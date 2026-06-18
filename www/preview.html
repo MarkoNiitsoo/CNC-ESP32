@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>G-code Preview</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/preview.css">
+  </head>
+  <body>
+    <main class="app preview-app">
+      <header class="status-header">
+        <div>
+          <p class="eyebrow">LowRider CNC</p>
+          <h1>Preview / Job</h1>
+          <p id="file-path">Loading...</p>
+        </div>
+        <a class="icon-link" href="/files">Files</a>
+      </header>
+
+      <section class="panel file-toolbar">
+        <button id="fit" type="button">Fit</button>
+        <button id="reload" type="button">Reload</button>
+        <a class="maintenance-link" href="/files">Back to files</a>
+      </section>
+
+      <nav class="preview-tabs" aria-label="Job workflow">
+        <button type="button" class="active" data-preview-tab-button="preview">Preview</button>
+        <button type="button" data-preview-tab-button="setup">Setup</button>
+        <button type="button" data-preview-tab-button="preflight">Preflight</button>
+        <button type="button" data-preview-tab-button="dry-run">Dry Run</button>
+        <button type="button" data-preview-tab-button="arm">Arm</button>
+        <button type="button" data-preview-tab-button="run">Run</button>
+      </nav>
+
+      <section class="panel preview-stage preview-tab-panel active" data-preview-tab="preview">
+        <canvas id="preview-canvas"></canvas>
+      </section>
+
+      <section class="panel preview-stats preview-tab-panel active" data-preview-tab="preview">
+        <h2>Summary</h2>
+        <div id="stats"></div>
+      </section>
+
+      <section class="panel preview-tab-panel active" data-preview-tab="preview">
+        <h2>Warnings</h2>
+        <div id="warnings" class="warning-list"></div>
+      </section>
+
+      <section class="panel job-panel preview-tab-panel" data-preview-tab="setup">
+        <h2>Job Setup</h2>
+        <div id="job-summary" class="job-summary"></div>
+        <div class="job-actions">
+          <button id="load-job" type="button">Load Job</button>
+          <button id="save-job" type="button">Save Job</button>
+          <button id="capture-position" type="button">Capture Current Position</button>
+          <button id="set-work-zero" type="button">Set Work Zero G92 X0 Y0 Z0</button>
+          <button id="capture-set-zero" type="button">Capture + Set Work Zero</button>
+          <button id="download-job" type="button">Download Job JSON</button>
+        </div>
+        <div id="job-result" class="job-result"></div>
+      </section>
+
+      <section class="panel tool-zero-panel preview-tab-panel" data-preview-tab="setup">
+        <h2>Tool / Z Zero</h2>
+        <p class="warning">This panel only sets Z zero. X/Y work zero will not be changed.</p>
+        <div id="tool-zero-summary" class="job-summary"></div>
+        <div class="job-actions">
+          <button id="tool-capture-position" type="button">Capture Current Position</button>
+          <button id="set-z-zero" type="button">Set Z Zero G92 Z0</button>
+          <button id="capture-set-z-zero" type="button">Capture + Set Z Zero</button>
+          <button id="save-tool-zero" type="button">Save Tool/Z Zero to Job</button>
+        </div>
+        <div id="tool-zero-result" class="job-result"></div>
+      </section>
+
+      <section class="panel feed-override-panel preview-tab-panel" data-preview-tab="setup">
+        <h2>Feed Override</h2>
+        <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
+        <div id="feed-override-summary" class="job-summary"></div>
+        <div class="dry-run-inputs">
+          <label for="feed-start-percent">Start feed override (%)</label>
+          <input id="feed-start-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
+        </div>
+        <div class="job-actions">
+          <button type="button" data-feed-start="50">50%</button>
+          <button type="button" data-feed-start="75">75%</button>
+          <button type="button" data-feed-start="100">100%</button>
+          <button type="button" data-feed-start="125">125%</button>
+          <button type="button" data-feed-start="150" class="caution">150%</button>
+        </div>
+      </section>
+
+      <section class="panel preflight-panel preview-tab-panel" data-preview-tab="preflight">
+        <h2>Preflight</h2>
+        <div id="preflight-state" class="preflight-state preflight-unknown">UNKNOWN</div>
+        <p id="preflight-action">Load a preview to check job readiness.</p>
+        <div class="job-actions">
+          <button id="refresh-preflight" type="button">Refresh Preflight</button>
+          <button id="save-job-preflight" type="button">Save Job With Preflight</button>
+        </div>
+        <div id="preflight-checks" class="preflight-checks"></div>
+      </section>
+
+      <section class="panel dry-run-panel preview-tab-panel" data-preview-tab="dry-run">
+        <h2>Dry Run</h2>
+        <p class="warning">This is not an emergency stop. Keep the physical emergency stop within reach.</p>
+        <div id="dry-run-summary" class="job-summary"></div>
+        <div class="dry-run-inputs">
+          <label for="safe-z">Safe Z (mm)</label>
+          <input id="safe-z" type="number" inputmode="decimal" step="0.1" value="15">
+          <label for="trace-margin">Margin (mm)</label>
+          <input id="trace-margin" type="number" inputmode="decimal" step="0.1" value="0">
+        </div>
+        <div class="job-actions">
+          <button id="generate-trace" type="button">Generate Bounding Box Commands</button>
+          <button id="send-trace" type="button" disabled>Send Bounding Box Trace</button>
+          <button id="copy-trace" type="button">Copy Commands</button>
+          <button id="generate-aircut" type="button">Generate Aircut Commands</button>
+          <button id="send-aircut" type="button" disabled>Send Aircut Toolpath</button>
+          <button id="copy-aircut" type="button">Copy Aircut Commands</button>
+          <button id="stop-m5" type="button">Stop spindle/laser M5</button>
+          <a class="maintenance-link" href="#preview-canvas">Back to Preview</a>
+        </div>
+        <pre id="trace-commands" class="command-preview"></pre>
+        <pre id="dry-run-log" class="dry-run-log"></pre>
+      </section>
+
+      <section class="panel arm-panel preview-tab-panel" data-preview-tab="arm">
+        <h2>Job Readiness / Arm Job</h2>
+        <div id="arm-state" class="arm-state arm-not-ready">NOT_READY</div>
+        <p>Arming does not move the CNC. It only marks this job as checked and ready for a future run command.</p>
+        <div id="arm-summary" class="job-summary"></div>
+        <fieldset class="arm-checklist">
+          <legend>Checked and Ready</legend>
+          <label><input type="checkbox" data-arm-check="previewAndBoundsVerified"> I verified the preview and bounds.</label>
+          <label><input type="checkbox" data-arm-check="workZeroVerified"> I verified the work zero.</label>
+          <label><input type="checkbox" data-arm-check="materialFixed"> The material is fixed.</label>
+          <label><input type="checkbox" data-arm-check="toolClear"> The tool is clear of clamps and obstacles.</label>
+          <label><input type="checkbox" data-arm-check="spindleOff"> Spindle/laser is off before start.</label>
+          <label><input type="checkbox" data-arm-check="physicalEmergencyStopKnown"> I know where the physical emergency stop is.</label>
+        </fieldset>
+        <div class="job-actions">
+          <button id="arm-job" type="button">Arm Job</button>
+          <button id="disarm-job" type="button">Disarm Job</button>
+          <button id="save-armed-job" type="button">Save Armed Job</button>
+          <button id="download-armed-job" type="button">Download Job JSON</button>
+        </div>
+        <div id="arm-result" class="job-result"></div>
+      </section>
+
+      <section id="run-panel" class="panel run-panel preview-tab-panel" data-preview-tab="run" hidden>
+        <h2>Run Job</h2>
+        <p class="warning">This is not a physical emergency stop.</p>
+        <p>FreeCAD usually outputs G54. Start Job applies G54 and then G92 X0 Y0 Z0 when using Apply current position as work zero.</p>
+        <div id="run-summary" class="job-summary"></div>
+        <section class="feed-live-control">
+          <h3>Feed Override</h3>
+          <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
+          <div id="feed-live-summary" class="job-summary"></div>
+          <div class="job-actions feed-actions">
+            <button type="button" data-feed-live="50">50%</button>
+            <button type="button" data-feed-live="75">75%</button>
+            <button type="button" data-feed-live="100">100%</button>
+            <button type="button" data-feed-live="125">125%</button>
+            <button type="button" data-feed-live="150" class="caution">150%</button>
+            <button type="button" data-feed-delta="-10">-10%</button>
+            <button type="button" data-feed-delta="10">+10%</button>
+          </div>
+          <div class="dry-run-inputs">
+            <label for="feed-live-percent">Set percent</label>
+            <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
+            <button id="feed-live-set" type="button">Set Feed Override</button>
+          </div>
+          <div id="feed-live-result" class="job-result"></div>
+        </section>
+        <div class="dry-run-inputs">
+          <label for="start-mode">Start mode</label>
+          <select id="start-mode">
+            <option value="apply_current_position_as_work_zero" selected>Apply current position as work zero</option>
+            <option value="use_active_work_zero">Use active work zero</option>
+          </select>
+        </div>
+        <fieldset class="arm-checklist">
+          <legend>Ready To Start</legend>
+          <label><input type="checkbox" data-run-check="toolAtWorkZero"> The tool is physically at the intended work X0/Y0/Z0.</label>
+          <label><input type="checkbox" data-run-check="zZeroCorrect"> Z zero is correct.</label>
+          <label><input type="checkbox" data-run-check="materialFixed"> Material is fixed.</label>
+          <label><input type="checkbox" data-run-check="spindleOff"> Spindle/laser is off.</label>
+        </fieldset>
+        <div class="job-actions">
+          <button id="start-job" type="button">Start Job</button>
+          <button id="pause-job" type="button">Pause Job</button>
+          <button id="resume-job" type="button">Resume Job</button>
+          <button id="stop-job" type="button">Stop job: M5 + pause stream</button>
+          <button id="refresh-job-status" type="button">Refresh Status</button>
+        </div>
+        <pre id="run-log" class="dry-run-log"></pre>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Primary">
+      <a href="/">Dashboard</a>
+      <a href="/files">Files</a>
+      <a class="active" href="/files">Job</a>
+      <a href="/#controls">Controls</a>
+      <a href="/#settings">Settings</a>
+    </nav>
+    <script src="/machine-bar.js"></script>
+    <script src="/preview.js"></script>
+  </body>
+</html>

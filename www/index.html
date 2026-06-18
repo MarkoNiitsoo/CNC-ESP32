@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LowRider CNC</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app shell-app">
+      <header class="status-header">
+        <div>
+          <p class="eyebrow">LowRider CNC</p>
+          <h1>Dashboard</h1>
+          <p id="health">Connecting...</p>
+        </div>
+        <a class="icon-link" href="#settings" data-nav-target="settings" aria-label="Settings">Settings</a>
+      </header>
+
+      <section id="dashboard-view" class="view-section active" data-view="dashboard">
+        <section class="hero-grid">
+          <article class="state-card">
+            <span id="connection-dot" class="state-dot warning-dot"></span>
+            <div>
+              <h2 id="connection-state">Checking</h2>
+              <p id="connection-detail">Waiting for pendant health.</p>
+            </div>
+          </article>
+          <article class="metric-card">
+            <span>Position</span>
+            <dl id="position-summary">
+              <dt>X</dt><dd>-</dd>
+              <dt>Y</dt><dd>-</dd>
+              <dt>Z</dt><dd>-</dd>
+            </dl>
+          </article>
+        </section>
+
+        <section class="workflow-card">
+          <h2>Workflow</h2>
+          <div class="workflow-steps" aria-label="Job workflow">
+            <a href="/files"><strong>File</strong><span>Choose G-code</span></a>
+            <a href="/files"><strong>Setup</strong><span>Preview and zero</span></a>
+            <a href="/files"><strong>Dry Run</strong><span>Trace or aircut</span></a>
+            <a href="/files"><strong>Arm</strong><span>Check readiness</span></a>
+            <a href="/files"><strong>Run</strong><span>Start armed job</span></a>
+          </div>
+        </section>
+
+        <section class="module-grid">
+          <a class="module-card" href="/files">
+            <strong>Preview / Job</strong>
+            <span>G-code preview, setup, preflight, arm.</span>
+          </a>
+          <a class="module-card" href="#controls" data-nav-target="controls">
+            <strong>Controls</strong>
+            <span>Homing, position, endstops, jog.</span>
+          </a>
+          <a class="module-card" href="/files">
+            <strong>Dry Run</strong>
+            <span>Bounding box trace and aircut.</span>
+          </a>
+          <a class="module-card" href="/files">
+            <strong>Run Job</strong>
+            <span>Start, pause, resume, stop status.</span>
+          </a>
+          <a class="module-card" href="/files">
+            <strong>Files</strong>
+            <span>G-code files and job JSON on SD.</span>
+          </a>
+          <a class="module-card" href="#settings" data-nav-target="settings">
+            <strong>Settings</strong>
+            <span>WiFi, firmware update, system info.</span>
+          </a>
+        </section>
+
+        <section class="panel compact-panel">
+          <h2>Quick Commands</h2>
+          <div class="quick-buttons">
+            <button type="button" data-cmd="M114">M114 Position</button>
+            <button type="button" data-cmd="M119">M119 Endstops</button>
+            <button type="button" data-cmd="M5">M5 Off</button>
+            <button type="button" data-cmd="M400">M400 Wait</button>
+          </div>
+        </section>
+
+        <details class="panel terminal-panel">
+          <summary>Terminal</summary>
+          <label for="cmd">Command</label>
+          <div class="command-row">
+            <input id="cmd" type="text" inputmode="text" autocomplete="off" value="M115">
+            <button id="send" type="button">Send</button>
+          </div>
+          <div class="quick-buttons compact-buttons" aria-label="Terminal quick commands">
+            <button type="button" data-cmd="M115">M115</button>
+            <button type="button" data-cmd="M20">M20</button>
+            <button type="button" data-cmd="M114">M114</button>
+            <button type="button" data-cmd="M119">M119</button>
+          </div>
+          <pre id="log" class="log"></pre>
+        </details>
+      </section>
+
+      <section id="controls-view" class="view-section" data-view="controls">
+        <section class="panel">
+          <h2>Position</h2>
+          <div id="position-card" class="job-summary">
+            <dl>
+              <dt>X</dt><dd>-</dd>
+              <dt>Y</dt><dd>-</dd>
+              <dt>Z</dt><dd>-</dd>
+            </dl>
+          </div>
+          <button type="button" data-cmd="M114">Refresh Position M114</button>
+        </section>
+
+        <section class="panel machine-panel">
+          <h2>Homing</h2>
+          <p class="warning">Homing moves the machine toward endstops.</p>
+          <p>Run M119 before homing if you are unsure about endstop state.</p>
+          <p>If endstops show TRIGGERED when they are not pressed, do not home.</p>
+          <div class="machine-buttons">
+            <button type="button" data-cmd="M119">M119 Endstops</button>
+            <button type="button" data-cmd="G28 X Y" data-confirm="This will move the CNC toward its endstops. Keep your hand near the physical emergency stop.">Home X/Y</button>
+            <button type="button" data-cmd="G28 Z" data-confirm="This will move the CNC toward its endstops. Keep your hand near the physical emergency stop.">Home Z</button>
+            <button type="button" class="danger-button" data-cmd="G28" data-confirm="HOME ALL AXES: This will move X, Y and Z. Make sure the machine is clear and endstops are connected.">Home All</button>
+          </div>
+        </section>
+
+        <section class="panel jog-panel">
+          <h2>Jog / Virtual Joystick</h2>
+          <p class="warning">Safe Jog lifts Z before XY movement by default.</p>
+          <p>Software stop is not a physical emergency stop.</p>
+          <label class="toggle-row">
+            <input id="safe-jog" type="checkbox" checked>
+            Safe Jog
+          </label>
+          <div class="jog-fields">
+            <label for="safe-lift-z">Safe Lift Z (mm)</label>
+            <input id="safe-lift-z" type="number" inputmode="decimal" min="0" max="25" step="0.5" value="5">
+            <label for="xy-speed">XY Speed</label>
+            <input id="xy-speed" type="range" min="0" max="100" value="50">
+            <label for="z-speed">Z Speed</label>
+            <input id="z-speed" type="range" min="0" max="100" value="40">
+          </div>
+          <div class="jog-layout">
+            <div id="xy-joystick" class="xy-joystick" aria-label="XY joystick">
+              <div id="xy-stick" class="xy-stick"></div>
+            </div>
+            <div class="z-jog-buttons">
+              <button id="z-plus" type="button">Z+</button>
+              <button id="z-minus" type="button">Z-</button>
+            </div>
+          </div>
+          <button id="jog-stop" type="button" class="danger-button">Stop Jog: M410 + M5</button>
+          <div id="jog-status" class="jog-status">Jog status unavailable.</div>
+        </section>
+
+        <section class="panel">
+          <h2>Tool / Z Zero</h2>
+          <p class="warning">This sets only Z zero. X/Y work zero is not changed.</p>
+          <p>Use the Preview / Job setup page when you need to save Tool/Z Zero into a job JSON.</p>
+          <div id="control-z-zero-summary" class="job-summary"></div>
+          <div class="machine-buttons">
+            <button id="control-capture-position" type="button">Capture Current Position</button>
+            <button id="control-set-z-zero" type="button">Set Z Zero G92 Z0</button>
+            <button id="control-capture-set-z-zero" type="button">Capture + Set Z Zero</button>
+            <a class="maintenance-link" href="/files">Open Preview / Job</a>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Other Commands</h2>
+          <div class="quick-buttons">
+            <button type="button" data-cmd="M400">M400 Wait</button>
+            <button type="button" data-cmd="M5">M5 Spindle/Laser Off</button>
+          </div>
+        </section>
+      </section>
+
+      <section id="settings-view" class="view-section" data-view="settings">
+        <section class="panel">
+          <h2>Settings</h2>
+          <div id="system-summary" class="job-summary"></div>
+          <div class="module-grid">
+            <a class="module-card" href="/wifi">
+              <strong>WiFi Settings</strong>
+              <span>Save, forget, or change local WiFi.</span>
+            </a>
+            <a class="module-card" href="/update">
+              <strong>Firmware Update</strong>
+              <span>Upload a new firmware binary.</span>
+            </a>
+            <a class="module-card" href="/files">
+              <strong>SD Files</strong>
+              <span>Manage /gcode, /www, /jobs, and logs.</span>
+            </a>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Primary">
+      <a href="#dashboard" data-nav-target="dashboard">Dashboard</a>
+      <a href="/files">Files</a>
+      <a href="/files">Job</a>
+      <a href="#controls" data-nav-target="controls">Controls</a>
+      <a href="#settings" data-nav-target="settings">Settings</a>
+    </nav>
+
+    <script src="/machine-bar.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

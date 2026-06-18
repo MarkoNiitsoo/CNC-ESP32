@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SD Files</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="status-header">
+        <div>
+          <p class="eyebrow">LowRider CNC</p>
+          <h1>Files</h1>
+          <p id="sd-status">Checking SD card...</p>
+        </div>
+        <a class="icon-link" href="/">Dashboard</a>
+      </header>
+
+      <section class="panel">
+        <h2>G-code Files</h2>
+        <p>Default folder is /gcode. Preview supported .gcode, .gc, .nc, and .tap files before setup.</p>
+        <div class="file-toolbar">
+          <button id="refresh" type="button">Refresh</button>
+          <a class="maintenance-link" href="/">Back</a>
+        </div>
+      </section>
+
+      <section class="panel">
+        <label for="current-path">Current path</label>
+        <input id="current-path" type="text" value="/gcode" readonly>
+      </section>
+
+      <section class="panel">
+        <form id="upload-form">
+          <label for="upload-file">Upload file</label>
+          <input id="upload-file" name="file" type="file" required>
+          <button type="submit">Upload to Current Folder</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <form id="mkdir-form">
+          <label for="folder-name">New folder</label>
+          <div class="command-row">
+            <input id="folder-name" type="text" autocomplete="off" placeholder="folder-name">
+            <button type="submit">Create</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Folder Contents</h2>
+        <div id="file-list" class="file-list"></div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Primary">
+      <a href="/">Dashboard</a>
+      <a class="active" href="/files">Files</a>
+      <a href="/files">Job</a>
+      <a href="/#controls">Controls</a>
+      <a href="/#settings">Settings</a>
+    </nav>
+
+    <script src="/machine-bar.js"></script>
+    <script src="/files.js"></script>
+  </body>
+</html>

@@ -1,0 +1,275 @@
+.preview-tabs {
+  position: sticky;
+  top: 136px;
+  z-index: 9;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  background: linear-gradient(180deg, rgba(8, 13, 16, 0.94), rgba(8, 13, 16, 0.76));
+}
+
+.preview-tabs button {
+  flex: 0 0 auto;
+  min-height: 42px;
+  background: #18232d;
+  color: #cbd8e1;
+}
+
+.preview-tabs button.active {
+  background: #245f8f;
+  color: #ffffff;
+}
+
+.preview-tab-panel {
+  display: none;
+}
+
+.preview-tab-panel.active {
+  display: grid;
+}
+
+.preview-tab-panel[hidden] {
+  display: none;
+}
+
+.preview-stage {
+  min-height: 360px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #263640;
+  border-radius: 6px;
+  background: #080b0d;
+}
+
+#preview-canvas {
+  display: block;
+  width: 100%;
+  height: min(62vh, 620px);
+  min-height: 340px;
+}
+
+.preview-stats dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.preview-stats dt {
+  color: #9fb1bf;
+}
+
+.preview-stats dd {
+  margin: 0;
+  color: #eef3f7;
+}
+
+.job-panel dl,
+.job-summary dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.job-panel dt,
+.job-summary dt {
+  color: #9fb1bf;
+}
+
+.job-panel dd,
+.job-summary dd {
+  min-width: 0;
+  margin: 0;
+  color: #eef3f7;
+  overflow-wrap: anywhere;
+}
+
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.job-result {
+  color: #b9f7ce;
+  min-height: 1.4em;
+}
+
+.preflight-state {
+  width: fit-content;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-weight: 800;
+}
+
+.preflight-ready {
+  background: #153d2c;
+  color: #b9f7ce;
+}
+
+.preflight-warnings {
+  background: #4a3917;
+  color: #ffd28a;
+}
+
+.preflight-not-ready {
+  background: #4a2020;
+  color: #ffb4b4;
+}
+
+.preflight-unknown {
+  background: #2a3944;
+  color: #cbd8e1;
+}
+
+.preflight-checks {
+  display: grid;
+  gap: 8px;
+}
+
+.preflight-check {
+  padding: 10px;
+  border: 1px solid #263640;
+  border-radius: 6px;
+  background: #121a21;
+}
+
+.preflight-check-pass {
+  color: #b9f7ce;
+}
+
+.preflight-check-warning {
+  border-color: #5f4b20;
+  color: #ffd28a;
+}
+
+.preflight-check-fail {
+  border-color: #693030;
+  color: #ffb4b4;
+}
+
+.dry-run-panel {
+  border-top: 1px solid #5f4b20;
+}
+
+.tool-zero-panel {
+  border-top: 1px solid #334653;
+  border-bottom: 1px solid #263640;
+  padding-block: 14px;
+}
+
+.dry-run-inputs {
+  display: grid;
+  grid-template-columns: auto minmax(0, 160px);
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.command-preview,
+.dry-run-log {
+  min-height: 120px;
+  max-height: 260px;
+  border: 1px solid #263640;
+  border-radius: 6px;
+  background: #080b0d;
+  color: #b9f7ce;
+}
+
+.dry-run-log {
+  color: #cbd8e1;
+}
+
+.dry-run-errors {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  color: #ffb4b4;
+}
+
+.arm-panel {
+  border-top: 1px solid #2d6044;
+}
+
+.arm-state {
+  width: fit-content;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-weight: 800;
+}
+
+.arm-not-ready {
+  background: #4a2020;
+  color: #ffb4b4;
+}
+
+.arm-ready {
+  background: #153d2c;
+  color: #b9f7ce;
+}
+
+.arm-armed {
+  background: #0f5132;
+  color: #d9ffe6;
+  box-shadow: 0 0 0 2px #65d28e inset;
+}
+
+.arm-stale {
+  background: #4a3917;
+  color: #ffd28a;
+  box-shadow: 0 0 0 2px #d99a32 inset;
+}
+
+.arm-checklist {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #263640;
+  border-radius: 6px;
+  margin: 0;
+  padding: 12px;
+}
+
+.arm-checklist label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.arm-warnings {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  color: #ffd28a;
+}
+
+.run-panel {
+  border-color: #693030;
+}
+
+.warning-list {
+  display: grid;
+  gap: 8px;
+}
+
+.warning-item {
+  padding: 10px;
+  border: 1px solid #5f4b20;
+  border-radius: 6px;
+  background: #1f1a10;
+  color: #ffd28a;
+}
+
+.warning-ok {
+  color: #b9f7ce;
+}
+
+@media (max-width: 460px) {
+  .preview-tabs {
+    top: 176px;
+  }
+
+  #preview-canvas {
+    height: 52vh;
+  }
+}
