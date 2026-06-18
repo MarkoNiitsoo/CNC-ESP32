@@ -277,3 +277,9 @@ The working tree already had a local `.git/` directory, but no commits had been 
 Existing ignore rules already exclude local PlatformIO-generated `.vscode/c_cpp_properties.json`
 and `.vscode/launch.json`, so the first project history can start from portable source, docs, and
 SD UI artifacts rather than machine-specific editor state.
+
+## License
+
+The repository now has a root-level MIT `LICENSE` file using `Copyright (c) 2026 Marko Niitsoo`.
+The README License section links to `LICENSE` and keeps CNC safety warnings separate from the MIT
+warranty disclaimer.

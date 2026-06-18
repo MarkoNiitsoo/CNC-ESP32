@@ -432,4 +432,6 @@ Do not rely on a root-level `firmware.bin`; it is ignored.
 
 ## License
 
-TODO: Add license.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+The MIT License is a software license and does not provide CNC safety protection. This is an experimental DIY CNC controller companion. It does not replace a physical emergency stop. Use at your own risk.

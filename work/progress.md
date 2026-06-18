@@ -315,3 +315,6 @@
 - Kept local PlatformIO-generated VS Code files out of version history by relying on existing
   `.gitignore` rules for `.vscode/c_cpp_properties.json` and `.vscode/launch.json`.
 - Prepared the project tree for an initial logical commit history instead of a single snapshot.
+- Added a root-level MIT `LICENSE` file for `Copyright (c) 2026 Marko Niitsoo`.
+- Updated the README License section to link to `LICENSE` while preserving the separate CNC safety
+  disclaimer.
