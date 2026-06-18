@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SD Files</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <h1>SD Files</h1>
+          <p id="sd-status">Checking SD card...</p>
+        </div>
+      </header>
+
+      <section class="panel file-toolbar">
+        <a class="maintenance-link" href="/">Back</a>
+        <button id="refresh" type="button">Refresh</button>
+      </section>
+
+      <section class="panel">
+        <label for="current-path">Current path</label>
+        <input id="current-path" type="text" value="/gcode" readonly>
+      </section>
+
+      <section class="panel">
+        <form id="upload-form">
+          <label for="upload-file">Upload file</label>
+          <input id="upload-file" name="file" type="file" required>
+          <button type="submit">Upload</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <form id="mkdir-form">
+          <label for="folder-name">New folder</label>
+          <div class="command-row">
+            <input id="folder-name" type="text" autocomplete="off" placeholder="folder-name">
+            <button type="submit">Create</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div id="file-list" class="file-list"></div>
+      </section>
+    </main>
+    <script src="/files.js"></script>
+  </body>
+</html>
+

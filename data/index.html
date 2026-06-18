@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LowRider CNC</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <h1>LowRider CNC</h1>
+          <p id="health">Connecting...</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <label for="cmd">Command</label>
+        <div class="command-row">
+          <input id="cmd" type="text" inputmode="text" autocomplete="off" value="M115">
+          <button id="send" type="button">Send</button>
+        </div>
+        <div class="quick-buttons" aria-label="Quick commands">
+          <button type="button" data-cmd="M115">M115</button>
+          <button type="button" data-cmd="M114">M114</button>
+          <button type="button" data-cmd="M119">M119</button>
+          <button type="button" data-cmd="M20">M20</button>
+          <button type="button" data-cmd="M5">M5</button>
+        </div>
+      </section>
+
+      <section class="terminal" aria-label="Response log">
+        <pre id="log"></pre>
+      </section>
+
+      <section class="panel maintenance-panel">
+        <h2>Maintenance</h2>
+        <a class="maintenance-link" href="/files">SD Files</a>
+        <a class="maintenance-link" href="/wifi">WiFi Settings</a>
+        <a class="maintenance-link" href="/update">Firmware Update</a>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
