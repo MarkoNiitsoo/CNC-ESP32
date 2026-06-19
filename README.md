@@ -12,7 +12,19 @@ The current setup is built around a LowRider CNC, BTT SKR Pro, and Marlin, but p
 
 ## Screenshots
 
-TODO: Add mobile dashboard / job preview / safety drawer screenshots.
+Representative phone screenshots from the current SD-hosted `/www` UI:
+
+| Dashboard | SD Files |
+|---|---|
+| <img src="screenshots/Screenshot_2026-06-19-13-09-36-130_com.android.chrome.jpg" alt="Dashboard with machine bar and workflow cards" width="260"> | <img src="screenshots/Screenshot_2026-06-19-13-09-59-158_com.android.chrome.jpg" alt="SD file manager with G-code files and Preview actions" width="260"> |
+
+| G-code Preview | Job Setup / Feed Override |
+|---|---|
+| <img src="screenshots/Screenshot_2026-06-19-13-10-07-043_com.android.chrome.jpg" alt="G-code preview canvas with toolpath" width="260"> | <img src="screenshots/Screenshot_2026-06-19-13-14-24-975_com.android.chrome.jpg" alt="Job setup feed override card" width="260"> |
+
+| Dry Run | Machine Controls |
+|---|---|
+| <img src="screenshots/Screenshot_2026-06-19-13-15-27-146_com.android.chrome.jpg" alt="Dry run bounding box command preview" width="260"> | <img src="screenshots/Screenshot_2026-06-19-13-11-07-083_com.android.chrome.jpg" alt="Controls page with safe jog virtual joystick" width="260"> |
 
 ## Key Features
 

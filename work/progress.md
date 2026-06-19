@@ -318,3 +318,11 @@
 - Added a root-level MIT `LICENSE` file for `Copyright (c) 2026 Marko Niitsoo`.
 - Updated the README License section to link to `LICENSE` while preserving the separate CNC safety
   disclaimer.
+
+## 2026-06-19
+
+- Reviewed the phone screenshots added under `screenshots/`.
+- Replaced the README screenshot TODO with a compact six-image gallery covering the dashboard,
+  SD file manager, G-code preview, feed override setup, dry-run commands, and safe jog controls.
+- Kept this as a documentation-only change; firmware, SD-hosted UI files, and PlatformIO settings
+  were not modified.

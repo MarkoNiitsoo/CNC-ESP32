@@ -283,3 +283,10 @@ SD UI artifacts rather than machine-specific editor state.
 The repository now has a root-level MIT `LICENSE` file using `Copyright (c) 2026 Marko Niitsoo`.
 The README License section links to `LICENSE` and keeps CNC safety warnings separate from the MIT
 warranty disclaimer.
+
+## README Screenshots
+
+The README now includes a compact screenshot gallery using selected images from `screenshots/`.
+The chosen images show the dashboard, SD file manager, G-code preview, feed override setup,
+dry-run command preview, and safe jog controls. This was a documentation-only update; no firmware,
+SD-hosted UI, or PlatformIO behavior changed.
