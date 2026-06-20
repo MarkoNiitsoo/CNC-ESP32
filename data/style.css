@@ -51,6 +51,12 @@ p {
   font-size: 0.92rem;
 }
 
+.form-hint {
+  margin: 0;
+  color: #9fb1bf;
+  font-size: 0.92rem;
+}
+
 .panel {
   display: grid;
   gap: 10px;
@@ -74,6 +80,69 @@ input {
   padding: 13px;
   background: #172028;
   color: #ffffff;
+}
+
+.toggle-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.toggle-row input {
+  width: auto;
+}
+
+.path-picker {
+  margin-top: 12px;
+  border: 1px solid #334653;
+  border-radius: 8px;
+  background: #0b1117;
+  overflow: hidden;
+}
+
+.path-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid #334653;
+}
+
+.path-picker-header button {
+  width: auto;
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.path-tree {
+  display: grid;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.path-tree-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-bottom: 1px solid rgba(45, 56, 68, 0.7);
+  border-radius: 0;
+  background: transparent;
+  color: #eef3f7;
+  text-align: left;
+}
+
+.path-tree-item span {
+  color: #9fb1bf;
+  font-size: 0.9rem;
+}
+
+.path-tree-item.active {
+  background: rgba(63, 196, 117, 0.16);
+  color: #3fc475;
 }
 
 button {

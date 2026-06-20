@@ -23,12 +23,24 @@
       <section class="panel">
         <label for="current-path">Current path</label>
         <input id="current-path" type="text" value="/gcode" readonly>
+        <p class="form-hint">Tap the path to choose another SD folder such as /www.</p>
+        <div id="path-picker" class="path-picker" hidden>
+          <div class="path-picker-header">
+            <strong>Choose folder</strong>
+            <button id="close-path-picker" type="button">Close</button>
+          </div>
+          <div id="path-tree" class="path-tree"></div>
+        </div>
       </section>
 
       <section class="panel">
         <form id="upload-form">
           <label for="upload-file">Upload file</label>
           <input id="upload-file" name="file" type="file" required>
+          <label class="toggle-row">
+            <input id="overwrite-upload" type="checkbox" checked>
+            Overwrite existing file
+          </label>
           <button type="submit">Upload</button>
         </form>
       </section>
@@ -50,4 +62,3 @@
     <script src="/files.js"></script>
   </body>
 </html>
-
