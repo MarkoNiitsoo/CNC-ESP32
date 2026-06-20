@@ -326,3 +326,35 @@
   SD file manager, G-code preview, feed override setup, dry-run commands, and safe jog controls.
 - Kept this as a documentation-only change; firmware, SD-hosted UI files, and PlatformIO settings
   were not modified.
+- Updated Safe Analog Jog behavior:
+  - firmware metadata is now `0.4.4-safe-jog-restore`
+  - Safe Jog captures current Z with `M400`/`M114`, moves to an absolute safe Z target, and restores
+    the captured Z after about 5 seconds if Z was not changed
+  - default safe Z target is `70` mm
+  - XY speed slider now represents 10-100 mm/s maximum feed, while joystick distance controls each
+    tick's movement length
+  - jog status reports captured Z and pending Z restore state
+- Updated the SD-hosted dashboard jog UI labels/defaults and protocol/architecture documentation.
+- Verified `node --check www/app.js` and PlatformIO `pio run` both succeed.
+- Improved the SD-hosted joystick touch handling without firmware changes:
+  - virtual joystick knob now follows pointer movement immediately during Safe Jog startup
+  - pointer movement is no longer ignored while `/api/jog/start` is still waiting for safe Z setup
+  - added touchmove/touchcancel fallback handling for mobile browsers
+  - releasing the touch before jog startup completes now stops the jog instead of starting heartbeat late
+- Verified `node --check www/app.js` succeeds after the touch handling fix.
+- Improved the SD file manager UI so `/www` and other allowed roots can be selected without removing
+  the SD card:
+  - tapping the readonly Current path field opens a folder picker for `/gcode`, `/www`,
+    `/firmware`, `/jobs`, and `/logs`
+  - the picker lists nested directories through the existing `/api/files` endpoint
+  - upload now has an enabled-by-default overwrite option for replacing existing UI files
+  - mirrored the same behavior into SPIFFS fallback `data/files.html`, `data/files.js`, and
+    `data/style.css`
+- Verified `node --check www/files.js`, `node --check data/files.js`, and `pio run --target buildfs`
+  succeed after the file manager UI changes.
+- Smoothed firmware jog ticks for partial joystick movement:
+  - XY feedrate is now scaled from the actual generated XY distance per tick
+  - partial joystick deflection should move for roughly the full tick duration instead of making a
+    quick short move followed by a pause
+  - Z-only jog feedrate is also scaled from the generated Z distance per tick
+- Verified PlatformIO `pio run` succeeds after the jog feedrate smoothing change.

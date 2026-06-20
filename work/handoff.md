@@ -290,3 +290,36 @@ The README now includes a compact screenshot gallery using selected images from 
 The chosen images show the dashboard, SD file manager, G-code preview, feed override setup,
 dry-run command preview, and safe jog controls. This was a documentation-only update; no firmware,
 SD-hosted UI, or PlatformIO behavior changed.
+
+## Safe Jog Restore
+
+Safe Analog Jog has been updated in firmware and SD-hosted dashboard UI. Firmware metadata is now
+`0.4.4-safe-jog-restore`. Safe Jog captures current Z with `M400`/`M114`, moves to an absolute
+safe Z target before X/Y jogging, and schedules a return to the captured Z about 5 seconds after
+jogging stops when Z was not changed. The default safe Z target in the UI and firmware is `70` mm.
+
+The XY slider now represents maximum XY feed from 10 to 100 mm/s, mapped to `xyFeedMax` 600 to
+6000 mm/min. Joystick distance from center controls the movement length of each firmware jog tick.
+Upload updated `www/index.html` and `www/app.js` to SD `/www` after flashing/WebOTA firmware
+`0.4.4-safe-jog-restore`.
+
+Follow-up UI-only joystick smoothing was added in `www/app.js`. The knob now follows pointer/touch
+movement immediately while `/api/jog/start` is still waiting for firmware Safe Jog setup, and
+touchmove/touchcancel fallbacks are wired for mobile browsers. No firmware change is required for
+that smoothing fix; upload the updated `www/app.js` to SD `/www`.
+
+## File Manager Folder Picker
+
+The file manager can now upload directly to `/www` from the browser. Tapping the readonly Current
+path field opens a folder picker for `/gcode`, `/www`, `/firmware`, `/jobs`, and `/logs`, including
+nested directories discovered through the existing `/api/files` endpoint. Upload has an
+enabled-by-default overwrite checkbox so replacing SD-hosted UI files such as `/www/app.js` is no
+longer a manual API call. The same behavior is mirrored in SPIFFS fallback `data/files.*`.
+
+No firmware API changes were needed. Upload updated `www/files.html`, `www/files.js`, and
+`www/style.css` to SD `/www`; if using fallback SPIFFS, rebuild/upload the filesystem image.
+
+Safe Jog feed smoothing follow-up: firmware now scales jog feedrate from the actual generated
+distance per 150 ms tick. Partial joystick deflection should therefore move for roughly the full
+tick instead of making a fast short move and waiting. This is a firmware behavior change, so it
+requires flashing/WebOTA the current firmware build.
