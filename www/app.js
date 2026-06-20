@@ -11,6 +11,7 @@ const systemSummary = document.querySelector('#system-summary');
 const safeJogInput = document.querySelector('#safe-jog');
 const safeLiftZInput = document.querySelector('#safe-lift-z');
 const xySpeedInput = document.querySelector('#xy-speed');
+const xySpeedLabel = document.querySelector('#xy-speed-label');
 const zSpeedInput = document.querySelector('#z-speed');
 const xyJoystick = document.querySelector('#xy-joystick');
 const xyStick = document.querySelector('#xy-stick');
@@ -25,6 +26,8 @@ const controlCaptureSetZZeroButton = document.querySelector('#control-capture-se
 
 let jogActive = false;
 let jogPointerId = null;
+let jogPointerDown = false;
+let jogStartPending = false;
 let jogTimer = null;
 let jogVector = { x: 0, y: 0, z: 0, speed: 0 };
 let lastPosition = { x: null, y: null, z: null };
@@ -215,11 +218,22 @@ function speedValue(input) {
   return Math.max(0, Math.min(1, Number(input.value || 0) / 100));
 }
 
+function xyMaxSpeedMmSec() {
+  return Math.max(10, Math.min(100, Number(xySpeedInput?.value || 50)));
+}
+
+function updateJogSpeedLabels() {
+  if (xySpeedLabel) xySpeedLabel.textContent = `${xyMaxSpeedMmSec().toFixed(0)} mm/s`;
+}
+
 function jogStartBody() {
+  const xyMaxMmSec = xyMaxSpeedMmSec();
   return {
     safeJog: safeJogInput?.checked !== false,
-    safeLiftZ: Number(safeLiftZInput?.value || 5),
-    xyFeedMax: 2000,
+    safeLiftZ: Number(safeLiftZInput?.value || 70),
+    restoreZAfterJog: true,
+    restoreDelayMs: 5000,
+    xyFeedMax: xyMaxMmSec * 60,
     zFeedMax: 400,
   };
 }
@@ -241,6 +255,8 @@ function renderJogStatus(data) {
     <dl>
       <dt>State</dt><dd>${html(data.state || '-')}</dd>
       <dt>Z lifted</dt><dd>${data.zLiftedForJog ? 'yes' : 'no'}</dd>
+      <dt>Original Z</dt><dd>${data.originalZCaptured ? Number(data.originalZ).toFixed(3) : '-'}</dd>
+      <dt>Z restore</dt><dd>${data.zRestoreScheduled ? `in ${data.zRestoreDueMs} ms` : '-'}</dd>
       <dt>Last command</dt><dd>${html(data.lastCommand || '-')}</dd>
       <dt>Heartbeat age</dt><dd>${data.heartbeatAgeMs ?? '-'} ms</dd>
       <dt>Error</dt><dd>${html(data.lastError || '-')}</dd>
@@ -260,7 +276,9 @@ async function refreshJogStatus() {
 
 async function ensureJogStarted() {
   if (jogActive) return;
+  jogStartPending = true;
   const data = await postJson('/api/jog/start', jogStartBody());
+  jogStartPending = false;
   jogActive = true;
   renderJogStatus(data);
 }
@@ -286,6 +304,8 @@ async function stopJog(callApi = true) {
   clearInterval(jogTimer);
   jogTimer = null;
   jogPointerId = null;
+  jogPointerDown = false;
+  jogStartPending = false;
   jogVector = { x: 0, y: 0, z: 0, speed: 0 };
   if (xyStick) {
     xyStick.style.transform = 'translate(-50%, -50%)';
@@ -301,6 +321,7 @@ async function stopJog(callApi = true) {
 }
 
 function updateJoystickVector(event) {
+  if (!xyJoystick || !xyStick) return;
   const rect = xyJoystick.getBoundingClientRect();
   const radius = rect.width / 2;
   const cx = rect.left + radius;
@@ -312,7 +333,16 @@ function updateJoystickVector(event) {
   const x = (dx * scale) / radius;
   const y = -(dy * scale) / radius;
   xyStick.style.transform = `translate(calc(-50% + ${x * radius}px), calc(-50% + ${-y * radius}px))`;
-  jogVector = { x, y, z: 0, speed: speedValue(xySpeedInput) };
+  jogVector = { x, y, z: 0, speed: 1 };
+}
+
+function updateJoystickVectorFromTouch(event) {
+  const touch = event.touches?.[0] || event.changedTouches?.[0];
+  if (!touch) return;
+  updateJoystickVector({
+    clientX: touch.clientX,
+    clientY: touch.clientY,
+  });
 }
 
 cmdInput?.addEventListener('keydown', (event) => {
@@ -340,10 +370,15 @@ if (xyJoystick) {
   xyJoystick.addEventListener('pointerdown', async (event) => {
     event.preventDefault();
     jogPointerId = event.pointerId;
+    jogPointerDown = true;
     xyJoystick.setPointerCapture(jogPointerId);
     updateJoystickVector(event);
     try {
       await ensureJogStarted();
+      if (!jogPointerDown) {
+        await stopJog();
+        return;
+      }
       startJogHeartbeat();
     } catch (err) {
       appendLog(`Jog start failed: ${err.message}`);
@@ -352,13 +387,32 @@ if (xyJoystick) {
   });
 
   xyJoystick.addEventListener('pointermove', (event) => {
-    if (event.pointerId !== jogPointerId || !jogActive) return;
+    if (event.pointerId !== jogPointerId || !jogPointerDown) return;
+    event.preventDefault();
     updateJoystickVector(event);
   });
 
   ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((eventName) => {
     xyJoystick.addEventListener(eventName, (event) => {
       if (event.pointerId === jogPointerId) stopJog();
+    });
+  });
+
+  xyJoystick.addEventListener('touchstart', (event) => {
+    if (!jogPointerDown) return;
+    event.preventDefault();
+    updateJoystickVectorFromTouch(event);
+  }, { passive: false });
+
+  xyJoystick.addEventListener('touchmove', (event) => {
+    if (!jogPointerDown) return;
+    event.preventDefault();
+    updateJoystickVectorFromTouch(event);
+  }, { passive: false });
+
+  ['touchend', 'touchcancel'].forEach((eventName) => {
+    xyJoystick.addEventListener(eventName, () => {
+      if (jogPointerDown || jogStartPending || jogActive) stopJog();
     });
   });
 }
@@ -390,6 +444,7 @@ wireZButton(zPlusButton, 1);
 wireZButton(zMinusButton, -1);
 
 jogStopButton?.addEventListener('click', () => stopJog());
+xySpeedInput?.addEventListener('input', updateJogSpeedLabels);
 controlCapturePositionButton?.addEventListener('click', () => captureControlPosition().catch((err) => appendLog(`Capture failed: ${err.message}`)));
 controlSetZZeroButton?.addEventListener('click', () => setControlZZero().catch((err) => appendLog(`Set Z zero failed: ${err.message}`)));
 controlCaptureSetZZeroButton?.addEventListener('click', () => setControlZZero().catch((err) => appendLog(`Set Z zero failed: ${err.message}`)));
@@ -407,6 +462,7 @@ routeFromHash();
 refreshHealth();
 refreshJobStatus();
 refreshJogStatus();
+updateJogSpeedLabels();
 setInterval(refreshHealth, 5000);
 setInterval(refreshJobStatus, 5000);
 setInterval(refreshJogStatus, 2000);

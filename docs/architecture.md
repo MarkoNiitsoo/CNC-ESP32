@@ -58,7 +58,10 @@ or job runner functionality.
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, short relative movement ticks, and
     500 ms deadman timeout.
-  - Safe Jog mode sends `M5`, `G91`, a small Z lift, and `G90` before X/Y jogging.
+  - Safe Jog mode captures current Z, sends `M5`, moves to an absolute safe Z target, and restores
+    the captured Z after jogging stops if Z was not changed.
+  - The XY speed slider sets the maximum feedrate; joystick distance from center sets each tick's
+    movement length and the firmware scales feedrate so partial stick movement remains smooth.
 - WiFi settings route:
   - Browser form at `/wifi`.
   - Save endpoint at `/api/wifi/save`.

@@ -8,7 +8,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.4.3-feed-override";
+constexpr const char *firmwareVersion = "0.4.4-safe-jog-restore";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
@@ -28,7 +28,8 @@ constexpr uint32_t kMarlinTimeoutMs = 1500;
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
 constexpr uint32_t kJogTickIntervalMs = 150;
 constexpr uint32_t kJogDeadmanMs = 500;
-constexpr float kJogMaxXyStepMm = 2.0f;
+constexpr uint32_t kJogRestoreDelayMs = 5000;
+constexpr float kJogMaxXyStepMm = 15.0f;
 constexpr float kJogMaxZStepMm = 0.5f;
 constexpr size_t kMaxGcodeLineLength = 180;
 constexpr int kMarlinRxPin = 3;
@@ -91,8 +92,13 @@ struct JogStatus {
   JogState state = JogState::Idle;
   bool safeJog = true;
   bool zLiftedForJog = false;
-  float safeLiftZ = 5.0f;
-  float xyFeedMax = 2000.0f;
+  bool restoreZAfterJog = true;
+  bool originalZCaptured = false;
+  bool zChangedDuringJog = false;
+  bool zRestoreScheduled = false;
+  float safeLiftZ = 70.0f;
+  float originalZ = 0.0f;
+  float xyFeedMax = 3000.0f;
   float zFeedMax = 400.0f;
   float x = 0.0f;
   float y = 0.0f;
@@ -100,9 +106,12 @@ struct JogStatus {
   float speed = 0.0f;
   String lastCommand;
   String lastError;
+  String lastM114;
   uint32_t startedAtMs = 0;
   uint32_t lastUpdateMs = 0;
   uint32_t lastTickMs = 0;
+  uint32_t zRestoreAtMs = 0;
+  uint32_t restoreDelayMs = kJogRestoreDelayMs;
 };
 
 WebServer server(80);
@@ -566,6 +575,18 @@ String jogStatusJson() {
   json += jogStatus.safeJog ? "true" : "false";
   json += ",\"safeLiftZ\":";
   json += String(jogStatus.safeLiftZ, 2);
+  json += ",\"restoreZAfterJog\":";
+  json += jogStatus.restoreZAfterJog ? "true" : "false";
+  json += ",\"originalZCaptured\":";
+  json += jogStatus.originalZCaptured ? "true" : "false";
+  json += ",\"originalZ\":";
+  json += jogStatus.originalZCaptured ? String(jogStatus.originalZ, 3) : "null";
+  json += ",\"zChangedDuringJog\":";
+  json += jogStatus.zChangedDuringJog ? "true" : "false";
+  json += ",\"zRestoreScheduled\":";
+  json += jogStatus.zRestoreScheduled ? "true" : "false";
+  json += ",\"zRestoreDueMs\":";
+  json += jogStatus.zRestoreScheduled && jogStatus.zRestoreAtMs > now ? String(jogStatus.zRestoreAtMs - now) : "0";
   json += ",\"xyFeedMax\":";
   json += String(jogStatus.xyFeedMax, 0);
   json += ",\"zFeedMax\":";
@@ -960,6 +981,73 @@ void sendJogCommand(const String &cmd) {
   readMarlinResponseFor(80);
 }
 
+String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
+  drainMarlinInput();
+  Serial.print(cmd);
+  Serial.print('\n');
+  jogStatus.lastCommand = cmd;
+  return readMarlinResponseFor(timeoutMs);
+}
+
+bool parseAxisFromM114(const String &response, char axis, float &value) {
+  String key;
+  key += axis;
+  key += ":";
+  const int index = response.indexOf(key);
+  if (index < 0) {
+    return false;
+  }
+
+  int start = index + key.length();
+  while (start < response.length() && response[start] == ' ') {
+    ++start;
+  }
+
+  String number;
+  while (start < response.length()) {
+    const char c = response[start];
+    if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.') {
+      number += c;
+      ++start;
+    } else {
+      break;
+    }
+  }
+
+  if (number.length() == 0) {
+    return false;
+  }
+
+  value = number.toFloat();
+  return true;
+}
+
+bool captureJogOriginalZ() {
+  sendJogCommand("M400");
+  const String response = sendJogCommandForResponse("M114", 300);
+  jogStatus.lastM114 = response;
+  float z = 0.0f;
+  if (!parseAxisFromM114(response, 'Z', z)) {
+    jogStatus.originalZCaptured = false;
+    jogStatus.lastError = "could not read current Z from M114 before safe jog";
+    return false;
+  }
+
+  jogStatus.originalZ = z;
+  jogStatus.originalZCaptured = true;
+  return true;
+}
+
+void scheduleJogZRestore() {
+  if (!jogStatus.safeJog || !jogStatus.restoreZAfterJog || !jogStatus.zLiftedForJog ||
+      !jogStatus.originalZCaptured || jogStatus.zChangedDuringJog) {
+    return;
+  }
+
+  jogStatus.zRestoreScheduled = true;
+  jogStatus.zRestoreAtMs = millis() + jogStatus.restoreDelayMs;
+}
+
 void stopJogInternal(bool sendStopCommands) {
   if (!sendStopCommands && !jogIsActive() && jogStatus.state != JogState::Error) {
     return;
@@ -977,6 +1065,7 @@ void stopJogInternal(bool sendStopCommands) {
     sendJogCommand("M400");
   }
   jogStatus.state = JogState::Idle;
+  scheduleJogZRestore();
 }
 
 void setJogError(const String &message) {
@@ -994,14 +1083,19 @@ bool prepareSafeJogLift() {
     return true;
   }
 
-  if (jogStatus.safeLiftZ <= 0 || jogStatus.zFeedMax <= 0) {
-    setJogError("invalid safe Z lift settings");
+  if (jogStatus.safeLiftZ <= 0 || jogStatus.zFeedMax <= 0 || jogStatus.restoreDelayMs < 1000) {
+    setJogError("invalid safe jog settings");
+    return false;
+  }
+
+  if (jogStatus.restoreZAfterJog && !captureJogOriginalZ()) {
+    setJogError(jogStatus.lastError);
     return false;
   }
 
   jogStatus.state = JogState::PreparingSafeZ;
   sendJogCommand("M5");
-  sendJogCommand("G91");
+  sendJogCommand("G90");
   sendJogCommand("G0 Z" + String(jogStatus.safeLiftZ, 3) + " F" + String(jogStatus.zFeedMax, 0));
   sendJogCommand("G90");
   jogStatus.zLiftedForJog = true;
@@ -1024,15 +1118,20 @@ void processJogRunner() {
     return;
   }
 
-  const float speed = clampFloat(jogStatus.speed, 0.0f, 1.0f);
   const float x = clampFloat(jogStatus.x, -1.0f, 1.0f);
   const float y = clampFloat(jogStatus.y, -1.0f, 1.0f);
   const float z = clampFloat(jogStatus.z, -1.0f, 1.0f);
-  const float xyScale = kJogMaxXyStepMm * speed;
-  const float zScale = kJogMaxZStepMm * speed;
+  const float speed = clampFloat(jogStatus.speed, 0.0f, 1.0f);
+  const float tickSeconds = kJogTickIntervalMs / 1000.0f;
+  const float xyMaxStep = min(kJogMaxXyStepMm, (jogStatus.xyFeedMax / 60.0f) * (kJogTickIntervalMs / 1000.0f));
+  const float xyScale = xyMaxStep;
+  const float zMaxStep = min(kJogMaxZStepMm, (jogStatus.zFeedMax / 60.0f) * tickSeconds);
+  const float zScale = zMaxStep * speed;
   const float dx = x * xyScale;
   const float dy = y * xyScale;
   const float dz = z * zScale;
+  const float xyDistance = sqrt(dx * dx + dy * dy);
+  const float zDistance = fabs(dz);
   if (fabs(dx) < 0.01f && fabs(dy) < 0.01f && fabs(dz) < 0.005f) {
     return;
   }
@@ -1053,10 +1152,12 @@ void processJogRunner() {
   if (fabs(dz) >= 0.005f) {
     cmd += " Z";
     cmd += String(dz, 3);
+    jogStatus.zChangedDuringJog = true;
+    jogStatus.zRestoreScheduled = false;
   }
-  const float feed = fabs(dz) >= 0.005f && fabs(dx) < 0.01f && fabs(dy) < 0.01f
-                         ? jogStatus.zFeedMax * max(speed, 0.1f)
-                         : jogStatus.xyFeedMax * max(speed, 0.1f);
+  const float feed = zDistance >= 0.005f && xyDistance < 0.01f
+                         ? clampFloat((zDistance / tickSeconds) * 60.0f, 20.0f, jogStatus.zFeedMax)
+                         : clampFloat((xyDistance / tickSeconds) * 60.0f, 60.0f, jogStatus.xyFeedMax);
   cmd += " F";
   cmd += String(feed, 0);
   cmd += "\nG90";
@@ -1067,6 +1168,41 @@ void processJogRunner() {
   jogStatus.lastCommand = cmd;
   readMarlinResponseFor(60);
   jogStatus.lastTickMs = now;
+}
+
+void processJogZRestore() {
+  if (!jogStatus.zRestoreScheduled || jogStatus.state != JogState::Idle) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (now < jogStatus.zRestoreAtMs) {
+    return;
+  }
+
+  jogStatus.zRestoreScheduled = false;
+  if (!jogStatus.originalZCaptured || jogStatus.zChangedDuringJog) {
+    return;
+  }
+
+  sendJogCommand("M400");
+  const String response = sendJogCommandForResponse("M114", 300);
+  jogStatus.lastM114 = response;
+  float currentZ = 0.0f;
+  if (!parseAxisFromM114(response, 'Z', currentZ)) {
+    jogStatus.lastError = "could not read current Z before restoring jog Z";
+    return;
+  }
+
+  if (fabs(currentZ - jogStatus.safeLiftZ) > 0.5f) {
+    jogStatus.lastError = "Z changed after jog; automatic restore skipped";
+    return;
+  }
+
+  sendJogCommand("G90");
+  sendJogCommand("G0 Z" + String(jogStatus.originalZ, 3) + " F" + String(jogStatus.zFeedMax, 0));
+  sendJogCommand("G90");
+  jogStatus.lastError = "";
 }
 
 String stripParenComments(const String &line) {
@@ -2165,9 +2301,12 @@ void handleJogStart() {
   const String body = server.arg("plain");
   jogStatus = JogStatus();
   jogStatus.safeJog = extractJsonBool(body, "safeJog", true);
-  jogStatus.safeLiftZ = clampFloat(extractJsonFloat(body, "safeLiftZ", 5.0f), 0.0f, 25.0f);
-  jogStatus.xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 2000.0f), 50.0f, 3000.0f);
+  jogStatus.restoreZAfterJog = extractJsonBool(body, "restoreZAfterJog", true);
+  jogStatus.safeLiftZ = clampFloat(extractJsonFloat(body, "safeLiftZ", 70.0f), 0.0f, 200.0f);
+  jogStatus.xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 3000.0f), 600.0f, 6000.0f);
   jogStatus.zFeedMax = clampFloat(extractJsonFloat(body, "zFeedMax", 400.0f), 20.0f, 800.0f);
+  jogStatus.restoreDelayMs = static_cast<uint32_t>(clampFloat(extractJsonFloat(body, "restoreDelayMs", kJogRestoreDelayMs),
+                                                              1000.0f, 30000.0f));
   jogStatus.startedAtMs = millis();
   jogStatus.lastUpdateMs = millis();
   jogStatus.lastTickMs = 0;
@@ -2528,6 +2667,7 @@ void loop() {
   server.handleClient();
   processJobRunner();
   processJogRunner();
+  processJogZRestore();
 
   if (rebootAtMs > 0 && millis() >= rebootAtMs) {
     ESP.restart();

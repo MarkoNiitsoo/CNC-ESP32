@@ -129,17 +129,18 @@
 
         <section class="panel jog-panel">
           <h2>Jog / Virtual Joystick</h2>
-          <p class="warning">Safe Jog lifts Z before XY movement by default.</p>
+          <p class="warning">Safe Jog moves Z to the safe target before XY movement by default.</p>
+          <p>After XY jog stops, firmware restores the previous Z after about 5 seconds if Z was not changed.</p>
           <p>Software stop is not a physical emergency stop.</p>
           <label class="toggle-row">
             <input id="safe-jog" type="checkbox" checked>
             Safe Jog
           </label>
           <div class="jog-fields">
-            <label for="safe-lift-z">Safe Lift Z (mm)</label>
-            <input id="safe-lift-z" type="number" inputmode="decimal" min="0" max="25" step="0.5" value="5">
-            <label for="xy-speed">XY Speed</label>
-            <input id="xy-speed" type="range" min="0" max="100" value="50">
+            <label for="safe-lift-z">Safe Z Target (mm)</label>
+            <input id="safe-lift-z" type="number" inputmode="decimal" min="0" max="200" step="0.5" value="70">
+            <label for="xy-speed">XY Max Speed <span id="xy-speed-label">50 mm/s</span></label>
+            <input id="xy-speed" type="range" min="10" max="100" value="50">
             <label for="z-speed">Z Speed</label>
             <input id="z-speed" type="range" min="0" max="100" value="40">
           </div>

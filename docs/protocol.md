@@ -269,14 +269,20 @@ Request body:
 ```json
 {
   "safeJog": true,
-  "safeLiftZ": 5,
-  "xyFeedMax": 2000,
+  "safeLiftZ": 70,
+  "restoreZAfterJog": true,
+  "restoreDelayMs": 5000,
+  "xyFeedMax": 3000,
   "zFeedMax": 400
 }
 ```
 
-When `safeJog` is true, firmware sends `M5`, `G91`, `G0 Z<safeLiftZ> F<zFeedMax>`, and `G90`
-before allowing X/Y jog ticks. Jog start is rejected while a job is `RUNNING`.
+When `safeJog` is true, firmware captures the current Z with `M400` and `M114`, sends `M5`, switches
+to `G90`, and moves to absolute `Z<safeLiftZ>` at `F<zFeedMax>` before allowing X/Y jog ticks.
+The default safe target is `Z70`, matching the current LowRider bench setup. If
+`restoreZAfterJog` is true, firmware schedules an automatic return to the captured Z after
+`restoreDelayMs` when jogging stops, unless Z was jogged or the current Z no longer matches the
+safe target. Jog start is rejected while a job is `RUNNING`.
 
 ### `POST /api/jog/update`
 
@@ -292,8 +298,12 @@ Request body:
 ```
 
 Values are clamped to safe ranges. Firmware converts them into small relative `G91`/`G0`/`G90`
-movement ticks about every 150 ms. If no update arrives for 500 ms, firmware stops sending jog
-movement and sends `M400`.
+movement ticks about every 150 ms. For X/Y, the joystick distance from center controls the movement
+step length and the firmware scales feedrate to that distance so partial joystick movement lasts
+roughly the full tick instead of making a quick short move followed by a pause. `xyFeedMax` from jog
+start controls the maximum feedrate. The SD UI maps the XY slider from 10 to 100 mm/s into
+`xyFeedMax` 600 to 6000 mm/min. If no update arrives for 500 ms, firmware stops sending jog
+movement, sends `M400`, and may schedule Z restore.
 
 ### `POST /api/jog/stop`
 
@@ -301,8 +311,8 @@ Stops jogging and sends `M410` and `M5`. This is not a physical emergency stop.
 
 ### `GET /api/jog/status`
 
-Returns jog state, whether Z was lifted for safe jog, last command, last error, heartbeat age, and
-configured jog limits.
+Returns jog state, whether Z was lifted for safe jog, original captured Z, pending Z restore status,
+last command, last error, heartbeat age, and configured jog limits.
 
 ## SD-Hosted UI
 
