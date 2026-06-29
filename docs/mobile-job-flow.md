@@ -1,5 +1,68 @@
 # Mobile Job Flow
 
+## Canvas-First Workbench
+
+The selected job opens in `/preview.html?path=...` as a fixed full-screen workbench. The graphical
+work area is the main view and does not page-scroll during the normal job workflow. Existing job
+panels are reused inside translucent overlays so desktop, tablet, and phone share one component and
+state model.
+
+Top action area:
+
+- The existing Machine Bar remains the first row with direct Pause, Stop, and M5 actions.
+- A compact workbench row shows connection, `activeRun` state, readiness, Tools, and overflow links.
+- `activeRun.path` remains execution truth. Badges are ORIGINAL, GENERATED, STALE, or BLOCKED.
+- Readiness is READY, BLOCKED, ARMED, RUNNING, or PAUSED.
+
+Edge drawers:
+
+- Left Tools drawer: Placement, Zero/Setup, Dry Run, Files, and Settings.
+- Right Readiness drawer: active path, status chips, blockers, primary next action, Preflight, Arm,
+  and Run.
+- On phone widths the drawers cover about 82% of the screen and slide over the canvas.
+- Drawers open from top buttons, edge buttons, or edge swipes and close with the scrim, close button,
+  or outward swipe.
+- Drawer state never changes job metadata or `activeRun`.
+
+Bottom canvas toolbar:
+
+- Fit Job, Fit Table, Fit Active, and Fit Zero.
+- Zoom in/out.
+- Pan/select interaction mode.
+- Layer toggles for Path, Bounds, Zero, Travel, Source, Generated, and Table.
+- Completed dry-run bounds and current position appear when existing metadata exposes them.
+
+Touch and mouse:
+
+- One pointer or mouse drag pans.
+- Two pointers pinch zoom.
+- Mouse wheel zooms around the pointer.
+- Double tap or double click fits the active run.
+- The canvas uses Pointer Events and `touch-action: none`; separate competing touch/mouse gesture
+  implementations are avoided.
+
+Responsive modes from `www/lib/workbench-ui.js`:
+
+- `edge`: up to 680 px, phone edge drawers.
+- `overlay`: 681-1100 px, larger overlay drawers.
+- `sidebar`: above 1100 px, desktop-sized overlay/sidebar presentation with the same components.
+
+The current placement policy intentionally remains simple: rotation `0` uses the source file;
+non-zero rotation uses the complete raw travel path, lower-left origin, and normalization. These
+fixed choices are shown as compact read-only chips instead of reintroducing options that can make
+the visible placement disagree with executable travel.
+
+Safety interaction policy:
+
+- Start Cut requires a continuous one-second hold after existing arm, checklist, preflight, and
+  active-run checks pass.
+- Pause, Stop, and M5 remain direct one-tap actions and do not show modal confirmations.
+- Drawer, pan, zoom, fit, and layer interactions send no G-code.
+- No homing, zero restore, resume, or new movement behavior is introduced by the workbench.
+
+Mobile text is reduced to badges, short blocker reasons, one primary next action, and expandable
+details in the drawers. Full logs and file management remain separate pages linked from overlays.
+
 ## Purpose
 
 The mobile UI should guide the CNC operator through the next useful physical action. It should not

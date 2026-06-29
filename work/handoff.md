@@ -744,3 +744,42 @@ Upload these updated SD UI files to `/www`:
 - `lib/job-readiness.js`
 
 No firmware upload is required.
+
+## Mobile Canvas Workbench In Progress
+
+- Feature branch: `codex/mobile-canvas-workbench`.
+- Added pure `www/lib/workbench-ui.js` state helpers and `test/ui/workbench-ui.test.mjs`.
+- The helper layer contains no machine commands and does not mutate job or `activeRun` metadata.
+- Focused workbench tests pass: 1 file, 8 tests.
+- `www/preview.html` and `www/preview.css` now define the full-screen canvas, top status strip,
+  translucent left/right edge drawers, and bottom canvas toolbar. Existing panel IDs are preserved.
+- Added `www/lib/workbench-controller.js` for panel reparenting, drawers, gestures, fit/zoom, and
+  visual layer state. It does not send machine commands.
+- `www/preview.js` now renders and labels the canvas from controller fit/pan/zoom/layer state and
+  uses shared readiness/active-run helpers for the top workbench badges.
+- Start Cut is now hold-to-confirm instead of repeated modal confirmation. Pause/Stop/M5 remain
+  direct. Drawer swipes only change UI state and do not create movement commands.
+- Workbench top offset follows the measured Machine Bar height on narrow two-row phone layouts.
+- Phone browser inspection confirms full-width canvas, no page scroll, and translucent overlay
+  drawers. Tools defaults to Placement; Readiness defaults to Checks; connection defaults OFFLINE.
+- Placement shows the fixed lower-left/full-travel/normalize-on policy as read-only chips.
+- File selection now returns directly to `/preview.html?path=...`; Readiness uses compact text.
+- Existing current-position and completed dry-run metadata render as optional canvas layers.
+- Canvas workbench architecture, responsive behavior, gestures, layer controls, safety confirmation
+  policy, tests, manual checks, and TODOs are documented in `docs/mobile-job-flow.md` and
+  `docs/safety-testing.md`.
+- Full Vitest suite passes: 9 files, 84 tests.
+- Final browser checks passed at 390x844 and 1280x800. All requested syntax checks and
+  `git diff --check` pass. Firmware `src/` has no diff.
+
+Upload these SD UI files to `/www`:
+
+- `app.js`
+- `files.js`
+- `preview.html`
+- `preview.css`
+- `preview.js`
+- `lib/workbench-ui.js`
+- `lib/workbench-controller.js`
+
+No firmware upload is required.

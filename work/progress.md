@@ -646,3 +646,57 @@
   - `npm.cmd test` passes with 8 test files and 75 tests
   - no legacy Dashboard/Controls HTML navigation or removed placement selector IDs remain
   - `git diff --check` reports no patch whitespace errors
+- Started the mobile canvas-first workbench on `codex/mobile-canvas-workbench`:
+  - added pure `www/lib/workbench-ui.js` responsive layout, drawer, layer, active-run badge,
+    readiness badge, and action-policy helpers
+  - added Vitest coverage for phone/desktop layout modes, drawer isolation from `activeRun`, visual
+    layer state, generated/source badges, stale generated next action, forbidden source fallback,
+    hold-to-start, direct Pause/Stop/M5, and no G28/G92 metadata
+  - verified `node --check www/lib/workbench-ui.js` and the focused 8-test workbench suite pass
+- Added the canvas-first Preview workbench structure and responsive styling:
+  - fixed status strip above a full-screen canvas
+  - translucent left Tools and right Readiness edge drawers
+  - compact bottom fit/zoom/mode/layer toolbar
+  - mobile edge handles, scrim, compact typography, and tablet/desktop width adaptations
+  - existing workflow panels retain their IDs and will be reparented into drawers by the UI layer
+- Added `www/lib/workbench-controller.js`:
+  - reparents existing Preview panels into left Tools and right Readiness drawers
+  - supports one-pointer/mouse pan, two-pointer pinch zoom, mouse-wheel zoom, double-tap/double-click
+    fit, edge swipe open, scrim/close dismissal, fit modes, interaction mode, and layer toggles
+  - remains a UI-only controller with no job mutation or machine command behavior
+- Integrated the workbench controller with `www/preview.js`:
+  - top chips now derive connection, active-run, and readiness state from existing job status and
+    shared readiness helpers
+  - readiness actions open the correct drawer/tab while retaining `activeRun.path` as execution truth
+  - canvas rendering now supports Fit Job/Table/Active/Zero, pan/zoom transforms, source/active/
+    transformed paths, travel visibility, raw/cut/generated bounds, table, and work-zero layers
+- Replaced Start Job's repeated confirmation dialogs with a one-second hold-to-confirm interaction
+  for touch, mouse, and keyboard. Existing readiness, arm, checklist, and active-run checks still run
+  before the API request. Pause, Stop, and M5 remain direct actions.
+- Added swipe-to-dismiss behavior for both edge drawers and a focused test that placement drawer
+  state contains no movement commands.
+- Browser phone-width inspection found and fixed a top-offset issue: the two-row Machine Bar height
+  is now measured into `--machine-bar-height`, so the workbench status strip no longer sits behind it.
+- Browser inspection confirmed a 390x844 viewport has no body scroll, the canvas remains full width,
+  and the 82%-width Tools drawer overlays rather than resizes it.
+- Fixed drawer defaults so Tools opens Placement and Readiness opens Checks; connection begins
+  OFFLINE until `/api/job/status` succeeds.
+- Kept the simplified placement safety policy visible as compact read-only chips instead of
+  reintroducing the removed bounds/anchor/normalize choices.
+- Reduced Readiness drawer text to active execution path, mode, placement, rotation, latest run,
+  compact blocker reasons, status chips, and existing primary/secondary actions.
+- Selecting Open Job from either file launcher now stores the current job and opens the canvas
+  workbench directly.
+- Added optional current-position marker and completed dry-run bounds to the canvas when existing
+  job status/metadata provides them.
+- Documented the mobile canvas-first layout, top action area, edge/bottom drawers, Pointer Event
+  gestures, layers, compact text policy, responsive modes, hold/direct confirmation policy, manual
+  checks, and remaining TODOs in `docs/mobile-job-flow.md` and `docs/safety-testing.md`.
+- Full automated suite passes with 9 test files and 84 tests.
+- Final verification:
+  - all requested `node --check` commands pass, including both new workbench modules
+  - `npm.cmd test` passes with 9 files and 84 tests
+  - phone 390x844 and desktop 1280x800 browser checks confirm fixed canvas, overlay drawers, no
+    body scroll, responsive drawer widths, and correct default tabs/status
+  - `git diff --check` passes
+  - `git diff -- src` is empty; firmware was not changed

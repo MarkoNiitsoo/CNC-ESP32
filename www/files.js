@@ -246,7 +246,7 @@ function renderList(items) {
         loadPath(item.path);
       } else if (canPreview(item)) {
         saveCurrentJob(item.path);
-        window.location.href = '/#job';
+        window.location.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
       } else {
         activeItemPath = activeItemPath === item.path ? '' : item.path;
         renderList(items);
@@ -260,7 +260,7 @@ function renderList(items) {
     if (canPreview(item)) {
       actions.append(rowButton('Open Job', () => {
         saveCurrentJob(item.path);
-        window.location.href = '/#job';
+        window.location.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
       }));
       const preview = document.createElement('a');
       preview.className = 'maintenance-link';

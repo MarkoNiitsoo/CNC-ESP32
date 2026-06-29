@@ -497,11 +497,7 @@ async function loadFiles(path = '/gcode') {
 
 async function openJob(gcodePath) {
   saveCurrentJob({ gcodePath, jobPath: jobPathFor(gcodePath) });
-  await loadJobMeta();
-  await refreshJobStatus();
-  renderCurrentJob();
-  history.replaceState(null, '', '#job');
-  showView('job');
+  window.location.href = previewUrl(gcodePath);
 }
 
 async function deleteFile(path) {

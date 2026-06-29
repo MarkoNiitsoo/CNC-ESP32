@@ -7,8 +7,23 @@
     <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="/preview.css">
   </head>
-  <body>
-    <main class="app preview-app">
+  <body class="workbench-page">
+    <main id="workbench" class="app preview-app">
+      <header id="workbench-topbar" class="workbench-topbar" aria-label="Job workbench status">
+        <button id="open-tools-drawer" class="icon-button" type="button" aria-label="Open tools">Tools</button>
+        <span id="workbench-connection" class="workbench-chip muted">OFFLINE</span>
+        <span id="workbench-active-run" class="workbench-chip">ORIGINAL</span>
+        <button id="open-readiness-drawer" class="workbench-chip status-trigger" type="button">BLOCKED</button>
+        <details class="workbench-overflow">
+          <summary aria-label="More actions">More</summary>
+          <div class="overflow-menu">
+            <a href="/files">Files</a>
+            <a href="/#logs">Logs</a>
+            <a href="/#settings">Settings</a>
+          </div>
+        </details>
+      </header>
+
       <header class="status-header">
         <div>
           <p class="eyebrow">LowRider CNC</p>
@@ -31,17 +46,69 @@
         <div id="readiness-secondary" class="job-actions compact-actions"></div>
       </section>
 
-      <nav class="preview-tabs" aria-label="Job workflow">
-        <button type="button" class="active" data-preview-tab-button="preview">Preview</button>
-        <button type="button" data-preview-tab-button="setup">Setup</button>
-        <button type="button" data-preview-tab-button="preflight">Preflight</button>
-        <button type="button" data-preview-tab-button="dry-run">Dry Run</button>
-        <button type="button" data-preview-tab-button="arm">Arm</button>
-        <button type="button" data-preview-tab-button="run">Run</button>
-      </nav>
-
       <section class="panel preview-stage" aria-label="Live toolpath preview">
         <canvas id="preview-canvas"></canvas>
+        <div class="canvas-overlay canvas-job-label">
+          <strong id="canvas-job-name">No job</strong>
+          <span id="canvas-active-path">Choose a G-code file</span>
+        </div>
+        <div id="canvas-zero-label" class="canvas-overlay canvas-zero-label">WORK ZERO 0,0</div>
+      </section>
+
+      <button id="left-edge-handle" class="edge-handle edge-handle-left" type="button" aria-label="Open tools">Tools</button>
+      <button id="right-edge-handle" class="edge-handle edge-handle-right" type="button" aria-label="Open readiness">Status</button>
+      <div id="workbench-scrim" class="workbench-scrim" hidden></div>
+
+      <aside id="tools-drawer" class="workbench-drawer workbench-drawer-left" aria-label="Job tools" aria-hidden="true">
+        <header class="drawer-titlebar">
+          <div><span class="eyebrow">Workbench</span><h2>Tools</h2></div>
+          <button id="close-tools-drawer" class="icon-button" type="button" aria-label="Close tools">Close</button>
+        </header>
+        <nav class="drawer-tabs" aria-label="Job tools">
+          <button type="button" class="active" data-preview-tab-button="preview">Placement</button>
+          <button type="button" data-preview-tab-button="setup">Zero</button>
+          <button type="button" data-preview-tab-button="dry-run">Dry Run</button>
+        </nav>
+        <div id="tools-drawer-content" class="drawer-scroll"></div>
+        <nav class="drawer-link-row" aria-label="Related pages">
+          <a href="/files">Files</a>
+          <a href="/#settings">Settings</a>
+        </nav>
+      </aside>
+
+      <aside id="readiness-drawer" class="workbench-drawer workbench-drawer-right" aria-label="Job readiness" aria-hidden="true">
+        <header class="drawer-titlebar">
+          <div><span class="eyebrow">Active job</span><h2>Readiness</h2></div>
+          <button id="close-readiness-drawer" class="icon-button" type="button" aria-label="Close readiness">Close</button>
+        </header>
+        <nav class="drawer-tabs" aria-label="Readiness details">
+          <button type="button" class="active" data-preview-tab-button="preflight">Checks</button>
+          <button type="button" data-preview-tab-button="arm">Arm</button>
+          <button type="button" data-preview-tab-button="run">Run</button>
+        </nav>
+        <div id="readiness-drawer-content" class="drawer-scroll"></div>
+      </aside>
+
+      <section id="canvas-toolbar" class="canvas-toolbar" aria-label="Canvas controls">
+        <div class="canvas-toolbar-main">
+          <button type="button" data-fit-view="job">Fit Job</button>
+          <button type="button" data-fit-view="table">Fit Table</button>
+          <button type="button" data-fit-view="active">Fit Active</button>
+          <button type="button" data-fit-view="zero">Fit Zero</button>
+          <button type="button" data-canvas-zoom="out" aria-label="Zoom out">−</button>
+          <button type="button" data-canvas-zoom="in" aria-label="Zoom in">+</button>
+          <button id="canvas-mode" type="button">Pan</button>
+          <button id="toggle-layers" type="button">Layers</button>
+        </div>
+        <div id="canvas-layers" class="canvas-layer-toggles" hidden>
+          <label><input type="checkbox" data-canvas-layer="path" checked> Path</label>
+          <label><input type="checkbox" data-canvas-layer="bounds" checked> Bounds</label>
+          <label><input type="checkbox" data-canvas-layer="zero" checked> Zero</label>
+          <label><input type="checkbox" data-canvas-layer="travel" checked> Travel</label>
+          <label><input type="checkbox" data-canvas-layer="source" checked> Source</label>
+          <label><input type="checkbox" data-canvas-layer="generated" checked> Generated</label>
+          <label><input type="checkbox" data-canvas-layer="table" checked> Table</label>
+        </div>
       </section>
 
       <section class="panel preview-stats preview-tab-panel active" data-preview-tab="preview">
@@ -51,7 +118,12 @@
 
       <section class="panel placement-panel preview-tab-panel active" data-preview-tab="preview">
         <h2>Placement / Origin</h2>
-        <p class="warning">At 0 degrees the original G-code is used. Rotating the job creates a fitted run file from the complete travel path.</p>
+        <p class="warning">0° uses original. Rotation creates a fitted generated run.</p>
+        <div class="placement-policy" aria-label="Placement policy">
+          <span>Origin: lower-left</span>
+          <span>Bounds: full travel</span>
+          <span>Normalize: on</span>
+        </div>
         <div class="dry-run-inputs">
           <label for="placement-rotation">Rotation (deg)</label>
           <input id="placement-rotation" type="number" inputmode="decimal" step="0.1" value="0">
@@ -73,7 +145,7 @@
         <pre id="placement-result" class="dry-run-log"></pre>
       </section>
 
-      <section class="panel preview-tab-panel active" data-preview-tab="preview">
+      <section id="preview-warnings-panel" class="panel preview-tab-panel active" data-preview-tab="preview">
         <h2>Warnings</h2>
         <div id="warnings" class="warning-list"></div>
       </section>
@@ -234,7 +306,7 @@
           <label><input type="checkbox" data-run-check="spindleOff"> Spindle/laser is off.</label>
         </fieldset>
         <div class="job-actions">
-          <button id="start-job" type="button">Start Job</button>
+          <button id="start-job" class="hold-to-confirm" type="button">Hold to Start Cut</button>
           <button id="pause-job" type="button">Pause Job</button>
           <button id="resume-job" type="button">Resume Job</button>
           <button id="stop-job" type="button">Stop job: M5 + pause stream</button>
