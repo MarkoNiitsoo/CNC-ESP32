@@ -191,11 +191,18 @@ button.machine-danger-dark {
 }
 
 .machine-drawer-head {
-  display: flex;
-  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 12px;
+}
+
+.machine-drawer-sticky-actions {
+  grid-column: 1 / -1;
 }
 
 .machine-drawer-card {
@@ -207,6 +214,12 @@ button.machine-danger-dark {
 .machine-drawer-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.drawer-terminal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
@@ -653,10 +666,182 @@ pre {
   font-size: 0.85rem;
 }
 
+.compact-row {
+  align-items: stretch;
+}
+
+.file-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.file-main strong,
+.file-main small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-main small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.thumb-placeholder {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b131a;
+  color: var(--green);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.thumb-image {
+  width: 56px;
+  height: 44px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #07100c;
+}
+
+.upload-preview {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(63, 196, 117, 0.24);
+  border-radius: 8px;
+  background: #0b131a;
+}
+
+.upload-preview[hidden] {
+  display: none;
+}
+
+.upload-thumb {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #07100c;
+}
+
+.upload-thumb svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.upload-preview dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 10px;
+}
+
+.select-file,
+.file-meta {
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #243442;
+  color: #fff;
+  font-weight: 800;
+}
+
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border: 1px solid rgba(159, 177, 191, 0.22);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.ok-badge {
+  color: #b9f7ce;
+  border-color: rgba(63, 196, 117, 0.5);
+}
+
+.fail-badge {
+  color: #ffd0d0;
+  border-color: rgba(255, 86, 86, 0.55);
+}
+
 .file-actions {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+}
+
+.more-actions {
+  width: 100%;
+}
+
+.more-actions summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.current-job-card dl,
+.next-action-card dl,
+.job-summary dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 12px;
+}
+
+.mini-preview {
+  min-height: 96px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(63, 196, 117, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(63, 196, 117, 0.15) 1px, transparent 1px),
+    linear-gradient(rgba(63, 196, 117, 0.15) 1px, transparent 1px),
+    #07100c;
+  background-size: 24px 24px;
+}
+
+.mini-preview span {
+  color: var(--green);
+  font-weight: 900;
+}
+
+.primary-action {
+  display: block;
+  width: 100%;
+  background: #2d80c7;
+}
+
+.secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -668,7 +853,7 @@ pre {
   width: min(100%, 860px);
   transform: translateX(-50%);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 2px;
   padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
@@ -741,6 +926,10 @@ pre {
   }
 
   .machine-drawer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .secondary-actions {
     grid-template-columns: 1fr;
   }
 

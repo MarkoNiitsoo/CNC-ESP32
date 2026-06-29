@@ -6,6 +6,18 @@ const statsEl = document.querySelector('#stats');
 const warningsEl = document.querySelector('#warnings');
 const fitButton = document.querySelector('#fit');
 const reloadButton = document.querySelector('#reload');
+const placementRotationInput = document.querySelector('#placement-rotation');
+const rotateDeltaButtons = [...document.querySelectorAll('[data-rotate-delta]')];
+const resetPlacementButton = document.querySelector('#reset-placement');
+const previewTransformButton = document.querySelector('#preview-transform');
+const generateRunFileButton = document.querySelector('#generate-run-file');
+const useGeneratedRunButton = document.querySelector('#use-generated-run');
+const useSourceRunButton = document.querySelector('#use-source-run');
+const placementSummaryEl = document.querySelector('#placement-summary');
+const placementResultEl = document.querySelector('#placement-result');
+const readinessSummaryEl = document.querySelector('#readiness-summary');
+const readinessPrimaryEl = document.querySelector('#readiness-primary');
+const readinessSecondaryEl = document.querySelector('#readiness-secondary');
 const jobSummaryEl = document.querySelector('#job-summary');
 const jobResultEl = document.querySelector('#job-result');
 const loadJobButton = document.querySelector('#load-job');
@@ -45,6 +57,8 @@ const toolCapturePositionButton = document.querySelector('#tool-capture-position
 const setZZeroButton = document.querySelector('#set-z-zero');
 const captureSetZZeroButton = document.querySelector('#capture-set-z-zero');
 const saveToolZeroButton = document.querySelector('#save-tool-zero');
+const zeroHistorySummaryEl = document.querySelector('#zero-history-summary');
+const runHistorySummaryEl = document.querySelector('#run-history-summary');
 const feedOverrideSummaryEl = document.querySelector('#feed-override-summary');
 const feedStartPercentInput = document.querySelector('#feed-start-percent');
 const feedStartButtons = [...document.querySelectorAll('[data-feed-start]')];
@@ -63,6 +77,7 @@ const resumeJobButton = document.querySelector('#resume-job');
 const stopJobButton = document.querySelector('#stop-job');
 const refreshJobStatusButton = document.querySelector('#refresh-job-status');
 const startModeSelect = document.querySelector('#start-mode');
+const runSafeStartZInput = document.querySelector('#run-safe-start-z');
 const runChecklistInputs = [...document.querySelectorAll('[data-run-check]')];
 const previewTabButtons = [...document.querySelectorAll('[data-preview-tab-button]')];
 const previewTabPanels = [...document.querySelectorAll('[data-preview-tab]')];
@@ -70,6 +85,8 @@ const ctx = canvas.getContext('2d');
 
 const MACHINE = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800 };
 let parsed = null;
+let toolpathModel = null;
+let previewSummaryData = null;
 let jobExists = false;
 let jobState = null;
 let currentPreflight = null;
@@ -87,6 +104,34 @@ let gcodeFingerprintWarning = '';
 let jobRunStatus = null;
 let jobRunPollTimer = null;
 let jobStatusHealthy = true;
+let transformedPreview = null;
+let placementWarnings = [];
+let sourceParsed = null;
+let sourceToolpathModel = null;
+let sourcePreviewSummaryData = null;
+let sourceGcodeText = '';
+let activeRunText = '';
+let activeRunPath = filePath;
+let activeRunMode = 'source';
+let placementUpdateTimer = null;
+let suppressPlacementChange = false;
+
+const toolpathModulesPromise = Promise.all([
+  import('/lib/toolpath-model.js'),
+  import('/lib/preview-data-adapter.js'),
+]).then(([toolpath, adapter]) => ({ toolpath, adapter }));
+const jobHistoryPromise = import('/lib/job-history.js');
+const toolpathTransformPromise = import('/lib/toolpath-transform.js');
+let jobActiveRunModule = null;
+const jobActiveRunPromise = import('/lib/job-active-run.js').then((module) => {
+  jobActiveRunModule = module;
+  return module;
+});
+let jobReadinessModule = null;
+const jobReadinessPromise = import('/lib/job-readiness.js').then((module) => {
+  jobReadinessModule = module;
+  return module;
+});
 
 function showPreviewTab(tabName) {
   const activeTab = tabName || 'preview';
@@ -102,6 +147,136 @@ function routePreviewTab() {
   const hash = (window.location.hash || '#preview').slice(1);
   const valid = previewTabButtons.some((button) => button.dataset.previewTabButton === hash);
   showPreviewTab(valid ? hash : 'preview');
+}
+
+function previewReadinessJob() {
+  return jobState || {
+    gcodePath: filePath,
+    sourceGcodePath: filePath,
+    activeRun: {
+      mode: activeRunMode || 'source',
+      path: activeRunPath || filePath,
+    },
+  };
+}
+
+function badgeClass(level) {
+  if (level === 'ok') return 'ok-badge';
+  if (level === 'fail') return 'fail-badge';
+  if (level === 'active') return 'active-badge';
+  if (level === 'warn') return 'caution';
+  return '';
+}
+
+function actionTab(action) {
+  const target = action?.target || 'preview';
+  if (target === 'dryrun') return 'dry-run';
+  return target;
+}
+
+function focusReadinessTarget(action) {
+  const focusMap = {
+    set_work_zero: setWorkZeroButton,
+    set_z_zero: setZZeroButton,
+    run_dry_run: generateTraceButton,
+    arm_job: armJobButton,
+    start_cut: startJobButton,
+    monitor_job: refreshJobStatusButton,
+    resume_job: resumeJobButton,
+    review_last_run: runHistorySummaryEl,
+  };
+  const target = focusMap[action?.id];
+  if (!target) return;
+  target.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  target.focus?.({ preventScroll: true });
+}
+
+async function handleReadinessAction(action) {
+  if (!action) return;
+  if (action.id === 'choose_file') {
+    window.location.href = '/files';
+    return;
+  }
+  if (action.id === 'update_run_file') {
+    showPreviewTab('preview');
+    history.replaceState(null, '', '#preview');
+    await generateRunFile({ overwrite: true });
+    renderReadiness();
+    return;
+  }
+  const tab = actionTab(action);
+  if (previewTabButtons.some((button) => button.dataset.previewTabButton === tab)) {
+    showPreviewTab(tab);
+    history.replaceState(null, '', `#${tab}`);
+  }
+  focusReadinessTarget(action);
+}
+
+function renderReadiness() {
+  if (!readinessSummaryEl || !readinessPrimaryEl || !readinessSecondaryEl) return;
+  if (!jobReadinessModule) {
+    readinessSummaryEl.textContent = 'Loading job readiness...';
+    return;
+  }
+  const readiness = jobReadinessModule.buildJobReadiness(previewReadinessJob(), {
+    currentJob: { gcodePath: filePath, jobPath: jobPathFor(filePath) },
+    jobStatus: jobRunStatus || {},
+  });
+  const placement = readiness.placement || {};
+  const blockers = readiness.blockingReasons || [];
+  const badgeHtml = (readiness.badges || [])
+    .map((badge) => `<span class="status-badge ${badgeClass(badge.level)}">${html(badge.label)}</span>`)
+    .join('');
+  const blockerHtml = blockers.length
+    ? `<ul class="readiness-blockers">${blockers.map((reason) => `<li>${html(reason.message)}</li>`).join('')}</ul>`
+    : '<p class="ok-text">No readiness blockers before the next action.</p>';
+
+  readinessSummaryEl.innerHTML = `
+    <div class="readiness-badges">${badgeHtml}</div>
+    <dl>
+      <dt>Source file</dt><dd>${html(readiness.sourcePath || filePath || '-')}</dd>
+      <dt>Active run file</dt><dd>${html(readiness.activeRun?.path || '-')}</dd>
+      <dt>Active mode</dt><dd>${html(readiness.activeRun?.mode || '-')}</dd>
+      <dt>Placement</dt><dd>${placement.identity ? 'Original placement' : 'Transformed placement'}${placement.dirty ? ' (update needed)' : ''}</dd>
+      <dt>Rotation</dt><dd>${Number(placement.rotationDeg || 0).toFixed(2)} deg</dd>
+      <dt>Origin / bounds</dt><dd>${html(placement.originAnchor || '-')} / ${html(placement.placementBoundsMode || '-')}</dd>
+      <dt>Normalize</dt><dd>${placement.normalizeToOrigin ? 'Yes' : 'No'}</dd>
+      <dt>Work zero</dt><dd>${html(readiness.zero?.workZero || '-')}</dd>
+      <dt>Z zero</dt><dd>${html(readiness.zero?.zZero || '-')}</dd>
+      <dt>Dry run</dt><dd>${html(readiness.dryRun?.status || '-')} ${html(readiness.dryRun?.staleReason || '')}</dd>
+      <dt>Arm</dt><dd>${html(readiness.arm?.status || '-')} ${html(readiness.arm?.staleReason || '')}</dd>
+      <dt>Latest run</dt><dd>${html(readiness.run?.status || '-')}</dd>
+    </dl>
+    <h3>Blocking reasons</h3>
+    ${blockerHtml}
+  `;
+
+  readinessPrimaryEl.textContent = '';
+  const primary = readiness.primaryAction;
+  const primaryButton = document.createElement('button');
+  primaryButton.type = 'button';
+  primaryButton.className = 'primary-action';
+  primaryButton.textContent = primary?.label || 'Review Job';
+  primaryButton.addEventListener('click', () => {
+    handleReadinessAction(primary).catch((err) => {
+      if (jobResultEl) {
+        jobResultEl.textContent = `Readiness action failed: ${err.message}`;
+        jobResultEl.classList.add('error');
+      }
+    });
+  });
+  readinessPrimaryEl.append(primaryButton);
+
+  readinessSecondaryEl.textContent = '';
+  (readiness.secondaryActions || []).forEach((secondary) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = secondary.label;
+    button.addEventListener('click', () => {
+      handleReadinessAction(secondary).catch((err) => appendRunLog(`Readiness action failed: ${err.message}`));
+    });
+    readinessSecondaryEl.append(button);
+  });
 }
 
 function basename(path) {
@@ -230,6 +405,18 @@ function previewSummary() {
     };
   }
 
+  if (previewSummaryData?.metadata) {
+    return {
+      ...previewSummaryData.metadata,
+      legacyBounds: parsed.bounds,
+      // Keep the old flat bounds alias for older job JSON readers.
+      bounds: previewSummaryData.metadata.bounds,
+      lineCount: parsed.parsedLines,
+      segmentCount: parsed.segments.length,
+      warnings: [...parsed.warnings],
+    };
+  }
+
   return {
     bounds: {
       xMin: parsed.bounds.xMin,
@@ -281,6 +468,18 @@ function effectiveFeedRange(feedOverride = currentFeedOverride()) {
   };
 }
 
+function refreshToolpathEstimateForFeed() {
+  if (!toolpathModel || !previewSummaryData) return;
+  toolpathModel.estimate.effectiveSecondsWithOverride = toolpathModel.estimate.nominalSeconds
+    ? toolpathModel.estimate.nominalSeconds * 100 / currentFeedOverride().startPercent
+    : null;
+  previewSummaryData.effectiveEstimateSeconds = toolpathModel.estimate.effectiveSecondsWithOverride;
+  previewSummaryData.estimate = { ...toolpathModel.estimate };
+  if (previewSummaryData.metadata?.estimate) {
+    previewSummaryData.metadata.estimate = { ...toolpathModel.estimate };
+  }
+}
+
 function newJobState() {
   const createdAt = nowIso();
   return {
@@ -288,8 +487,31 @@ function newJobState() {
     createdAt,
     updatedAt: createdAt,
     gcodePath: filePath,
+    sourceGcodePath: filePath,
     jobPath: jobPathFor(filePath),
+    activeRun: {
+      mode: 'source',
+      path: filePath,
+      selectedAt: createdAt,
+      selectedBy: 'default',
+      sourceFingerprint: '',
+      generatedFingerprint: '',
+      transformFingerprint: '',
+    },
+    generatedValidation: {
+      status: 'unknown',
+      validatedAt: null,
+      sourceFingerprint: '',
+      generatedFingerprint: '',
+      transformFingerprint: '',
+      warnings: [],
+      errors: [],
+      bounds: null,
+      feed: null,
+      estimate: null,
+    },
     startMode: 'apply_current_position_as_work_zero',
+    safeStartZ: Number(safeZInput?.value) || 15,
     startChecklist: defaultRunChecklistState(),
     allowedWorkspaceCommands: false,
     feedOverride: defaultFeedOverride(),
@@ -301,7 +523,26 @@ function newJobState() {
       afterG92: emptyCapture(),
     },
     toolZero: emptyToolZero(),
+    zeroHistory: [],
+    runHistory: [],
+    activeWorkZeroId: null,
+    activeZZeroId: null,
+    placement: defaultPlacementState(),
     notes: '',
+  };
+}
+
+function defaultPlacementState() {
+  return {
+    rotationDeg: 0,
+    originAnchor: 'rawBoundsLowerLeft',
+    placementBoundsMode: 'rawTravelBounds',
+    normalizeToOrigin: true,
+    generatedAt: null,
+    generatedRunPath: null,
+    generatedRunBounds: null,
+    sourceFingerprint: '',
+    transformFingerprint: '',
   };
 }
 
@@ -310,6 +551,12 @@ function dryRunSummary() {
   return {
     safeZ: Number(safeZInput.value) || 15,
     margin: Number(traceMarginInput.value) || 0,
+    activeRunMode: currentRunMode(),
+    activeRunPath: currentRunPath(),
+    activeRunFingerprint: gcodeFingerprint || '',
+    sourceFingerprint: jobState?.activeRun?.sourceFingerprint || '',
+    generatedFingerprint: jobState?.activeRun?.generatedFingerprint || '',
+    transformFingerprint: jobState?.activeRun?.transformFingerprint || '',
     lastBoundingBoxTraceAt: previous.lastBoundingBoxTraceAt || null,
     lastBoundingBoxTraceStatus: previous.lastBoundingBoxTraceStatus || 'idle',
     lastAircutAt: previous.lastAircutAt || null,
@@ -431,6 +678,15 @@ function computePreflight() {
   if (parsed.analysis.fatalErrors > 0) addCheck(checks, 'parser', 'fail', 'Preview parser reported fatal errors');
   else addCheck(checks, 'parser', 'pass', 'Preview parser completed');
 
+  const runBlockers = activeRunBlockers();
+  if (runBlockers.length) {
+    addCheck(checks, 'activeRun', 'fail', runBlockers.join(' '));
+  } else if (currentRunMode() === 'generated') {
+    addCheck(checks, 'activeRun', 'pass', 'Generated run file matches the visible placement');
+  } else {
+    addCheck(checks, 'activeRun', 'pass', 'Original source file is active');
+  }
+
   if (parsed.analysis.unsupportedTotal > 20) {
     addCheck(checks, 'unsupportedCommands', 'warning', 'Unsupported commands are frequent; preview may be incomplete');
   }
@@ -478,6 +734,9 @@ function armWarnings() {
     warnings.push('Bounding box trace or aircut has not been completed for this job.');
   }
   if (gcodeFingerprintWarning) warnings.push(gcodeFingerprintWarning);
+  if (currentRunMode() === 'generated') {
+    (jobState?.generatedValidation?.warnings || []).forEach((warning) => warnings.push(warning));
+  }
   return warnings;
 }
 
@@ -488,6 +747,7 @@ function armBlockers() {
   if (!hasWorkZero()) blockers.push('Work zero is missing.');
   if (!gcodeFingerprint) blockers.push('G-code fingerprint has not been computed.');
   if (!checklistComplete()) blockers.push('All readiness checklist items must be checked.');
+  blockers.push(...activeRunBlockers());
   return blockers;
 }
 
@@ -498,6 +758,13 @@ function visibleArmState() {
     const savedFingerprint = arm.gcodeFingerprint || arm.gcodeHashSha256;
     const savedAlgorithm = arm.gcodeFingerprintAlgorithm || (arm.gcodeHashSha256 ? 'sha-256-webcrypto' : '');
     if (savedFingerprint !== gcodeFingerprint || savedAlgorithm !== gcodeFingerprintAlgorithm) return 'STALE';
+    if (arm.activeRunPath && arm.activeRunPath !== currentRunPath()) return 'STALE';
+    if (arm.activeRunMode && arm.activeRunMode !== currentRunMode()) return 'STALE';
+    if (arm.activeRunFingerprint && arm.activeRunFingerprint !== gcodeFingerprint) return 'STALE';
+    if (currentRunMode() === 'generated' && arm.transformFingerprint && arm.transformFingerprint !== jobState?.activeRun?.transformFingerprint) return 'STALE';
+    if (arm.activeRun?.path && arm.activeRun.path !== currentRunPath()) return 'STALE';
+    if (arm.activeRun?.mode && arm.activeRun.mode !== currentRunMode()) return 'STALE';
+    if (currentRunMode() === 'generated' && jobState?.generatedValidation?.status !== 'valid') return 'STALE';
     if (currentPreflight?.checks?.some((check) => check.level === 'fail')) return 'STALE';
     if (!hasWorkZero()) return 'STALE';
     return 'ARMED';
@@ -520,8 +787,11 @@ function renderArmPanel() {
 
   armSummaryEl.innerHTML = `
     <dl>
+      <dt>Active run</dt><dd>${html(currentRunPath())}</dd>
+      <dt>Active mode</dt><dd>${html(currentRunLabel())}</dd>
       <dt>G-code fingerprint</dt><dd>${gcodeFingerprint || '-'}</dd>
       <dt>Fingerprint algorithm</dt><dd>${gcodeFingerprintAlgorithm || '-'}</dd>
+      <dt>Generated status</dt><dd>${html(jobState?.generatedValidation?.status || 'unknown')}</dd>
       <dt>Preflight</dt><dd>${currentPreflight?.state || 'UNKNOWN'}</dd>
       <dt>Warnings</dt><dd>${warnings.length}</dd>
       <dt>Work zero</dt><dd>${hasWorkZero() ? 'Captured before and after G92' : 'Missing'}</dd>
@@ -606,7 +876,11 @@ function renderRunPanel() {
     runSummaryEl.innerHTML = `
       <dl>
         <dt>State</dt><dd>${state}</dd>
+        <dt>Starting</dt><dd>${html(currentRunMode() === 'generated' ? `generated file: ${currentRunPath()}` : `source file: ${currentRunPath()}`)}</dd>
+        <dt>Run file</dt><dd>${html(currentRunPath())}</dd>
+        <dt>Run mode</dt><dd>${html(currentRunLabel())}</dd>
         <dt>Start mode</dt><dd>${(startModeSelect?.value || jobState?.startMode || 'apply_current_position_as_work_zero').replace(/_/g, ' ')}</dd>
+        <dt>Safe start Z</dt><dd>${Number(jobState?.safeStartZ ?? runSafeStartZInput?.value ?? 15).toFixed(1)} mm</dd>
         <dt>Workspace commands</dt><dd>${jobState?.allowedWorkspaceCommands ? 'G55+ allowed by job JSON' : 'Only G54 allowed by default'}</dd>
         <dt>Progress</dt><dd>${jobRunStatus ? Number(jobRunStatus.progressPercent || 0).toFixed(1) : '0.0'}%</dd>
         <dt>Byte offset</dt><dd>${runStatusValue('currentByteOffset')} / ${runStatusValue('fileSize')}</dd>
@@ -632,6 +906,7 @@ function renderRunPanel() {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stopping: file streaming is stopped while firmware sends priority M5/M410.</div></div>';
     }
     renderLiveFeedOverride();
+    renderReadiness();
   } catch (err) {
     appendRunLog(`Run panel render failed: ${err.message}`);
     if (stopJobButton) stopJobButton.disabled = false;
@@ -687,6 +962,7 @@ async function refreshJobStatus() {
   if (!res.ok) throw new Error(data.error || 'status failed');
   jobRunStatus = data;
   jobStatusHealthy = true;
+  await syncRunHistoryFromStatus(data);
   renderRunPanel();
   updateJobRunPolling();
   return data;
@@ -723,7 +999,7 @@ function optimisticCriticalStatus(url) {
     return {
       ...(jobRunStatus || {}),
       state: 'RUNNING',
-      gcodePath: filePath,
+      gcodePath: currentRunPath(),
       jobPath: jobPathFor(filePath),
       lastError: 'Firmware returned malformed JSON after Start Job. Safety controls remain available.',
     };
@@ -813,6 +1089,16 @@ async function startJobRun() {
     appendRunLog('Start blocked: job is not ARMED.');
     return;
   }
+  const runPath = currentRunPath();
+  const runMode = currentRunMode();
+  const runCheck = jobActiveRunModule?.assertCanUseActiveRunForExecution
+    ? jobActiveRunModule.assertCanUseActiveRunForExecution(ensureJobState(), { requireArm: true })
+    : null;
+  const runBlockers = runCheck ? (runCheck.ok ? [] : runCheck.reasons.map((item) => item.message)) : activeRunBlockers();
+  if (runBlockers.length) {
+    appendRunLog(`Start blocked: ${runBlockers.join(' ')}`);
+    return;
+  }
   if (currentPreflight?.checks?.some((check) => check.level === 'fail')) {
     appendRunLog('Start blocked: Preflight has failed checks.');
     return;
@@ -828,12 +1114,33 @@ async function startJobRun() {
   if (warnings.length && !confirm(`${warnings.length} warning(s) exist. Confirm that you have reviewed them before starting this job.`)) return;
 
   const job = ensureJobState();
-  const data = await postCriticalJobAction('/api/job/start', {
-    gcodePath: filePath,
-    jobPath: jobPathFor(filePath),
-    startMode: job.startMode,
-  });
-  appendRunLog(`Started ${data.gcodePath || filePath} with ${job.startMode}.`);
+  const history = await jobHistoryPromise;
+  const run = history.startRunHistory(job, jobRunStatus || {});
+  try {
+    await saveJobQuietly();
+    renderHistoryPanels();
+    const data = await postCriticalJobAction('/api/job/start', {
+      gcodePath: runPath,
+      jobPath: jobPathFor(filePath),
+      startMode: job.startMode,
+      safeStartZ: job.safeStartZ,
+      activeRunMode: runMode,
+      activeRunFingerprint: gcodeFingerprint,
+      sourceFingerprint: job.activeRun?.sourceFingerprint || '',
+      generatedFingerprint: job.activeRun?.generatedFingerprint || '',
+      transformFingerprint: job.activeRun?.transformFingerprint || '',
+    });
+    history.updateRunHistoryFromStatus(job, { ...data, state: data.state || 'RUNNING' });
+    await saveJobQuietly();
+    renderHistoryPanels();
+    appendRunLog(`Started ${data.gcodePath || runPath} with ${job.startMode}.`);
+  } catch (err) {
+    history.finishLatestRun(job, 'error', err.message);
+    await saveJobQuietly().catch(() => {});
+    renderHistoryPanels();
+    appendRunLog(`Run ${run.id} recorded as error.`);
+    throw err;
+  }
 }
 
 async function pauseJobRun() {
@@ -859,22 +1166,51 @@ async function stopJobRun() {
   try {
     const data = await postCriticalJobAction('/api/job/stop');
     appendRunLog(data.message || 'Stop command accepted by firmware.');
+    await markLatestRunStopped(data, data.message || 'Operator stop requested');
   } catch (err) {
     runLogError('Stop endpoint failed', err);
     appendRunLog('Trying best-effort M5 and M400 fallback through /api/cmd.');
     await sendCmdBestEffort('M5');
     await sendCmdBestEffort('M400');
+    await markLatestRunStopped(null, `Stop fallback used after error: ${err.message}`);
   }
+}
+
+async function markLatestRunStopped(status = null, reason = '') {
+  if (!jobState) return;
+  const history = await jobHistoryPromise;
+  if (status) history.updateRunHistoryFromStatus(jobState, { ...status, state: 'STOPPED' });
+  else history.finishLatestRun(jobState, 'stopped', reason);
+  const run = history.latestRun(jobState);
+  if (run && !run.reason) run.reason = reason;
+  await saveJobQuietly().catch((err) => appendRunLog(`Run history save failed: ${err.message}`));
+  renderHistoryPanels();
+}
+
+async function syncRunHistoryFromStatus(status) {
+  if (!jobState || !status?.state) return;
+  const terminal = status.state === 'COMPLETED' || status.state === 'STOPPED' || status.state === 'ERROR';
+  if (!terminal) return;
+  const history = await jobHistoryPromise;
+  const run = history.latestRun(jobState);
+  if (!run || run.endedAt) return;
+  history.updateRunHistoryFromStatus(jobState, status);
+  await saveJobQuietly().catch((err) => appendRunLog(`Run history save failed: ${err.message}`));
+  renderHistoryPanels();
 }
 
 function ensureJobState() {
   if (!jobState) jobState = newJobState();
   jobState.gcodePath = filePath;
+  jobState.sourceGcodePath = jobState.sourceGcodePath || filePath;
   jobState.jobPath = jobPathFor(filePath);
+  ensureActiveRunShape(jobState);
   if (!jobState.startMode) jobState.startMode = 'apply_current_position_as_work_zero';
+  if (jobState.safeStartZ === undefined || jobState.safeStartZ === null) jobState.safeStartZ = Number(safeZInput?.value) || 15;
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
   if (startModeSelect) jobState.startMode = startModeSelect.value || jobState.startMode;
+  if (runSafeStartZInput) jobState.safeStartZ = Math.max(0, Math.min(200, Number(runSafeStartZInput.value || jobState.safeStartZ || 15)));
   jobState.feedOverride = {
     ...currentFeedOverride(),
     updatedAt: jobState.feedOverride?.updatedAt || null,
@@ -883,8 +1219,174 @@ function ensureJobState() {
   jobState.startChecklist = runChecklistState();
   jobState.preview = previewSummary();
   jobState.dryRun = dryRunSummary();
+  jobState.placement = currentPlacementState();
+  ensureHistoryShape(jobState);
   jobState.updatedAt = nowIso();
   return jobState;
+}
+
+function ensureActiveRunShape(job) {
+  if (!job) return;
+  const now = nowIso();
+  job.sourceGcodePath = job.sourceGcodePath || filePath;
+  if (!job.activeRun?.path) {
+    job.activeRun = {
+      mode: 'source',
+      path: job.sourceGcodePath,
+      reason: 'identity-placement',
+      updatedAt: now,
+      selectedAt: now,
+      selectedBy: 'default',
+      sourceFingerprint: '',
+      generatedFingerprint: '',
+      transformFingerprint: '',
+    };
+  }
+  if (!job.generatedValidation) {
+    job.generatedValidation = {
+      status: 'unknown',
+      validatedAt: null,
+      sourceFingerprint: '',
+      generatedFingerprint: '',
+      transformFingerprint: '',
+      warnings: [],
+      errors: [],
+      bounds: null,
+      feed: null,
+      estimate: null,
+    };
+  }
+}
+
+function currentRunPath() {
+  return jobActiveRunModule?.getExecutionPath
+    ? jobActiveRunModule.getExecutionPath(jobState || { gcodePath: filePath, sourceGcodePath: filePath, activeRun: { path: activeRunPath, mode: activeRunMode } })
+    : (jobState?.activeRun?.path || activeRunPath || filePath);
+}
+
+function currentRunMode() {
+  return jobActiveRunModule?.getActiveRun
+    ? jobActiveRunModule.getActiveRun(jobState || { gcodePath: filePath, sourceGcodePath: filePath, activeRun: { path: activeRunPath, mode: activeRunMode } }).mode
+    : (jobState?.activeRun?.mode || activeRunMode || 'source');
+}
+
+function currentRunLabel() {
+  return currentRunMode() === 'generated' ? 'Generated transformed run file' : 'Original source G-code';
+}
+
+async function placementRequiresGenerated(placement = currentPlacementState()) {
+  const active = await jobActiveRunPromise;
+  return active.desiredRunModeForPlacement(placement) === 'generated';
+}
+
+function activeRunBlockers() {
+  if (!jobState) return ['Job metadata is not loaded.'];
+  const result = jobActiveRunModule?.assertCanUseActiveRunForExecution
+    ? jobActiveRunModule.assertCanUseActiveRunForExecution(jobState)
+    : null;
+  if (result) return result.ok ? [] : result.reasons.map((item) => item.message);
+
+  const blockers = [];
+  const validation = jobState?.generatedValidation || {};
+  const active = jobState?.activeRun || {};
+  if (active.mode === 'generated') {
+    if (!active.path) blockers.push('Generated run path is missing.');
+    if (validation.status !== 'valid' || jobState?.placement?.dirty) {
+      blockers.push('Placement is transformed, but generated run file is not valid. Update Run File before dry run or cutting.');
+    }
+  }
+  return blockers;
+}
+
+function currentPlacementState() {
+  const previous = jobState?.placement || {};
+  return {
+    ...defaultPlacementState(),
+    ...previous,
+    rotationDeg: Number(placementRotationInput?.value ?? previous.rotationDeg ?? 0) || 0,
+    originAnchor: 'rawBoundsLowerLeft',
+    placementBoundsMode: 'rawTravelBounds',
+    normalizeToOrigin: true,
+  };
+}
+
+function applyPlacementToInputs(placement = {}) {
+  const next = { ...defaultPlacementState(), ...placement };
+  if (placementRotationInput) placementRotationInput.value = Number(next.rotationDeg || 0);
+}
+
+function ensureHistoryShape(job) {
+  if (!job) return null;
+  if (!Array.isArray(job.zeroHistory)) job.zeroHistory = [];
+  if (!Array.isArray(job.runHistory)) job.runHistory = [];
+  if (!Object.prototype.hasOwnProperty.call(job, 'activeWorkZeroId')) job.activeWorkZeroId = null;
+  if (!Object.prototype.hasOwnProperty.call(job, 'activeZZeroId')) job.activeZZeroId = null;
+  return job;
+}
+
+function html(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
+function zeroTitle(zero) {
+  if (!zero) return '-';
+  const type = zero.type === 'zZero' ? 'Z Zero' : 'Work Zero';
+  return `${type}${zero.label ? ` - ${zero.label}` : ''}`;
+}
+
+function activeZero(type) {
+  ensureHistoryShape(jobState);
+  const id = type === 'zZero' ? jobState?.activeZZeroId : jobState?.activeWorkZeroId;
+  return jobState?.zeroHistory?.find((zero) => zero.id === id && zero.type === type) || null;
+}
+
+function latestRunEntry() {
+  ensureHistoryShape(jobState);
+  return jobState?.runHistory?.[jobState.runHistory.length - 1] || null;
+}
+
+async function saveJobQuietly() {
+  const job = ensureJobState();
+  await uploadJobJson(job);
+  jobExists = true;
+}
+
+function renderHistoryPanels() {
+  renderZeroHistoryPanel();
+  renderRunHistoryPanel();
+}
+
+async function selectHistoryZero(id, type) {
+  const history = await jobHistoryPromise;
+  const job = ensureJobState();
+  const changed = type === 'zZero' ? history.markActiveZZero(job, id) : history.markActiveZero(job, id);
+  if (!changed) {
+    setJobResult('Could not select that zero history entry.', true);
+    return;
+  }
+  await saveJobQuietly();
+  setJobResult('Selected previous zero in job metadata only. No movement or G92 was sent.');
+  renderJobPanel();
+  renderToolZeroPanel();
+  renderHistoryPanels();
+  renderArmPanel();
+}
+
+async function labelHistoryZero(id) {
+  const job = ensureJobState();
+  const zero = job.zeroHistory.find((entry) => entry.id === id);
+  if (!zero) return;
+  const label = prompt('Zero label', zero.label || '');
+  if (label === null) return;
+  zero.label = label.trim();
+  await saveJobQuietly();
+  renderHistoryPanels();
 }
 
 function fmtValue(value) {
@@ -1007,6 +1509,7 @@ function validateDryRun(bounds, safeZ) {
     messages.push('Generated X/Y bounds exceed LowRider limits X 0..1625, Y 0..5800.');
   }
   if (!hasWorkZero()) messages.push('Work zero is missing. Capture + Set Work Zero before sending a trace.');
+  messages.push(...activeRunBlockers());
   return { ok: messages.length === 0, messages };
 }
 
@@ -1020,6 +1523,7 @@ function validateAircut(safeZ, commandCount) {
     messages.push('Generated X/Y bounds exceed LowRider limits X 0..1625, Y 0..5800.');
   }
   if (!hasWorkZero()) messages.push('Work zero is missing. Capture + Set Work Zero before sending an aircut.');
+  messages.push(...activeRunBlockers());
   if (commandCount > 5000) messages.push('Large aircut. This may take a long time.');
   return { ok: messages.length === 0 || messages.every((message) => message.startsWith('Large aircut')), messages };
 }
@@ -1100,7 +1604,8 @@ function renderDryRunPanel() {
   const b = parsed?.bounds;
   dryRunSummaryEl.innerHTML = `
     <dl>
-      <dt>G-code</dt><dd>${filePath || '-'}</dd>
+      <dt>Run file</dt><dd>${html(currentRunPath() || '-')}</dd>
+      <dt>Run mode</dt><dd>${html(currentRunLabel())}</dd>
       <dt>Preview bounds</dt><dd>${b ? `X ${b.xMin.toFixed(2)} .. ${b.xMax.toFixed(2)}, Y ${b.yMin.toFixed(2)} .. ${b.yMax.toFixed(2)}, Z ${b.zMin.toFixed(2)} .. ${b.zMax.toFixed(2)}` : '-'}</dd>
       <dt>Trace bounds</dt><dd>${bounds ? `X ${bounds.xMin.toFixed(2)} .. ${bounds.xMax.toFixed(2)}, Y ${bounds.yMin.toFixed(2)} .. ${bounds.yMax.toFixed(2)}` : '-'}</dd>
       <dt>Safe Z</dt><dd>${Number.isFinite(safeZ) ? `${safeZ} mm` : '-'}</dd>
@@ -1121,21 +1626,143 @@ function renderJobPanel() {
   const path = jobPathFor(filePath);
   const preview = previewSummary();
   const workZero = jobState?.workZero;
-  const b = preview.bounds;
+  const workZeroEntry = activeZero('workZero');
+  const zZeroEntry = activeZero('zZero');
+  const run = latestRunEntry();
+  const b = preview.legacyBounds || preview.bounds?.placementBounds || preview.bounds?.cutBounds || preview.bounds?.rawTravelBounds || preview.bounds;
   jobSummaryEl.innerHTML = `
     <dl>
-      <dt>G-code</dt><dd>${filePath || '-'}</dd>
+      <dt>Source G-code</dt><dd>${html(filePath || '-')}</dd>
+      <dt>Active run file</dt><dd>${html(currentRunPath() || '-')}</dd>
+      <dt>Active mode</dt><dd>${html(currentRunLabel())}</dd>
+      <dt>Generated status</dt><dd>${html(jobState?.generatedValidation?.status || 'unknown')}</dd>
       <dt>Job JSON</dt><dd>${path}</dd>
       <dt>Job file</dt><dd>${jobExists ? 'Exists' : 'No job file yet'}</dd>
       <dt>Start mode</dt><dd>${jobState?.startMode || 'apply_current_position_as_work_zero'}</dd>
       <dt>Workspace override</dt><dd>${jobState?.allowedWorkspaceCommands ? 'Non-default workspaces allowed' : 'Only G54 allowed by default'}</dd>
-      <dt>Bounds</dt><dd>X ${b.xMin.toFixed(2)} .. ${b.xMax.toFixed(2)}, Y ${b.yMin.toFixed(2)} .. ${b.yMax.toFixed(2)}, Z ${b.zMin.toFixed(2)} .. ${b.zMax.toFixed(2)}</dd>
+      <dt>Bounds</dt><dd>${hasBounds(b) ? `X ${b.xMin.toFixed(2)} .. ${b.xMax.toFixed(2)}, Y ${b.yMin.toFixed(2)} .. ${b.yMax.toFixed(2)}, Z ${b.zMin.toFixed(2)} .. ${b.zMax.toFixed(2)}` : '-'}</dd>
       <dt>Warnings</dt><dd>${preview.warnings.length}</dd>
+      <dt>Active work zero</dt><dd>${workZeroEntry ? `${workZeroEntry.capturedAt || '-'} (${workZeroEntry.id})` : '-'}</dd>
+      <dt>Active Z zero</dt><dd>${zZeroEntry ? `${zZeroEntry.capturedAt || '-'} (${zZeroEntry.id})` : '-'}</dd>
+      <dt>Last run</dt><dd>${run ? `${run.state || '-'} at ${run.startedAt || '-'}` : '-'}</dd>
       <dt>Before G92</dt><dd>${formatCapture(workZero?.beforeG92)}</dd>
       <dt>After G92</dt><dd>${formatCapture(workZero?.afterG92)}</dd>
     </dl>
   `;
+  renderHistoryPanels();
   renderFeedOverridePanel();
+  renderReadiness();
+}
+
+function zeroUsageStatus(zero) {
+  if (!zero || !jobState) return 'Unused';
+  if ((zero.type === 'workZero' && zero.id === jobState.activeWorkZeroId) ||
+      (zero.type === 'zZero' && zero.id === jobState.activeZZeroId)) {
+    return 'Current active zero';
+  }
+  const ids = Array.isArray(zero.usedByRuns) ? zero.usedByRuns : [];
+  const states = ids.map((id) => jobState.runHistory?.find((run) => run.id === id)?.state).filter(Boolean);
+  if (states.includes('error')) return 'Used by error run';
+  if (states.includes('stopped') || states.includes('interrupted')) return 'Used by stopped/interrupted run';
+  if (states.includes('completed')) return 'Used by completed run';
+  if (states.length) return 'Used by run';
+  return 'Unused';
+}
+
+function renderZeroHistoryPanel() {
+  if (!zeroHistorySummaryEl) return;
+  ensureHistoryShape(jobState);
+  zeroHistorySummaryEl.textContent = '';
+  const entries = [...(jobState?.zeroHistory || [])].reverse();
+  if (!entries.length) {
+    zeroHistorySummaryEl.textContent = 'No zero history yet. Setting Work Zero or Z Zero will create an audit entry.';
+    return;
+  }
+
+  entries.forEach((zero) => {
+    const article = document.createElement('article');
+    article.className = 'history-entry';
+    const active = (zero.type === 'workZero' && zero.id === jobState.activeWorkZeroId) ||
+      (zero.type === 'zZero' && zero.id === jobState.activeZZeroId);
+    article.innerHTML = `
+      <div class="history-head">
+        <strong>${html(zeroTitle(zero))}</strong>
+        <span class="status-badge ${active ? 'active-badge' : ''}">${html(zeroUsageStatus(zero))}</span>
+      </div>
+      <dl>
+        <dt>Captured</dt><dd>${html(zero.capturedAt || '-')}</dd>
+        <dt>Method</dt><dd>${html(zero.method || '-')}</dd>
+        <dt>File</dt><dd>${html(zero.gcodePath || '-')}</dd>
+        <dt>After G92</dt><dd>X ${fmtValue(zero.positionAfter?.x)} Y ${fmtValue(zero.positionAfter?.y)} Z ${fmtValue(zero.positionAfter?.z)}</dd>
+        <dt>Used by runs</dt><dd>${Array.isArray(zero.usedByRuns) ? zero.usedByRuns.length : 0}</dd>
+      </dl>
+      <pre class="history-details" hidden>${html(JSON.stringify(zero, null, 2))}</pre>
+    `;
+    const actions = document.createElement('div');
+    actions.className = 'job-actions compact-actions';
+    const details = document.createElement('button');
+    details.type = 'button';
+    details.textContent = 'View details';
+    details.addEventListener('click', () => {
+      const pre = article.querySelector('.history-details');
+      pre.hidden = !pre.hidden;
+    });
+    actions.append(details);
+
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.textContent = zero.type === 'zZero' ? 'Mark active Z zero' : 'Mark active work zero';
+    select.disabled = active;
+    select.addEventListener('click', () => selectHistoryZero(zero.id, zero.type).catch((err) => setJobResult(err.message, true)));
+    actions.append(select);
+
+    const label = document.createElement('button');
+    label.type = 'button';
+    label.textContent = 'Rename';
+    label.addEventListener('click', () => labelHistoryZero(zero.id).catch((err) => setJobResult(err.message, true)));
+    actions.append(label);
+    article.append(actions);
+    zeroHistorySummaryEl.append(article);
+  });
+}
+
+function renderRunHistoryPanel() {
+  if (!runHistorySummaryEl) return;
+  ensureHistoryShape(jobState);
+  runHistorySummaryEl.textContent = '';
+  const runs = [...(jobState?.runHistory || [])].reverse();
+  if (!runs.length) {
+    runHistorySummaryEl.textContent = 'No run history yet. Starting a job will create a run audit entry.';
+    return;
+  }
+
+  runs.forEach((run) => {
+    const article = document.createElement('article');
+    article.className = 'history-entry';
+    const duration = run.actualDurationSeconds === null || run.actualDurationSeconds === undefined ? '-' : `${run.actualDurationSeconds}s`;
+    const future = run.state === 'stopped' || run.state === 'interrupted'
+      ? '<p class="warning">Future: resume from safe point. Resume execution is not implemented yet.</p>'
+      : '';
+    article.innerHTML = `
+      <div class="history-head">
+        <strong>${html(run.state || 'started')}</strong>
+        <span class="status-badge">${html(run.id || '-')}</span>
+      </div>
+      <dl>
+        <dt>Started</dt><dd>${html(run.startedAt || '-')}</dd>
+        <dt>Ended</dt><dd>${html(run.endedAt || '-')}</dd>
+        <dt>Duration</dt><dd>${html(duration)}</dd>
+        <dt>Work zero</dt><dd>${html(run.zeroId || '-')}</dd>
+        <dt>Z zero</dt><dd>${html(run.zZeroId || '-')}</dd>
+        <dt>Feed</dt><dd>${html(run.feedOverrideStart ?? '-')}% -> ${html(run.feedOverrideLast ?? '-')}%</dd>
+        <dt>Line</dt><dd>${html(run.currentLineNumber ?? run.lastSentLineNumber ?? '-')}</dd>
+        <dt>Last command</dt><dd>${html(run.lastSentCommand || '-')}</dd>
+        <dt>Reason</dt><dd>${html(run.reason || '-')}</dd>
+      </dl>
+      ${future}
+    `;
+    runHistorySummaryEl.append(article);
+  });
 }
 
 function renderFeedOverridePanel() {
@@ -1170,6 +1797,8 @@ function setFeedStartPercent(percent) {
     source: 'user',
   };
   renderFeedOverridePanel();
+  refreshToolpathEstimateForFeed();
+  if (parsed) renderStats();
   renderRunPanel();
 }
 
@@ -1214,9 +1843,15 @@ async function loadJob() {
   }
 
   jobState = await res.json();
+  ensureActiveRunShape(jobState);
+  ensureHistoryShape(jobState);
+  applyPlacementToInputs(jobState.placement);
   if (jobState.dryRun) {
     if (jobState.dryRun.safeZ !== undefined) safeZInput.value = jobState.dryRun.safeZ;
     if (jobState.dryRun.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
+  }
+  if (runSafeStartZInput) {
+    runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
   }
   if (!jobState.startMode) jobState.startMode = 'apply_current_position_as_work_zero';
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
@@ -1228,8 +1863,13 @@ async function loadJob() {
   applyChecklistState(jobState.arm?.checklist);
   jobExists = true;
   setJobResult('Job JSON loaded');
+  await loadActiveRunPreview();
+  refreshToolpathEstimateForFeed();
+  if (parsed) renderStats();
+  await updatePlacementPreview();
   renderJobPanel();
   renderToolZeroPanel();
+  renderHistoryPanels();
   renderFeedOverridePanel();
   renderPreflight();
   renderArmPanel();
@@ -1254,9 +1894,208 @@ async function saveJob() {
   setJobResult(`Saved ${job.jobPath}`);
   renderJobPanel();
   renderToolZeroPanel();
+  renderHistoryPanels();
   renderFeedOverridePanel();
   renderPreflight();
   renderArmPanel();
+}
+
+async function loadExistingJobJson() {
+  try {
+    const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(filePath))}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    return null;
+  }
+}
+
+async function parseRunText(text, path, mode) {
+  const fingerprint = await computeGcodeFingerprint(text);
+  const { toolpath, adapter } = await toolpathModulesPromise;
+  const model = toolpath.parseGCodeToToolpath(text, {
+    feedOverridePercent: currentFeedOverride().startPercent,
+  });
+  return {
+    path,
+    mode,
+    text,
+    fingerprint,
+    model,
+    parsed: adapter.adaptToolpathForPreview(model),
+    summary: adapter.buildPreviewSummaryData(model, currentFeedOverride()),
+  };
+}
+
+function applyActiveRunParse(run, options = {}) {
+  const updateActive = options.updateActive !== false;
+  activeRunPath = run.path;
+  activeRunMode = run.mode;
+  activeRunText = run.text;
+  toolpathModel = run.model;
+  parsed = run.parsed;
+  previewSummaryData = run.summary;
+  gcodeHashSha256 = run.fingerprint.sha256;
+  gcodeFingerprint = run.fingerprint.value;
+  gcodeFingerprintAlgorithm = run.fingerprint.algorithm;
+  gcodeFingerprintWarning = run.fingerprint.warning;
+  if (updateActive && jobState?.activeRun) {
+    jobState.activeRun.path = run.path;
+    jobState.activeRun.mode = run.mode;
+    if (run.mode === 'source') jobState.activeRun.sourceFingerprint = run.fingerprint.value;
+    else jobState.activeRun.generatedFingerprint = run.fingerprint.value;
+  }
+  pathEl.textContent = `${filePath} | Active: ${run.path}`;
+}
+
+async function validateGeneratedRunFromPath(path = jobState?.placement?.generatedRunPath || jobState?.generatedRunPath) {
+  if (!path) return null;
+  const active = await jobActiveRunPromise;
+  const transform = await toolpathTransformPromise;
+  let text = null;
+  const res = await fetch(`/api/download?path=${encodeURIComponent(path)}`).catch(() => null);
+  if (res?.ok) text = await res.text();
+  const sourceFingerprint = sourceGcodeText ? (await computeGcodeFingerprint(sourceGcodeText)).value : '';
+  const placement = transform.normalizePlacement(sourceToolpathModel || toolpathModel, currentPlacementState());
+  const currentTransformFingerprint = transform.transformFingerprint(placement, sourceFingerprint);
+  const currentPreview = transform.transformToolpath(sourceToolpathModel || toolpathModel, placement);
+  const validation = active.validateGeneratedRun({
+    text,
+    generatedPath: path,
+    sourceFingerprint,
+    expectedSourceFingerprint: jobState?.placement?.sourceFingerprint || '',
+    transformFingerprint: currentTransformFingerprint,
+    expectedTransformFingerprint: jobState?.placement?.transformFingerprint || '',
+    expectedGeneratedFingerprint: jobState?.generatedValidation?.generatedFingerprint || '',
+    placementBounds: currentPreview.selectedTransformedBounds,
+  });
+  if (jobState) jobState.generatedValidation = validation;
+  return validation;
+}
+
+async function loadActiveRunPreview() {
+  const job = ensureJobState();
+  const requestedPath = job.activeRun?.path || filePath;
+  const requestedMode = job.activeRun?.mode || 'source';
+  if (requestedMode === 'generated') {
+    const validation = await validateGeneratedRunFromPath(requestedPath);
+    if (validation?.status !== 'valid') {
+      appendPlacementResult(`Generated run is ${validation?.status || 'unknown'}; showing source preview.`);
+      const sourceRun = await parseRunText(sourceGcodeText, filePath, 'source');
+      applyActiveRunParse({
+        ...sourceRun,
+        path: requestedPath,
+        mode: 'generated',
+      }, { updateActive: false });
+      return;
+    }
+    const res = await fetch(`/api/download?path=${encodeURIComponent(requestedPath)}`);
+    if (res.ok) {
+      const generatedRun = await parseRunText(await res.text(), requestedPath, 'generated');
+      applyActiveRunParse(generatedRun);
+      return;
+    }
+  }
+  const sourceRun = await parseRunText(sourceGcodeText, filePath, 'source');
+  applyActiveRunParse(sourceRun);
+}
+
+async function refreshActiveRunUi() {
+  await loadActiveRunPreview();
+  if (jobState) jobState.preview = previewSummary();
+  renderStats();
+  refreshToolpathEstimateForFeed();
+  await updatePlacementPreview();
+  renderJobPanel();
+  renderToolZeroPanel();
+  renderFeedOverridePanel();
+  renderPreflight();
+  aircutCommands = [];
+  aircutSafety = { ok: false, messages: [] };
+  generateTraceCommands();
+  renderArmPanel();
+  draw();
+}
+
+async function selectGeneratedRunInUi() {
+  const job = ensureJobState();
+  const generatedPath = job.placement?.generatedRunPath || job.generatedRunPath;
+  if (!generatedPath) {
+    appendPlacementResult('No generated run file exists yet.');
+    return;
+  }
+  const validation = await validateGeneratedRunFromPath(generatedPath);
+  if (validation?.status !== 'valid') {
+    appendPlacementResult(`Generated run cannot be selected: ${validation?.status || 'unknown'}`);
+    (validation?.errors || []).forEach((message) => appendPlacementResult(message));
+    renderPlacementPanel();
+    return;
+  }
+  const active = await jobActiveRunPromise;
+  if (!active.selectGeneratedRun(job, validation)) {
+    appendPlacementResult('Generated run selection failed.');
+    return;
+  }
+  await saveJobQuietly();
+  appendPlacementResult(`Active run file is now ${generatedPath}. Review and re-arm before cutting.`);
+  await refreshActiveRunUi();
+}
+
+async function selectSourceRunInUi() {
+  const job = ensureJobState();
+  if (job.placement?.dirty && !confirm('Reset placement changes and use the original source file?')) return;
+  suppressPlacementChange = true;
+  applyPlacementToInputs(defaultPlacementState());
+  suppressPlacementChange = false;
+  const active = await jobActiveRunPromise;
+  job.placement = {
+    ...defaultPlacementState(),
+    dirty: false,
+    generatedRunPath: job.placement?.generatedRunPath || job.generatedRunPath || null,
+    generatedRunBounds: job.placement?.generatedRunBounds || null,
+    sourceFingerprint: job.placement?.sourceFingerprint || '',
+    transformFingerprint: '',
+  };
+  active.selectSourceRun(job, filePath);
+  await saveJobQuietly();
+  appendPlacementResult('Active run file is now the original source G-code. Review and re-arm before cutting.');
+  await refreshActiveRunUi();
+}
+
+async function uploadJobJson(job) {
+  const json = JSON.stringify(job, null, 2);
+  const file = new File([json], basename(job.jobPath), { type: 'application/json' });
+  const form = new FormData();
+  form.append('path', '/jobs');
+  form.append('file', file);
+  const res = await fetch('/api/upload?overwrite=true', { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Preview metadata save failed');
+}
+
+async function syncPreviewMetadata() {
+  if (!toolpathModel || !previewSummaryData) return;
+  try {
+    const { adapter } = await toolpathModulesPromise;
+    const existing = await loadExistingJobJson();
+    const base = existing || {
+      schemaVersion: 2,
+      createdAt: nowIso(),
+      gcodePath: filePath,
+      jobPath: jobPathFor(filePath),
+    };
+    const merged = adapter.mergePreviewIntoJob({
+      ...base,
+      updatedAt: nowIso(),
+      gcodePath: filePath,
+      jobPath: jobPathFor(filePath),
+    }, toolpathModel, base.thumbnailPath || null);
+    await uploadJobJson(merged);
+    jobExists = true;
+    if (jobResultEl && !jobResultEl.textContent) setJobResult('Preview metadata saved to job JSON');
+  } catch (err) {
+    if (jobResultEl) setJobResult(`Preview metadata was not saved: ${err.message}`, true);
+  }
 }
 
 async function saveJobWithPreflight() {
@@ -1301,6 +2140,14 @@ async function armJob() {
     gcodeHashSha256,
     gcodeFingerprint,
     gcodeFingerprintAlgorithm,
+    activeRunMode: currentRunMode(),
+    activeRunPath: currentRunPath(),
+    activeRunFingerprint: gcodeFingerprint,
+    sourceFingerprint: job.activeRun?.sourceFingerprint || job.placement?.sourceFingerprint || '',
+    generatedFingerprint: job.activeRun?.generatedFingerprint || job.generatedValidation?.generatedFingerprint || '',
+    transformFingerprint: job.activeRun?.transformFingerprint || job.placement?.transformFingerprint || '',
+    activeRun: { ...(job.activeRun || {}) },
+    generatedValidation: job.generatedValidation ? { ...job.generatedValidation } : null,
     preflightState: currentPreflight?.state || 'UNKNOWN',
     warningCount: warnings.length,
     workZeroCapturedAt: job.workZero?.capturedAt || null,
@@ -1503,9 +2350,16 @@ async function setZZeroWithCapture() {
   toolZero.capturedAt = nowIso();
   toolZero.beforeG92Z = before;
   toolZero.afterG92Z = after;
+  const history = await jobHistoryPromise;
+  history.appendZZeroHistory(ensureJobState(), {
+    before,
+    after,
+    capturedAt: toolZero.capturedAt,
+  });
   markArmStaleForZZero();
   setToolZeroResult(`Z zero set. After G92 Z0: ${formatCapture(after)}`);
   renderToolZeroPanel();
+  renderHistoryPanels();
   renderArmPanel();
 }
 
@@ -1524,9 +2378,16 @@ async function setWorkZeroWithCapture() {
   job.workZero.capturedAt = nowIso();
   job.workZero.beforeG92 = before;
   job.workZero.afterG92 = after;
+  const history = await jobHistoryPromise;
+  history.appendWorkZeroHistory(job, {
+    before,
+    after,
+    capturedAt: job.workZero.capturedAt,
+  });
   setJobResult(`Work zero set. After G92: ${formatCapture(after)}`);
   renderJobPanel();
   renderToolZeroPanel();
+  renderHistoryPanels();
   renderPreflight();
   renderArmPanel();
   generateTraceCommands();
@@ -1799,6 +2660,23 @@ function fitBounds(bounds) {
   };
 }
 
+function hasBounds(bounds) {
+  return bounds && Number.isFinite(bounds.xMin) && Number.isFinite(bounds.xMax) &&
+    Number.isFinite(bounds.yMin) && Number.isFinite(bounds.yMax);
+}
+
+function boundsText(bounds) {
+  if (!hasBounds(bounds)) return '-';
+  return `X ${bounds.xMin.toFixed(2)} .. ${bounds.xMax.toFixed(2)}, Y ${bounds.yMin.toFixed(2)} .. ${bounds.yMax.toFixed(2)}, Z ${bounds.zMin.toFixed(2)} .. ${bounds.zMax.toFixed(2)} mm`;
+}
+
+function estimateText(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  if (value < 60) return `~${Math.max(1, Math.round(value))} sec`;
+  return `~${Math.max(1, Math.round(value / 60))} min`;
+}
+
 function draw() {
   if (!parsed) return;
   const rect = canvas.getBoundingClientRect();
@@ -1813,7 +2691,15 @@ function draw() {
   ctx.fillStyle = '#080b0d';
   ctx.fillRect(0, 0, w, h);
 
-  const view = fitBounds(parsed.bounds);
+  const viewBounds = transformedPreview?.generatedRunBounds && hasBounds(transformedPreview.generatedRunBounds)
+    ? {
+        xMin: Math.min(parsed.bounds.xMin, transformedPreview.generatedRunBounds.xMin),
+        xMax: Math.max(parsed.bounds.xMax, transformedPreview.generatedRunBounds.xMax),
+        yMin: Math.min(parsed.bounds.yMin, transformedPreview.generatedRunBounds.yMin),
+        yMax: Math.max(parsed.bounds.yMax, transformedPreview.generatedRunBounds.yMax),
+      }
+    : parsed.bounds;
+  const view = fitBounds(viewBounds);
   const sx = w / (view.xMax - view.xMin);
   const sy = h / (view.yMax - view.yMin);
   const scale = Math.min(sx, sy);
@@ -1829,32 +2715,70 @@ function draw() {
   parsed.segments.forEach((segment) => {
     ctx.beginPath();
     ctx.moveTo(px(segment.from.x), py(segment.from.y));
-    ctx.lineTo(px(segment.to.x), py(segment.to.y));
+    const points = segment.points?.length ? segment.points : [segment.to];
+    points.forEach((point) => ctx.lineTo(px(point.x), py(point.y)));
     ctx.strokeStyle = segment.rapid ? '#697985' : '#65d28e';
     ctx.lineWidth = segment.rapid ? 1 : 1.6;
     ctx.stroke();
   });
+
+  if (transformedPreview?.segments?.length) {
+    transformedPreview.segments.forEach((segment) => {
+      ctx.beginPath();
+      ctx.moveTo(px(segment.from.x), py(segment.from.y));
+      const points = segment.points?.length ? segment.points : [segment.to];
+      points.forEach((point) => ctx.lineTo(px(point.x), py(point.y)));
+      ctx.strokeStyle = segment.engaged ? '#ffd166' : '#2f86d1';
+      ctx.lineWidth = segment.engaged ? 1.4 : 0.9;
+      ctx.setLineDash(segment.engaged ? [] : [4, 4]);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
 }
 
 function renderStats() {
+  const summary = previewSummaryData;
   const b = parsed.bounds;
   const feeds = parsed.analysis.feeds;
   const effective = effectiveFeedRange();
+  const feed = summary?.feed || {
+    min: feeds.minFeed,
+    max: feeds.maxFeed,
+    commandCount: feeds.feedCommandCount,
+    rapidDistance: null,
+    cuttingDistance: null,
+  };
+  const estimate = summary?.estimate || {};
+  const effectiveEstimate = summary?.effectiveEstimateSeconds || estimate.effectiveSecondsWithOverride;
   statsEl.innerHTML = `
     <dl>
-      <dt>X</dt><dd>${b.xMin.toFixed(2)} .. ${b.xMax.toFixed(2)} mm</dd>
-      <dt>Y</dt><dd>${b.yMin.toFixed(2)} .. ${b.yMax.toFixed(2)} mm</dd>
-      <dt>Z</dt><dd>${b.zMin.toFixed(2)} .. ${b.zMax.toFixed(2)} mm</dd>
-      <dt>Feed commands</dt><dd>${feeds.feedCommandCount}</dd>
-      <dt>G-code feed</dt><dd>${feeds.feedCommandCount ? `F${fmtMm(feeds.minFeed)} .. F${fmtMm(feeds.maxFeed)}` : '-'}</dd>
+      <dt>Raw travel bounds</dt><dd>${boundsText(summary?.rawTravelBounds || b)}</dd>
+      <dt>Cut bounds</dt><dd>${boundsText(summary?.cutBounds)}</dd>
+      <dt>Placement bounds</dt><dd>${boundsText(summary?.placementBounds)}</dd>
+      <dt>Feed commands</dt><dd>${feed.commandCount ?? feeds.feedCommandCount}</dd>
+      <dt>G-code feed</dt><dd>${feed.commandCount ? `F${fmtMm(feed.min)} .. F${fmtMm(feed.max)}` : '-'}</dd>
       <dt>Effective feed</dt><dd>${effective ? `F${fmtMm(effective.min)} .. F${fmtMm(effective.max)} at ${effective.percent}%` : '-'}</dd>
+      <dt>Rapid distance</dt><dd>${Number.isFinite(feed.rapidDistance) ? `${fmtMm(feed.rapidDistance)} mm` : '-'}</dd>
+      <dt>Cutting distance</dt><dd>${Number.isFinite(feed.cuttingDistance) ? `${fmtMm(feed.cuttingDistance)} mm` : '-'}</dd>
+      <dt>Estimated time</dt><dd>${estimateText(effectiveEstimate || estimate.nominalSeconds)}</dd>
+      <dt>Estimate confidence</dt><dd>${estimate.confidence || '-'}</dd>
       <dt>Parsed lines</dt><dd>${parsed.parsedLines}</dd>
       <dt>Segments</dt><dd>${parsed.segments.length}</dd>
     </dl>
+    <p class="form-hint">Estimate is approximate. Feed override changes movement speed only. It does not change router RPM.</p>
   `;
+  (summary?.infos || []).forEach((message) => {
+    const info = document.createElement('p');
+    info.className = 'warning';
+    info.textContent = message;
+    statsEl.append(info);
+  });
 
   warningsEl.textContent = '';
-  if (!parsed.warnings.length) {
+  const groups = summary?.warningGroups || {};
+  const hasGroupedWarnings = Object.values(groups).some((items) => items.length);
+  if (!parsed.warnings.length && !hasGroupedWarnings) {
     const ok = document.createElement('p');
     ok.className = 'warning-ok';
     ok.textContent = 'No preview warnings.';
@@ -1862,12 +2786,267 @@ function renderStats() {
     return;
   }
 
-  parsed.warnings.forEach((warning) => {
-    const item = document.createElement('div');
-    item.className = 'warning-item';
-    item.textContent = warning;
-    warningsEl.append(item);
+  const labels = {
+    workspace: 'Workspace',
+    unsupported: 'Unsupported commands',
+    transformSensitive: 'Transform-sensitive',
+    arcs: 'Arc approximation',
+    coordinates: 'Coordinates',
+    general: 'General',
+  };
+  Object.entries(groups).forEach(([key, items]) => {
+    if (!items.length) return;
+    const group = document.createElement('div');
+    group.className = 'warning-group';
+    group.innerHTML = `<h3>${labels[key] || key}</h3>`;
+    items.forEach((warning) => {
+      const item = document.createElement('div');
+      item.className = key === 'workspace' ? 'warning-info' : 'warning-item';
+      item.textContent = warning;
+      group.append(item);
+    });
+    warningsEl.append(group);
   });
+}
+
+function placementBoundsText(bounds) {
+  if (!hasBounds(bounds)) return '-';
+  return `X ${bounds.xMin.toFixed(2)} .. ${bounds.xMax.toFixed(2)}, Y ${bounds.yMin.toFixed(2)} .. ${bounds.yMax.toFixed(2)}, Z ${bounds.zMin.toFixed(2)} .. ${bounds.zMax.toFixed(2)} mm`;
+}
+
+async function updatePlacementPreview(options = {}) {
+  const placementModel = sourceToolpathModel || toolpathModel;
+  if (!placementModel) return null;
+  const transform = await toolpathTransformPromise;
+  const placement = transform.normalizePlacement(placementModel, currentPlacementState());
+  applyPlacementToInputs(placement);
+  transformedPreview = Math.abs(placement.rotationDeg) < 0.0001
+    ? null
+    : transform.transformToolpath(placementModel, placement);
+  const preview = transformedPreview || transform.transformToolpath(placementModel, placement);
+  placementWarnings = [
+    ...preview.warnings,
+    ...transform.transformSafety(placementModel).blockers,
+  ];
+  renderPlacementPanel();
+  draw();
+  if (options.userChange) {
+    await markPlacementChangedAndScheduleUpdate();
+  }
+  return preview;
+}
+
+async function renderPlacementPanel() {
+  if (!placementSummaryEl) return;
+  const placementModel = sourceToolpathModel || toolpathModel;
+  if (!placementModel) {
+    placementSummaryEl.textContent = 'Load a preview to configure placement.';
+    return;
+  }
+  const transform = await toolpathTransformPromise;
+  const placement = transform.normalizePlacement(placementModel, currentPlacementState());
+  const safety = transform.transformSafety(placementModel);
+  const preview = transformedPreview || transform.transformToolpath(placementModel, placement);
+  const generated = jobState?.placement?.generatedRunPath || placement.generatedRunPath || '-';
+  const validation = jobState?.generatedValidation || {};
+  const placementDirty = Boolean(jobState?.placement?.dirty);
+  const generatedReady = currentRunMode() === 'generated' && validation.status === 'valid' && !placementDirty;
+  const generatedStatus = placementDirty
+    ? 'stale'
+    : validation.status === 'pending'
+      ? 'updating'
+      : validation.status || 'unknown';
+  if (useGeneratedRunButton) {
+    useGeneratedRunButton.textContent = generatedReady ? 'Run File Up To Date' : 'Update Run File';
+    useGeneratedRunButton.disabled = generatedReady;
+  }
+  if (useSourceRunButton) useSourceRunButton.disabled = currentRunMode() === 'source';
+  const negative = hasBounds(preview.selectedTransformedBounds) &&
+    (preview.selectedTransformedBounds.xMin < 0 || preview.selectedTransformedBounds.yMin < 0);
+  const placementOutOfBounds = hasBounds(preview.selectedTransformedBounds) &&
+    (preview.selectedTransformedBounds.xMin < MACHINE.xMin || preview.selectedTransformedBounds.xMax > MACHINE.xMax ||
+     preview.selectedTransformedBounds.yMin < MACHINE.yMin || preview.selectedTransformedBounds.yMax > MACHINE.yMax);
+  const fullRunOutOfBounds = hasBounds(preview.generatedRunBounds) &&
+    (preview.generatedRunBounds.xMin < MACHINE.xMin || preview.generatedRunBounds.xMax > MACHINE.xMax ||
+     preview.generatedRunBounds.yMin < MACHINE.yMin || preview.generatedRunBounds.yMax > MACHINE.yMax);
+  placementSummaryEl.innerHTML = `
+    <dl>
+      <dt>Rotation</dt><dd>${placement.rotationDeg} deg</dd>
+      <dt>Origin</dt><dd>${placement.originAnchor}</dd>
+      <dt>Bounds mode</dt><dd>${placement.placementBoundsMode}</dd>
+      <dt>Normalize</dt><dd>${placement.normalizeToOrigin ? 'Yes' : 'No'}</dd>
+      <dt>Generated bounds</dt><dd>${placementBoundsText(preview.generatedRunBounds)}</dd>
+      <dt>Placement bounds</dt><dd>${placementBoundsText(preview.selectedTransformedBounds)}</dd>
+      <dt>Generated path</dt><dd>${html(generated)}</dd>
+      <dt>Active run file</dt><dd>${html(currentRunPath())}</dd>
+      <dt>Active mode</dt><dd><span class="status-badge ${currentRunMode() === 'generated' ? 'active-badge' : ''}">${currentRunMode() === 'generated' ? 'USING GENERATED' : 'USING ORIGINAL'}</span></dd>
+      <dt>Generated status</dt><dd><span class="status-badge ${generatedStatus === 'valid' ? 'active-badge' : generatedStatus === 'stale' || generatedStatus === 'invalid' || generatedStatus === 'missing' ? 'caution' : ''}">GENERATED ${html(String(generatedStatus).toUpperCase())}</span></dd>
+      <dt>Status</dt><dd>${safety.ok ? 'Placement ready' : 'Blocked'}</dd>
+    </dl>
+  `;
+  const messages = [];
+  if (negative) messages.push('Generated placement still has negative X/Y. Use Normalize origin.');
+  if (placementOutOfBounds) {
+    messages.push('Placement bounds exceed configured LowRider work area.');
+  } else if (fullRunOutOfBounds) {
+    messages.push('Full generated file includes travel or lead-in moves outside the placement bounds. This can be OK only if your work zero leaves clearance; review before cutting.');
+  }
+  if (!safety.ok) messages.push(...safety.blockers);
+  if (validation.errors?.length) messages.push(...validation.errors);
+  if (validation.warnings?.length) messages.push(...validation.warnings);
+  if (placementDirty) messages.push('Placement changed. Run file must be updated before dry run or cutting.');
+  messages.push(...safety.warnings);
+  if (messages.length) {
+    placementSummaryEl.innerHTML += `<div class="dry-run-errors">${messages.map((message) => `<div>${html(message)}</div>`).join('')}</div>`;
+  }
+  if (jobState?.placement?.generatedRunPath) {
+    placementSummaryEl.innerHTML += '<p class="warning">Visible placement is the intended job. When placement differs from the original, the generated run file is used after it is updated and validated.</p>';
+  }
+}
+
+function appendPlacementResult(text) {
+  if (!placementResultEl) return;
+  placementResultEl.textContent += `${text}\n`;
+  placementResultEl.scrollTop = placementResultEl.scrollHeight;
+}
+
+async function ensureGeneratedFolder() {
+  try {
+    await fetch('/api/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/jobs/generated' }),
+    });
+  } catch (err) {
+    appendPlacementResult(`Could not ensure /jobs/generated: ${err.message}`);
+  }
+}
+
+async function uploadGeneratedRun(path, text) {
+  const file = new File([text], basename(path), { type: 'text/plain' });
+  const form = new FormData();
+  form.append('path', '/jobs/generated');
+  form.append('file', file);
+  const res = await fetch('/api/upload?overwrite=true', { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Generated run upload failed');
+}
+
+async function currentSourceFingerprintValue() {
+  return sourceGcodeText ? (await computeGcodeFingerprint(sourceGcodeText)).value : '';
+}
+
+async function markPlacementChangedAndScheduleUpdate() {
+  if (suppressPlacementChange || !sourceToolpathModel) return;
+  const active = await jobActiveRunPromise;
+  const transform = await toolpathTransformPromise;
+  const placement = transform.normalizePlacement(sourceToolpathModel, currentPlacementState());
+  const sourceFingerprint = await currentSourceFingerprintValue();
+  placement.transformFingerprint = transform.transformFingerprint(placement, sourceFingerprint);
+  const desiredMode = active.markPlacementChanged(ensureJobState(), {
+    placement,
+    generatedRunPath: transform.generatedRunPathFor(filePath),
+    sourceFingerprint,
+    transformFingerprint: placement.transformFingerprint,
+  });
+  if (desiredMode !== 'generated') {
+    jobState.placement.dirty = false;
+    active.selectSourceRun(jobState, filePath);
+    await saveJobQuietly().catch((err) => appendPlacementResult(`Placement save failed: ${err.message}`));
+    await loadActiveRunPreview();
+    appendPlacementResult('Rotation is 0 degrees; using the original source G-code.');
+    renderPlacementPanel();
+    renderJobPanel();
+    renderPreflight();
+    renderArmPanel();
+    return;
+  }
+
+  await saveJobQuietly().catch((err) => appendPlacementResult(`Placement save failed: ${err.message}`));
+  if (placementUpdateTimer) clearTimeout(placementUpdateTimer);
+  placementUpdateTimer = setTimeout(() => {
+    generateRunFile({ auto: true, overwrite: true })
+      .catch((err) => {
+        if (jobState?.generatedValidation) {
+          jobState.generatedValidation.status = 'invalid';
+          jobState.generatedValidation.errors = [err.message];
+        }
+        appendPlacementResult(`Update Run File failed: ${err.message}`);
+        renderPlacementPanel();
+        renderPreflight();
+        renderArmPanel();
+      });
+  }, 800);
+  renderPlacementPanel();
+  renderJobPanel();
+  renderPreflight();
+  renderArmPanel();
+}
+
+async function reconcilePlacementIntentOnLoad() {
+  if (!jobState || !sourceToolpathModel) return;
+  const active = await jobActiveRunPromise;
+  const transform = await toolpathTransformPromise;
+  const placement = transform.normalizePlacement(sourceToolpathModel, currentPlacementState());
+  const desiredMode = active.desiredRunModeForPlacement(placement);
+  if (desiredMode !== 'generated') {
+    if (jobState.activeRun?.mode === 'generated') {
+      jobState.placement = { ...(jobState.placement || {}), ...placement, dirty: false };
+      active.selectSourceRun(jobState, filePath);
+      await saveJobQuietly();
+    }
+    return;
+  }
+
+  if (jobState.generatedValidation?.status === 'valid' && (jobState.placement?.generatedRunPath || jobState.generatedRunPath)) {
+    active.selectGeneratedRun(jobState, jobState.generatedValidation);
+    return;
+  }
+  await markPlacementChangedAndScheduleUpdate();
+}
+
+async function generateRunFile(options = {}) {
+  const placementModel = sourceToolpathModel || toolpathModel;
+  if (!placementModel) return;
+  const transform = await toolpathTransformPromise;
+  const placement = transform.normalizePlacement(placementModel, currentPlacementState());
+  const generatedRunPath = transform.generatedRunPathFor(filePath);
+  const existing = await fetch(`/api/download?path=${encodeURIComponent(generatedRunPath)}`).catch(() => null);
+  if (existing?.ok && options.overwrite === false) return;
+  if (existing?.ok && options.confirmOverwrite && !confirm(`${generatedRunPath} already exists. Overwrite run file?`)) return;
+
+  const generated = transform.generateRunGcode(placementModel, placement, {
+    sourcePath: filePath,
+    sourceFingerprint: await currentSourceFingerprintValue(),
+    generatedRunPath,
+  });
+  if (!generated.ok) {
+    appendPlacementResult(generated.error);
+    renderPlacementPanel();
+    return;
+  }
+
+  await ensureGeneratedFolder();
+  await uploadGeneratedRun(generatedRunPath, generated.gcode);
+  const job = ensureJobState();
+  job.placement = generated.placement;
+  job.placement.dirty = false;
+  job.generatedRunPath = generatedRunPath;
+  const active = await jobActiveRunPromise;
+  job.generatedValidation = active.validateGeneratedRun({
+    text: generated.gcode,
+    generatedPath: generatedRunPath,
+    sourceFingerprint: generated.placement.sourceFingerprint,
+    expectedSourceFingerprint: generated.placement.sourceFingerprint,
+    transformFingerprint: generated.placement.transformFingerprint,
+    expectedTransformFingerprint: generated.placement.transformFingerprint,
+    placementBounds: generated.transformed.selectedTransformedBounds,
+  });
+  active.selectGeneratedRun(job, job.generatedValidation);
+  await saveJobQuietly();
+  transformedPreview = generated.transformed;
+  appendPlacementResult(`${options.auto ? 'Auto-updated' : 'Updated'} ${generatedRunPath}`);
+  await refreshActiveRunUi();
 }
 
 async function loadPreview() {
@@ -1883,20 +3062,40 @@ async function loadPreview() {
     return;
   }
 
-  const text = await res.text();
-  gcodeText = text;
-  gcodeHashSha256 = '';
-  gcodeFingerprint = '';
-  gcodeFingerprintAlgorithm = '';
-  gcodeFingerprintWarning = '';
-  const fingerprint = await computeGcodeFingerprint(gcodeText);
-  gcodeHashSha256 = fingerprint.sha256;
-  gcodeFingerprint = fingerprint.value;
-  gcodeFingerprintAlgorithm = fingerprint.algorithm;
-  gcodeFingerprintWarning = fingerprint.warning;
-  parsed = parseGcode(text);
+  sourceGcodeText = await res.text();
+  gcodeText = sourceGcodeText;
+  const existingJob = await loadExistingJobJson();
+  if (existingJob) {
+    jobState = existingJob;
+    ensureActiveRunShape(jobState);
+    ensureHistoryShape(jobState);
+    applyPlacementToInputs(jobState.placement);
+    if (jobState.dryRun) {
+      if (jobState.dryRun.safeZ !== undefined) safeZInput.value = jobState.dryRun.safeZ;
+      if (jobState.dryRun.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
+    }
+    if (runSafeStartZInput) {
+      runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
+    }
+    if (!jobState.startMode) jobState.startMode = 'apply_current_position_as_work_zero';
+    if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
+    if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
+    jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
+    if (feedStartPercentInput) feedStartPercentInput.value = clampFeedPercent(jobState.feedOverride.startPercent, 100);
+    if (startModeSelect) startModeSelect.value = jobState.startMode;
+    applyRunChecklistState(jobState.startChecklist);
+    applyChecklistState(jobState.arm?.checklist);
+    jobExists = true;
+  }
+  const sourceRun = await parseRunText(sourceGcodeText, filePath, 'source');
+  sourceToolpathModel = sourceRun.model;
+  sourceParsed = sourceRun.parsed;
+  sourcePreviewSummaryData = sourceRun.summary;
+  await reconcilePlacementIntentOnLoad();
+  await loadActiveRunPreview();
   if (jobState) jobState.preview = previewSummary();
   renderStats();
+  await updatePlacementPreview();
   renderJobPanel();
   renderToolZeroPanel();
   renderFeedOverridePanel();
@@ -1906,7 +3105,8 @@ async function loadPreview() {
   generateTraceCommands();
   renderArmPanel();
   draw();
-  await checkJobExists();
+  syncPreviewMetadata();
+  if (!jobExists) await checkJobExists();
 }
 
 function refreshDryRunCommands() {
@@ -1925,6 +3125,19 @@ function guardedRunClick(label, action) {
 
 fitButton.addEventListener('click', draw);
 reloadButton.addEventListener('click', loadPreview);
+rotateDeltaButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const next = (Number(placementRotationInput?.value || 0) || 0) + Number(button.dataset.rotateDelta || 0);
+    if (placementRotationInput) placementRotationInput.value = next;
+    updatePlacementPreview({ userChange: true }).catch((err) => appendPlacementResult(`Preview transform failed: ${err.message}`));
+  });
+});
+placementRotationInput?.addEventListener('change', () => updatePlacementPreview({ userChange: true }).catch((err) => appendPlacementResult(`Preview transform failed: ${err.message}`)));
+resetPlacementButton?.addEventListener('click', () => selectSourceRunInUi().catch((err) => appendPlacementResult(`Reset placement failed: ${err.message}`)));
+previewTransformButton?.addEventListener('click', () => updatePlacementPreview().catch((err) => appendPlacementResult(`Preview transform failed: ${err.message}`)));
+generateRunFileButton?.addEventListener('click', () => generateRunFile({ overwrite: true }).catch((err) => appendPlacementResult(`Update run file failed: ${err.message}`)));
+useGeneratedRunButton?.addEventListener('click', () => generateRunFile({ overwrite: true }).catch((err) => appendPlacementResult(`Update run file failed: ${err.message}`)));
+useSourceRunButton?.addEventListener('click', () => selectSourceRunInUi().catch((err) => appendPlacementResult(`Use original failed: ${err.message}`)));
 loadJobButton.addEventListener('click', () => loadJob().catch((err) => setJobResult(err.message, true)));
 saveJobButton.addEventListener('click', () => saveJob().catch((err) => setJobResult(err.message, true)));
 saveJobPreflightButton.addEventListener('click', () => saveJobWithPreflight().catch((err) => setJobResult(err.message, true)));
@@ -1972,6 +3185,10 @@ startModeSelect?.addEventListener('change', () => {
   renderJobPanel();
   renderRunPanel();
 });
+runSafeStartZInput?.addEventListener('input', () => {
+  ensureJobState();
+  renderRunPanel();
+});
 runChecklistInputs.forEach((input) => input.addEventListener('change', () => {
   ensureJobState();
   renderRunPanel();
@@ -1998,9 +3215,14 @@ jobState = newJobState();
 routePreviewTab();
 renderJobPanel();
 renderToolZeroPanel();
+renderHistoryPanels();
 renderFeedOverridePanel();
+renderPlacementPanel();
 renderPreflight();
 renderDryRunPanel();
 renderArmPanel();
+jobReadinessPromise.then(renderReadiness).catch((err) => {
+  if (readinessSummaryEl) readinessSummaryEl.textContent = `Readiness unavailable: ${err.message}`;
+});
 loadPreview();
 if (runPanel) refreshJobStatus().catch(() => {});

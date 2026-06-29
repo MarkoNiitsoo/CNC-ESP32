@@ -1,0 +1,222 @@
+# Mobile Job Flow
+
+## Purpose
+
+The mobile UI should guide the CNC operator through the next useful physical action. It should not
+be a collection of pages full of unrelated buttons.
+
+The intended story is:
+
+```text
+File -> visual job -> placement/origin -> zero -> checks -> arm -> cut -> recover if needed
+```
+
+The UI may allow an experienced operator to skip recommended steps, but required steps must stay
+clear. Each job view should show what is required, recommended, and optional.
+
+## Core Principles
+
+- The next step should be an action, not only navigation to another page.
+- The UI should reflect the physical state of the machine and the selected job.
+- Dangerous actions must be visually separated from normal workflow actions.
+- Machine controls belong in a persistent machine area, while job setup belongs in the job story.
+- The main screen should change depending on whether a job is selected.
+
+## Top Machine Drawer
+
+The Top Machine Drawer is the persistent machine-control layer.
+
+It should have an always visible sticky header with:
+
+- Pause or Resume.
+- Stop.
+- Spindle/Laser Off.
+- Last known machine/job state.
+
+Pause, Stop, and Spindle/Laser Off must remain visible even when the drawer content scrolls. These
+are software controls and must never be described as a physical emergency stop.
+
+The drawer should contain machine controls:
+
+- Feed/speed override.
+- Homing.
+- Firmware-backed joystick.
+- Goto Work Zero.
+- Terminal.
+- Marlin messages.
+
+The drawer is for machine control, not for the job story. The joystick should move from the
+Controls page into the drawer so it is reachable from every main view.
+
+## Files-First Home
+
+When no job is selected, the default home view should be the file list. A generic dashboard full of
+random controls is not useful before there is a selected job.
+
+The file list should be compact. File actions should appear only for the active or expanded file.
+Long press may enter select mode, but there should also be a visible Select button for clarity.
+
+On upload, the browser should parse the selected file immediately. It should generate thumbnail and
+statistics before or during upload, then create or update the job metadata sidecar.
+
+Current implementation: selecting a G-code file in the root Files / Job Launcher upload control
+uses `ToolpathModel` in the browser to show an SVG thumbnail, placement bounds, warning count, feed
+range, and approximate estimated time before upload. After upload, the browser tries to save the
+thumbnail under `/jobs/thumbs` and merge preview metadata into `/jobs/<file>.job.json` while
+preserving existing job setup fields.
+
+The goal is that selecting a file naturally creates the next job context instead of sending the user
+to hunt through pages.
+
+## Current Job / Next Action
+
+When a job is selected, home should become the Current Job / Next Action view.
+
+It should show:
+
+- Current file.
+- Mini preview.
+- Bounds.
+- Warnings.
+- Feed override.
+- Estimated time.
+- Work zero and Z zero status.
+- Preflight status.
+- Dry run status.
+- Arm/run status.
+
+It should show one large primary next action, plus smaller alternative actions.
+
+Primary action examples:
+
+- Choose G-code File.
+- Update Run File.
+- Fix Active Run.
+- Set Work Zero.
+- Set Z Zero.
+- Run Bounding Box / Dry Run.
+- Arm Job.
+- Start Cut.
+- Monitor Job.
+- Resume Job, only for an actively paused firmware job.
+- Review Last Run.
+
+The current implementation uses `www/lib/job-readiness.js` as the shared decision layer for the
+Dashboard and Preview / Job page. The helper derives a readiness model from the selected job JSON,
+live job status, active run state, zero state, dry-run state, arm state, and run history.
+
+Primary action priority:
+
+- Running jobs show Monitor Job and expose Pause, Stop, and M5 as secondary actions.
+- Paused jobs show Resume Job and expose Stop and M5.
+- No selected file shows Choose G-code File.
+- Transformed placement with missing, pending, stale, or invalid generated output shows Update Run
+  File and blocks Dry Run, Arm, and Start.
+- Missing/invalid active run shows Fix Active Run.
+- Missing work zero shows Set Work Zero.
+- Missing Z zero shows Set Z Zero.
+- Missing or stale dry run shows Run Bounding Box / Dry Run.
+- Missing or stale arm state shows Arm Job.
+- Armed and otherwise ready jobs show Start Cut.
+- Stopped, interrupted, or error run history shows Review Last Run. Resume/recovery is not
+  implemented.
+
+The readiness card must always show the source `/gcode/...` file and the effective `activeRun.path`.
+When placement is transformed but the generated run file is not valid, the UI must not present the
+source file as the cutting path.
+
+Older planning examples kept for context:
+
+- Fix Origin.
+- Update Run File.
+- Set Work Zero.
+- Set Z Zero.
+- Run Bounding Box.
+- Run Air Dry Run.
+- Arm Job.
+- Start Cut.
+- Return to XY Zero after stop.
+- Resume from Safe Point.
+
+Buttons should perform the action or open the exact action context. They should not merely send the
+operator to another tab and leave them to figure out what to press next.
+
+## Full Preview
+
+Preview should always be available when a job is selected.
+
+A mini preview belongs in the Current Job card. Full preview opens from the job card and should
+eventually support placement and origin decisions.
+
+The visible preview is the operator's intent. If placement is changed, the generated run file is the
+implementation detail that makes the visible placement streamable; the workflow must not silently
+fall back to the original source file.
+
+Current implementation: full preview uses the shared `ToolpathModel` layer. The Summary panel shows
+raw travel bounds, cut bounds, placement bounds, feed statistics, rapid/cutting distance, and an
+approximate estimated time. G17 G2/G3 arcs are drawn using their resolved arc geometry. Warning
+groups separate workspace information, unsupported commands, coordinate issues, and general warnings.
+
+The full preview page also has a Placement / Origin section. The operator changes only rotation.
+At zero degrees the original `/gcode` file remains active. A non-zero rotation transforms and
+normalizes the complete raw travel path, marks the generated run file stale/pending, and makes
+`Update Run File` the next action until the `.run.gc` under `/jobs/generated` is valid. Returning
+rotation to zero automatically selects the original file.
+
+Current Job and Preview should show both the original source file and the active run file. The
+active run file is the one used for Preflight, Dry Run, Arm, Start, and Run History. Older job JSON
+files that only have `gcodePath` remain valid by deriving a source-mode `activeRun` from that path.
+
+## Marlin Messages
+
+Marlin messages are the machine's voice and must not be hidden only in a terminal.
+
+The UI should:
+
+- Show critical Marlin messages globally.
+- Show the last Marlin status in the top bar or drawer.
+- Keep the full log available in Logs or the drawer terminal.
+- Distinguish commands and responses.
+
+Recommended visual prefixes:
+
+```text
+-> command sent
+<- Marlin response
+! warning or error
+```
+
+## Bottom Navigation
+
+Suggested bottom navigation:
+
+- Files.
+- Job.
+- Logs.
+- Settings.
+
+Controls should mostly move to the Top Machine Drawer. A separate Controls view may exist as a
+secondary convenience, but it should not be the main way to reach urgent controls.
+
+## 2026-06-22 SD UI Refactor Status
+
+The SD-hosted `/www` UI now follows this direction without new firmware movement behavior:
+
+- `/` opens to Files first when no current job is selected.
+- Opening a G-code file stores a browser-side current job pointer and switches to Current Job.
+- Current Job shows job metadata, work/Z zero status, warnings, dry-run status, arm state, and one
+  next action.
+- Current Job also shows active work/Z zero timestamps from `zeroHistory`, the latest
+  `runHistory` state, and a stopped/interrupted badge when the last run did not complete.
+- Preview / Job setup includes Zero History and Run History panels. Selecting a previous zero is
+  metadata-only: it does not move the CNC and does not send `G92`.
+- Stopped/interrupted runs show a future recovery placeholder only. Resume execution is not
+  implemented in this workflow pass.
+- Logs are promoted to a bottom-nav view and use the existing `/api/marlin/log` endpoint when
+  available.
+- Machine controls live in the shared top Machine Bar / Drawer on `/`, `/files`, and preview pages.
+- Goto Work Zero remains disabled/TODO because there is no bounded safe firmware API for it yet.
+- Placement / Origin controls on full preview define the intended active run. If placement differs
+  from identity/default, Start Job uses the validated generated run path, not the original source.
+
+This pass intentionally does not implement resume/recovery logic or joystick behavior changes.

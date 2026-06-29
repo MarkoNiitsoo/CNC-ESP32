@@ -54,6 +54,9 @@ or job runner functionality.
   - Runs in `loop()` with one command in flight and waits for Marlin `ok` before sending the next
     cleaned line.
   - Provides start, status, pause, resume, and stop API endpoints for the browser UI.
+  - Keeps normal file streaming separate from priority controls such as Pause, Stop, M5, and
+    feed override.
+  - Captures recent Marlin commands/responses in a bounded log for global UI visibility.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, short relative movement ticks, and

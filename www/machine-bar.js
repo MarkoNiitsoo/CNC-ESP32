@@ -5,12 +5,17 @@
     position: { x: null, y: null, z: null },
     drawerOpen: false,
     lastMessage: '',
+    marlinLog: { entries: [], lastCritical: null },
   };
 
   const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
   const PAUSED_STATES = new Set(['PAUSED']);
   const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'COMPLETED', 'ERROR']);
+
+  window.LowRiderMachineBar = {
+    lastCritical: () => STATE.marlinLog?.lastCritical || '',
+  };
 
   function el(id) {
     return document.getElementById(id);
@@ -109,6 +114,16 @@
     }
   }
 
+  async function terminalSend(cmd) {
+    const trimmed = String(cmd || '').trim();
+    if (!trimmed) return;
+    const upper = trimmed.toUpperCase();
+    if ((upper === 'G92 Z0' || upper === 'G92 X0 Y0 Z0') && !confirm(`${upper} changes the active work zero. Continue?`)) {
+      return;
+    }
+    await sendCmd(trimmed);
+  }
+
   async function setFeedOverride(percent) {
     const value = Math.max(10, Math.min(200, Math.round(Number(percent) || 100)));
     if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
@@ -149,6 +164,21 @@
       if (!res.ok) throw new Error(STATE.job.error || 'job status failed');
     } catch (err) {
       STATE.job = { state: 'UNKNOWN', lastError: err.message };
+    }
+    render();
+  }
+
+  async function refreshMarlinLog() {
+    try {
+      const res = await fetch('/api/marlin/log');
+      const data = await readJson(res);
+      if (!res.ok || data.ok === false) throw new Error(data.error || 'Marlin log failed');
+      STATE.marlinLog = {
+        entries: Array.isArray(data.entries) ? data.entries.slice(-20) : [],
+        lastCritical: data.lastCritical || null,
+      };
+    } catch (err) {
+      STATE.marlinLog = { entries: [], lastCritical: `Marlin log unavailable: ${err.message}` };
     }
     render();
   }
@@ -263,8 +293,15 @@
     const drawerXyzEl = el('mb-drawer-xyz');
     const feedEl = el('mb-feed');
     const warningEl = el('mb-warning');
+    const marlinLastEl = el('mb-marlin-last');
+    const marlinCriticalEl = el('mb-marlin-critical');
+    const marlinLogEl = el('mb-marlin-log');
+    const drawerStateEl = el('mb-drawer-state');
+    const drawerFeedEl = el('mb-drawer-feed');
     const xyzText = `X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`;
     const feed = feedPercent();
+    const entries = STATE.marlinLog?.entries || [];
+    const lastEntry = entries.length ? entries[entries.length - 1] : null;
 
     if (stateEl) {
       stateEl.textContent = state;
@@ -278,6 +315,33 @@
       feedEl.classList.toggle('caution', feed > 125);
     }
     if (warningEl) warningEl.hidden = state !== 'UNKNOWN';
+    if (drawerStateEl) drawerStateEl.textContent = state;
+    if (drawerFeedEl) drawerFeedEl.textContent = `${feed}%`;
+    if (marlinLastEl) {
+      marlinLastEl.textContent = lastEntry
+        ? `${lastEntry.direction === 'tx' ? '->' : '<-'} ${lastEntry.text || ''}`.trim()
+        : 'No Marlin messages yet.';
+    }
+    if (marlinCriticalEl) {
+      marlinCriticalEl.hidden = !STATE.marlinLog?.lastCritical;
+      marlinCriticalEl.textContent = STATE.marlinLog?.lastCritical
+        ? `Warning: ${STATE.marlinLog.lastCritical}`
+        : '';
+    }
+    if (marlinLogEl) {
+      marlinLogEl.textContent = entries.length
+        ? entries.map((entry) => {
+          const prefix = entry.level === 'error' || entry.level === 'warning'
+            ? '!'
+            : entry.direction === 'tx'
+              ? '->'
+              : '<-';
+          const tag = entry.priority ? ' priority' : '';
+          return `${entry.time || '-'} ${prefix}${tag} ${entry.text || ''}`;
+        }).join('\n')
+        : 'No recent Marlin log entries.';
+      marlinLogEl.scrollTop = marlinLogEl.scrollHeight;
+    }
 
     setDisabled('mb-pause', !(running || isUnknown()));
     setDisabled('mb-resume', !(paused || isUnknown()));
@@ -294,7 +358,8 @@
 
     const disableHoming = !canSetup();
     setDisabled('mb-m119', disableHoming);
-    setDisabled('mb-home-xy', disableHoming);
+    setDisabled('mb-home-x', disableHoming);
+    setDisabled('mb-home-y', disableHoming);
     setDisabled('mb-home-z', disableHoming);
     setDisabled('mb-home-all', disableHoming);
   }
@@ -320,19 +385,21 @@
         <div class="machine-drawer-head">
           <div>
             <strong>Machine</strong>
+            <p><span id="mb-drawer-state">UNKNOWN</span> | Feed <span id="mb-drawer-feed">100%</span></p>
             <p id="mb-warning" class="warning" hidden>Machine/job state is unknown.</p>
           </div>
           <button id="mb-close" type="button">Close</button>
+          <div class="machine-drawer-grid machine-drawer-sticky-actions">
+            <button id="mb-drawer-pause" class="machine-warn" type="button">Pause</button>
+            <button id="mb-drawer-resume" type="button">Resume</button>
+            <button id="mb-drawer-stop" class="machine-danger" type="button">Stop</button>
+            <button id="mb-drawer-m5" class="machine-danger-dark" type="button">M5</button>
+          </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Job Safety</h2>
           <p class="warning">Software stop is not a physical emergency stop.</p>
-          <div class="machine-drawer-grid">
-            <button id="mb-drawer-pause" class="machine-warn" type="button">Pause Job</button>
-            <button id="mb-drawer-resume" type="button">Resume Job</button>
-            <button id="mb-drawer-stop" class="machine-danger" type="button">Stop Job</button>
-            <button id="mb-drawer-m5" class="machine-danger-dark" type="button">M5 Off</button>
-          </div>
+          <p>Use the physical emergency stop for real emergencies. The buttons above ask firmware/Marlin to pause, stop, or turn output off.</p>
         </div>
         <div class="machine-drawer-card">
           <h2>Feed Override</h2>
@@ -344,9 +411,26 @@
             <button type="button" data-mb-feed="100">100%</button>
             <button type="button" data-mb-feed="125">125%</button>
             <button type="button" data-mb-feed="150" class="machine-warn">150%</button>
+            <button type="button" data-mb-feed-delta="-1">-1%</button>
+            <button type="button" data-mb-feed-delta="1">+1%</button>
             <button type="button" data-mb-feed-delta="-10">-10%</button>
             <button type="button" data-mb-feed-delta="10">+10%</button>
           </div>
+        </div>
+        <div class="machine-drawer-card">
+          <h2>Joystick</h2>
+          <p class="warning">TODO: joystick controls stay disabled in this refactor. No joystick behavior changed.</p>
+          <div class="machine-drawer-grid">
+            <button type="button" disabled>XY Jog</button>
+            <button type="button" disabled>Z Jog</button>
+          </div>
+        </div>
+        <div class="machine-drawer-card">
+          <h2>Marlin Messages</h2>
+          <p id="mb-marlin-last">No Marlin messages yet.</p>
+          <p id="mb-marlin-critical" class="warning" hidden></p>
+          <pre id="mb-marlin-log" class="log">No recent Marlin log entries.</pre>
+          <a class="maintenance-link" href="/#logs">Open Full Logs</a>
         </div>
         <div class="machine-drawer-card">
           <h2>Position</h2>
@@ -369,10 +453,38 @@
           <p class="warning">Homing moves the machine toward endstops. Run M119 first if unsure.</p>
           <div class="machine-drawer-grid">
             <button id="mb-m119" type="button">M119 Endstops</button>
-            <button id="mb-home-xy" type="button">Home X/Y</button>
+            <button id="mb-home-x" type="button">Home X</button>
+            <button id="mb-home-y" type="button">Home Y</button>
             <button id="mb-home-z" type="button">Home Z</button>
             <button id="mb-home-all" class="machine-danger" type="button">Home All</button>
           </div>
+        </div>
+        <div class="machine-drawer-card">
+          <h2>Go To Work Zero</h2>
+          <p class="warning">TODO: disabled until firmware exposes a bounded, safe go-to-zero API.</p>
+          <div class="machine-drawer-grid">
+            <button type="button" disabled>X0</button>
+            <button type="button" disabled>Y0</button>
+            <button type="button" disabled>Z0</button>
+            <button type="button" disabled>XY0</button>
+          </div>
+        </div>
+        <div class="machine-drawer-card">
+          <h2>Terminal</h2>
+          <div class="drawer-terminal-row">
+            <input id="mb-terminal-cmd" type="text" inputmode="text" autocomplete="off" placeholder="M114">
+            <button id="mb-terminal-send" type="button">Send</button>
+          </div>
+          <div class="machine-drawer-grid">
+            <button type="button" data-mb-terminal="M114">M114</button>
+            <button type="button" data-mb-terminal="M119">M119</button>
+            <button type="button" data-mb-terminal="M115">M115</button>
+            <button type="button" data-mb-terminal="M400">M400</button>
+            <button type="button" data-mb-terminal="M5">M5</button>
+            <button type="button" data-mb-terminal="G92 Z0">G92 Z0</button>
+            <button type="button" data-mb-terminal="G92 X0 Y0 Z0">G92 XYZ0</button>
+          </div>
+          <a class="maintenance-link" href="https://marlinfw.org/docs/gcode/G000-G001.html" target="_blank" rel="noopener">Marlin G-code reference</a>
         </div>
         <p id="mb-status" class="machine-drawer-status"></p>
       </aside>
@@ -413,9 +525,28 @@
     button('mb-capture-work-zero', captureAndSetWorkZero);
     button('mb-capture-z-zero', captureAndSetZZero);
     button('mb-m119', () => sendCmd('M119'));
-    button('mb-home-xy', () => home('G28 X Y', 'This will move the CNC toward endstops.'));
+    button('mb-home-x', () => home('G28 X', 'This will move the CNC X axis toward its endstop. Keep your hand near the physical emergency stop.'));
+    button('mb-home-y', () => home('G28 Y', 'This will move the CNC Y axis toward its endstop. Keep your hand near the physical emergency stop.'));
     button('mb-home-z', () => home('G28 Z', 'This will move the CNC toward endstops.'));
     button('mb-home-all', () => home('G28', 'HOME ALL AXES: This moves X/Y/Z. Make sure endstops are connected and machine is clear.'));
+    button('mb-terminal-send', () => terminalSend(el('mb-terminal-cmd')?.value));
+    el('mb-terminal-cmd')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        terminalSend(event.currentTarget.value).catch((err) => {
+          setMessage(err.message || String(err));
+          render();
+        });
+      }
+    });
+    document.querySelectorAll('[data-mb-terminal]').forEach((item) => {
+      item.addEventListener('click', () => {
+        terminalSend(item.dataset.mbTerminal).catch((err) => {
+          setMessage(err.message || String(err));
+          render();
+        });
+      });
+    });
 
     setInterval(() => {
       if (!document.hidden) refreshJobStatus();
@@ -423,15 +554,20 @@
     setInterval(() => {
       if (!document.hidden) refreshHealth();
     }, 5000);
+    setInterval(() => {
+      if (!document.hidden) refreshMarlinLog();
+    }, 2500);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
         refreshJobStatus();
         refreshHealth();
+        refreshMarlinLog();
       }
     });
 
     refreshJobStatus();
     refreshHealth();
+    refreshMarlinLog();
     render();
   }
 

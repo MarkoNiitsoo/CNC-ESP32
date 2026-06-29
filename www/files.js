@@ -12,7 +12,10 @@ const pathTree = document.querySelector('#path-tree');
 const closePathPicker = document.querySelector('#close-path-picker');
 
 let currentPath = '/gcode';
+let activeItemPath = '';
+let fileMetaByPath = new Map();
 const allowedRoots = ['/gcode', '/www', '/firmware', '/jobs', '/logs'];
+const currentJobKey = 'lowrider.currentJob';
 
 function parentPath(path) {
   const index = path.lastIndexOf('/');
@@ -132,8 +135,48 @@ function formatBytes(value) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatMinutes(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value < 60) return `~${Math.max(1, Math.round(value))} sec`;
+  return `~${Math.max(1, Math.round(value / 60))} min`;
+}
+
 function canPreview(item) {
   return item.type === 'file' && /\.(gcode|gc|nc|tap)$/i.test(item.name);
+}
+
+function jobPathFor(gcodePath) {
+  return `/jobs/${basename(gcodePath)}.job.json`;
+}
+
+function saveCurrentJob(gcodePath) {
+  localStorage.setItem(currentJobKey, JSON.stringify({
+    gcodePath,
+    jobPath: jobPathFor(gcodePath),
+  }));
+}
+
+async function loadFileMeta(item) {
+  if (!canPreview(item)) return null;
+  try {
+    const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(item.path))}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    return null;
+  }
+}
+
+function fileBadges(item, meta) {
+  const badges = [];
+  if (meta) badges.push('has job');
+  if (meta?.preview) badges.push('preview');
+  const warnings = Number(meta?.preview?.warnings?.length || 0);
+  if (warnings) badges.push(`${warnings} warnings`);
+  const estimate = formatMinutes(meta?.preview?.estimate?.effectiveSecondsWithOverride || meta?.preview?.estimate?.nominalSeconds);
+  if (estimate) badges.push(estimate);
+  return badges.map((badge) => `<span class="status-badge">${html(badge)}</span>`).join('');
 }
 
 async function refreshStatus() {
@@ -170,31 +213,59 @@ function renderList(items) {
   }
 
   items.forEach((item) => {
+    const itemMeta = fileMetaByPath.get(item.path) || null;
     const row = document.createElement('div');
-    row.className = 'file-row';
+    row.className = 'file-row compact-row';
+    row.classList.toggle('expanded', item.path === activeItemPath);
 
     const name = document.createElement('button');
     name.type = 'button';
-    name.className = 'file-name';
-    name.textContent = item.type === 'dir' ? `${item.name}/` : item.name;
-    if (item.type === 'dir') {
-      name.addEventListener('click', () => loadPath(item.path));
-    } else {
-      name.disabled = true;
-    }
+    name.className = 'file-name file-main';
+    name.innerHTML = `
+      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(itemMeta.thumbnailPath)}" alt="">` : `<span class="thumb-placeholder">${item.type === 'dir' ? 'DIR' : canPreview(item) ? 'GC' : 'FILE'}</span>`}
+      <span>
+        <strong>${html(item.type === 'dir' ? `${item.name}/` : item.name)}</strong>
+        <small>${item.type === 'file' ? formatBytes(item.size) : 'folder'}</small>
+        <span class="badge-row">${fileBadges(item, itemMeta)}</span>
+      </span>
+    `;
+    name.addEventListener('click', () => {
+      if (item.type === 'dir') {
+        loadPath(item.path);
+        return;
+      }
+      activeItemPath = activeItemPath === item.path ? '' : item.path;
+      renderList(items);
+    });
 
     const meta = document.createElement('span');
     meta.className = 'file-meta';
-    meta.textContent = item.type === 'file' ? formatBytes(item.size) : 'folder';
+    meta.textContent = item.type === 'file' ? 'Select' : 'Open';
+    meta.addEventListener('click', () => {
+      if (item.type === 'dir') {
+        loadPath(item.path);
+      } else if (canPreview(item)) {
+        saveCurrentJob(item.path);
+        window.location.href = '/#job';
+      } else {
+        activeItemPath = activeItemPath === item.path ? '' : item.path;
+        renderList(items);
+      }
+    });
 
     const actions = document.createElement('div');
     actions.className = 'file-actions';
+    actions.hidden = item.path !== activeItemPath;
 
     if (canPreview(item)) {
+      actions.append(rowButton('Open Job', () => {
+        saveCurrentJob(item.path);
+        window.location.href = '/#job';
+      }));
       const preview = document.createElement('a');
       preview.className = 'maintenance-link';
       preview.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
-      preview.textContent = 'Preview';
+      preview.textContent = 'Full Preview';
       actions.append(preview);
     }
 
@@ -229,7 +300,11 @@ async function loadPath(path) {
     listEl.textContent = data.error || 'Could not list files';
     return;
   }
-
+  fileMetaByPath = new Map();
+  await Promise.all((data.items || []).map(async (item) => {
+    const meta = await loadFileMeta(item);
+    if (meta) fileMetaByPath.set(item.path, meta);
+  }));
   renderList(data.items || []);
 }
 

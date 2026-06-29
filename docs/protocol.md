@@ -171,22 +171,33 @@ Request body:
 {
   "gcodePath": "/gcode/test.gcode",
   "jobPath": "/jobs/test.gcode.job.json",
-  "startMode": "apply_current_position_as_work_zero"
+  "activeRunMode": "source",
+  "startMode": "apply_current_position_as_work_zero",
+  "safeStartZ": 15
 }
 ```
 
-The firmware rejects unsafe paths, missing files, non-`/gcode` G-code paths, non-`/jobs` job paths,
-and job JSON that is not marked `ARMED`. The MVP verifies `ARMED` with a minimal string check; robust
-JSON parsing is a TODO. The default `startMode` is `apply_current_position_as_work_zero`.
+The firmware rejects unsafe paths, missing files, non-`/jobs` job paths, and job JSON that is not
+marked `ARMED`. Normal source jobs must use a `gcodePath` under `/gcode`. Generated transformed jobs
+may use `/jobs/generated/...` only when `activeRunMode` is `"generated"` and the saved job JSON
+contains the same path as a validated active run. The browser sets generated active-run intent when
+the operator changes visible placement; there is no separate generated-file confirmation step in the
+normal workflow. The MVP verifies `ARMED` and generated active-run
+provenance with minimal string checks; robust JSON parsing is a TODO. The default `startMode` is
+`apply_current_position_as_work_zero`.
 
 Before streaming, the firmware sends this preamble:
 
 - `apply_current_position_as_work_zero`:
-  `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`, `G92 X0 Y0 Z0`, `M114`
+  `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`, `G92 X0 Y0 Z0`, `M114`,
+  `G0 Z<safeStartZ> F400`, `M400`
 - `use_active_work_zero`:
-  `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`
+  `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`,
+  `G0 Z<safeStartZ> F400`, `M400`
 
 `startPercent` is read from job JSON `feedOverride.startPercent` and defaults to `100`.
+`safeStartZ` is a positive work-coordinate Z height before the first streamed file line and defaults
+to `15` when omitted.
 
 During streaming, `G54` is allowed and logged as informational. `G55`, `G56`, `G57`, `G58`, `G59`,
 `G59.1`, `G59.2`, and `G59.3` are blocked unless the job JSON contains
@@ -199,7 +210,8 @@ last command/response, and last error. Priority fields include `pauseRequested`,
 `priorityCommandInProgress`, `lastPriorityCommand`, `lastPriorityResponse`, `lastPriorityError`,
 `streamingPausedReason`, and `currentLineNumber`. Feed override fields include
 `feedOverridePercent`, `lastFeedOverrideCommand`, `lastFeedOverrideResponse`, and
-`lastFeedOverrideError`.
+`lastFeedOverrideError`. Compatibility aliases `lastSentCommand` and `lastMarlinResponse` mirror
+the latest streamed command and response.
 
 ### `POST /api/job/feed-override`
 
@@ -255,7 +267,44 @@ priority sequence completes. This is not a physical emergency stop.
 Priority controls are separate from normal file streaming. Normal streaming sends one cleaned
 G-code file line at a time and waits for Marlin `ok` before sending the next file line. Pause, Stop,
 and manual `M5` during active job states do not wait behind queued file lines; they mark the stream
-as stopped/paused first and then use the priority command path.
+as stopped/paused first and then use the priority command path. Manual `M5` is accepted during
+`RUNNING`, `PAUSING`, `PAUSED`, `RESUMING`, `STOPPING`, and `ERROR`. If a lower-priority feed
+override is queued, `M5` may replace it; Stop/Pause/M5 stay above `M220` feed override.
+
+### `GET /api/marlin/log`
+
+Returns a bounded in-memory Marlin command/response log. The log is intentionally limited so it
+cannot grow without bound.
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "entries": [
+    {
+      "time": "123456",
+      "direction": "tx",
+      "priority": true,
+      "text": "M5",
+      "level": "info"
+    },
+    {
+      "time": "123470",
+      "direction": "rx",
+      "priority": true,
+      "text": "ok\n",
+      "level": "info"
+    }
+  ],
+  "lastCritical": null
+}
+```
+
+`direction` is `tx` for commands sent to Marlin and `rx` for Marlin responses. `priority` marks
+priority controls such as Pause/Stop/M5/M220 and safety/jog commands. `level` is `info`,
+`warning`, or `error`; critical strings such as `Error:`, `ALARM`, `kill`, `Printer halted`,
+`endstops hit`, `Resend`, and `timeout` are surfaced through `lastCritical`.
 
 ## Safe Jog API
 

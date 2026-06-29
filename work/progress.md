@@ -358,3 +358,291 @@
     quick short move followed by a pause
   - Z-only jog feedrate is also scaled from the generated Z distance per tick
 - Verified PlatformIO `pio run` succeeds after the jog feedrate smoothing change.
+- Fixed a dangerous Start Job behavior where `use_active_work_zero` could begin streaming without
+  lifting Z first:
+  - firmware metadata is now `0.4.5-safe-start-z`
+  - `/api/job/start` accepts `safeStartZ`, defaulting to `15`
+  - both `apply_current_position_as_work_zero` and `use_active_work_zero` now send
+    `G0 Z<safeStartZ> F400` followed by `M400` before the first streamed G-code file line
+  - Run Job UI exposes a Safe start Z field and sends it with the start request
+  - job JSON now preserves `safeStartZ`
+- Verified `node --check www/preview.js` and PlatformIO `pio run` succeed after the safe-start-Z
+  fix.
+
+## 2026-06-22
+
+- Added planning documentation only; firmware logic, SD-hosted UI files, and `platformio.ini` were
+  not changed for this documentation pass.
+- Created `docs/mobile-job-flow.md` to capture the files-first, next-action mobile workflow, top
+  Machine Drawer direction, Current Job view, Marlin message visibility, and bottom navigation
+  direction.
+- Created `docs/toolpath-model.md` to capture the future browser-side shared parser/model,
+  separate bounds types, placement/origin/rotation behavior, generated run files, arc handling, and
+  approximate time estimation.
+- Created `docs/job-metadata.md` to describe `job.json` as job memory, including source references,
+  preview, placement, feed override, zero history, run history, zero/run relationships, and future
+  resume metadata.
+- Created `docs/safety-testing.md` to define safety-critical test expectations for movement,
+  coordinate zero, job start/resume, feed override, transforms, generated files, logs, and manual
+  hardware testing.
+- Added bounded Marlin message logging in firmware:
+  - firmware metadata is now `0.4.6-priority-log`
+  - commands and responses are recorded as `tx`/`rx`
+  - priority commands are marked in the log
+  - critical Marlin messages such as `Error:`, `ALARM`, `kill`, `Printer halted`, `endstops hit`,
+    `Resend`, and `timeout` populate `lastCritical`
+  - new `GET /api/marlin/log` returns recent log entries without unbounded growth
+- Hardened manual `M5` priority handling so it is accepted during active/error job states and can
+  replace a lower-priority queued feed override.
+- Added `lastSentCommand` and `lastMarlinResponse` aliases to `/api/job/status`.
+- Updated the SD-hosted Machine Bar to show recent Marlin messages and the latest critical message
+  globally in the drawer.
+- Added `docs/manual-tests.md` with priority Pause, Stop, M5, feed override, Marlin log, and safety
+  invariant checks.
+
+## 2026-06-23
+
+- Added the first automated browser-side test package:
+  - added `package.json` and `package-lock.json` with Vitest
+  - added `node_modules/` to `.gitignore`
+  - added pure testable modules `www/lib/gcode-core.mjs` and `www/lib/job-core.mjs`
+  - added G-code fixtures under `test/fixtures`
+  - added Vitest suites under `test/ui`
+- Initial test coverage checks:
+  - G-code comment stripping, modal units, coordinate mode, workspace commands, spindle enable,
+    bounds, and feed command stats
+  - Preflight pass/warning/fail classification for G54, G20, G91, G55, missing work zero, deep Z,
+    and spindle enable
+  - Feed override clamping and effective feed range
+  - Current Job next-action ordering from file choice through Start Cut and live job states
+- Updated `docs/safety-testing.md` with the Vitest command and current automated coverage.
+- Verified `npm.cmd test` passes with 2 test files and 10 tests.
+- Added the shared browser-side ToolpathModel layer:
+  - created `www/lib/toolpath-model.js`
+  - parses G-code into reusable modal state, segments, warnings, unsupported commands, bounds,
+    feed statistics, and approximate estimate data
+  - separates `rawTravelBounds`, `cutBounds`, and `placementBounds`
+  - generates SVG thumbnails without modifying original G-code
+  - merges preview metadata into job JSON without erasing `workZero`, `toolZero`, or `arm`
+  - flags transform-sensitive commands such as `G91`, `G53`, `G55+`, source `G92`, `G18/G19`,
+    cutter compensation, canned cycles, and unknown commands
+- Added upload-time ToolpathModel UI on the SD-hosted root Files / Job Launcher:
+  - selecting a G-code file shows thumbnail, placement bounds, warning count, feed range, and
+    approximate estimated time before upload
+  - after upload, the browser attempts to save `/jobs/thumbs/<file>.svg` and update
+    `/jobs/<file>.job.json` preview metadata through existing SD file APIs
+  - file lists show thumbnail/status badges when job JSON preview metadata exists
+- Added ToolpathModel fixtures and unit tests:
+  - simple square, FreeCAD G54, negative X offset, far parking move, feed values, G2/G3 arcs,
+    G91, and source G92 fixtures
+  - tests cover parser basics, bounds, warnings, feed stats, estimated time, thumbnails, metadata
+    merge, and no generated movement commands
+- Updated `docs/toolpath-model.md`, `docs/job-metadata.md`, `docs/mobile-job-flow.md`, and
+  `docs/safety-testing.md` for the implemented model and limitations.
+- Verified `node --check` passes for `www/app.js`, `www/files.js`, and `www/lib/toolpath-model.js`.
+- Verified `npm.cmd test` passes with 3 test files and 23 tests.
+- Refactored the SD-hosted mobile workflow UI without firmware changes:
+  - `/` is now Files-first when no current job is selected
+  - selecting a G-code file stores a browser-side current job pointer and opens the Current Job view
+  - Current Job shows metadata, preview link, bounds, work/Z zero, warnings, dry-run, arm, feed
+    override, and one next-action button
+  - bottom navigation is now Files, Job, Logs, and Settings
+  - `/files` uses compact tap-to-expand file rows and can set the current job
+  - the shared Machine Drawer has sticky Pause/Resume/Stop/M5 controls, feed override with +/-1 and
+    +/-10 controls, separate Home X/Home Y/Home Z/Home All buttons, a terminal, and disabled/TODO
+    Go To Work Zero buttons until a safe firmware API exists
+  - file row More actions include Rename, Download, View Raw / Details, and Delete where supported
+  - the Machine Drawer shows a disabled/TODO joystick section so no joystick internals changed in
+    this UI refactor
+  - updated `docs/mobile-job-flow.md` with the implemented SD UI status and explicit non-goals
+- Verified `node --check` passes for `www/app.js`, `www/files.js`, and `www/machine-bar.js`; no
+  firmware build or upload is required for this UI-only refactor.
+- Migrated full SD-hosted preview to the shared ToolpathModel layer without firmware changes:
+  - added `www/lib/preview-data-adapter.js`
+  - `www/preview.js` now parses selected G-code with `parseGCodeToToolpath()`
+  - the canvas draws from ToolpathModel-derived segments through the adapter
+  - Summary shows raw travel bounds, cut bounds, placement bounds, feed stats, rapid/cutting
+    distance, and approximate estimated time
+  - Warnings are grouped into workspace, unsupported, transform-sensitive, arc, coordinate, and
+    general categories
+  - negative offsets show a future "Fix Origin / normalize to bounds" placeholder instead of only a
+    generic out-of-bounds warning
+  - preview metadata is saved back to job JSON non-blockingly while preserving work/tool zero,
+    dry-run, arm, feed override, zero history, and run history fields
+- Added `test/ui/preview-data-adapter.test.mjs` for preview summary conversion, metadata merge,
+  warning grouping, negative offset handling, parking move bounds, estimate override, and renderer
+  safety.
+- Verified syntax checks pass for `www/preview.js`, `www/lib/preview-data-adapter.js`,
+  `www/lib/toolpath-model.js`, `www/app.js`, and `www/files.js`.
+- Verified `npm.cmd test` passes with 4 test files and 30 tests.
+- Added browser-side job memory history without firmware changes:
+  - created pure `www/lib/job-history.js` for zero history, active zero IDs, run history, run-state
+    updates, and zero/run status labels
+  - setting Work Zero now keeps existing `workZero` compatibility data and appends a
+    `zeroHistory` entry of type `workZero`
+  - setting Tool / Z Zero now keeps existing `toolZero` compatibility data and appends a
+    `zeroHistory` entry of type `zZero`
+  - starting a job records a `runHistory` entry before `/api/job/start`, links it to active work/Z
+    zero IDs, and appends the run ID to each zero's `usedByRuns`
+  - observed completed/stopped/error status and Stop actions update the latest run entry when the
+    current APIs expose enough lifecycle information
+  - Preview / Job setup now has Zero History and Run History panels with metadata-only active-zero
+    selection, details, labels, and future resume placeholders
+  - Current Job now shows active zero timestamps and latest run state, with stopped/interrupted
+    next-action hints
+- Added `test/ui/job-history.test.mjs` for zero history append, active zero selection, run history,
+  merge safety, display categorization, and metadata-only selection behavior.
+- Updated job metadata, mobile workflow, and safety testing docs for zero/run history.
+- Verified `node --check` passes for `www/preview.js`, `www/app.js`, and `www/lib/job-history.js`.
+- Verified `npm.cmd test` passes with 5 test files and 35 tests.
+- Added browser-side placement transform and inspection-only generated run files without firmware
+  changes:
+  - created pure `www/lib/toolpath-transform.js` for arbitrary-angle rotation, origin
+    normalization, cut/raw bounds selection, transform safety checks, `.run.gc` generation, and
+    placement metadata merge
+  - added Preview / Job Placement / Origin controls for rotation angle, -90/-10/-1/+1/+10/+90
+    steps, origin anchor, placement bounds mode, normalize-to-origin, Preview Transform, Generate
+    Run File, and Reset Placement
+  - transformed preview overlay renders on the existing preview canvas for inspection
+  - generated run files are uploaded to `/jobs/generated/<safe-original-name>.run.gc` and labelled
+    inspection-only
+  - job JSON stores `placement`, `generatedRunPath`, `generatedRunBounds`, `sourceFingerprint`, and
+    `transformFingerprint` only after generated file upload succeeds
+  - generation blocks transform-unsafe commands including `G91`, `G53`, source `G92`, `G55+`,
+    `G18/G19`, cutter compensation, and canned cycles
+  - original `/gcode` files remain unchanged and Start Job does not automatically use
+    `generatedRunPath`
+- Added `test/ui/toolpath-transform.test.mjs` plus `g55-unsupported.gc` and
+  `rotated-rectangle.gc` fixtures for transform math, normalization, generated G-code safety,
+  unsupported-command blocking, arc-to-line generation, and metadata merge safety.
+- Updated toolpath model, job metadata, mobile workflow, and safety testing docs for placement
+  generation and inspection-only limitations.
+- Verified `node --check` passes for `www/preview.js`, `www/app.js`, `www/files.js`,
+  `www/lib/toolpath-model.js`, `www/lib/preview-data-adapter.js`, `www/lib/job-history.js`, and
+  `www/lib/toolpath-transform.js`.
+- Verified `npm.cmd test` passes with 6 test files and 48 tests.
+- Added explicit active run file selection for generated `.run.gc` files:
+  - created `www/lib/job-active-run.js` for source/generated active-run metadata, generated file
+    validation, stale fingerprint detection, and arm/dry-run invalidation
+  - added `Use Generated Run File` and `Use Original Source File` controls to the preview Placement
+    panel
+  - generated files remain unselected by default; selecting generated requires a valid generated
+    validation result and user confirmation
+  - full preview, Preflight, Dry Run, Arm, and Start Job now use `activeRun.path`
+  - switching source/generated marks existing ARMED jobs stale and marks dry-run results stale
+  - job JSON now records `sourceGcodePath`, `activeRun`, and `generatedValidation`
+  - run history records active run mode/path and provenance fingerprints
+- Added minimal firmware support for explicit generated run starts:
+  - firmware metadata is now `0.4.7-active-run`
+  - `/api/job/start` still allows normal source jobs under `/gcode`
+  - `/api/job/start` allows `/jobs/generated/...` only when `activeRunMode` is `generated` and the
+    ARMED job JSON contains the same path as a validated active generated run
+  - firmware continues to reject other job start paths
+- Updated `docs/protocol.md`, `docs/job-metadata.md`, `docs/toolpath-model.md`, and
+  `docs/safety-testing.md` for active run selection and generated start validation.
+- Added/updated Vitest coverage for generated active-run selection and run-history active-run
+  provenance.
+- Verified `node --check` passes for `www/preview.js`, `www/lib/job-active-run.js`, and
+  `www/lib/job-history.js`.
+- Verified `npm.cmd test` passes with 7 test files and 56 tests.
+- Verified PlatformIO firmware build succeeds for `0.4.7-active-run`.
+- Corrected generated placement UX so user placement changes are treated as operator intent:
+  - placement changes now mark `activeRun.mode = "generated"` and make `/jobs/generated/*.run.gc`
+    the required active run file
+  - there is no extra normal-workflow `Use Generated File` confirmation step
+  - generated run files are auto-updated with debounce where practical, and the manual button is now
+    `Update Run File`
+  - missing, pending, stale, or invalid generated files block Dry Run, Arm, and Start Job instead of
+    falling back to the original source file
+  - `Reset Placement / Use Original` is the explicit way back to source mode
+  - dashboard next-action logic now shows `Update Run File` before zero/dry-run/arm/start when
+    generated output is stale
+  - generated run file comments no longer call the file inspection-only
+- Updated `docs/job-metadata.md`, `docs/toolpath-model.md`, `docs/mobile-job-flow.md`,
+  `docs/protocol.md`, and `docs/safety-testing.md` for the new visible-preview-is-intent model.
+- Updated Vitest coverage for placement-generated intent, dirty placement, generated validation,
+  reset-to-source behavior, and next-action `Update Run File`.
+- Verified all requested JavaScript syntax checks pass.
+- Verified `npm.cmd test` passes with 7 test files and 57 tests.
+- Clarified generated placement bounds warnings without firmware changes:
+  - Placement panel now distinguishes selected placement bounds from full generated run bounds
+  - a fitted detail no longer shows the misleading `Generated bounds exceed configured LowRider work area`
+    message just because full generated output contains a small negative travel/lead-in move
+  - full-run travel or lead-in outside placement bounds is still shown as a clearance warning
+  - generated run validation receives the visible placement bounds and stores the same clearer warning
+- Added Vitest coverage for a generated file with negative lead-in outside otherwise valid placement
+  bounds.
+- Verified `node --check www/preview.js`, `node --check www/lib/job-active-run.js`, and
+  `npm.cmd test` pass with 7 test files and 58 tests.
+- Hardened activeRun/generated execution workflow without firmware changes:
+  - added pure active-run helpers for source path, active run, execution path, generated requirement,
+    generated usability, active fingerprint, stale marking, and execution assertions
+  - old source-only job JSON now derives source-mode active run metadata while preserving existing
+    work zero, tool zero, dry-run, arm, and history fields
+  - Preflight, Dry Run, Arm, Start, Current Job, next-action logic, and Run History now share the
+    same active-run execution invariant
+  - transformed placement with missing, stale, pending, or invalid generated output blocks execution
+    with `Update Run File` instead of falling back to the original source
+  - Arm stores active run mode/path/fingerprint plus source/generated/transform fingerprints
+  - Start Job sends the exact `activeRun.path` and includes active-run fingerprint fields in the
+    request body for compatibility/audit
+  - Dry Run metadata records the active run identity so stale dry-run state can be detected
+  - Run History records `activeRunFingerprint` in addition to mode/path/provenance
+- Updated job metadata, toolpath model, mobile flow, and safety testing docs for the activeRun
+  execution truth model.
+- Verified all requested `node --check` commands pass.
+- Verified `npm.cmd test` passes with 7 test files and 62 tests.
+- Started Job Readiness / Next Action workflow without firmware changes:
+  - added shared `www/lib/job-readiness.js` model for active run, placement, zero, dry-run, arm,
+    run state, blockers, badges, and primary/secondary actions
+  - normalized current job context so source-only or partially loaded job JSON still resolves the
+    selected `/gcode/...` file instead of reporting a false missing-file state
+  - added focused Vitest coverage for source jobs, generated jobs, stale dry-run/arm state, running
+    and paused live states, interrupted runs, badges, blockers, and safety invariants
+  - verified `node --check www/lib/job-readiness.js`, `node --check test/ui/job-readiness.test.mjs`,
+    and `npm.cmd test -- test/ui/job-readiness.test.mjs`
+  - added a compact Job Readiness card to `www/preview.html` and `www/preview.js` showing source
+    file, active run file, placement summary, zero state, dry-run state, arm state, blockers, and
+    one primary next action
+  - readiness primary actions navigate to the exact relevant panel or update the generated run file;
+    no new movement commands or firmware behavior were added
+  - wired dashboard `Current Job` / `Next Action` rendering to the same readiness helper so source
+    vs generated active run, blockers, and primary next action match the preview page
+  - documented the readiness model, primary action priority, generated stale blocking rules,
+    active-run execution truth, and no-resume/no-new-movement boundaries in `docs/mobile-job-flow.md`,
+    `docs/job-metadata.md`, and `docs/safety-testing.md`
+  - verified all requested JavaScript syntax checks pass, including `www/preview.js`, `www/app.js`,
+    `www/files.js`, `www/lib/job-active-run.js`, `www/lib/job-core.mjs`,
+    `www/lib/job-history.js`, `www/lib/toolpath-model.js`, `www/lib/toolpath-transform.js`,
+    `www/lib/preview-data-adapter.js`, and `www/lib/job-readiness.js`
+  - verified `npm.cmd test` passes with 8 test files and 74 tests
+
+## 2026-06-29
+
+- Removed the remaining legacy Preview-page bottom navigation entries for Dashboard and Controls.
+  Preview now uses the same Files, Job, Logs, and Settings navigation as the main SD-hosted UI.
+- Simplified placement to an operator-first workflow:
+  - zero-degree placement always uses the original source G-code
+  - rotating a job automatically uses complete raw travel bounds, lower-left normalization, and a
+    generated run file
+  - removed the bounds, anchor, and normalization choices that could produce a preview/run mismatch
+  - kept the toolpath canvas visible while Setup, Preflight, Dry Run, Arm, and Run panels are open
+  - returning rotation to zero, including loading older zero-degree generated metadata, now switches
+    execution back to the original source file automatically
+- Added real G17 XY arc handling to the shared ToolpathModel:
+  - G2/G3 with I/J or R are interpolated into accurate preview points and bounds
+  - canvas and SVG thumbnails follow the arc instead of drawing a straight chord
+  - transformed generated run files preserve G2/G3 and emit rotated I/J offsets
+  - malformed arc geometry is reported explicitly and falls back to a visible endpoint line
+- Updated job metadata, toolpath model, mobile flow, and safety-testing documentation to match the
+  simplified placement policy and ToolpathModel v2 arc behavior.
+- Added automated coverage for both I/J-offset and R-radius G2/G3 arc geometry.
+- Corrected the R-arc fixture expectation to verify the clockwise arc appears on the positive-Y
+  side for its selected start/end points.
+- Removed dead placement-selector DOM references and the obsolete manual Normalize button after
+  normalization became automatic for rotated jobs.
+- Final verification passed:
+  - all changed JavaScript files pass `node --check`
+  - `npm.cmd test` passes with 8 test files and 75 tests
+  - no legacy Dashboard/Controls HTML navigation or removed placement selector IDs remain
+  - `git diff --check` reports no patch whitespace errors

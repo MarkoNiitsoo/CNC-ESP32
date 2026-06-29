@@ -323,3 +323,424 @@ Safe Jog feed smoothing follow-up: firmware now scales jog feedrate from the act
 distance per 150 ms tick. Partial joystick deflection should therefore move for roughly the full
 tick instead of making a fast short move and waiting. This is a firmware behavior change, so it
 requires flashing/WebOTA the current firmware build.
+
+## Safe Start Z
+
+Start Job has been hardened after real-machine testing showed `use_active_work_zero` could begin
+streaming while the tool was still at cutting depth. Firmware metadata is now
+`0.4.5-safe-start-z`. `/api/job/start` accepts `safeStartZ` and both start modes send
+`G0 Z<safeStartZ> F400` plus `M400` before the first streamed file line. `apply_current_position_as_work_zero`
+still applies `G92 X0 Y0 Z0` first; `use_active_work_zero` still does not send `G92`.
+
+The Run Job UI now has a Safe start Z field, defaulting from job JSON `safeStartZ` or dry-run
+`safeZ` and falling back to 15 mm. Upload updated `www/preview.html` and `www/preview.js` to SD
+`/www` after flashing/WebOTA firmware `0.4.5-safe-start-z`.
+
+## Mobile Workflow And Safety Planning Docs
+
+Four planning documents have been added without changing firmware logic, SD-hosted UI files, or
+`platformio.ini`:
+
+- `docs/mobile-job-flow.md`
+- `docs/toolpath-model.md`
+- `docs/job-metadata.md`
+- `docs/safety-testing.md`
+
+These documents define the intended direction for future work: files-first mobile UX, a persistent
+Machine Drawer, Current Job / Next Action flow, browser-owned toolpath parsing and transforms,
+generated run files under `/jobs/generated`, richer `job.json` memory, zero/run history, and
+movement-related testing rules.
+
+Future implementation tasks should treat these docs as product and safety guidance before adding
+more job workflow, transform, resume, or movement features.
+
+## Priority Controls And Marlin Visibility
+
+Firmware metadata is now `0.4.6-priority-log`. Firmware keeps a bounded in-memory Marlin log and
+exposes it at `GET /api/marlin/log`. Log
+entries distinguish `tx` commands, `rx` responses, priority controls, and critical messages. The
+latest critical Marlin text is returned as `lastCritical`.
+
+Manual `M5` is accepted during `RUNNING`, `PAUSING`, `PAUSED`, `RESUMING`, `STOPPING`, and `ERROR`.
+If only a lower-priority feed override is queued, M5 can replace it. Pause and Stop continue to stop
+normal file streaming immediately and use the priority command path.
+
+`/api/job/status` now includes `lastSentCommand` and `lastMarlinResponse` aliases in addition to the
+existing `lastCommand` and `lastResponse` fields.
+
+The SD-hosted Machine Bar drawer now polls `/api/marlin/log` and shows the latest Marlin message,
+latest critical warning, and a recent bounded log. Upload updated `www/machine-bar.js` to SD
+`/www` after flashing/WebOTA the firmware.
+
+`docs/manual-tests.md` contains the current manual/simulated test checklist for Pause, Stop, M5,
+feed override, Marlin log visibility, and safety invariants.
+
+## SD Mobile Workflow Refactor
+
+The SD-hosted `/www` UI has been refactored toward the Files -> Job -> Logs -> Settings phone flow
+without firmware movement changes. Upload updated `www/index.html`, `www/app.js`, `www/files.html`,
+`www/files.js`, `www/machine-bar.js`, and `www/style.css` to SD `/www`.
+
+The root page now opens as a Files / Job Launcher when no current job is stored in browser
+localStorage. Selecting a G-code file stores `lowrider.currentJob`, then the Job view shows current
+file metadata, status, warnings, work/Z zero state, dry-run state, arm state, and a single primary
+next action. The Logs view shows Marlin messages through `/api/marlin/log` when the current firmware
+supports it.
+
+The shared Machine Drawer now keeps Pause, Resume, Stop, and M5 in a sticky drawer header. It also
+has feed override quick controls including +/-1%, separate Home X/Home Y/Home Z/Home All buttons,
+manual terminal quick commands, a disabled/TODO joystick section, and disabled Go To Work Zero
+buttons. Go-to-zero is intentionally disabled until firmware exposes a bounded safe API for that
+behavior. Joystick internals were not changed in this pass.
+
+This pass intentionally did not implement rotation/origin transforms, generated run files,
+resume/recovery, joystick behavior changes, new firmware endpoints, or PlatformIO changes.
+
+## First Automated Test Package
+
+Vitest is now installed as the first browser-side unit test framework. Use:
+
+```powershell
+npm.cmd test
+```
+
+The first pure logic modules are:
+
+- `www/lib/gcode-core.mjs`
+- `www/lib/job-core.mjs`
+
+The first tests are:
+
+- `test/ui/gcode-core.test.mjs`
+- `test/ui/job-core.test.mjs`
+
+Fixtures live in `test/fixtures`. Current tests cover G-code parser safety basics, G54/G55
+workspace handling, G20/G21, G90/G91, M3/M4 detection, bounds, feed stats, preflight classification,
+feed override math, and Current Job next-action ordering.
+
+Next testing step: move more of the live `www/preview.js` parser/preflight code and `www/app.js`
+next-action logic onto these pure modules so tests exercise the same functions used by the UI.
+
+## Shared ToolpathModel
+
+A shared browser-side ToolpathModel now exists at `www/lib/toolpath-model.js`. It is used by the
+SD-hosted root Files / Job Launcher upload flow and covered by Vitest tests. It parses source
+G-code into reusable modal state, segments, warnings, unsupported commands, raw travel bounds, cut
+bounds, placement bounds, feed statistics, and approximate time estimates.
+
+Upload flow behavior:
+
+- Selecting a G-code file in `/` parses it in the browser before upload.
+- The UI shows an SVG thumbnail, placement bounds, warning count, feed range, and approximate
+  estimated time.
+- After upload, the browser tries to save `/jobs/thumbs/<safe-file-name>.svg`.
+- It also merges preview metadata into `/jobs/<gcode-file>.job.json` through the existing upload
+  API.
+- Existing `workZero`, `toolZero`, `arm`, `dryRun`, and other job setup fields are preserved by the
+  merge helper.
+
+File list behavior:
+
+- The root compact file list and `/files` page show thumbnail/status badges when job JSON preview
+  metadata exists.
+- If thumbnail metadata is missing, the UI keeps the existing placeholder.
+
+Current status:
+
+- Full `www/preview.js` now parses with `ToolpathModel`.
+- `www/lib/preview-data-adapter.js` provides the compatibility shape still needed by existing
+  dry-run, preflight, arm, and runner UI functions.
+- The preview Summary panel shows raw travel bounds, cut bounds, placement bounds, feed stats,
+  rapid/cutting distance, and approximate estimated time.
+- Warning output is grouped by workspace, unsupported commands, transform-sensitive commands, arc
+  approximation, coordinates, and general messages.
+- Preview metadata is saved back to `/jobs/*.job.json` non-blockingly, preserving work/tool zero,
+  dry-run, arm, feed override, zero history, and run history fields.
+
+Remaining limitations:
+
+- No rotation/origin UI was added.
+- No generated transformed run files were written.
+- No resume/recovery behavior was added.
+- No firmware movement behavior changed.
+
+## Zero And Run History
+
+Browser-side job memory history has been added without firmware changes. Upload updated
+`www/preview.html`, `www/preview.js`, `www/preview.css`, `www/app.js`, and `www/lib/job-history.js`
+to SD `/www`.
+
+Behavior:
+
+- Confirmed Work Zero (`G92 X0 Y0 Z0`) still updates the existing `workZero` compatibility field
+  and now appends a `zeroHistory` entry with before/after `M114` data.
+- Confirmed Tool / Z Zero (`G92 Z0`) still updates the existing `toolZero` compatibility field and
+  now appends a `zeroHistory` entry.
+- `activeWorkZeroId` and `activeZZeroId` point at the currently selected history entries.
+- Selecting a previous zero in the Zero History panel is metadata-only. It does not move the CNC
+  and does not send `G92`.
+- Starting a job creates a `runHistory` entry before `/api/job/start`, links active zero IDs, and
+  appends the run ID to each zero's `usedByRuns`.
+- Stop actions and observed terminal `/api/job/status` states update the latest run entry as far as
+  current firmware status data allows.
+
+UI:
+
+- Preview / Job setup now has Zero History and Run History panels.
+- Current Job shows active zero timestamps and the latest run state.
+- Stopped/interrupted runs show review/future-recovery hints only.
+
+Verification passed:
+
+- `node --check www/preview.js`
+- `node --check www/app.js`
+- `node --check www/lib/job-history.js`
+- `npm.cmd test` with 5 test files and 35 tests.
+
+TODO for future recovery:
+
+- Firmware/browser must record richer trusted position and line/byte recovery data.
+- Safe resume must be a separate explicit feature with tested safe-Z motion.
+- Selecting an old zero must remain metadata-only until a separately confirmed restore flow exists.
+
+## Placement Transform And Generated Run Files
+
+Browser-side placement transform support has been added without firmware changes. Upload updated
+`www/preview.html`, `www/preview.js`, `www/preview.css`, and `www/lib/toolpath-transform.js` to SD
+`/www`.
+
+Behavior:
+
+- Preview / Job now includes a Placement / Origin section on the Preview tab.
+- The operator can inspect rotation angle, origin anchor, placement bounds mode, and
+  normalize-to-origin behavior.
+- Cut bounds are the default placement mode when available so parking/travel moves do not distort
+  rotation/origin.
+- Preview Transform draws an overlay on the existing preview canvas.
+- Generate Run File writes `/jobs/generated/<safe-original-name>.run.gc` through existing SD file
+  APIs and then stores placement metadata in job JSON.
+- Generated files include a deterministic comment block, `G21`, `G90`, `G17`, `G54`, transformed
+  `G0/G1` moves, `M5`, and `M400`.
+- Generated files are explicitly inspection-only. Start Job does not automatically use
+  `generatedRunPath` yet.
+- Original files under `/gcode` remain unchanged.
+
+Generation blocks transform-unsafe source commands including `G91`, `G53`, source `G92`, `G55+`,
+`G18/G19`, cutter compensation, and canned cycles. Current `G2/G3` arc segments are emitted as
+`G1` line segments with a warning.
+
+Verification passed:
+
+- `node --check www/preview.js`
+- `node --check www/app.js`
+- `node --check www/files.js`
+- `node --check www/lib/toolpath-model.js`
+- `node --check www/lib/preview-data-adapter.js`
+- `node --check www/lib/job-history.js`
+- `node --check www/lib/toolpath-transform.js`
+- `npm.cmd test` with 6 test files and 48 tests.
+
+TODO before real cutting from generated files:
+
+- Add hardware/manual tests with router off and tool above material.
+- Decide whether generated files need stronger line numbering or provenance logs.
+
+Parser limitations:
+
+- `G2/G3` arcs are marked as approximated for preview/statistics.
+- `cutBounds` use an MVP rule: XY `G1`/arc movement below `Z0` is treated as engaged.
+- `G91`, `G53`, `G55+`, source `G92`, `G18/G19`, cutter compensation, canned cycles, and unknown
+  commands are warnings/unsupported for future transform safety.
+
+Verification passed:
+
+- `node --check www/app.js`
+- `node --check www/files.js`
+- `node --check www/preview.js`
+- `node --check www/lib/preview-data-adapter.js`
+- `node --check www/lib/toolpath-model.js`
+- `npm.cmd test` with 4 test files and 30 tests
+
+## Active Generated Run Selection
+
+Generated `.run.gc` files are now selected by placement intent rather than by a separate
+confirmation step. Upload updated `www/preview.html`, `www/preview.js`, `www/app.js`,
+`www/lib/job-active-run.js`, `www/lib/job-core.mjs`, `www/lib/job-history.js`, and
+`www/lib/toolpath-transform.js` to SD `/www`.
+
+Behavior:
+
+- Identity/default placement uses the original source file under `/gcode`.
+- When the operator changes rotation, origin, bounds mode, or normalize behavior, the visible
+  placement is treated as intent and `activeRun.mode` becomes `generated`.
+- Generated run files are updated automatically with debounce where practical. The manual button is
+  `Update Run File`.
+- Missing, pending, stale, or invalid generated files block Dry Run, Arm, and Start Job. The system
+  must not silently fall back to source while showing transformed placement.
+- `Reset Placement / Use Original` is the explicit way back to the original source file.
+- Switching active source/generated or changing placement marks existing arm state and dry-run
+  results stale.
+- Full Preview, Preflight, Dry Run, Arm, Start Job, and Run History use the selected `activeRun.path`.
+- Run history now records `sourceGcodePath`, `activeRunMode`, `activeRunPath`, and source/generated
+  provenance fingerprints.
+
+Firmware metadata is now `0.4.7-active-run`, so this change also requires flashing/WebOTA. Normal
+source jobs still start only from `/gcode`. Generated jobs may start from `/jobs/generated/...` only
+when the request includes `activeRunMode: "generated"` and the ARMED job JSON contains that same
+validated active generated path. Other start paths remain rejected.
+
+Verification passed:
+
+- `node --check www/preview.js`
+- `node --check www/app.js`
+- `node --check www/files.js`
+- `node --check www/lib/toolpath-model.js`
+- `node --check www/lib/preview-data-adapter.js`
+- `node --check www/lib/job-active-run.js`
+- `node --check www/lib/job-history.js`
+- `node --check www/lib/toolpath-transform.js`
+- `node --check www/lib/job-core.mjs`
+- `npm.cmd test` with 7 test files and 57 tests
+- PlatformIO `pio run` firmware build
+
+## Generated Bounds Warning Clarification
+
+The SD-hosted preview UI now distinguishes the visible selected placement bounds from the full
+generated run bounds. This is important for files that fit on the table but include small negative
+lead-in or travel moves around the selected cut bounds.
+
+Upload updated `www/preview.js` and `www/lib/job-active-run.js` to SD `/www`. No firmware upload is
+required for this clarification.
+
+Behavior:
+
+- If the selected placement bounds exceed the configured LowRider work area, the UI still reports a
+  work-area problem.
+- If the selected placement fits but the full generated file includes travel or lead-in moves
+  outside that placement, the UI now shows a clearance warning instead of saying the generated
+  bounds exceed the LowRider work area.
+- Generated run validation receives the visible placement bounds so saved job JSON warnings use the
+  same clearer wording.
+- `G2/G3` arcs are still emitted as `G1` line segments in generated output and remain visible as a
+  separate warning.
+
+Verification passed:
+
+- `node --check www/preview.js`
+- `node --check www/lib/job-active-run.js`
+- `npm.cmd test` with 7 test files and 58 tests
+
+## ActiveRun Execution Hardening
+
+The active run workflow has been hardened without firmware changes. Upload updated
+`www/preview.js`, `www/app.js`, `www/lib/job-active-run.js`, `www/lib/job-core.mjs`, and
+`www/lib/job-history.js` to SD `/www`. Firmware `0.4.7-active-run` remains compatible; no new
+movement behavior was added.
+
+Behavior:
+
+- `activeRun.path` is the execution truth for Preflight, Dry Run, Arm, Start Job, and Run History.
+- `sourceGcodePath` remains the original uploaded `/gcode/...` file.
+- Identity/default placement uses source mode.
+- Transformed placement requires generated mode under `/jobs/generated/...`.
+- Missing, pending, stale, or invalid generated output blocks execution and makes `Update Run File`
+  the required next action.
+- The UI must not silently fall back to the original source file while showing transformed
+  placement.
+- Older job JSON files with only `gcodePath` derive source-mode `activeRun` metadata without
+  deleting setup or history fields.
+- Arming stores active run mode, path, active fingerprint, source fingerprint, generated
+  fingerprint, and transform fingerprint. If these change, the arm state is stale and the job must
+  be reviewed and re-armed.
+- Dry-run metadata records the active run identity so dry runs can become stale when the run file
+  changes.
+- Run history records `activeRunFingerprint` in addition to active mode/path and generated
+  provenance.
+
+Verification passed:
+
+- `node --check www/preview.js`
+- `node --check www/app.js`
+- `node --check www/files.js`
+- `node --check www/lib/job-active-run.js`
+- `node --check www/lib/job-core.mjs`
+- `node --check www/lib/job-history.js`
+- `node --check www/lib/toolpath-model.js`
+- `node --check www/lib/toolpath-transform.js`
+- `node --check www/lib/preview-data-adapter.js`
+- `npm.cmd test` with 7 test files and 62 tests
+
+## Job Readiness / Next Action In Progress
+
+Work started on a shared `www/lib/job-readiness.js` helper. It derives the active run, blocker list,
+badges, and primary next action from job JSON plus live job status. It is SD UI / JavaScript only;
+firmware has not been changed.
+
+Initial helper tests are in `test/ui/job-readiness.test.mjs` and cover source/generate/stale/live
+state behavior plus the no-movement-command invariant.
+
+`www/preview.html`, `www/preview.js`, and `www/preview.css` now include a compact Job Readiness
+card. It shows source path, active run path, badges, placement, zero/dry-run/arm/run state, blockers,
+and primary/secondary next actions. Actions navigate to existing panels or update the generated run
+file only; no new movement behavior was added.
+
+Dashboard `www/app.js` now uses the same helper for Current Job / Next Action so the first screen and
+preview page agree about active run path, blockers, and the primary next action.
+
+Docs updated:
+
+- `docs/mobile-job-flow.md` describes primary action priority and the visible readiness card.
+- `docs/job-metadata.md` documents the readiness model and generated stale blocking rules.
+- `docs/safety-testing.md` lists the new readiness-helper test coverage and invariants.
+
+Verification passed:
+
+- `node --check www/preview.js`
+- `node --check www/app.js`
+- `node --check www/files.js`
+- `node --check www/lib/job-active-run.js`
+- `node --check www/lib/job-core.mjs`
+- `node --check www/lib/job-history.js`
+- `node --check www/lib/toolpath-model.js`
+- `node --check www/lib/toolpath-transform.js`
+- `node --check www/lib/preview-data-adapter.js`
+- `node --check www/lib/job-readiness.js`
+- `npm.cmd test` with 8 test files and 74 tests
+
+Upload updated SD UI files to `/www`: `app.js`, `style.css`, `preview.html`, `preview.js`,
+`preview.css`, and `lib/job-readiness.js`. Firmware upload is not required.
+
+## Preview Workflow Polish In Progress
+
+- `www/preview.html` now uses the current Files, Job, Logs, and Settings bottom navigation. The
+  legacy Dashboard and Controls links were removed.
+- Placement now has one predictable policy: rotation `0` uses the untouched source file; a non-zero
+  rotation fits and normalizes the complete raw travel path into a generated run file. The bounds,
+  anchor, and normalize selectors were removed from the operator UI.
+- Returning rotation to `0` automatically selects the original source G-code, including when an
+  older job JSON still points at a zero-degree generated run.
+- The preview canvas is always present and sticky across the Job workflow tabs so placement changes
+  remain visible while setup and readiness panels are reviewed.
+- ToolpathModel v2 now resolves G17 G2/G3 geometry from I/J or R, uses interpolated points for
+  preview/bounds/thumbnails, and preserves G2/G3 with transformed I/J offsets in generated run files.
+- `docs/job-metadata.md`, `docs/toolpath-model.md`, `docs/mobile-job-flow.md`, and
+  `docs/safety-testing.md` describe the new behavior.
+- Arc tests cover both common I/J output and R-radius commands.
+- The R-form test explicitly checks clockwise sweep direction as well as radius and interpolation.
+- No legacy placement selectors or non-functional Normalize action remain in the Preview UI.
+
+Verification passed with all requested JavaScript syntax checks and `npm.cmd test` (8 files,
+75 tests). No firmware source was changed for this task.
+
+Upload these updated SD UI files to `/www`:
+
+- `preview.html`
+- `preview.js`
+- `preview.css`
+- `lib/toolpath-model.js`
+- `lib/toolpath-transform.js`
+- `lib/preview-data-adapter.js`
+- `lib/job-active-run.js`
+- `lib/job-readiness.js`
+
+No firmware upload is required.

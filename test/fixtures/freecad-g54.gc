@@ -1,0 +1,15 @@
+; FreeCAD Path style
+(Begin operation)
+G21
+G90
+G17
+G54
+M5
+G0 Z5
+G0 X0 Y0
+G1 Z-1 F300
+G1 X25 Y0 F900
+G1 X25 Y25
+G1 X0 Y25
+G1 X0 Y0
+G0 Z5

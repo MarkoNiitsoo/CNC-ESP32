@@ -34,19 +34,23 @@
 }
 
 .preview-stage {
+  position: sticky;
+  top: 190px;
+  z-index: 8;
   min-height: 360px;
   padding: 0;
   overflow: hidden;
   border: 1px solid #263640;
   border-radius: 6px;
   background: #080b0d;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.42);
 }
 
 #preview-canvas {
   display: block;
   width: 100%;
-  height: min(62vh, 620px);
-  min-height: 340px;
+  height: min(34vh, 420px);
+  min-height: 220px;
 }
 
 .preview-stats dl {
@@ -63,6 +67,26 @@
 .preview-stats dd {
   margin: 0;
   color: #eef3f7;
+}
+
+.warning-group {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.warning-group h3 {
+  margin: 0;
+  color: #cbd8e1;
+  font-size: 0.92rem;
+}
+
+.warning-info {
+  padding: 10px;
+  border: 1px solid rgba(63, 196, 117, 0.22);
+  border-radius: 7px;
+  background: rgba(63, 196, 117, 0.08);
+  color: #b9f7ce;
 }
 
 .job-panel dl,
@@ -90,6 +114,95 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.readiness-panel {
+  gap: 12px;
+}
+
+.readiness-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.readiness-blockers {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #ffd0d0;
+}
+
+.readiness-panel h3 {
+  margin: 12px 0 0;
+  color: #cbd8e1;
+  font-size: 0.92rem;
+}
+
+.readiness-primary .primary-action {
+  min-width: min(100%, 260px);
+}
+
+.compact-actions button {
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+.ok-text {
+  margin: 8px 0 0;
+  color: #b9f7ce;
+}
+
+.ok-badge {
+  color: #b9f7ce;
+  border-color: rgba(63, 196, 117, 0.5);
+}
+
+.fail-badge {
+  color: #ffd0d0;
+  border-color: rgba(255, 86, 86, 0.55);
+}
+
+.history-entry {
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(159, 177, 191, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.active-badge {
+  color: #b9f7ce;
+  border-color: rgba(63, 196, 117, 0.5);
+}
+
+.history-details {
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 10px;
+}
+
+.compact-actions {
+  margin-top: 10px;
+}
+
+.placement-panel input[type="number"] {
+  min-height: 40px;
+}
+
+.placement-panel .dry-run-log {
+  max-height: 180px;
 }
 
 .job-result {
@@ -269,7 +382,13 @@
     top: 176px;
   }
 
+  .preview-stage {
+    top: 226px;
+    min-height: 180px;
+  }
+
   #preview-canvas {
-    height: 52vh;
+    height: 28vh;
+    min-height: 180px;
   }
 }

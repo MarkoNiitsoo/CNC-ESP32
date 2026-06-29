@@ -8,7 +8,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.4.4-safe-jog-restore";
+constexpr const char *firmwareVersion = "0.4.7-active-run";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
@@ -31,7 +31,9 @@ constexpr uint32_t kJogDeadmanMs = 500;
 constexpr uint32_t kJogRestoreDelayMs = 5000;
 constexpr float kJogMaxXyStepMm = 15.0f;
 constexpr float kJogMaxZStepMm = 0.5f;
+constexpr float kJobStartZFeed = 400.0f;
 constexpr size_t kMaxGcodeLineLength = 180;
+constexpr size_t kMarlinLogSize = 40;
 constexpr int kMarlinRxPin = 3;
 constexpr int kMarlinTxPin = 1;
 
@@ -54,6 +56,7 @@ struct JobRunnerStatus {
   String jobPath;
   String startMode = "apply_current_position_as_work_zero";
   bool allowedWorkspaceCommands = false;
+  float safeStartZ = 15.0f;
   size_t fileSize = 0;
   size_t currentByteOffset = 0;
   uint32_t sentLineCount = 0;
@@ -114,6 +117,14 @@ struct JogStatus {
   uint32_t restoreDelayMs = kJogRestoreDelayMs;
 };
 
+struct MarlinLogEntry {
+  uint32_t timeMs = 0;
+  String direction;
+  bool priority = false;
+  String text;
+  String level = "info";
+};
+
 WebServer server(80);
 Preferences wifiPrefs;
 String activeWifiMode = "ap";
@@ -140,6 +151,10 @@ uint8_t priorityCommandCount = 0;
 uint8_t priorityCommandIndex = 0;
 String priorityResponseBuffer;
 uint32_t priorityCommandStartedAtMs = 0;
+MarlinLogEntry marlinLog[kMarlinLogSize];
+size_t marlinLogNext = 0;
+size_t marlinLogCount = 0;
+String lastCriticalMarlinMessage;
 
 String readJobJsonSnippet(const String &jobPath);
 bool jobJsonAllowsWorkspaceCommands(const String &jobPath);
@@ -148,6 +163,41 @@ bool handleWorkspaceCommand(const String &line);
 bool runJobStartPreamble();
 bool responseContainsToken(const String &response, const char *token);
 void resetFeedOverrideAfterJobIfNeeded();
+
+String marlinMessageLevel(String text) {
+  text.toLowerCase();
+  if (text.indexOf("error:") >= 0 || text.indexOf("alarm") >= 0 || text.indexOf("kill") >= 0 ||
+      text.indexOf("printer halted") >= 0 || text.indexOf("endstops hit") >= 0 ||
+      text.indexOf("resend") >= 0 || text.indexOf("timeout") >= 0) {
+    return "error";
+  }
+  if (text.indexOf("busy:") >= 0) {
+    return "info";
+  }
+  return "info";
+}
+
+void addMarlinLog(const String &direction, bool priority, const String &text, const String &level = "") {
+  if (text.length() == 0) {
+    return;
+  }
+
+  MarlinLogEntry &entry = marlinLog[marlinLogNext];
+  entry.timeMs = millis();
+  entry.direction = direction;
+  entry.priority = priority;
+  entry.text = text;
+  entry.level = level.length() > 0 ? level : marlinMessageLevel(text);
+
+  if (entry.level == "error" || entry.level == "warning") {
+    lastCriticalMarlinMessage = entry.text;
+  }
+
+  marlinLogNext = (marlinLogNext + 1) % kMarlinLogSize;
+  if (marlinLogCount < kMarlinLogSize) {
+    marlinLogCount += 1;
+  }
+}
 
 String jsonEscape(const String &value) {
   String out;
@@ -486,7 +536,9 @@ String jobStatusJson() {
   json += jsonEscape(jobStatus.jobPath);
   json += "\",\"startMode\":\"";
   json += jsonEscape(jobStatus.startMode);
-  json += "\",\"allowedWorkspaceCommands\":";
+  json += "\",\"safeStartZ\":";
+  json += String(jobStatus.safeStartZ, 3);
+  json += ",\"allowedWorkspaceCommands\":";
   json += jobStatus.allowedWorkspaceCommands ? "true" : "false";
   json += ",\"fileSize\":";
   json += String(jobStatus.fileSize);
@@ -510,7 +562,11 @@ String jobStatusJson() {
   json += String(jobStatus.feedOverridePercent);
   json += ",\"lastCommand\":\"";
   json += jsonEscape(jobStatus.lastCommand);
+  json += "\",\"lastSentCommand\":\"";
+  json += jsonEscape(jobStatus.lastCommand);
   json += "\",\"lastResponse\":\"";
+  json += jsonEscape(jobStatus.lastResponse);
+  json += "\",\"lastMarlinResponse\":\"";
   json += jsonEscape(jobStatus.lastResponse);
   json += "\",\"lastError\":\"";
   json += jsonEscape(jobStatus.lastError);
@@ -764,7 +820,7 @@ String extractCmdFromJson(const String &body) {
   return cmd;
 }
 
-String readMarlinResponse() {
+String readMarlinResponse(bool priority = false) {
   String response;
   const uint32_t start = millis();
 
@@ -775,10 +831,11 @@ String readMarlinResponse() {
     delay(5);
   }
 
+  addMarlinLog("rx", priority, response);
   return response;
 }
 
-String readMarlinResponseFor(uint32_t timeoutMs) {
+String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
   String response;
   const uint32_t start = millis();
 
@@ -789,6 +846,7 @@ String readMarlinResponseFor(uint32_t timeoutMs) {
     delay(5);
   }
 
+  addMarlinLog("rx", priority, response);
   return response;
 }
 
@@ -800,9 +858,10 @@ void drainMarlinInput() {
 
 void sendMarlinSafetyCommand(const char *cmd) {
   drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
-  readMarlinResponseFor(250);
+  readMarlinResponseFor(250, true);
 }
 
 bool isFeedOverrideCommand(const String &cmd) {
@@ -831,9 +890,10 @@ String feedOverrideCommand(int percent) {
 bool sendFeedOverrideImmediate(int percent) {
   const String cmd = feedOverrideCommand(percent);
   drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
-  const String response = readMarlinResponseFor(250);
+  const String response = readMarlinResponseFor(250, true);
   jobStatus.feedOverridePercent = percent;
   noteFeedOverrideResult(cmd, response);
   logJobEvent("feed override: " + cmd);
@@ -860,6 +920,16 @@ void queuePriorityCommands(const char *first, const char *second = nullptr) {
   jobStatus.lastPriorityError = "";
 }
 
+bool prioritySequenceIsFeedOverrideOnly() {
+  return priorityCommandCount == 1 && isFeedOverrideCommand(priorityCommands[0]);
+}
+
+void queueManualM5Priority() {
+  if (priorityCommandCount == 0 || prioritySequenceIsFeedOverrideOnly()) {
+    queuePriorityCommands("M5");
+  }
+}
+
 void startNextPriorityCommand() {
   if (priorityCommandIndex >= priorityCommandCount) {
     jobStatus.priorityCommandInProgress = false;
@@ -867,6 +937,7 @@ void startNextPriorityCommand() {
   }
 
   const String &cmd = priorityCommands[priorityCommandIndex];
+  addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
   jobStatus.lastPriorityCommand = cmd;
@@ -917,7 +988,8 @@ void processPriorityCommands() {
   }
 
   while (Serial.available() > 0) {
-    priorityResponseBuffer += static_cast<char>(Serial.read());
+    const char c = static_cast<char>(Serial.read());
+    priorityResponseBuffer += c;
   }
 
   if (!jobStatus.priorityCommandInProgress) {
@@ -927,6 +999,7 @@ void processPriorityCommands() {
   }
 
   if (responseContainsToken(priorityResponseBuffer, "Error:")) {
+    addMarlinLog("rx", true, priorityResponseBuffer);
     jobStatus.lastPriorityResponse = priorityResponseBuffer;
     jobStatus.lastPriorityError = "Marlin reported Error for priority command";
     noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer, jobStatus.lastPriorityError);
@@ -945,6 +1018,7 @@ void processPriorityCommands() {
     if (millis() - priorityCommandStartedAtMs > kMarlinTimeoutMs) {
       jobStatus.lastPriorityResponse = priorityResponseBuffer;
       jobStatus.lastPriorityError = "Priority command timed out";
+      addMarlinLog("rx", true, priorityResponseBuffer.length() > 0 ? priorityResponseBuffer : "timeout", "error");
       noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer, jobStatus.lastPriorityError);
       clearPriorityCommands();
       if (jobStatus.state == JobRunnerState::Pausing || jobStatus.state == JobRunnerState::Stopping) {
@@ -959,6 +1033,7 @@ void processPriorityCommands() {
   }
 
   jobStatus.lastPriorityResponse = priorityResponseBuffer;
+  addMarlinLog("rx", true, priorityResponseBuffer);
   noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer);
   priorityCommandIndex += 1;
   jobStatus.priorityCommandInProgress = false;
@@ -975,18 +1050,20 @@ void processPriorityCommands() {
 
 void sendJogCommand(const String &cmd) {
   drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  readMarlinResponseFor(80);
+  readMarlinResponseFor(80, true);
 }
 
 String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
   drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  return readMarlinResponseFor(timeoutMs);
+  return readMarlinResponseFor(timeoutMs, true);
 }
 
 bool parseAxisFromM114(const String &response, char axis, float &value) {
@@ -1163,10 +1240,11 @@ void processJogRunner() {
   cmd += "\nG90";
 
   drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  readMarlinResponseFor(60);
+  readMarlinResponseFor(60, true);
   jogStatus.lastTickMs = now;
 }
 
@@ -1359,11 +1437,13 @@ void processJobRunner() {
   if (jobWaitingForOk) {
     if (responseContainsToken(jobResponseBuffer, "Error:")) {
       jobStatus.lastResponse = jobResponseBuffer;
+      addMarlinLog("rx", false, jobResponseBuffer);
       setJobError("Marlin reported Error");
       return;
     }
     if (responseContainsToken(jobResponseBuffer, "Resend:")) {
       jobStatus.lastResponse = jobResponseBuffer;
+      addMarlinLog("rx", false, jobResponseBuffer);
       setJobError("Marlin requested Resend; TODO: add line-numbered resend support");
       return;
     }
@@ -1373,6 +1453,7 @@ void processJobRunner() {
 
     jobStatus.acknowledgedLineCount += 1;
     jobStatus.lastResponse = jobResponseBuffer;
+    addMarlinLog("rx", false, jobResponseBuffer);
     jobResponseBuffer = "";
     jobWaitingForOk = false;
     touchJobStatus();
@@ -1402,6 +1483,7 @@ void processJobRunner() {
 
   jobStatus.lastCommand = line;
   jobResponseBuffer = "";
+  addMarlinLog("tx", false, line);
   Serial.print(line);
   Serial.print('\n');
   jobStatus.sentLineCount += 1;
@@ -1490,6 +1572,38 @@ void handleHealth() {
   }
   json += "}";
 
+  server.send(200, "application/json", json);
+}
+
+void handleMarlinLog() {
+  String json = "{\"ok\":true,\"entries\":[";
+  for (size_t i = 0; i < marlinLogCount; ++i) {
+    const size_t index = (marlinLogNext + kMarlinLogSize - marlinLogCount + i) % kMarlinLogSize;
+    const MarlinLogEntry &entry = marlinLog[index];
+    if (i > 0) {
+      json += ",";
+    }
+    json += "{\"time\":\"";
+    json += String(entry.timeMs);
+    json += "\",\"direction\":\"";
+    json += jsonEscape(entry.direction);
+    json += "\",\"priority\":";
+    json += entry.priority ? "true" : "false";
+    json += ",\"text\":\"";
+    json += jsonEscape(entry.text);
+    json += "\",\"level\":\"";
+    json += jsonEscape(entry.level);
+    json += "\"}";
+  }
+  json += "],\"lastCritical\":";
+  if (lastCriticalMarlinMessage.length() > 0) {
+    json += "\"";
+    json += jsonEscape(lastCriticalMarlinMessage);
+    json += "\"";
+  } else {
+    json += "null";
+  }
+  json += "}";
   server.send(200, "application/json", json);
 }
 
@@ -1893,19 +2007,21 @@ void handleCommand() {
     return;
   }
 
+  String upper = cmd;
+  upper.toUpperCase();
+  upper.trim();
+  if ((jobStatus.state == JobRunnerState::Running || jobStatus.state == JobRunnerState::Pausing ||
+       jobStatus.state == JobRunnerState::Paused || jobStatus.state == JobRunnerState::Resuming ||
+       jobStatus.state == JobRunnerState::Stopping || jobStatus.state == JobRunnerState::Error) &&
+      upper == "M5") {
+    queueManualM5Priority();
+    logJobEvent("priority manual: M5");
+    server.send(200, "application/json",
+                "{\"ok\":true,\"response\":\"M5 priority requested. This is not a physical emergency stop.\"}");
+    return;
+  }
+
   if (jobStatus.state == JobRunnerState::Running) {
-    String upper = cmd;
-    upper.toUpperCase();
-    upper.trim();
-    if (upper == "M5") {
-      if (priorityCommandCount == 0) {
-        queuePriorityCommands("M5");
-      }
-      logJobEvent("priority manual: M5");
-      server.send(200, "application/json",
-                  "{\"ok\":true,\"response\":\"M5 priority requested. This is not a physical emergency stop.\"}");
-      return;
-    }
     const bool allowedDuringJob = upper == "M114" || upper == "M115" || upper == "M119" ||
                                   upper == "M400" || upper == "M5";
     if (!allowedDuringJob) {
@@ -1914,26 +2030,7 @@ void handleCommand() {
     }
   }
 
-  if (jobStatus.state == JobRunnerState::Pausing || jobStatus.state == JobRunnerState::Paused ||
-      jobStatus.state == JobRunnerState::Stopping) {
-    String upper = cmd;
-    upper.toUpperCase();
-    upper.trim();
-    if (upper == "M5") {
-      if (priorityCommandCount == 0) {
-        queuePriorityCommands("M5");
-      }
-      logJobEvent("priority manual: M5");
-      server.send(200, "application/json",
-                  "{\"ok\":true,\"response\":\"M5 priority requested. This is not a physical emergency stop.\"}");
-      return;
-    }
-  }
-
   if (jogIsActive()) {
-    String upper = cmd;
-    upper.toUpperCase();
-    upper.trim();
     const bool allowedDuringJog = upper == "M114" || upper == "M119" || upper == "M400" || upper == "M5";
     if (!allowedDuringJog) {
       sendJsonError(409, "safe jog is active; manual command rejected");
@@ -1943,6 +2040,7 @@ void handleCommand() {
 
   drainMarlinInput();
 
+  addMarlinLog("tx", false, cmd);
   Serial.print(cmd);
   Serial.print('\n');
 
@@ -1999,6 +2097,29 @@ bool jobJsonAllowsWorkspaceCommands(const String &jobPath) {
   const String body = readJobJsonSnippet(jobPath);
   return body.indexOf("\"allowedWorkspaceCommands\":true") >= 0 ||
          body.indexOf("\"allowedWorkspaceCommands\": true") >= 0;
+}
+
+String compactJsonForStringChecks(String body) {
+  body.replace(" ", "");
+  body.replace("\n", "");
+  body.replace("\r", "");
+  body.replace("\t", "");
+  return body;
+}
+
+bool jobJsonAllowsActiveGeneratedRun(const String &jobPath, const String &gcodePath) {
+  const String compact = compactJsonForStringChecks(readJobJsonSnippet(jobPath));
+  if (compact.length() == 0) {
+    return false;
+  }
+  const String activePathNeedle = String("\"path\":\"") + gcodePath + "\"";
+
+  // TODO: Replace this minimal provenance check with robust JSON parsing.
+  return compact.indexOf("\"activeRun\"") >= 0 &&
+         compact.indexOf("\"mode\":\"generated\"") >= 0 &&
+         compact.indexOf(activePathNeedle) >= 0 &&
+         compact.indexOf("\"generatedValidation\"") >= 0 &&
+         compact.indexOf("\"status\":\"valid\"") >= 0;
 }
 
 int jobJsonFeedStartPercent(const String &jobPath) {
@@ -2087,6 +2208,9 @@ bool runJobStartPreamble() {
     sendMarlinSafetyCommand("M114");
   }
 
+  sendMarlinSafetyCommand(("G0 Z" + String(jobStatus.safeStartZ, 3) + " F" + String(kJobStartZFeed, 0)).c_str());
+  sendMarlinSafetyCommand("M400");
+
   return true;
 }
 
@@ -2144,6 +2268,7 @@ void handleJobStart() {
   const String body = server.arg("plain");
   const String gcodePath = normalizeSdPath(extractJsonString(body, "gcodePath"));
   const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  const String activeRunMode = extractJsonString(body, "activeRunMode");
   String startMode = extractJsonString(body, "startMode");
   if (startMode.length() == 0) {
     startMode = "apply_current_position_as_work_zero";
@@ -2152,8 +2277,11 @@ void handleJobStart() {
     sendJsonError(400, "invalid startMode");
     return;
   }
-  if (!isPathUnderRoot(gcodePath, "/gcode")) {
-    sendJsonError(400, "gcodePath must be under /gcode");
+  const float safeStartZ = clampFloat(extractJsonFloat(body, "safeStartZ", 15.0f), 0.0f, 200.0f);
+  const bool sourceRunPath = isPathUnderRoot(gcodePath, "/gcode");
+  const bool generatedRunPath = isPathUnderRoot(gcodePath, "/jobs/generated");
+  if (!sourceRunPath && !generatedRunPath) {
+    sendJsonError(400, "gcodePath must be under /gcode or explicit /jobs/generated");
     return;
   }
   if (!isPathUnderRoot(jobPath, "/jobs")) {
@@ -2172,6 +2300,16 @@ void handleJobStart() {
     sendJsonError(409, "job JSON is not ARMED");
     return;
   }
+  if (generatedRunPath) {
+    if (activeRunMode != "generated") {
+      sendJsonError(400, "generated run requires activeRunMode generated");
+      return;
+    }
+    if (!jobJsonAllowsActiveGeneratedRun(jobPath, gcodePath)) {
+      sendJsonError(409, "generated run is not the validated active run in job JSON");
+      return;
+    }
+  }
 
   jobStatus = JobRunnerStatus();
   clearPriorityCommands();
@@ -2179,6 +2317,7 @@ void handleJobStart() {
   jobStatus.gcodePath = gcodePath;
   jobStatus.jobPath = jobPath;
   jobStatus.startMode = startMode;
+  jobStatus.safeStartZ = safeStartZ;
   jobStatus.allowedWorkspaceCommands = jobJsonAllowsWorkspaceCommands(jobPath);
   jobStatus.feedOverridePercent = jobJsonFeedStartPercent(jobPath);
   jobStatus.resetFeedOverrideAfterJob = jobJsonResetFeedAfterJob(jobPath);
@@ -2621,6 +2760,7 @@ void startHttpServer() {
   server.on("/files.js", HTTP_GET, handleFilesJs);
   server.on("/style.css", HTTP_GET, handleStyleCss);
   server.on("/api/health", HTTP_GET, handleHealth);
+  server.on("/api/marlin/log", HTTP_GET, handleMarlinLog);
   server.on("/api/cmd", HTTP_POST, handleCommand);
   server.on("/api/ui/status", HTTP_GET, handleUiStatus);
   server.on("/api/sd/status", HTTP_GET, handleSdStatus);
