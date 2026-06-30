@@ -60,19 +60,28 @@
       </section>
 
       <section id="settings-view" class="view-section" data-view="settings">
+        <section class="panel appearance-panel">
+          <h2>Appearance</h2>
+          <label for="skin-selector">UI skin</label>
+          <select id="skin-selector" aria-label="UI skin">
+            <option value="default">Default</option>
+          </select>
+          <p id="skin-status" class="form-hint">Loading skin...</p>
+          <p class="form-hint">FreeCAD-like uses original CNC-ESP32 artwork and familiar CAD/CAM metaphors.</p>
+        </section>
         <section class="panel">
           <h2>Settings</h2>
           <div id="system-summary" class="job-summary"></div>
           <div class="module-grid">
-            <a class="module-card" href="/wifi">
+            <a class="module-card" href="/wifi" data-icon="settings">
               <strong>WiFi Settings</strong>
               <span>Save, forget, or change local WiFi.</span>
             </a>
-            <a class="module-card" href="/update">
+            <a class="module-card" href="/update" data-icon="warning">
               <strong>Firmware Update</strong>
               <span>Upload a new firmware binary.</span>
             </a>
-            <a class="module-card" href="/files">
+            <a class="module-card" href="/files" data-icon="files">
               <strong>SD Files</strong>
               <span>Manage /gcode, /www, /jobs, and logs.</span>
             </a>
@@ -82,12 +91,13 @@
     </main>
 
     <nav class="bottom-nav" aria-label="Primary">
-      <a href="#files" data-nav-target="files">Files</a>
+      <a href="#files" data-nav-target="files" data-icon="files">Files</a>
       <a href="#job" data-nav-target="job">Job</a>
-      <a href="#logs" data-nav-target="logs">Logs</a>
-      <a href="#settings" data-nav-target="settings">Settings</a>
+      <a href="#logs" data-nav-target="logs" data-icon="log">Logs</a>
+      <a href="#settings" data-nav-target="settings" data-icon="settings">Settings</a>
     </nav>
 
+    <script type="module" src="/skin-init.js"></script>
     <script src="/machine-bar.js"></script>
     <script src="/app.js"></script>
   </body>

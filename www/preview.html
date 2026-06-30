@@ -10,10 +10,10 @@
   <body class="workbench-page">
     <main id="workbench" class="app preview-app">
       <header id="workbench-topbar" class="workbench-topbar" aria-label="Job workbench status">
-        <button id="open-tools-drawer" class="icon-button" type="button" aria-label="Open tools">Tools</button>
+        <button id="open-tools-drawer" class="icon-button" type="button" aria-label="Open tools" data-icon="menu">Tools</button>
         <span id="workbench-connection" class="workbench-chip muted">OFFLINE</span>
-        <span id="workbench-active-run" class="workbench-chip">ORIGINAL</span>
-        <button id="open-readiness-drawer" class="workbench-chip status-trigger" type="button">BLOCKED</button>
+        <span id="workbench-active-run" class="workbench-chip" data-icon="source">ORIGINAL</span>
+        <button id="open-readiness-drawer" class="workbench-chip status-trigger" type="button" data-icon="blocked">BLOCKED</button>
         <details class="workbench-overflow">
           <summary aria-label="More actions">More</summary>
           <div class="overflow-menu">
@@ -52,7 +52,10 @@
           <strong id="canvas-job-name">No job</strong>
           <span id="canvas-active-path">Choose a G-code file</span>
         </div>
-        <div id="canvas-zero-label" class="canvas-overlay canvas-zero-label">WORK ZERO 0,0</div>
+        <div id="canvas-zero-label" class="canvas-overlay canvas-zero-label">
+          <span id="canvas-work-zero-text">WORK ZERO NOT SET</span>
+          <span id="canvas-tool-position">TOOL X- Y- Z-</span>
+        </div>
       </section>
 
       <button id="left-edge-handle" class="edge-handle edge-handle-left" type="button" aria-label="Open tools">Tools</button>
@@ -65,9 +68,9 @@
           <button id="close-tools-drawer" class="icon-button" type="button" aria-label="Close tools">Close</button>
         </header>
         <nav class="drawer-tabs" aria-label="Job tools">
-          <button type="button" class="active" data-preview-tab-button="preview">Placement</button>
-          <button type="button" data-preview-tab-button="setup">Zero</button>
-          <button type="button" data-preview-tab-button="dry-run">Dry Run</button>
+          <button type="button" class="active" data-preview-tab-button="preview" data-icon="placement">Placement</button>
+          <button type="button" data-preview-tab-button="setup" data-icon="zero">Zero</button>
+          <button type="button" data-preview-tab-button="dry-run" data-icon="dryRun">Dry Run</button>
         </nav>
         <div id="tools-drawer-content" class="drawer-scroll"></div>
         <nav class="drawer-link-row" aria-label="Related pages">
@@ -83,22 +86,22 @@
         </header>
         <nav class="drawer-tabs" aria-label="Readiness details">
           <button type="button" class="active" data-preview-tab-button="preflight">Checks</button>
-          <button type="button" data-preview-tab-button="arm">Arm</button>
-          <button type="button" data-preview-tab-button="run">Run</button>
+          <button type="button" data-preview-tab-button="arm" data-icon="arm">Arm</button>
+          <button type="button" data-preview-tab-button="run" data-icon="start">Run</button>
         </nav>
         <div id="readiness-drawer-content" class="drawer-scroll"></div>
       </aside>
 
       <section id="canvas-toolbar" class="canvas-toolbar" aria-label="Canvas controls">
         <div class="canvas-toolbar-main">
-          <button type="button" data-fit-view="job">Fit Job</button>
-          <button type="button" data-fit-view="table">Fit Table</button>
-          <button type="button" data-fit-view="active">Fit Active</button>
-          <button type="button" data-fit-view="zero">Fit Zero</button>
-          <button type="button" data-canvas-zoom="out" aria-label="Zoom out">−</button>
-          <button type="button" data-canvas-zoom="in" aria-label="Zoom in">+</button>
-          <button id="canvas-mode" type="button">Pan</button>
-          <button id="toggle-layers" type="button">Layers</button>
+          <button type="button" data-fit-view="job" data-icon="fitJob">Fit Job</button>
+          <button type="button" data-fit-view="table" data-icon="fitTable">Fit Table</button>
+          <button type="button" data-fit-view="active" data-icon="fitWorkArea">Fit Active</button>
+          <button type="button" data-fit-view="zero" data-icon="zero">Fit Zero</button>
+          <button type="button" data-canvas-zoom="out" aria-label="Zoom out" title="Zoom out" data-icon="zoomOut">−</button>
+          <button type="button" data-canvas-zoom="in" aria-label="Zoom in" title="Zoom in" data-icon="zoomIn">+</button>
+          <button id="canvas-mode" type="button" data-icon="pan">Pan</button>
+          <button id="toggle-layers" type="button" data-icon="bounds">Layers</button>
         </div>
         <div id="canvas-layers" class="canvas-layer-toggles" hidden>
           <label><input type="checkbox" data-canvas-layer="path" checked> Path</label>
@@ -137,7 +140,7 @@
           <button type="button" data-rotate-delta="90">+90</button>
           <button id="reset-placement" type="button">Reset Placement</button>
           <button id="preview-transform" type="button">Preview Transform</button>
-          <button id="generate-run-file" type="button">Update Run File</button>
+          <button id="generate-run-file" type="button" data-icon="generated">Update Run File</button>
           <button id="use-generated-run" type="button" disabled>Run File Up To Date</button>
           <button id="use-source-run" type="button">Reset Placement / Use Original</button>
         </div>
@@ -157,7 +160,7 @@
           <button id="load-job" type="button">Load Job</button>
           <button id="save-job" type="button">Save Job</button>
           <button id="capture-position" type="button">Capture Current Position</button>
-          <button id="set-work-zero" type="button">Set Work Zero G92 X0 Y0 Z0</button>
+          <button id="set-work-zero" type="button" data-icon="workZero">Set Work Zero G92 X0 Y0 Z0</button>
           <button id="capture-set-zero" type="button">Capture + Set Work Zero</button>
           <button id="download-job" type="button">Download Job JSON</button>
         </div>
@@ -170,7 +173,7 @@
         <div id="tool-zero-summary" class="job-summary"></div>
         <div class="job-actions">
           <button id="tool-capture-position" type="button">Capture Current Position</button>
-          <button id="set-z-zero" type="button">Set Z Zero G92 Z0</button>
+          <button id="set-z-zero" type="button" data-icon="zZero">Set Z Zero G92 Z0</button>
           <button id="capture-set-z-zero" type="button">Capture + Set Z Zero</button>
           <button id="save-tool-zero" type="button">Save Tool/Z Zero to Job</button>
         </div>
@@ -228,13 +231,13 @@
           <input id="trace-margin" type="number" inputmode="decimal" step="0.1" value="0">
         </div>
         <div class="job-actions">
-          <button id="generate-trace" type="button">Generate Bounding Box Commands</button>
+          <button id="generate-trace" type="button" data-icon="bounds">Generate Bounding Box Commands</button>
           <button id="send-trace" type="button" disabled>Send Bounding Box Trace</button>
           <button id="copy-trace" type="button">Copy Commands</button>
-          <button id="generate-aircut" type="button">Generate Aircut Commands</button>
+          <button id="generate-aircut" type="button" data-icon="dryRun">Generate Aircut Commands</button>
           <button id="send-aircut" type="button" disabled>Send Aircut Toolpath</button>
           <button id="copy-aircut" type="button">Copy Aircut Commands</button>
-          <button id="stop-m5" type="button">Stop spindle/laser M5</button>
+          <button id="stop-m5" type="button" aria-label="Stop spindle or laser M5" data-icon="m5">Stop spindle/laser M5</button>
           <a class="maintenance-link" href="#preview-canvas">Back to Preview</a>
         </div>
         <pre id="trace-commands" class="command-preview"></pre>
@@ -256,7 +259,7 @@
           <label><input type="checkbox" data-arm-check="physicalEmergencyStopKnown"> I know where the physical emergency stop is.</label>
         </fieldset>
         <div class="job-actions">
-          <button id="arm-job" type="button">Arm Job</button>
+          <button id="arm-job" type="button" data-icon="arm">Arm Job</button>
           <button id="disarm-job" type="button">Disarm Job</button>
           <button id="save-armed-job" type="button">Save Armed Job</button>
           <button id="download-armed-job" type="button">Download Job JSON</button>
@@ -306,10 +309,10 @@
           <label><input type="checkbox" data-run-check="spindleOff"> Spindle/laser is off.</label>
         </fieldset>
         <div class="job-actions">
-          <button id="start-job" class="hold-to-confirm" type="button">Hold to Start Cut</button>
-          <button id="pause-job" type="button">Pause Job</button>
+          <button id="start-job" class="hold-to-confirm" type="button" aria-label="Hold to Start Cut" data-icon="start">Hold to Start Cut</button>
+          <button id="pause-job" type="button" aria-label="Pause Job" data-icon="pause">Pause Job</button>
           <button id="resume-job" type="button">Resume Job</button>
-          <button id="stop-job" type="button">Stop job: M5 + pause stream</button>
+          <button id="stop-job" type="button" aria-label="Stop job" data-icon="stop">Stop job: M5 + pause stream</button>
           <button id="refresh-job-status" type="button">Refresh Status</button>
         </div>
         <pre id="run-log" class="dry-run-log"></pre>
@@ -322,6 +325,7 @@
       <a href="/#logs">Logs</a>
       <a href="/#settings">Settings</a>
     </nav>
+    <script type="module" src="/skin-init.js"></script>
     <script src="/machine-bar.js"></script>
     <script src="/preview.js"></script>
   </body>

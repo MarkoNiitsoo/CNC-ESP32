@@ -412,7 +412,7 @@ body.workbench-page {
   height: 100dvh;
   overflow: hidden;
   overscroll-behavior: none;
-  background: #060a0c;
+  background: var(--cnc-bg);
 }
 
 .workbench-page .machine-shell {
@@ -441,7 +441,7 @@ body.workbench-page {
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid rgba(159, 177, 191, 0.18);
-  background: rgba(8, 13, 16, 0.88);
+  background: var(--cnc-panel-strong);
   backdrop-filter: blur(14px);
 }
 
@@ -455,35 +455,35 @@ body.workbench-page {
   border: 1px solid rgba(159, 177, 191, 0.28);
   border-radius: 6px;
   background: rgba(20, 31, 40, 0.9);
-  color: #eef3f7;
+  color: var(--cnc-text);
   font-size: 0.72rem;
   font-weight: 850;
   white-space: nowrap;
 }
 
 .workbench-chip.muted {
-  color: #9fb1bf;
+  color: var(--cnc-muted);
 }
 
 .workbench-chip.ok {
-  color: #b9f7ce;
-  border-color: rgba(63, 196, 117, 0.55);
+  color: var(--cnc-ok);
+  border-color: var(--cnc-ok);
 }
 
 .workbench-chip.warn {
-  color: #ffd28a;
-  border-color: rgba(255, 209, 138, 0.55);
+  color: var(--cnc-warning);
+  border-color: var(--cnc-warning);
 }
 
 .workbench-chip.fail {
-  color: #ffb4b4;
-  border-color: rgba(255, 86, 86, 0.62);
+  color: color-mix(in srgb, var(--cnc-danger) 45%, white);
+  border-color: var(--cnc-danger);
 }
 
 .workbench-chip.active {
-  color: #d9ffe6;
-  background: rgba(15, 81, 50, 0.86);
-  border-color: #65d28e;
+  color: var(--cnc-text);
+  background: color-mix(in srgb, var(--cnc-ok) 26%, var(--cnc-panel-strong));
+  border-color: var(--cnc-ok);
 }
 
 .status-trigger {
@@ -542,7 +542,7 @@ body.workbench-page {
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  background: #060a0c;
+  background: var(--cnc-bg);
 }
 
 #preview-canvas {
@@ -568,7 +568,7 @@ body.workbench-page {
   padding: 7px 9px;
   border: 1px solid rgba(159, 177, 191, 0.18);
   border-radius: 6px;
-  background: rgba(7, 12, 15, 0.68);
+  background: color-mix(in srgb, var(--cnc-panel-strong) 76%, transparent);
   backdrop-filter: blur(8px);
 }
 
@@ -581,7 +581,7 @@ body.workbench-page {
 }
 
 .canvas-job-label span {
-  color: #9fb1bf;
+  color: var(--cnc-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -591,9 +591,18 @@ body.workbench-page {
 .canvas-zero-label {
   top: 12px;
   right: 12px;
-  color: #ffd166;
+  color: var(--cnc-zero, var(--cnc-warning));
   font-size: 0.7rem;
   font-weight: 800;
+  display: grid;
+  gap: 2px;
+  text-align: right;
+}
+
+.canvas-zero-label span:last-child {
+  color: var(--cnc-current-position, #62b0ff);
+  font-size: 0.66rem;
+  font-weight: 700;
 }
 
 .workbench-scrim {
@@ -612,7 +621,7 @@ body.workbench-page {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   border: 1px solid rgba(159, 177, 191, 0.25);
-  background: rgba(10, 17, 22, 0.88);
+  background: color-mix(in srgb, var(--cnc-panel-strong) 90%, transparent);
   backdrop-filter: blur(16px);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
   transition: transform 180ms ease;
@@ -666,7 +675,7 @@ body.workbench-page {
 }
 
 .drawer-tabs button.active {
-  background: #245f8f;
+  background: var(--cnc-accent);
   color: #fff;
 }
 
@@ -681,7 +690,7 @@ body.workbench-page {
   margin: 0 0 8px;
   padding: 11px;
   border-color: rgba(159, 177, 191, 0.18);
-  background: rgba(17, 24, 32, 0.76);
+  background: var(--cnc-panel);
   box-shadow: none;
 }
 
@@ -712,7 +721,7 @@ body.workbench-page {
   min-height: 74px;
   padding: 4px;
   border-radius: 0 6px 6px 0;
-  background: rgba(36, 95, 143, 0.72);
+  background: color-mix(in srgb, var(--cnc-accent) 76%, transparent);
   color: #fff;
   writing-mode: vertical-rl;
   font-size: 0.66rem;
@@ -736,7 +745,7 @@ body.workbench-page {
   gap: 5px;
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   border-top: 1px solid rgba(159, 177, 191, 0.22);
-  background: rgba(8, 13, 16, 0.9);
+  background: color-mix(in srgb, var(--cnc-panel-strong) 92%, transparent);
   backdrop-filter: blur(14px);
 }
 

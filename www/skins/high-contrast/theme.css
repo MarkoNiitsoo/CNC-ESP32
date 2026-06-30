@@ -1,0 +1,9 @@
+:root {
+  --cnc-bg: #000; --cnc-panel: rgba(0, 0, 0, 0.9); --cnc-panel-strong: #000;
+  --cnc-text: #fff; --cnc-muted: #d7d7d7; --cnc-accent: #00b7ff; --cnc-ok: #46ff72;
+  --cnc-warning: #ffe600; --cnc-danger: #ff4141; --cnc-blocked: #ff7a00;
+  --cnc-path-source: #fff; --cnc-path-generated: #00b7ff; --cnc-path-travel: #46ff72;
+  --cnc-path-cut: #00e5ff; --cnc-bounds-raw: #ffe600; --cnc-bounds-cut: #fff;
+  --cnc-bounds-placement: #ff59ff; --cnc-zero: #46ff72; --cnc-current-position: #ffe600;
+  --cnc-button-size: 48px; --cnc-large-button-size: 60px; --cnc-icon-stroke: 2.5;
+}

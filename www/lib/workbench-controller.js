@@ -1,4 +1,4 @@
-import { createWorkbenchState, reduceWorkbenchState } from './workbench-ui.js';
+import { createWorkbenchState, reduceWorkbenchState, zoomPanForGesture } from './workbench-ui.js';
 
 const LEFT_TABS = new Set(['preview', 'setup', 'dry-run']);
 const RIGHT_TABS = new Set(['preflight', 'arm', 'run']);
@@ -100,8 +100,17 @@ export function installWorkbench(options = {}) {
     view.zoom = Math.max(0.15, Math.min(30, previous * factor));
     if (center && previous > 0) {
       const ratio = view.zoom / previous;
-      view.panX = center.x - (center.x - view.panX) * ratio;
-      view.panY = center.y - (center.y - view.panY) * ratio;
+      const rect = canvas.getBoundingClientRect();
+      const nextPan = zoomPanForGesture({
+        panX: view.panX,
+        panY: view.panY,
+        startPoint: center,
+        currentPoint: center,
+        viewportCenter: { x: rect.width / 2, y: rect.height / 2 },
+        ratio,
+      });
+      view.panX = nextPan.panX;
+      view.panY = nextPan.panY;
     }
     notify();
   }
@@ -148,8 +157,17 @@ export function installWorkbench(options = {}) {
       const distance = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
       const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       view.zoom = Math.max(0.15, Math.min(30, pinchStart.zoom * distance / pinchStart.distance));
-      view.panX = pinchStart.panX + center.x - pinchStart.center.x;
-      view.panY = pinchStart.panY + center.y - pinchStart.center.y;
+      const rect = canvas.getBoundingClientRect();
+      const nextPan = zoomPanForGesture({
+        panX: pinchStart.panX,
+        panY: pinchStart.panY,
+        startPoint: pinchStart.center,
+        currentPoint: center,
+        viewportCenter: { x: rect.width / 2, y: rect.height / 2 },
+        ratio: view.zoom / pinchStart.zoom,
+      });
+      view.panX = nextPan.panX;
+      view.panY = nextPan.panY;
       notify();
       return;
     }

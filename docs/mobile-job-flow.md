@@ -1,5 +1,15 @@
 # Mobile Job Flow
 
+## Mock Mode Indicator
+
+When `/api/health` reports `mockMode: true`, the shared Machine Bar shows a compact `DEV MOCK` badge
+beside machine state and XYZ. The badge is intentionally global so Dashboard, Files, Preview,
+drawers, and settings cannot be mistaken for a live CNC session without consuming a separate row.
+
+Production firmware does not return `mockMode`, so the badge remains hidden on the ESP32. The mock
+indicator changes presentation only; it does not alter active-run, readiness, arming, or command
+logic.
+
 ## Canvas-First Workbench
 
 The selected job opens in `/preview.html?path=...` as a fixed full-screen workbench. The graphical
@@ -63,6 +73,18 @@ Safety interaction policy:
 Mobile text is reduced to badges, short blocker reasons, one primary next action, and expandable
 details in the drawers. Full logs and file management remain separate pages linked from overlays.
 
+## Skins And Semantic Icons
+
+The workbench uses semantic icon roles and `--cnc-*` theme variables. The bundled Default,
+FreeCAD-like, and High Contrast skins share one UI/component model. Appearance selection is stored
+locally in the browser and applies to the Machine Bar, canvas controls, drawers, readiness badges,
+critical actions, and path/bounds/zero colors.
+
+FreeCAD-like is conceptual inspiration only. Its icons are original CNC-ESP32 artwork; no FreeCAD
+SVG paths or artwork are copied. Critical actions always retain text and accessible labels.
+
+See `docs/ui-skins.md` for role mapping, fallback rules, and custom skin instructions.
+
 ## Purpose
 
 The mobile UI should guide the CNC operator through the next useful physical action. It should not
@@ -110,6 +132,19 @@ The drawer should contain machine controls:
 
 The drawer is for machine control, not for the job story. The joystick should move from the
 Controls page into the drawer so it is reachable from every main view.
+
+Current implementation uses a compact layout:
+
+- one state-aware Pause/Resume button beside direct Stop and M5
+- feed current value centered between -10/-1 and +1/+10, with five presets below
+- firmware-deadman XY joystick, Z hold buttons, Safe Z, speed limits, and explicit Stop Jog
+- X/Y/Z homing on one row, then Home All and M119
+- X0/Y0/XY0 work-zero moves on one row with Safe move enabled by default
+- command dropdown followed immediately by the shared Marlin command/response log
+
+While a job is active, the latest Marlin response is visible in the Machine Bar. Critical Marlin
+messages remain globally visible even outside an active run. Pause/Resume, Stop, and M5 stay in the
+sticky drawer header while the rest scrolls.
 
 ## Files-First Home
 
@@ -282,4 +317,4 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
 - Placement / Origin controls on full preview define the intended active run. If placement differs
   from identity/default, Start Job uses the validated generated run path, not the original source.
 
-This pass intentionally does not implement resume/recovery logic or joystick behavior changes.
+This pass intentionally does not implement resume/recovery logic.

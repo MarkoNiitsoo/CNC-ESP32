@@ -1,5 +1,25 @@
 # Safety Testing
 
+## Desktop Mock Layer
+
+`npm run dev:mock` provides a no-hardware workflow layer before SD-card or machine testing. It
+serves the production `www/` UI but routes APIs to local MockSD, MockMarlin, and MockJobRunner
+components.
+
+Automated mock coverage verifies:
+
+- path traversal rejection and persistent SD file operations
+- M114/G92 position behavior, M5, M220, and G0/G1 state
+- X/Y/Z soft-limit errors plus unexpected G28/G53 rejection
+- exact source/generated active-run streaming with no silent source fallback
+- stale or missing generated run blocking
+- completion, pause, resume, stop, priority M5, feed override, and error status
+- core HTTP compatibility for UI, files, commands, job start, and status
+
+Mock tests reduce iteration time but do not replace real-machine tests. They do not model inertia,
+step loss, acceleration, electrical faults, router behavior, endstop wiring, or browser/WiFi failure.
+Use the visible `DEV MOCK - NO REAL MACHINE` badge to distinguish simulation from hardware.
+
 ## Core Rule
 
 Any code path that can move the tool, change coordinate zero, start or resume a job, transform
@@ -81,6 +101,23 @@ Test that:
 - Direct XY jog requires explicit confirmation.
 - Maximum XY/Z speed values are inside configured safe ranges.
 - Movement ticks are small enough to be controllable, not long `G0` moves.
+- Repeated pointer gestures before delayed Z restore retain the first captured work Z.
+- Window blur or visibility loss sends jog stop only when jog is active; an idle page must not emit
+  M410/M5 merely because browser focus changed.
+
+## Go To Work Zero Tests
+
+Test that:
+
+- only X0, Y0, and XY0 targets are accepted
+- active job, jog, and OTA states reject movement
+- Safe move is enabled by default and requires positive bounded Safe Z
+- safe sequence lifts Z before selected XY axes move
+- X0 does not alter Y and Y0 does not alter X
+- Z remains at Safe Z after the move and is never automatically lowered
+- direct-at-current-Z mode has a stronger browser confirmation
+- Marlin error, alarm, or missing acknowledgement aborts remaining commands
+- no G92, G28, M3, M4, Z0, homing, or automatic zero restore appears in the endpoint
 
 ## Toolpath Transform Tests
 
@@ -113,6 +150,8 @@ Test that:
 - Old source-only job JSON derives source-mode `activeRun` metadata without deleting work zero,
   tool zero, dry-run, arm, or history fields.
 - Arming stores active run mode/path/fingerprint and changing any of them makes the arm state stale.
+- Compatible fallback forms (`size+fnv1a` and `size+fnv1a+cyrb53`) match only when size and FNV-1a
+  agree; tests also prove changed size or FNV-1a remains blocked.
 - Generated file starts with a safe deterministic preamble.
 - Generated file does not contain thumbnail or metadata garbage.
 - Generated file never contains accidental ultra-fast feed values.
@@ -220,6 +259,15 @@ Current coverage:
   - visual layer and placement drawer state contains no movement commands
   - Start Cut uses hold policy while Pause, Stop, and M5 remain direct
   - no G28, automatic G92, homing, or restore metadata
+- `www/lib/ui-skins.js`
+  - bundled manifest validation and sprite symbol completeness
+  - semantic icon role resolution and Default fallback
+  - accessible SVG/use markup
+  - selected skin localStorage persistence
+  - manifest/icon/theme failure fallback policy
+  - critical controls retain text and ARIA labels
+  - workbench/status/canvas consume theme variables
+  - no movement, homing, G28, automatic G92, M3, or M4 behavior
 
 - `www/lib/gcode-core.mjs`
   - comment stripping
@@ -305,6 +353,7 @@ Remaining UI TODOs:
 - Add a richer current-position feed when firmware status exposes structured XY/Z consistently.
 - Consider optional previous-zero markers after their machine/work coordinate meaning is explicit.
 - Add browser integration tests with mocked ESP APIs and representative generated/source jobs.
+- Consider dynamic `/www/skins` discovery so user skins do not require a static registry entry.
 
 ## Manual Hardware Test Policy
 

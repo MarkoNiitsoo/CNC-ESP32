@@ -363,6 +363,49 @@ Stops jogging and sends `M410` and `M5`. This is not a physical emergency stop.
 Returns jog state, whether Z was lifted for safe jog, original captured Z, pending Z restore status,
 last command, last error, heartbeat age, and configured jog limits.
 
+Repeated safe XY jog gestures made before the pending Z restore keep the first captured work Z.
+Starting a new pointer gesture must not replace that original value with the already lifted Safe Z.
+
+## Go To Work Zero API
+
+### `POST /api/work-zero/goto`
+
+Moves only the selected work-coordinate X/Y axes to zero. It never sends G92, G28, M3, M4, or Z0.
+
+Request body:
+
+```json
+{
+  "axes": "xy",
+  "safeMove": true,
+  "safeZ": 70
+}
+```
+
+`axes` must be `x`, `y`, or `xy`. The endpoint rejects requests during OTA, any active job state,
+or active jog.
+
+Safe mode sends and acknowledges this bounded sequence before returning success:
+
+```text
+M5
+G21
+G90
+G54
+G0 Z<safeZ> F400
+G0 X0 Y0 F3000   ; selected axes only
+G90
+```
+
+Safe Z must be greater than 0 and no more than 200 mm. Z deliberately remains at Safe Z after the
+XY move; firmware does not automatically plunge back toward material. With `safeMove: false`, the
+selected XY move happens at current Z and the UI requires a stronger warning confirmation.
+
+Marlin's planner preserves the accepted Z-lift then XY command order. The endpoint reports that the
+move was accepted; it does not block the HTTP request until a long physical return has completed.
+This is controlled positioning, not a physical emergency stop. A Marlin error, alarm, or missing
+`ok` while accepting commands aborts the remaining sequence and returns HTTP 502.
+
 ## SD-Hosted UI
 
 When `/www/index.html` exists on the SD card, `GET /` serves that file. Known UI assets such as

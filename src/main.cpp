@@ -8,7 +8,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.4.7-active-run";
+constexpr const char *firmwareVersion = "0.4.8-machine-controls";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
@@ -32,6 +32,8 @@ constexpr uint32_t kJogRestoreDelayMs = 5000;
 constexpr float kJogMaxXyStepMm = 15.0f;
 constexpr float kJogMaxZStepMm = 0.5f;
 constexpr float kJobStartZFeed = 400.0f;
+constexpr float kGotoWorkZeroXyFeed = 3000.0f;
+constexpr float kGotoWorkZeroZFeed = 400.0f;
 constexpr size_t kMaxGcodeLineLength = 180;
 constexpr size_t kMarlinLogSize = 40;
 constexpr int kMarlinRxPin = 3;
@@ -864,6 +866,17 @@ void sendMarlinSafetyCommand(const char *cmd) {
   readMarlinResponseFor(250, true);
 }
 
+bool sendMarlinControlCommand(const String &cmd, String &response) {
+  drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
+  Serial.print(cmd);
+  Serial.print('\n');
+  response = readMarlinResponseFor(500, true);
+  String upper = response;
+  upper.toUpperCase();
+  return upper.indexOf("OK") >= 0 && upper.indexOf("ERROR") < 0 && upper.indexOf("ALARM") < 0;
+}
+
 bool isFeedOverrideCommand(const String &cmd) {
   String upper = cmd;
   upper.toUpperCase();
@@ -1165,7 +1178,7 @@ bool prepareSafeJogLift() {
     return false;
   }
 
-  if (jogStatus.restoreZAfterJog && !captureJogOriginalZ()) {
+  if (jogStatus.restoreZAfterJog && !jogStatus.originalZCaptured && !captureJogOriginalZ()) {
     setJogError(jogStatus.lastError);
     return false;
   }
@@ -2438,6 +2451,9 @@ void handleJogStart() {
   }
 
   const String body = server.arg("plain");
+  const bool continuePendingRestore = jogStatus.zRestoreScheduled && jogStatus.originalZCaptured &&
+                                      !jogStatus.zChangedDuringJog;
+  const float pendingOriginalZ = jogStatus.originalZ;
   jogStatus = JogStatus();
   jogStatus.safeJog = extractJsonBool(body, "safeJog", true);
   jogStatus.restoreZAfterJog = extractJsonBool(body, "restoreZAfterJog", true);
@@ -2449,6 +2465,10 @@ void handleJogStart() {
   jogStatus.startedAtMs = millis();
   jogStatus.lastUpdateMs = millis();
   jogStatus.lastTickMs = 0;
+  if (continuePendingRestore && jogStatus.restoreZAfterJog) {
+    jogStatus.originalZ = pendingOriginalZ;
+    jogStatus.originalZCaptured = true;
+  }
 
   // TODO: Add a future physical enable/arm button input before allowing jog movement.
   if (!prepareSafeJogLift()) {
@@ -2491,6 +2511,76 @@ void handleJogUpdate() {
 void handleJogStop() {
   stopJogInternal(true);
   server.send(200, "application/json", jogStatusJson());
+}
+
+void handleGoToWorkZero() {
+  if (otaActive) {
+    sendJsonError(409, "OTA update in progress");
+    return;
+  }
+  if (jobIsActive()) {
+    sendJsonError(409, "go to work zero rejected while job is active");
+    return;
+  }
+  if (jogIsActive()) {
+    sendJsonError(409, "go to work zero rejected while jog is active");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  String axes = extractJsonString(body, "axes");
+  axes.toLowerCase();
+  if (axes != "x" && axes != "y" && axes != "xy") {
+    sendJsonError(400, "axes must be x, y, or xy");
+    return;
+  }
+  const bool safeMove = extractJsonBool(body, "safeMove", true);
+  const float safeZ = extractJsonFloat(body, "safeZ", 70.0f);
+  if (safeMove && (safeZ <= 0.0f || safeZ > 200.0f)) {
+    sendJsonError(400, "safeZ must be greater than 0 and no more than 200 mm");
+    return;
+  }
+
+  String response;
+  auto sendChecked = [&](const String &cmd) {
+    if (sendMarlinControlCommand(cmd, response)) {
+      return true;
+    }
+    sendJsonError(502, "Marlin rejected or did not acknowledge: " + cmd);
+    return false;
+  };
+
+  if (!sendChecked("M5") || !sendChecked("G21") || !sendChecked("G90") || !sendChecked("G54")) {
+    return;
+  }
+  if (safeMove) {
+    if (!sendChecked("G0 Z" + String(safeZ, 3) + " F" + String(kGotoWorkZeroZFeed, 0))) {
+      return;
+    }
+  }
+
+  String move = "G0";
+  if (axes == "x" || axes == "xy") move += " X0";
+  if (axes == "y" || axes == "xy") move += " Y0";
+  move += " F";
+  move += String(kGotoWorkZeroXyFeed, 0);
+  if (!sendChecked(move) || !sendChecked("G90")) {
+    return;
+  }
+
+  logJobEvent("go to work zero: " + axes + (safeMove ? " safe" : " direct"));
+  String json = "{\"ok\":true,\"axes\":\"";
+  json += axes;
+  json += "\",\"safeMove\":";
+  json += safeMove ? "true" : "false";
+  json += ",\"safeZ\":";
+  json += String(safeZ, 3);
+  json += ",\"message\":\"Work-zero move accepted. Z will remain at safe height after XY movement.\"}";
+  server.send(200, "application/json", json);
 }
 
 void handleUpdatePage() {
@@ -2780,6 +2870,7 @@ void startHttpServer() {
   server.on("/api/jog/update", HTTP_POST, handleJogUpdate);
   server.on("/api/jog/stop", HTTP_POST, handleJogStop);
   server.on("/api/jog/status", HTTP_GET, handleJogStatus);
+  server.on("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
   server.on("/update", HTTP_GET, handleUpdatePage);
   server.on("/api/update", HTTP_POST, handleUpdateComplete, handleUpdateUpload);
   server.on("/wifi", HTTP_GET, handleWifiPage);

@@ -3,18 +3,31 @@
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #080d10;
   color: #eef3f7;
-  --bg: #080d10;
-  --panel: #111820;
+  --cnc-bg: #080d10;
+  --cnc-panel: rgba(17, 24, 32, 0.82);
+  --cnc-panel-strong: rgba(8, 13, 16, 0.96);
+  --cnc-text: #eef3f7;
+  --cnc-muted: #9fb1bf;
+  --cnc-accent: #2d80c7;
+  --cnc-ok: #3fc475;
+  --cnc-warning: #ffd166;
+  --cnc-danger: #cf4d4d;
+  --cnc-blocked: #b95000;
+  --cnc-button-size: 44px;
+  --cnc-large-button-size: 56px;
+  --cnc-icon-stroke: 2;
+  --bg: var(--cnc-bg);
+  --panel: var(--cnc-panel);
   --panel-2: #151e27;
   --line: #273640;
-  --muted: #9fb1bf;
-  --text: #eef3f7;
-  --green: #3fc475;
+  --muted: var(--cnc-muted);
+  --text: var(--cnc-text);
+  --green: var(--cnc-ok);
   --green-bg: #123823;
-  --blue: #2d80c7;
-  --yellow: #ffd28a;
+  --blue: var(--cnc-accent);
+  --yellow: var(--cnc-warning);
   --yellow-bg: #3b2c12;
-  --red: #cf4d4d;
+  --red: var(--cnc-danger);
   --red-bg: #451d1d;
 }
 
@@ -27,7 +40,8 @@ body {
   min-height: 100vh;
   background:
     radial-gradient(circle at top left, rgba(45, 128, 199, 0.12), transparent 36rem),
-    linear-gradient(180deg, #0b1115 0%, var(--bg) 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--cnc-bg) 88%, white) 0%, var(--cnc-bg) 100%);
+  color: var(--cnc-text);
 }
 
 body.machine-drawer-open {
@@ -79,14 +93,42 @@ select {
   align-items: center;
   padding: 7px 10px;
   border-bottom: 1px solid var(--line);
-  background: rgba(8, 13, 16, 0.98);
+  background: var(--cnc-panel-strong);
   backdrop-filter: blur(12px);
+}
+
+.machine-live-message {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 4px 8px;
+  overflow: hidden;
+  border-left: 3px solid var(--cnc-accent);
+  background: rgba(0, 0, 0, 0.3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.machine-mock-badge {
+  padding: 2px 5px;
+  border: 1px solid #ffd54f;
+  border-radius: 4px;
+  background: rgba(59, 38, 0, 0.82);
+  color: #fff3b0;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.machine-mock-badge[hidden] {
+  display: none;
 }
 
 .machine-state {
   min-height: 44px;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   padding: 8px 10px;
@@ -135,7 +177,7 @@ select {
 
 .machine-warn,
 button.machine-warn {
-  background: #9a6a25;
+  background: color-mix(in srgb, var(--cnc-warning) 62%, #332400);
 }
 
 .caution,
@@ -146,12 +188,12 @@ button.caution {
 
 .machine-danger,
 button.machine-danger {
-  background: #a83b3b;
+  background: var(--cnc-danger);
 }
 
 .machine-danger-dark,
 button.machine-danger-dark {
-  background: #5a1e1e;
+  background: color-mix(in srgb, var(--cnc-danger) 58%, #240000);
 }
 
 .machine-drawer-overlay {
@@ -174,7 +216,7 @@ button.machine-danger-dark {
   padding: 12px;
   overflow: auto;
   border-left: 1px solid var(--line);
-  background: #0b1115;
+  background: var(--cnc-bg);
   box-shadow: -24px 0 40px rgba(0, 0, 0, 0.34);
 }
 
@@ -203,6 +245,131 @@ button.machine-danger-dark {
 
 .machine-drawer-sticky-actions {
   grid-column: 1 / -1;
+}
+
+.machine-drawer-actions,
+.machine-homing-axis-row,
+.machine-zero-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.machine-homing-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.machine-feed-adjust,
+.machine-feed-presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  align-items: center;
+}
+
+.machine-feed-adjust strong {
+  display: grid;
+  min-height: 42px;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: #0b1117;
+}
+
+.machine-jog-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.machine-jog-settings input[type="number"] {
+  width: 68px;
+  min-height: 38px;
+}
+
+.machine-jog-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.machine-jog-pad {
+  position: relative;
+  width: min(100%, 230px);
+  aspect-ratio: 1;
+  margin: 0 auto;
+  border: 2px solid var(--cnc-accent);
+  border-radius: 50%;
+  background: radial-gradient(circle, #17232d 0 18%, #0b1117 19% 100%);
+  touch-action: none;
+  user-select: none;
+}
+
+.machine-jog-pad::before,
+.machine-jog-pad::after {
+  position: absolute;
+  content: "";
+  background: var(--line);
+}
+
+.machine-jog-pad::before {
+  top: 50%;
+  left: 10%;
+  width: 80%;
+  height: 1px;
+}
+
+.machine-jog-pad::after {
+  top: 10%;
+  left: 50%;
+  width: 1px;
+  height: 80%;
+}
+
+.machine-jog-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 1;
+  width: 58px;
+  height: 58px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #d9f2ff;
+  border-radius: 50%;
+  background: var(--cnc-accent);
+  pointer-events: none;
+}
+
+.machine-jog-z {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.machine-jog-z button {
+  min-height: 64px;
+  touch-action: none;
+}
+
+.compact-status {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.machine-zero-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: center;
+}
+
+.machine-zero-row label {
+  white-space: nowrap;
+}
+
+.machine-marlin-log {
+  max-height: 170px;
 }
 
 .machine-drawer-card {
@@ -280,7 +447,7 @@ a {
 .file-row {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(21, 30, 39, 0.98), rgba(15, 22, 29, 0.98));
+  background: var(--cnc-panel);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
 }
 
@@ -438,7 +605,7 @@ button,
   border: 0;
   border-radius: 7px;
   padding: 12px 14px;
-  min-height: 44px;
+  min-height: var(--cnc-button-size);
   background: #243442;
   color: #ffffff;
   font-weight: 800;
@@ -450,7 +617,7 @@ button {
 }
 
 button:not(.danger-button):not(.warning-button) {
-  background: #245f8f;
+  background: var(--cnc-accent);
 }
 
 .secondary-button,
@@ -922,7 +1089,7 @@ pre {
   }
 
   .machine-state {
-    grid-template-columns: auto auto minmax(90px, 1fr);
+    grid-template-columns: auto auto minmax(70px, 1fr) auto;
   }
 
   .machine-drawer-grid {
@@ -937,4 +1104,58 @@ pre {
   .topbar {
     top: 104px;
   }
+}
+
+.cnc-icon-slot {
+  width: 1.15em;
+  height: 1.15em;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  vertical-align: middle;
+  color: currentColor;
+}
+
+.cnc-icon {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+  flex: none;
+}
+
+button[data-icon],
+a[data-icon],
+.workbench-chip[data-icon] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.bottom-nav a[data-icon] {
+  align-content: center;
+  gap: 3px;
+}
+
+.bottom-nav a[data-icon] .cnc-icon-slot {
+  width: 1.35em;
+  height: 1.35em;
+}
+
+.appearance-panel select {
+  width: 100%;
+}
+
+.ok-badge,
+.active-badge {
+  color: var(--cnc-ok);
+  border-color: color-mix(in srgb, var(--cnc-ok) 58%, transparent);
+}
+
+.fail-badge {
+  color: color-mix(in srgb, var(--cnc-danger) 45%, white);
+  border-color: var(--cnc-danger);
 }

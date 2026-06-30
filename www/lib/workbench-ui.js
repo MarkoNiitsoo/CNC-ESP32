@@ -18,6 +18,53 @@ export function layoutModeForWidth(width) {
   return 'sidebar';
 }
 
+export function createCanvasProjection(options = {}) {
+  const {
+    width = 0,
+    height = 0,
+    bounds = { xMin: 0, xMax: 1, yMin: 0, yMax: 1 },
+    scale = 1,
+    panX = 0,
+    panY = 0,
+  } = options;
+  const originX = (width - (bounds.xMax - bounds.xMin) * scale) / 2;
+  const originY = (height - (bounds.yMax - bounds.yMin) * scale) / 2;
+  return {
+    x: (value) => originX + (value - bounds.xMin) * scale + panX,
+    y: (value) => height - (originY + (value - bounds.yMin) * scale) + panY,
+  };
+}
+
+export function zoomPanForGesture(options = {}) {
+  const {
+    panX = 0,
+    panY = 0,
+    startPoint = { x: 0, y: 0 },
+    currentPoint = startPoint,
+    viewportCenter = { x: 0, y: 0 },
+    ratio = 1,
+  } = options;
+  return {
+    panX: currentPoint.x - viewportCenter.x - ratio * (startPoint.x - viewportCenter.x - panX),
+    panY: currentPoint.y - viewportCenter.y - ratio * (startPoint.y - viewportCenter.y - panY),
+  };
+}
+
+export function commandedPositionAtLine(segments = [], lineNumber = 0) {
+  const line = Number(lineNumber);
+  if (!Number.isFinite(line) || line <= 0) return null;
+  let position = null;
+  for (const segment of segments) {
+    const segmentLine = Number(segment?.lineNumber);
+    if (!Number.isFinite(segmentLine)) continue;
+    if (segmentLine > line) break;
+    if (segment?.to && Number.isFinite(segment.to.x) && Number.isFinite(segment.to.y)) {
+      position = { x: segment.to.x, y: segment.to.y, z: Number.isFinite(segment.to.z) ? segment.to.z : null };
+    }
+  }
+  return position;
+}
+
 export function createWorkbenchState(width = 0) {
   return {
     layoutMode: layoutModeForWidth(width),

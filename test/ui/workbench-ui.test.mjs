@@ -3,9 +3,12 @@ import {
   actionPolicy,
   activeRunBadge,
   buildWorkbenchStatus,
+  commandedPositionAtLine,
+  createCanvasProjection,
   createWorkbenchState,
   layoutModeForWidth,
   reduceWorkbenchState,
+  zoomPanForGesture,
 } from '../../www/lib/workbench-ui.js';
 
 const sourceJob = {
@@ -22,6 +25,72 @@ const generatedJob = {
 };
 
 describe('canvas workbench responsive state', () => {
+  it('maps acknowledged G-code line progress to the last commanded tool endpoint', () => {
+    const segments = [
+      { to: { x: 999, y: 999, z: 999 } },
+      { lineNumber: 5, to: { x: 1, y: 2, z: 3 } },
+      { lineNumber: 8, to: { x: 10, y: 20, z: -1 } },
+    ];
+
+    expect(commandedPositionAtLine(segments, 4)).toBeNull();
+    expect(commandedPositionAtLine(segments, 5)).toEqual({ x: 1, y: 2, z: 3 });
+    expect(commandedPositionAtLine(segments, 7)).toEqual({ x: 1, y: 2, z: 3 });
+    expect(commandedPositionAtLine(segments, 8)).toEqual({ x: 10, y: 20, z: -1 });
+  });
+
+  it('moves the rendered image in the same screen direction as pointer pan', () => {
+    const base = createCanvasProjection({
+      width: 400,
+      height: 300,
+      bounds: { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
+      scale: 2,
+    });
+    const draggedUp = createCanvasProjection({
+      width: 400,
+      height: 300,
+      bounds: { xMin: 0, xMax: 100, yMin: 0, yMax: 100 },
+      scale: 2,
+      panX: 18,
+      panY: -24,
+    });
+
+    expect(draggedUp.x(50) - base.x(50)).toBe(18);
+    expect(draggedUp.y(50) - base.y(50)).toBe(-24);
+  });
+
+  it('keeps wheel zoom anchored exactly under the cursor', () => {
+    const bounds = { xMin: 0, xMax: 100, yMin: 0, yMax: 100 };
+    const cursor = { x: 310, y: 90 };
+    const viewportCenter = { x: 200, y: 150 };
+    const before = createCanvasProjection({ width: 400, height: 300, bounds, scale: 2, panX: 12, panY: -8 });
+    const world = { x: (cursor.x - 100 - 12) / 2, y: (250 - cursor.y - 8) / 2 };
+    const nextPan = zoomPanForGesture({
+      panX: 12, panY: -8, startPoint: cursor, currentPoint: cursor, viewportCenter, ratio: 1.5,
+    });
+    const after = createCanvasProjection({ width: 400, height: 300, bounds, scale: 3, ...nextPan });
+
+    expect(before.x(world.x)).toBeCloseTo(cursor.x, 8);
+    expect(before.y(world.y)).toBeCloseTo(cursor.y, 8);
+    expect(after.x(world.x)).toBeCloseTo(cursor.x, 8);
+    expect(after.y(world.y)).toBeCloseTo(cursor.y, 8);
+  });
+
+  it('keeps pinch zoom anchored under the moving two-pointer midpoint', () => {
+    const bounds = { xMin: 0, xMax: 100, yMin: 0, yMax: 100 };
+    const start = { x: 120, y: 180 };
+    const current = { x: 145, y: 155 };
+    const center = { x: 200, y: 150 };
+    const before = createCanvasProjection({ width: 400, height: 300, bounds, scale: 2 });
+    const world = { x: (start.x - 100) / 2, y: (250 - start.y) / 2 };
+    const nextPan = zoomPanForGesture({ startPoint: start, currentPoint: current, viewportCenter: center, ratio: 2 });
+    const after = createCanvasProjection({ width: 400, height: 300, bounds, scale: 4, ...nextPan });
+
+    expect(before.x(world.x)).toBeCloseTo(start.x, 8);
+    expect(before.y(world.y)).toBeCloseTo(start.y, 8);
+    expect(after.x(world.x)).toBeCloseTo(current.x, 8);
+    expect(after.y(world.y)).toBeCloseTo(current.y, 8);
+  });
+
   it('uses edge drawers on phones and overlay/sidebar modes on larger screens', () => {
     expect(layoutModeForWidth(390)).toBe('edge');
     expect(layoutModeForWidth(820)).toBe('overlay');

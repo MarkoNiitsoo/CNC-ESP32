@@ -745,6 +745,119 @@ Upload these updated SD UI files to `/www`:
 
 No firmware upload is required.
 
+## Skinnable UI Complete
+
+- Added `www/lib/ui-skins.js` and `test/ui/ui-skins.test.mjs`.
+- Skin/icon code is UI-only and contains no G28, G92, M3, M4, homing, or movement behavior.
+- Bundled skins now exist at `www/skins/default`, `www/skins/freecad-like`, and
+  `www/skins/high-contrast`, each with `skin.json`, `icons.svg`, and `theme.css`.
+- Icon artwork is original to this project; FreeCAD artwork was not copied.
+- Focused skin tests pass: 1 file, 8 tests.
+- `www/skin-init.js` initializes skins on index, preview, and files pages, observes dynamic controls,
+  persists Appearance selection, and applies semantic icons without removing critical text labels.
+- Runtime integration syntax checks and focused skin tests pass.
+- Workbench components and canvas layers now consume `--cnc-*` theme variables. Dynamic badges and
+  readiness actions update semantic icons through `window.CncSkin`.
+- Theme CSS failure falls back to Default; tests audit sprite completeness, critical labels, and
+  canvas/workbench theme-variable integration.
+- Skin architecture, original-artwork rule, custom skin workflow, fallback, accessibility, and
+  safety boundaries are documented in `docs/ui-skins.md`, mobile flow, and safety testing docs.
+- Full Vitest suite passes: 10 files, 92 tests. Fifteen UI modules pass `node --check`,
+  `git diff --check` passes, and firmware `src/` has no diff.
+- Automated local browser inspection was blocked by the current browser security policy. Perform a
+  final phone check after copying the UI bundle to SD: change Appearance through all three skins,
+  reload to verify persistence, and confirm Start/Pause/Stop/M5 retain visible text and icons.
+
+Upload these skin UI files to `/www` while preserving directories:
+
+- `index.html`
+- `files.html`
+- `preview.html`
+- `style.css`
+- `preview.css`
+- `preview.js`
+- `machine-bar.js`
+- `skin-init.js`
+- `lib/ui-skins.js`
+- `skins/default/skin.json`, `icons.svg`, `theme.css`
+- `skins/freecad-like/skin.json`, `icons.svg`, `theme.css`
+- `skins/high-contrast/skin.json`, `icons.svg`, `theme.css`
+
+No firmware upload is required for the skin system.
+
+## Local Mock Development Server In Progress
+
+- Added `dev/mock-config.json`, `dev/mock-sd.mjs`, and `dev/mock-marlin.mjs` as desktop-only code.
+- Mock SD state will live under `dev/mock-sd`; source UI files remain in repo `www/`.
+- Seed samples include safe square/rectangle plus negative-X, out-of-bounds, and dangerous-Z jobs.
+- G28 and G53 are rejected by default in MockMarlin; no real serial connection is created.
+- Added focused unit tests under `test/mock/`.
+- Next: add mock job runner, HTTP API/static server, visible mock badge, scripts, docs, and full tests.
+- Added `dev/mock-job-runner.mjs`; it imports the production UI active-run invariant instead of
+  reimplementing source/generated fallback decisions.
+- Runner streams only the armed `activeRun.path`, blocks stale/missing generated output, and models
+  firmware-shaped pause/resume/stop/feed/status behavior without physical timing or serial I/O.
+- Next: add HTTP API/static server, visible mock badge, scripts, docs, and full tests.
+- Added the Node HTTP server and package scripts. Run `npm run dev:mock`, then open
+  `http://localhost:8097`; reset persistent sample state with `npm run dev:mock:reset`.
+- Health includes `mockMode: true`, and the global Machine Bar displays a high-contrast
+  `DEV MOCK - NO REAL MACHINE` badge. Production firmware behavior is unchanged.
+- HTTP tests cover core UI/API compatibility. Safe jog remains an explicit mock TODO and returns
+  HTTP 501; no joystick behavior was added or changed.
+- Next: finish documentation, full syntax/test audit, and manual local smoke test where permitted.
+- Added complete operating notes in `docs/mock-dev-server.md` and a short README development entry.
+- Added safety/mobile documentation for the global mock badge and simulation limitations.
+- Runtime `dev/mock-sd/` is git-ignored; use `npm run dev:mock:reset` to restore seeded samples.
+- MockSD supports all existing file-manager roots, including `/firmware`; firmware upload/update
+  execution itself is intentionally not simulated.
+- Local mock development feature is complete. Final audit: 15 syntax checks pass, 14 Vitest files
+  and 107 tests pass, diff whitespace is clean, and firmware `src/` has no diff.
+- Start the mock server from the project terminal with `npm run dev:mock`, then open
+  `http://localhost:8097`. Reset state with `npm run dev:mock:reset`.
+- Browser-level visual automation was blocked by the current local-browser security policy. The
+  remaining manual check is to open the URL, verify the yellow mock badge, and walk through sample
+  Preview -> placement/generated -> Preflight -> Dry Run -> Arm -> Start/Pause/Stop.
+- Mock server now defaults to `http://localhost:8097`; port 8080 remains available for llama.cpp.
+- Mock server now binds to `0.0.0.0` and prints `LAN:` URLs for mobile/Oculus testing. Current Wi-Fi
+  address observed during implementation: `http://192.168.8.142:8097`.
+- LAN mock APIs are unauthenticated. Use only on a trusted private network and do not create a router
+  port-forward. This change affects desktop mock development only, not ESP32 firmware.
+- Canvas panning now follows direct-manipulation semantics on mouse and touch. `panY` is applied in
+  screen coordinates after the machine Y-axis inversion, with a focused regression test.
+- Full suite passes with 108 tests. Refresh the mock Preview page before testing because the local
+  server serves source files directly but the browser may retain the previously loaded script.
+- Machine Drawer compaction, joystick restoration, mock jog support, and bounded Go To Work Zero
+  are implemented.
+- Go To Work Zero is now backed by firmware endpoint `/api/work-zero/goto`; X0/Y0/XY0 never send
+  G92 or Z0. Safe mode lifts first and does not automatically lower Z. This firmware change requires
+  a wired/WebOTA/SD-rescue firmware update before the controls work on the ESP32.
+- Repeated safe XY jog gestures retain the original captured Z until restore. Mock mode now supports
+  the jog API, so joystick UI can be exercised from desktop/mobile/Oculus without CNC hardware.
+- Focused tests cover the compact drawer and new movement safety invariants. Automatic blur/hidden
+  stop is guarded so an idle page cannot emit M410/M5 merely because focus changed.
+- PlatformIO build passes for firmware `0.4.8-machine-controls`: 15.0% RAM and 49.8% flash.
+- Work-zero endpoint returns after Marlin accepts the ordered lift/XY commands; it does not claim
+  long physical travel is already complete or wait on M400 through a short HTTP timeout.
+- Final verification: 114 tests and the PlatformIO build pass. Refresh the mock UI to load the new
+  Machine Bar. Real ESP32 Go To Work Zero requires flashing `0.4.8-machine-controls`; the compact
+  UI and existing jog controls are SD `/www` updates.
+- Wheel and pinch zoom now preserve their screen-space anchor under cursor/midpoint. Semantic icons
+  render inside an explicit 24x24 SVG viewport instead of being clipped or offset by CSS sizing.
+- Final suite after zoom/icon fixes: 15 files, 116 tests pass. Refresh the mock page to load the
+  updated UI modules; no additional firmware flash is needed for these two visual fixes.
+- Mock identity is now a small badge in the state/XYZ row rather than a full-width banner. This is a
+  UI-only change and appears after refreshing the mock page.
+- Final suite after the badge change: 15 files, 117 tests pass.
+- Fixed false `Generated run fingerprint changed` blocking for fallback fingerprints where one
+  component stores `size+fnv1a` and another stores `size+fnv1a+cyrb53`. Compatibility requires the
+  same size and FNV-1a; this is UI/shared metadata logic only and needs no firmware flash.
+- Actual mock `safe-rectangle.gc.job.json` validation returns `Generated run file is valid`; final
+  suite passes with 118 tests. Refresh Preview, then continue Dry Run -> Arm -> Start.
+- Canvas now distinguishes work zero from tool position. M114 positions are shown as actual reported
+  work coordinates; during a real running job without a status position field, the marker is labelled
+  `CMD` and represents the latest acknowledged G-code endpoint, not measured physical position.
+- Next: run the complete syntax/test/diff audit and report any remaining mock limitations.
+
 ## Mobile Canvas Workbench In Progress
 
 - Feature branch: `codex/mobile-canvas-workbench`.
@@ -783,3 +896,5 @@ Upload these SD UI files to `/www`:
 - `lib/workbench-controller.js`
 
 No firmware upload is required.
+- 2026-06-29 tool-position UI: the canvas overlay now says `WORK ZERO NOT SET` until a captured work zero exists, then `WORK ZERO X0 Y0`. `TOOL ... M114` is an idle/setup position, `TOOL ... STATUS` is supplied by job status (including the mock runner), and `TOOL ... CMD` is the commanded endpoint inferred from the latest acknowledged file line while real firmware is streaming. Background M114 polling is disabled for active job states and active jog.
+- 2026-06-29 position mapping detail: `currentLineNumber` is a cleaned non-empty command counter in firmware, so legacy preview segments now carry `lineNumber: parsedLines`; all approximated segments from one G2/G3 command share that command number. The mock runner mirrors this counter. `CMD` is the latest streamed command endpoint, not encoder feedback.

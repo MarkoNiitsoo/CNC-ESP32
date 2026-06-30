@@ -224,6 +224,9 @@ Generated run stale rules:
 - Active generated path must match the placement/generated path.
 - Dry-run and arm metadata are stale if their stored active run path or fingerprint differs from the
   current active run.
+- Fallback fingerprints may be stored as `size+fnv1a` or the stronger `size+fnv1a+cyrb53` form.
+  They identify the same bytes when both size and FNV-1a match; optional extra components do not by
+  themselves make generated output stale. A changed shared component still blocks execution.
 
 There is no silent source fallback. If the operator changed placement, the generated active run file
 is required until `Reset Placement / Use Original` explicitly returns the job to source mode.

@@ -86,6 +86,8 @@ const workbenchActiveRunEl = document.querySelector('#workbench-active-run');
 const workbenchReadinessEl = document.querySelector('#open-readiness-drawer');
 const canvasJobNameEl = document.querySelector('#canvas-job-name');
 const canvasActivePathEl = document.querySelector('#canvas-active-path');
+const canvasWorkZeroTextEl = document.querySelector('#canvas-work-zero-text');
+const canvasToolPositionEl = document.querySelector('#canvas-tool-position');
 const ctx = canvas.getContext('2d');
 
 const MACHINE = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800 };
@@ -122,6 +124,7 @@ let placementUpdateTimer = null;
 let suppressPlacementChange = false;
 let workbenchUiModule = null;
 let workbenchController = null;
+let liveToolPosition = null;
 
 const toolpathModulesPromise = Promise.all([
   import('/lib/toolpath-model.js'),
@@ -159,6 +162,27 @@ function workbenchChipClass(level) {
   return ['ok', 'warn', 'fail', 'active'].includes(level) ? level : 'muted';
 }
 
+function activeRunIcon(label) {
+  if (label === 'GENERATED') return 'generated';
+  if (label === 'STALE') return 'warning';
+  if (label === 'BLOCKED') return 'blocked';
+  return 'source';
+}
+
+function readinessIcon(label) {
+  if (label === 'READY' || label === 'ARMED' || label === 'RUNNING') return 'ok';
+  if (label === 'PAUSED') return 'pause';
+  return 'blocked';
+}
+
+function actionIcon(action = {}) {
+  return ({
+    choose_file: 'files', update_run_file: 'generated', set_work_zero: 'workZero', set_z_zero: 'zZero',
+    run_dry_run: 'dryRun', arm_job: 'arm', start_cut: 'start', monitor_job: 'log', resume_job: 'start',
+    review_last_run: 'log', pause_job: 'pause', stop_job: 'stop', m5: 'm5',
+  })[action.id] || 'ok';
+}
+
 function renderWorkbenchStatus() {
   if (!workbenchUiModule) return;
   const status = workbenchUiModule.buildWorkbenchStatus(previewReadinessJob(), {
@@ -173,10 +197,14 @@ function renderWorkbenchStatus() {
     workbenchActiveRunEl.textContent = status.activeRun.label;
     workbenchActiveRunEl.title = status.activeRunPath || '';
     workbenchActiveRunEl.className = `workbench-chip ${workbenchChipClass(status.activeRun.level)}`;
+    workbenchActiveRunEl.dataset.icon = activeRunIcon(status.activeRun.label);
+    window.CncSkin?.applyIcons(workbenchActiveRunEl);
   }
   if (workbenchReadinessEl) {
     workbenchReadinessEl.textContent = status.readiness.label;
     workbenchReadinessEl.className = `workbench-chip status-trigger ${workbenchChipClass(status.readiness.level)}`;
+    workbenchReadinessEl.dataset.icon = readinessIcon(status.readiness.label);
+    window.CncSkin?.applyIcons(workbenchReadinessEl);
   }
   if (canvasJobNameEl) canvasJobNameEl.textContent = basename(filePath) || 'No job';
   if (canvasActivePathEl) canvasActivePathEl.textContent = status.activeRunPath || 'Choose a G-code file';
@@ -301,6 +329,7 @@ function renderReadiness() {
   primaryButton.type = 'button';
   primaryButton.className = 'primary-action';
   primaryButton.textContent = primary?.label || 'Review Job';
+  primaryButton.dataset.icon = actionIcon(primary);
   primaryButton.addEventListener('click', () => {
     handleReadinessAction(primary).catch((err) => {
       if (jobResultEl) {
@@ -316,6 +345,7 @@ function renderReadiness() {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = secondary.label;
+    button.dataset.icon = actionIcon(secondary);
     button.addEventListener('click', () => {
       handleReadinessAction(secondary).catch((err) => appendRunLog(`Readiness action failed: ${err.message}`));
     });
@@ -425,7 +455,7 @@ function parseAxisTriplet(text, regex) {
 }
 
 function parseM114(response) {
-  return {
+  const capture = {
     rawM114: response,
     position: {
       x: parseAxisTriplet(response, /(?:^|\s)X:\s*(-?\d+(?:\.\d+)?)/i),
@@ -438,6 +468,44 @@ function parseM114(response) {
       z: parseAxisTriplet(response, /Count\s+.*?\bZ:\s*(-?\d+(?:\.\d+)?)/i),
     },
   };
+  if (Number.isFinite(capture.position.x) && Number.isFinite(capture.position.y)) {
+    window.dispatchEvent(new CustomEvent('cnc-position-update', {
+      detail: { ...capture.position, source: 'M114', updatedAt: Date.now() },
+    }));
+  }
+  return capture;
+}
+
+function canvasToolPosition() {
+  const state = String(jobRunStatus?.state || '').toUpperCase();
+  const active = ['RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(state);
+  const statusPosition = jobRunStatus?.position || jobRunStatus?.lastKnownPosition;
+  if (active && Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
+    return { ...statusPosition, source: 'STATUS' };
+  }
+  if (active) {
+    const commanded = workbenchUiModule?.commandedPositionAtLine(parsed?.segments || [], jobRunStatus?.currentLineNumber);
+    if (commanded) return { ...commanded, source: 'CMD' };
+  }
+  if (liveToolPosition) return liveToolPosition;
+  if (Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
+    return { ...statusPosition, source: 'STATUS' };
+  }
+  return null;
+}
+
+function renderCanvasPositionOverlay() {
+  if (canvasWorkZeroTextEl) {
+    canvasWorkZeroTextEl.textContent = hasWorkZero() ? 'WORK ZERO X0 Y0' : 'WORK ZERO NOT SET';
+  }
+  const position = canvasToolPosition();
+  if (canvasToolPositionEl) {
+    const formatAxis = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '-';
+    canvasToolPositionEl.textContent = position
+      ? `TOOL X${formatAxis(position.x)} Y${formatAxis(position.y)} Z${formatAxis(position.z)} ${position.source || ''}`.trim()
+      : 'TOOL X- Y- Z-';
+  }
+  return position;
 }
 
 function previewSummary() {
@@ -801,11 +869,15 @@ function visibleArmState() {
   if (arm?.state === 'STALE') return 'STALE';
   if (arm?.state === 'ARMED') {
     const savedFingerprint = arm.gcodeFingerprint || arm.gcodeHashSha256;
-    const savedAlgorithm = arm.gcodeFingerprintAlgorithm || (arm.gcodeHashSha256 ? 'sha-256-webcrypto' : '');
-    if (savedFingerprint !== gcodeFingerprint || savedAlgorithm !== gcodeFingerprintAlgorithm) return 'STALE';
+    const sameFingerprint = jobActiveRunModule?.fingerprintsMatch
+      ? jobActiveRunModule.fingerprintsMatch(savedFingerprint, gcodeFingerprint)
+      : savedFingerprint === gcodeFingerprint;
+    if (!sameFingerprint) return 'STALE';
     if (arm.activeRunPath && arm.activeRunPath !== currentRunPath()) return 'STALE';
     if (arm.activeRunMode && arm.activeRunMode !== currentRunMode()) return 'STALE';
-    if (arm.activeRunFingerprint && arm.activeRunFingerprint !== gcodeFingerprint) return 'STALE';
+    if (arm.activeRunFingerprint && !(jobActiveRunModule?.fingerprintsMatch
+      ? jobActiveRunModule.fingerprintsMatch(arm.activeRunFingerprint, gcodeFingerprint)
+      : arm.activeRunFingerprint === gcodeFingerprint)) return 'STALE';
     if (currentRunMode() === 'generated' && arm.transformFingerprint && arm.transformFingerprint !== jobState?.activeRun?.transformFingerprint) return 'STALE';
     if (arm.activeRun?.path && arm.activeRun.path !== currentRunPath()) return 'STALE';
     if (arm.activeRun?.mode && arm.activeRun.mode !== currentRunMode()) return 'STALE';
@@ -2492,15 +2564,15 @@ function targetPosition(pos, words, scale, absolute) {
   return next;
 }
 
-function addLinear(segments, bounds, from, to, rapid, feedrate = null) {
+function addLinear(segments, bounds, from, to, rapid, feedrate = null, lineNumber = null) {
   updateBounds(bounds, from);
   updateBounds(bounds, to);
   if (from.x !== to.x || from.y !== to.y) {
-    segments.push({ from: { ...from }, to: { ...to }, rapid, feedrate });
+    segments.push({ from: { ...from }, to: { ...to }, rapid, feedrate, lineNumber });
   }
 }
 
-function addArc(segments, bounds, from, to, words, scale, clockwise, warnings, feedrate) {
+function addArc(segments, bounds, from, to, words, scale, clockwise, warnings, feedrate, lineNumber) {
   if (words.I === undefined && words.J === undefined) {
     warnings.push('Arc without I/J center offset was skipped.');
     return false;
@@ -2531,7 +2603,7 @@ function addArc(segments, bounds, from, to, words, scale, clockwise, warnings, f
       y: cy + Math.sin(angle) * radius,
       z: from.z + (to.z - from.z) * t,
     };
-    addLinear(segments, bounds, prev, next, false, feedrate);
+    addLinear(segments, bounds, prev, next, false, feedrate, lineNumber);
     prev = next;
   }
   return true;
@@ -2626,9 +2698,9 @@ function parseGcode(text) {
 
     const next = targetPosition(pos, words, unitsScale, absolute);
     if (motion === 0 || motion === 1) {
-      addLinear(segments, bounds, pos, next, motion === 0, motion === 1 ? feedrate : null);
+      addLinear(segments, bounds, pos, next, motion === 0, motion === 1 ? feedrate : null, parsedLines);
     } else if (motion === 2 || motion === 3) {
-      if (addArc(segments, bounds, pos, next, words, unitsScale, motion === 2, warnings, feedrate)) {
+      if (addArc(segments, bounds, pos, next, words, unitsScale, motion === 2, warnings, feedrate, parsedLines)) {
         arcApproximated += 1;
       } else {
         arcSkipped += 1;
@@ -2756,6 +2828,11 @@ function drawSegments(segments, px, py, options = {}) {
   ctx.setLineDash([]);
 }
 
+function themeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
 function hasBounds(bounds) {
   return bounds && Number.isFinite(bounds.xMin) && Number.isFinite(bounds.xMax) &&
     Number.isFinite(bounds.yMin) && Number.isFinite(bounds.yMax);
@@ -2774,6 +2851,7 @@ function estimateText(seconds) {
 }
 
 function draw() {
+  const visibleToolPosition = renderCanvasPositionOverlay();
   if (!parsed) return;
   const rect = canvas.getBoundingClientRect();
   const ratio = devicePixelRatio || 1;
@@ -2796,16 +2874,37 @@ function draw() {
   const sx = w / (view.xMax - view.xMin);
   const sy = h / (view.yMax - view.yMin);
   const scale = Math.min(sx, sy) * workbenchView.zoom;
-  const ox = (w - (view.xMax - view.xMin) * scale) / 2 + workbenchView.panX;
-  const oy = (h - (view.yMax - view.yMin) * scale) / 2 + workbenchView.panY;
-  const px = (x) => ox + (x - view.xMin) * scale;
-  const py = (y) => h - (oy + (y - view.yMin) * scale);
+  const projection = workbenchUiModule?.createCanvasProjection({
+    width: w,
+    height: h,
+    bounds: view,
+    scale,
+    panX: workbenchView.panX,
+    panY: workbenchView.panY,
+  }) || {
+    x: (x) => (w - (view.xMax - view.xMin) * scale) / 2 + (x - view.xMin) * scale + workbenchView.panX,
+    y: (y) => h - ((h - (view.yMax - view.yMin) * scale) / 2 + (y - view.yMin) * scale) + workbenchView.panY,
+  };
+  const px = projection.x;
+  const py = projection.y;
 
-  if (layers.table) strokeBounds(ctx, MACHINE, px, py, '#2d80c7');
+  const colors = {
+    accent: themeColor('--cnc-accent', '#2d80c7'),
+    source: themeColor('--cnc-path-source', '#4c8f69'),
+    generated: themeColor('--cnc-path-generated', '#ffd166'),
+    travel: themeColor('--cnc-path-travel', '#2f86d1'),
+    cut: themeColor('--cnc-path-cut', '#65d28e'),
+    rawBounds: themeColor('--cnc-bounds-raw', '#9fb1bf'),
+    cutBounds: themeColor('--cnc-bounds-cut', '#3fc475'),
+    placementBounds: themeColor('--cnc-bounds-placement', '#ffd166'),
+    zero: themeColor('--cnc-zero', '#ffd166'),
+    position: themeColor('--cnc-current-position', '#62b0ff'),
+  };
+  if (layers.table) strokeBounds(ctx, MACHINE, px, py, colors.accent);
   if (layers.bounds) {
-    strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, px, py, 'rgba(159,177,191,0.7)', [7, 5]);
-    strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, px, py, 'rgba(63,196,117,0.8)', [3, 3]);
-    strokeBounds(ctx, transformedPreview?.generatedRunBounds, px, py, 'rgba(255,209,102,0.9)', [8, 4]);
+    strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, px, py, colors.rawBounds, [7, 5]);
+    strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, px, py, colors.cutBounds, [3, 3]);
+    strokeBounds(ctx, transformedPreview?.generatedRunBounds, px, py, colors.placementBounds, [8, 4]);
     const dryRunComplete = jobState?.dryRun?.lastBoundingBoxTraceStatus === 'complete' ||
       jobState?.dryRun?.lastAircutStatus === 'complete';
     if (dryRunComplete) {
@@ -2817,15 +2916,15 @@ function draw() {
           xMax: active.xMax + margin,
           yMin: active.yMin - margin,
           yMax: active.yMax + margin,
-        }, px, py, '#c084fc', [10, 4]);
+        }, px, py, colors.placementBounds, [10, 4]);
       }
     }
   }
   if (layers.source && sourceParsed?.segments?.length) {
     drawSegments(sourceParsed.segments, px, py, {
       showTravel: layers.travel,
-      cutColor: '#4c8f69',
-      travelColor: '#40515a',
+      cutColor: colors.source,
+      travelColor: colors.rawBounds,
       alpha: currentRunMode() === 'source' ? 0.62 : 0.34,
       cutWidth: 1.2,
     });
@@ -2833,15 +2932,15 @@ function draw() {
   if (layers.path) {
     drawSegments(parsed.segments, px, py, {
       showTravel: layers.travel,
-      cutColor: currentRunMode() === 'generated' ? '#ffd166' : '#65d28e',
-      travelColor: '#2f86d1',
+      cutColor: currentRunMode() === 'generated' ? colors.generated : colors.cut,
+      travelColor: colors.travel,
     });
   }
   if (layers.generated && transformedPreview?.segments?.length) {
     drawSegments(transformedPreview.segments, px, py, {
       showTravel: layers.travel,
-      cutColor: '#ffd166',
-      travelColor: '#2f86d1',
+      cutColor: colors.generated,
+      travelColor: colors.travel,
       alpha: 0.92,
       cutWidth: 2,
     });
@@ -2850,7 +2949,7 @@ function draw() {
     const zeroX = px(0);
     const zeroY = py(0);
     ctx.save();
-    ctx.strokeStyle = '#ffd166';
+    ctx.strokeStyle = colors.zero;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(zeroX - 9, zeroY);
@@ -2858,9 +2957,9 @@ function draw() {
     ctx.moveTo(zeroX, zeroY - 9);
     ctx.lineTo(zeroX, zeroY + 9);
     ctx.stroke();
-    const position = jobRunStatus?.position || jobRunStatus?.lastKnownPosition;
+    const position = visibleToolPosition;
     if (Number.isFinite(position?.x) && Number.isFinite(position?.y)) {
-      ctx.fillStyle = '#62b0ff';
+      ctx.fillStyle = colors.position;
       ctx.beginPath();
       ctx.arc(px(position.x), py(position.y), 5, 0, Math.PI * 2);
       ctx.fill();
@@ -3395,6 +3494,13 @@ previewTabButtons.forEach((button) => {
 });
 addEventListener('hashchange', routePreviewTab);
 addEventListener('resize', draw);
+addEventListener('cnc-skin-change', draw);
+addEventListener('cnc-position-update', (event) => {
+  const position = event.detail || {};
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+  liveToolPosition = { ...position };
+  draw();
+});
 addEventListener('error', (event) => {
   appendRunLog(`Browser error: ${event.message}`);
   if (stopJobButton) stopJobButton.disabled = false;

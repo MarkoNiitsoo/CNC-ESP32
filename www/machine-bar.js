@@ -6,7 +6,12 @@
     drawerOpen: false,
     lastMessage: '',
     marlinLog: { entries: [], lastCritical: null },
+    jog: { state: 'IDLE', zLiftedForJog: false, heartbeatAgeMs: 0, lastCommand: '', lastError: '' },
+    jogVector: { x: 0, y: 0, z: 0, speed: 0 },
   };
+  let jogTimer = null;
+  let jogUpdatePending = false;
+  let jogPointerId = null;
 
   const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
@@ -38,6 +43,9 @@
       y: Number(match[2]),
       z: Number(match[3]),
     };
+    window.dispatchEvent(new CustomEvent('cnc-position-update', {
+      detail: { ...STATE.position, source: 'M114', updatedAt: Date.now() },
+    }));
     return true;
   }
 
@@ -200,6 +208,11 @@
     await refreshJobStatus();
   }
 
+  async function pauseOrResumeJob() {
+    if (visibleJobState() === 'PAUSED') return resumeJob();
+    return pauseJob();
+  }
+
   async function stopJob() {
     const state = visibleJobState();
     if (state === 'STOPPING') {
@@ -222,6 +235,166 @@
   async function refreshPosition() {
     await sendCmd('M114');
     setMessage('Position refreshed');
+  }
+
+  async function pollPosition() {
+    const state = visibleJobState();
+    if (state === 'UNKNOWN' || ACTIVE_STATES.has(state) || jogIsUiActive()) return;
+    const data = await apiPost('/api/cmd', { cmd: 'M114' });
+    parseM114(data.response || '');
+    render();
+  }
+
+  async function goToWorkZero(axes) {
+    if (!canSetup()) throw new Error('Work-zero movement is unavailable while the job is active.');
+    if (!confirmUnknown('moving to work zero')) return;
+    const safeMove = Boolean(el('mb-goto-safe')?.checked);
+    const safeZ = Math.max(1, Math.min(200, Number(el('mb-jog-safe-z')?.value || 70)));
+    const label = String(axes || '').toUpperCase();
+    const message = safeMove
+      ? `Move ${label} to work zero after lifting to Z${safeZ.toFixed(1)} mm? Z will remain at safe height.`
+      : `DIRECT ${label} MOVE AT CURRENT Z: This can drag the tool through material. Continue?`;
+    if (!confirm(message)) return;
+    const data = await apiPost('/api/work-zero/goto', { axes, safeMove, safeZ });
+    setMessage(data.message || `${label} work-zero move complete`);
+    await refreshPosition().catch(() => {});
+  }
+
+  function jogSettings(safeJog) {
+    const xySpeed = Math.max(10, Math.min(100, Number(el('mb-jog-xy-speed')?.value || 50)));
+    const zSpeed = Math.max(1, Math.min(10, Number(el('mb-jog-z-speed')?.value || 5)));
+    return {
+      safeJog,
+      safeLiftZ: Math.max(1, Math.min(200, Number(el('mb-jog-safe-z')?.value || 70))),
+      restoreZAfterJog: safeJog && Boolean(el('mb-jog-restore-z')?.checked),
+      restoreDelayMs: 5000,
+      xyFeedMax: Math.round(xySpeed * 60),
+      zFeedMax: Math.round(zSpeed * 60),
+    };
+  }
+
+  function jogIsUiActive() {
+    return ['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'].includes(String(STATE.jog?.state || ''));
+  }
+
+  async function refreshJogStatus() {
+    try {
+      const res = await fetch('/api/jog/status');
+      const data = await readJson(res);
+      if (!res.ok || data.ok === false) throw new Error(data.error || 'Jog status unavailable');
+      STATE.jog = data;
+    } catch (err) {
+      STATE.jog = { state: 'UNAVAILABLE', lastError: err.message };
+    }
+    render();
+  }
+
+  async function sendJogUpdate() {
+    if (jogUpdatePending || STATE.jog?.state !== 'JOGGING') return;
+    jogUpdatePending = true;
+    try {
+      STATE.jog = await apiPost('/api/jog/update', STATE.jogVector);
+    } finally {
+      jogUpdatePending = false;
+      render();
+    }
+  }
+
+  async function startJog(safeJog) {
+    if (jogTimer || STATE.jog?.state === 'JOGGING') return;
+    STATE.jog = await apiPost('/api/jog/start', jogSettings(safeJog));
+    jogTimer = setInterval(() => {
+      sendJogUpdate().catch((err) => {
+        setMessage(`Jog stopped: ${err.message}`);
+        stopJog().catch(() => {});
+      });
+    }, 150);
+    await sendJogUpdate();
+    render();
+  }
+
+  async function stopJog(force = false) {
+    if (!force && !jogTimer && !jogIsUiActive()) return;
+    if (jogTimer) clearInterval(jogTimer);
+    jogTimer = null;
+    jogUpdatePending = false;
+    STATE.jogVector = { x: 0, y: 0, z: 0, speed: 0 };
+    const knob = el('mb-jog-knob');
+    if (knob) knob.style.transform = 'translate(-50%, -50%)';
+    try {
+      STATE.jog = await apiPost('/api/jog/stop');
+    } catch (err) {
+      STATE.jog = { ...(STATE.jog || {}), state: 'ERROR', lastError: err.message };
+      throw err;
+    } finally {
+      render();
+    }
+  }
+
+  function updateJoystickVector(event) {
+    const pad = el('mb-jog-pad');
+    const knob = el('mb-jog-knob');
+    if (!pad || !knob) return;
+    const rect = pad.getBoundingClientRect();
+    const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.38);
+    let dx = event.clientX - (rect.left + rect.width / 2);
+    let dy = event.clientY - (rect.top + rect.height / 2);
+    const distance = Math.hypot(dx, dy);
+    if (distance > radius) {
+      dx = dx / distance * radius;
+      dy = dy / distance * radius;
+    }
+    const x = dx / radius;
+    const y = -dy / radius;
+    STATE.jogVector = { x, y, z: 0, speed: Math.min(1, Math.hypot(x, y)) };
+    knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+  }
+
+  function installJoystick() {
+    const pad = el('mb-jog-pad');
+    pad?.addEventListener('pointerdown', (event) => {
+      if (jogPointerId !== null) return;
+      jogPointerId = event.pointerId;
+      pad.setPointerCapture?.(event.pointerId);
+      updateJoystickVector(event);
+      startJog(Boolean(el('mb-jog-safe')?.checked)).catch((err) => {
+        setMessage(`Jog unavailable: ${err.message}`);
+        jogPointerId = null;
+        stopJog().catch(() => {});
+      });
+    });
+    pad?.addEventListener('pointermove', (event) => {
+      if (event.pointerId === jogPointerId) updateJoystickVector(event);
+    });
+    const end = (event) => {
+      if (event.pointerId !== jogPointerId) return;
+      jogPointerId = null;
+      stopJog().catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+    };
+    pad?.addEventListener('pointerup', end);
+    pad?.addEventListener('pointercancel', end);
+
+    document.querySelectorAll('[data-mb-jog-z]').forEach((item) => {
+      let pointerId = null;
+      item.addEventListener('pointerdown', (event) => {
+        if (pointerId !== null) return;
+        pointerId = event.pointerId;
+        item.setPointerCapture?.(event.pointerId);
+        STATE.jogVector = { x: 0, y: 0, z: Number(item.dataset.mbJogZ), speed: 1 };
+        startJog(false).catch((err) => {
+          pointerId = null;
+          setMessage(`Z jog unavailable: ${err.message}`);
+          stopJog().catch(() => {});
+        });
+      });
+      const stop = (event) => {
+        if (event.pointerId !== pointerId) return;
+        pointerId = null;
+        stopJog().catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+      };
+      item.addEventListener('pointerup', stop);
+      item.addEventListener('pointercancel', stop);
+    });
   }
 
   async function setWorkZero() {
@@ -288,6 +461,7 @@
     const progress = Number(STATE.job?.progressPercent || 0);
 
     const stateEl = el('mb-job-state');
+    const mockBadgeEl = el('mb-mock-badge');
     const progressEl = el('mb-progress');
     const xyzEl = el('mb-xyz');
     const drawerXyzEl = el('mb-drawer-xyz');
@@ -298,6 +472,10 @@
     const marlinLogEl = el('mb-marlin-log');
     const drawerStateEl = el('mb-drawer-state');
     const drawerFeedEl = el('mb-drawer-feed');
+    const pauseResumeEl = el('mb-pause');
+    const drawerPauseResumeEl = el('mb-drawer-pause-resume');
+    const liveMarlinEl = el('mb-live-marlin');
+    const jogStatusEl = el('mb-jog-status');
     const xyzText = `X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`;
     const feed = feedPercent();
     const entries = STATE.marlinLog?.entries || [];
@@ -306,6 +484,11 @@
     if (stateEl) {
       stateEl.textContent = state;
       stateEl.dataset.state = state.toLowerCase();
+    }
+    if (mockBadgeEl) {
+      mockBadgeEl.hidden = !STATE.health?.mockMode;
+      mockBadgeEl.textContent = 'DEV MOCK';
+      mockBadgeEl.title = STATE.health?.modeLabel || 'DEV MOCK - NO REAL MACHINE';
     }
     if (progressEl) progressEl.textContent = ACTIVE_STATES.has(state) ? `${progress.toFixed(1)}%` : '';
     if (xyzEl) xyzEl.textContent = xyzText;
@@ -343,11 +526,29 @@
       marlinLogEl.scrollTop = marlinLogEl.scrollHeight;
     }
 
-    setDisabled('mb-pause', !(running || isUnknown()));
-    setDisabled('mb-resume', !(paused || isUnknown()));
+    const pauseLabel = paused ? 'Resume' : 'Pause';
+    [pauseResumeEl, drawerPauseResumeEl].forEach((item) => {
+      if (!item) return;
+      item.textContent = pauseLabel;
+      item.setAttribute('aria-label', `${pauseLabel} job`);
+      item.dataset.icon = paused ? 'start' : 'pause';
+      item.classList.toggle('machine-warn', !paused);
+    });
+    window.CncSkin?.applyIcons?.(document.querySelector('.machine-shell'));
+    if (liveMarlinEl) {
+      const liveText = STATE.marlinLog?.lastCritical || lastEntry?.text || '';
+      liveMarlinEl.hidden = !liveText || (!ACTIVE_STATES.has(state) && !STATE.marlinLog?.lastCritical);
+      liveMarlinEl.textContent = STATE.marlinLog?.lastCritical ? `! ${liveText}` : `<- ${liveText}`;
+      liveMarlinEl.classList.toggle('warning', Boolean(STATE.marlinLog?.lastCritical));
+    }
+    if (jogStatusEl) {
+      const jog = STATE.jog || {};
+      jogStatusEl.textContent = `${jog.state || 'IDLE'} | Safe Z ${jog.zLiftedForJog ? 'lifted' : 'not lifted'} | ${jog.lastError || jog.lastCommand || 'ready'}`;
+    }
+
+    setDisabled('mb-pause', !(running || paused || isUnknown()));
     setDisabled('mb-stop', state === 'STOPPING');
-    setDisabled('mb-drawer-pause', !(running || isUnknown()));
-    setDisabled('mb-drawer-resume', !(paused || isUnknown()));
+    setDisabled('mb-drawer-pause-resume', !(running || paused || isUnknown()));
     setDisabled('mb-drawer-stop', state === 'STOPPING');
 
     const disableZero = busy;
@@ -362,6 +563,9 @@
     setDisabled('mb-home-y', disableHoming);
     setDisabled('mb-home-z', disableHoming);
     setDisabled('mb-home-all', disableHoming);
+    document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
+      item.disabled = disableHoming || jogIsUiActive();
+    });
   }
 
   function install() {
@@ -373,12 +577,14 @@
           <strong id="mb-job-state" data-state="unknown">UNKNOWN</strong>
           <span id="mb-progress"></span>
           <span id="mb-xyz">X - Y - Z -</span>
+          <small id="mb-mock-badge" class="machine-mock-badge" title="DEV MOCK - NO REAL MACHINE" hidden>DEV MOCK</small>
         </button>
         <div class="machine-actions">
-          <button id="mb-pause" class="machine-warn" type="button">Pause</button>
-          <button id="mb-stop" class="machine-danger" type="button">Stop</button>
-          <button id="mb-m5" class="machine-danger-dark" type="button">M5</button>
+          <button id="mb-pause" class="machine-warn" type="button" aria-label="Pause job" data-icon="pause">Pause</button>
+          <button id="mb-stop" class="machine-danger" type="button" aria-label="Stop job" data-icon="stop">Stop</button>
+          <button id="mb-m5" class="machine-danger-dark" type="button" aria-label="Spindle or laser off M5" data-icon="m5">M5</button>
         </div>
+        <p id="mb-live-marlin" class="machine-live-message" hidden></p>
       </div>
       <div id="machine-drawer-overlay" class="machine-drawer-overlay" hidden></div>
       <aside id="machine-drawer" class="machine-drawer" hidden aria-label="Machine safety drawer">
@@ -389,11 +595,10 @@
             <p id="mb-warning" class="warning" hidden>Machine/job state is unknown.</p>
           </div>
           <button id="mb-close" type="button">Close</button>
-          <div class="machine-drawer-grid machine-drawer-sticky-actions">
-            <button id="mb-drawer-pause" class="machine-warn" type="button">Pause</button>
-            <button id="mb-drawer-resume" type="button">Resume</button>
-            <button id="mb-drawer-stop" class="machine-danger" type="button">Stop</button>
-            <button id="mb-drawer-m5" class="machine-danger-dark" type="button">M5</button>
+          <div class="machine-drawer-actions machine-drawer-sticky-actions">
+            <button id="mb-drawer-pause-resume" class="machine-warn" type="button" data-icon="pause">Pause</button>
+            <button id="mb-drawer-stop" class="machine-danger" type="button" data-icon="stop">Stop</button>
+            <button id="mb-drawer-m5" class="machine-danger-dark" type="button" data-icon="m5">M5</button>
           </div>
         </div>
         <div class="machine-drawer-card">
@@ -404,33 +609,42 @@
         <div class="machine-drawer-card">
           <h2>Feed Override</h2>
           <p>Movement speed only. Router RPM does not change.</p>
-          <p>Current: <strong id="mb-feed">100%</strong></p>
-          <div class="machine-drawer-grid">
+          <div class="machine-feed-adjust">
+            <button type="button" data-mb-feed-delta="-10">-10</button>
+            <button type="button" data-mb-feed-delta="-1">-1</button>
+            <strong id="mb-feed">100%</strong>
+            <button type="button" data-mb-feed-delta="1">+1</button>
+            <button type="button" data-mb-feed-delta="10">+10</button>
+          </div>
+          <div class="machine-feed-presets">
             <button type="button" data-mb-feed="50">50%</button>
             <button type="button" data-mb-feed="75">75%</button>
             <button type="button" data-mb-feed="100">100%</button>
             <button type="button" data-mb-feed="125">125%</button>
             <button type="button" data-mb-feed="150" class="machine-warn">150%</button>
-            <button type="button" data-mb-feed-delta="-1">-1%</button>
-            <button type="button" data-mb-feed-delta="1">+1%</button>
-            <button type="button" data-mb-feed-delta="-10">-10%</button>
-            <button type="button" data-mb-feed-delta="10">+10%</button>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Joystick</h2>
-          <p class="warning">TODO: joystick controls stay disabled in this refactor. No joystick behavior changed.</p>
-          <div class="machine-drawer-grid">
-            <button type="button" disabled>XY Jog</button>
-            <button type="button" disabled>Z Jog</button>
+          <div class="machine-jog-settings">
+            <label><input id="mb-jog-safe" type="checkbox" checked> Safe</label>
+            <label>Safe Z <input id="mb-jog-safe-z" type="number" min="1" max="200" step="1" value="70"></label>
+            <label><input id="mb-jog-restore-z" type="checkbox" checked> Restore Z</label>
           </div>
-        </div>
-        <div class="machine-drawer-card">
-          <h2>Marlin Messages</h2>
-          <p id="mb-marlin-last">No Marlin messages yet.</p>
-          <p id="mb-marlin-critical" class="warning" hidden></p>
-          <pre id="mb-marlin-log" class="log">No recent Marlin log entries.</pre>
-          <a class="maintenance-link" href="/#logs">Open Full Logs</a>
+          <div class="machine-jog-layout">
+            <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick">
+              <span id="mb-jog-knob" class="machine-jog-knob"></span>
+            </div>
+            <div class="machine-jog-z">
+              <button type="button" data-mb-jog-z="1">Z+</button>
+              <button type="button" data-mb-jog-z="-1">Z-</button>
+            </div>
+          </div>
+          <label>XY max <output id="mb-jog-xy-output">50 mm/s</output><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50"></label>
+          <label>Z max <output id="mb-jog-z-output">5 mm/s</output><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5"></label>
+          <p id="mb-jog-status" class="compact-status">IDLE | Safe Z not lifted | ready</p>
+          <button id="mb-jog-stop" class="machine-danger" type="button">Stop Jog: M410 + M5</button>
+          <p class="warning">Not a physical emergency stop.</p>
         </div>
         <div class="machine-drawer-card">
           <h2>Position</h2>
@@ -442,8 +656,8 @@
           <p>Work Zero changes X/Y/Z. Z Zero changes only tool height.</p>
           <div class="machine-drawer-grid">
             <button id="mb-capture-position" type="button">Capture Current Position</button>
-            <button id="mb-set-work-zero" type="button">Set Work Zero XYZ</button>
-            <button id="mb-set-z-zero" type="button">Set Z Zero Only</button>
+            <button id="mb-set-work-zero" type="button" data-icon="workZero">Set Work Zero XYZ</button>
+            <button id="mb-set-z-zero" type="button" data-icon="zZero">Set Z Zero Only</button>
             <button id="mb-capture-work-zero" type="button">Capture + Set Work Zero</button>
             <button id="mb-capture-z-zero" type="button">Capture + Set Z Zero</button>
           </div>
@@ -451,39 +665,44 @@
         <div class="machine-drawer-card">
           <h2>Homing</h2>
           <p class="warning">Homing moves the machine toward endstops. Run M119 first if unsure.</p>
-          <div class="machine-drawer-grid">
-            <button id="mb-m119" type="button">M119 Endstops</button>
-            <button id="mb-home-x" type="button">Home X</button>
-            <button id="mb-home-y" type="button">Home Y</button>
-            <button id="mb-home-z" type="button">Home Z</button>
+          <div class="machine-homing-axis-row">
+            <button id="mb-home-x" type="button">X</button>
+            <button id="mb-home-y" type="button">Y</button>
+            <button id="mb-home-z" type="button">Z</button>
+          </div>
+          <div class="machine-homing-action-row">
             <button id="mb-home-all" class="machine-danger" type="button">Home All</button>
+            <button id="mb-m119" type="button">M119</button>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Go To Work Zero</h2>
-          <p class="warning">TODO: disabled until firmware exposes a bounded, safe go-to-zero API.</p>
-          <div class="machine-drawer-grid">
-            <button type="button" disabled>X0</button>
-            <button type="button" disabled>Y0</button>
-            <button type="button" disabled>Z0</button>
-            <button type="button" disabled>XY0</button>
+          <div class="machine-zero-row">
+            <button type="button" data-mb-goto-zero="x">X0</button>
+            <button type="button" data-mb-goto-zero="y">Y0</button>
+            <button type="button" data-mb-goto-zero="xy">XY0</button>
+            <label><input id="mb-goto-safe" type="checkbox" checked> Safe move</label>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Terminal</h2>
           <div class="drawer-terminal-row">
-            <input id="mb-terminal-cmd" type="text" inputmode="text" autocomplete="off" placeholder="M114">
-            <button id="mb-terminal-send" type="button">Send</button>
+            <select id="mb-terminal-select" aria-label="Marlin command">
+              <option value="M114">M114 Position</option>
+              <option value="M119">M119 Endstops</option>
+              <option value="M115">M115 Firmware</option>
+              <option value="M400">M400 Wait</option>
+              <option value="M5">M5 Output off</option>
+              <option value="G92 Z0">G92 Z0</option>
+              <option value="G92 X0 Y0 Z0">G92 XYZ0</option>
+              <option value="custom">Custom...</option>
+            </select>
+            <button id="mb-terminal-send" type="button" data-icon="terminal">Send</button>
           </div>
-          <div class="machine-drawer-grid">
-            <button type="button" data-mb-terminal="M114">M114</button>
-            <button type="button" data-mb-terminal="M119">M119</button>
-            <button type="button" data-mb-terminal="M115">M115</button>
-            <button type="button" data-mb-terminal="M400">M400</button>
-            <button type="button" data-mb-terminal="M5">M5</button>
-            <button type="button" data-mb-terminal="G92 Z0">G92 Z0</button>
-            <button type="button" data-mb-terminal="G92 X0 Y0 Z0">G92 XYZ0</button>
-          </div>
+          <input id="mb-terminal-cmd" type="text" inputmode="text" autocomplete="off" placeholder="Custom Marlin command" hidden>
+          <p id="mb-marlin-last">No Marlin messages yet.</p>
+          <p id="mb-marlin-critical" class="warning" hidden></p>
+          <pre id="mb-marlin-log" class="log machine-marlin-log">No recent Marlin log entries.</pre>
           <a class="maintenance-link" href="https://marlinfw.org/docs/gcode/G000-G001.html" target="_blank" rel="noopener">Marlin G-code reference</a>
         </div>
         <p id="mb-status" class="machine-drawer-status"></p>
@@ -494,14 +713,21 @@
     button('mb-toggle', () => toggleDrawer());
     button('mb-close', () => toggleDrawer(false));
     button('machine-drawer-overlay', () => toggleDrawer(false));
-    button('mb-pause', pauseJob);
-    button('mb-drawer-pause', pauseJob);
-    button('mb-resume', resumeJob);
-    button('mb-drawer-resume', resumeJob);
+    button('mb-pause', pauseOrResumeJob);
+    button('mb-drawer-pause-resume', pauseOrResumeJob);
     button('mb-stop', stopJob);
     button('mb-drawer-stop', stopJob);
     button('mb-m5', () => sendCmd('M5'));
     button('mb-drawer-m5', () => sendCmd('M5'));
+    button('mb-jog-stop', () => stopJog(true));
+    document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
+      item.addEventListener('click', () => {
+        goToWorkZero(item.dataset.mbGotoZero).catch((err) => {
+          setMessage(err.message || String(err));
+          render();
+        });
+      });
+    });
     document.querySelectorAll('[data-mb-feed]').forEach((item) => {
       item.addEventListener('click', () => {
         setFeedOverride(item.dataset.mbFeed).catch((err) => {
@@ -529,7 +755,15 @@
     button('mb-home-y', () => home('G28 Y', 'This will move the CNC Y axis toward its endstop. Keep your hand near the physical emergency stop.'));
     button('mb-home-z', () => home('G28 Z', 'This will move the CNC toward endstops.'));
     button('mb-home-all', () => home('G28', 'HOME ALL AXES: This moves X/Y/Z. Make sure endstops are connected and machine is clear.'));
-    button('mb-terminal-send', () => terminalSend(el('mb-terminal-cmd')?.value));
+    button('mb-terminal-send', () => {
+      const selected = el('mb-terminal-select')?.value;
+      return terminalSend(selected === 'custom' ? el('mb-terminal-cmd')?.value : selected);
+    });
+    el('mb-terminal-select')?.addEventListener('change', (event) => {
+      const custom = event.currentTarget.value === 'custom';
+      if (el('mb-terminal-cmd')) el('mb-terminal-cmd').hidden = !custom;
+      if (custom) el('mb-terminal-cmd')?.focus();
+    });
     el('mb-terminal-cmd')?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -539,12 +773,11 @@
         });
       }
     });
-    document.querySelectorAll('[data-mb-terminal]').forEach((item) => {
-      item.addEventListener('click', () => {
-        terminalSend(item.dataset.mbTerminal).catch((err) => {
-          setMessage(err.message || String(err));
-          render();
-        });
+    installJoystick();
+    ['mb-jog-xy-speed', 'mb-jog-z-speed'].forEach((id) => {
+      el(id)?.addEventListener('input', (event) => {
+        const output = el(id === 'mb-jog-xy-speed' ? 'mb-jog-xy-output' : 'mb-jog-z-output');
+        if (output) output.textContent = `${event.currentTarget.value} mm/s`;
       });
     });
 
@@ -555,13 +788,24 @@
       if (!document.hidden) refreshHealth();
     }, 5000);
     setInterval(() => {
+      if (!document.hidden) pollPosition().catch(() => {});
+    }, 5000);
+    setInterval(() => {
       if (!document.hidden) refreshMarlinLog();
     }, 2500);
+    setInterval(() => {
+      if (!document.hidden && STATE.drawerOpen) refreshJogStatus();
+    }, 1000);
+    window.addEventListener('blur', () => stopJog().catch(() => {}));
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
         refreshJobStatus();
         refreshHealth();
         refreshMarlinLog();
+        refreshJogStatus();
+        pollPosition().catch(() => {});
+      } else {
+        stopJog().catch(() => {});
       }
     });
 
