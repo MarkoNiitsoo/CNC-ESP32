@@ -92,6 +92,24 @@ describe('mock HTTP API', () => {
     expect(env.marlin.spindleOff).toBe(true);
   });
 
+  it('clamps Safe Jog to machine Z max in native coordinates after G92', async () => {
+    const { base, env } = await start();
+    env.marlin.machine.zMax = 70;
+    env.marlin.execute('G0 Z40');
+    env.marlin.execute('G92 Z0');
+
+    const response = await fetch(`${base}/api/jog/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ safeJog: true, safeLiftZ: 999, restoreZAfterJog: true }),
+    });
+    const status = await response.json();
+
+    expect(response.ok).toBe(true);
+    expect(status).toMatchObject({ state: 'JOGGING', safeLiftZ: 70, safeLiftWorkZ: 30, zLiftedForJog: true });
+    expect(env.marlin.machinePosition.z).toBe(70);
+    await fetch(`${base}/api/jog/stop`, { method: 'POST' });
+  });
+
   it('rejects traversal and exposes unknown APIs as explicit mock TODOs', async () => {
     const { base } = await start();
     const traversal = await fetch(`${base}/api/files?path=${encodeURIComponent('/gcode/../secret')}`);

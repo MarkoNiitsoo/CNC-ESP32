@@ -1,5 +1,44 @@
 # Protocol
 
+## Marlin transport ownership
+
+Firmware `0.5.0-telemetry-transport` treats UART as a single-owner transport. A manual diagnostic
+request must not drain or consume a response that belongs to the job runner, a priority sequence,
+or Safe Jog. `/api/cmd` therefore returns HTTP `409` while those owners are active. `M5` remains a
+priority exception and is queued before this busy check.
+
+Synchronous Marlin reads finish as soon as a complete terminal response line (`ok`, `Error:`,
+`Alarm:`, or `!!`) arrives. The configured timeout is now a missing-response ceiling rather than a
+fixed delay added to every command.
+
+## WebSocket telemetry
+
+Connect to `ws://<pendant-ip>:81/`. This channel is read-only telemetry; movement, Pause, Stop, M5,
+and all other commands remain HTTP POST operations. On connect firmware sends:
+
+```json
+{"type":"snapshot","revision":1,"data":{"job":{},"jog":{}}}
+```
+
+Changed state is sent as a revisioned delta, throttled to at most 10 Hz:
+
+```json
+{"type":"delta","revision":2,"channel":"job","data":{}}
+```
+
+Clients ignore duplicate/out-of-order revisions. If the socket disconnects, the SD UI resumes its
+sparse HTTP fallback automatically. Health remains a low-rate HTTP channel.
+
+Marlin log delivery is opt-in. A client sends `{"subscribe":{"log":true}}` while its log UI is
+visible and `false` when hidden. Each entry has a monotonic `id`; live deltas contain only new rows.
+HTTP fallback uses `/api/marlin/log?after=<id>` and returns `nextId`, so it also avoids retransmitting
+the full ring buffer.
+
+Position telemetry is emitted only after firmware receives an M114-shaped X/Y/Z response and the
+parsed coordinates differ from the cached values. There is no periodic browser M114. The UI may
+show predicted commanded movement immediately, then replace it with a `position` delta when Marlin
+truth is explicitly refreshed. Homing performs one deliberate M114 after G28.
+
 ## Browser API
 
 ### `GET /api/health`
@@ -326,9 +365,12 @@ Request body:
 }
 ```
 
-When `safeJog` is true, firmware captures the current Z with `M400` and `M114`, sends `M5`, switches
-to `G90`, and moves to absolute `Z<safeLiftZ>` at `F<zFeedMax>` before allowing X/Y jog ticks.
-The default safe target is `Z70`, matching the current LowRider bench setup. If
+When `safeJog` is true, firmware captures the current work Z with `M400` and `M114`, sends `M5`,
+and moves to native machine coordinate `G53 G0 Z<safeLiftZ>` at `F<zFeedMax>` before allowing X/Y
+jog ticks. The configured machine ceiling is `Z70`; larger browser values are silently clamped to
+`70`, so a G92/workspace offset cannot turn Safe Z into a move beyond the physical upper limit.
+Firmware reads M114 again after the lift and stores the resulting work-coordinate Z for restore
+validation. If
 `restoreZAfterJog` is true, firmware schedules an automatic return to the captured Z after
 `restoreDelayMs` when jogging stops, unless Z was jogged or the current Z no longer matches the
 safe target. Jog start is rejected while a job is `RUNNING`.
@@ -360,8 +402,8 @@ Stops jogging and sends `M410` and `M5`. This is not a physical emergency stop.
 
 ### `GET /api/jog/status`
 
-Returns jog state, whether Z was lifted for safe jog, original captured Z, pending Z restore status,
-last command, last error, heartbeat age, and configured jog limits.
+Returns jog state, whether Z was lifted for safe jog, original captured Z, lifted work-coordinate Z,
+pending Z restore status, last command, last error, heartbeat age, and configured jog limits.
 
 Repeated safe XY jog gestures made before the pending Z restore keep the first captured work Z.
 Starting a new pointer gesture must not replace that original value with the already lifted Safe Z.

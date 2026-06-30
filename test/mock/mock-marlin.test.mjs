@@ -30,4 +30,13 @@ describe('MockMarlin', () => {
     expect(marlin.execute('G53 G0 X0').error).toMatch(/G53/);
     expect(marlin.execute('G28').error).toMatch(/G28/);
   });
+
+  it('allows an explicit internal G53 move without changing the G92 work offset', () => {
+    const marlin = new MockMarlin({ machine: { zMax: 70 } });
+    marlin.execute('G0 Z40');
+    marlin.execute('G92 Z0');
+    expect(marlin.execute('G53 G0 Z70', { allowMachineCoordinates: true }).ok).toBe(true);
+    expect(marlin.machinePosition.z).toBe(70);
+    expect(marlin.position.z).toBe(30);
+  });
 });

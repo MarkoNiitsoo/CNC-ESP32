@@ -65,7 +65,10 @@ export class MockMarlin {
     const upper = command.toUpperCase();
     const args = words(upper);
 
-    if (/\bG53\b/.test(upper)) return this.error('Unexpected G53 machine-coordinate command in mock mode');
+    const machineCoordinates = /\bG53\b/.test(upper);
+    if (machineCoordinates && !options.allowMachineCoordinates) {
+      return this.error('Unexpected G53 machine-coordinate command in mock mode');
+    }
     if (/\bG28\b/.test(upper)) {
       if (!this.allowHoming) return this.error('Unexpected G28 homing command in mock mode');
       for (const axis of ['x', 'y', 'z']) {
@@ -132,7 +135,7 @@ export class MockMarlin {
         const key = axis.toUpperCase();
         if (!Number.isFinite(args[key])) continue;
         const value = args[key] * scale;
-        target[axis] = this.absolute ? this.g92Offset[axis] + value : target[axis] + value;
+        target[axis] = machineCoordinates ? value : this.absolute ? this.g92Offset[axis] + value : target[axis] + value;
       }
       if (Number.isFinite(args.F)) this.feed = args.F * scale;
       for (const axis of ['x', 'y', 'z']) {

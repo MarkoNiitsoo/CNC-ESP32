@@ -1,5 +1,6 @@
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
+const currentJobKey = 'lowrider.currentJob';
 const pathEl = document.querySelector('#file-path');
 const canvas = document.querySelector('#preview-canvas');
 const statsEl = document.querySelector('#stats');
@@ -123,6 +124,21 @@ let suppressPlacementChange = false;
 let workbenchUiModule = null;
 let workbenchController = null;
 let liveToolPosition = null;
+let redirectingToFiles = false;
+
+function redirectToFiles(failedPath = '') {
+  if (redirectingToFiles) return;
+  redirectingToFiles = true;
+  if (failedPath) {
+    try {
+      const current = JSON.parse(localStorage.getItem(currentJobKey) || 'null');
+      if (current?.gcodePath === failedPath) localStorage.removeItem(currentJobKey);
+    } catch (err) {
+      localStorage.removeItem(currentJobKey);
+    }
+  }
+  window.location.replace('/#files');
+}
 
 const toolpathModulesPromise = Promise.all([
   import('/lib/toolpath-model.js'),
@@ -1058,27 +1074,27 @@ async function setLiveFeedOverride(percent) {
 }
 
 function updateJobRunPolling() {
-  const state = jobRunStatus?.state;
-  const shouldPoll = state === 'RUNNING' || state === 'PAUSED' || state === 'PREPARING' ||
-    state === 'PAUSING' || state === 'RESUMING' || state === 'STOPPING';
-  if (shouldPoll && !jobRunPollTimer) {
-    jobRunPollTimer = setInterval(() => refreshJobStatus().catch((err) => appendRunLog(`Status failed: ${err.message}`)), 2000);
-  } else if (!shouldPoll && jobRunPollTimer) {
+  if (jobRunPollTimer) {
     clearInterval(jobRunPollTimer);
     jobRunPollTimer = null;
   }
 }
 
-async function refreshJobStatus() {
-  const res = await fetch('/api/job/status');
-  const data = await readJsonOrThrow(res);
-  if (!res.ok) throw new Error(data.error || 'status failed');
+async function applyJobRunStatus(data) {
   jobRunStatus = data;
   jobStatusHealthy = true;
   await syncRunHistoryFromStatus(data);
   renderRunPanel();
   updateJobRunPolling();
   return data;
+}
+
+async function refreshJobStatus() {
+  if (window.CncTelemetry) return window.CncTelemetry.request('job');
+  const res = await fetch('/api/job/status');
+  const data = await readJsonOrThrow(res);
+  if (!res.ok) throw new Error(data.error || 'status failed');
+  return applyJobRunStatus(data);
 }
 
 async function readJsonOrThrow(res) {
@@ -2834,7 +2850,7 @@ function themeColor(name, fallback) {
 }
 
 function drawMachineGrid(ctx2d, options) {
-  const { px, py, scale, view, panX, panY, width, height, color, textColor } = options;
+  const { px, py, scale, view, panX, panY, width, height, color, textColor, workZero } = options;
   const step = workbenchUiModule?.adaptiveGridStep(scale, 74) || 100;
   const originX = (width - (view.xMax - view.xMin) * scale) / 2;
   const originY = (height - (view.yMax - view.yMin) * scale) / 2;
@@ -2883,13 +2899,15 @@ function drawMachineGrid(ctx2d, options) {
   ctx2d.textAlign = 'center';
   for (let x = xStart; x <= visible.xMax + step * 0.001; x += step) {
     const screenX = px(x);
-    if (screenX >= 18 && screenX <= width - 18) ctx2d.fillText(`${Math.round(x)}`, screenX, xLabelY);
+    const label = workbenchUiModule?.workCoordinateAtMachine(x, workZero?.x) ?? x;
+    if (screenX >= 18 && screenX <= width - 18) ctx2d.fillText(`${Math.round(label)}`, screenX, xLabelY);
   }
   ctx2d.textAlign = 'left';
   ctx2d.textBaseline = 'middle';
   for (let y = yStart; y <= visible.yMax + step * 0.001; y += step) {
     const screenY = py(y);
-    if (screenY >= 12 && screenY <= height - 82) ctx2d.fillText(`${Math.round(y)}`, yLabelX, screenY);
+    const label = workbenchUiModule?.workCoordinateAtMachine(y, workZero?.y) ?? y;
+    if (screenY >= 12 && screenY <= height - 82) ctx2d.fillText(`${Math.round(label)}`, yLabelX, screenY);
   }
   if (top >= 0 && top < height - 80) {
     ctx2d.textBaseline = 'top';
@@ -2979,6 +2997,7 @@ function draw() {
       height: h,
       color: colors.grid,
       textColor: colors.gridText,
+      workZero,
     });
     strokeBounds(ctx, MACHINE, px, py, colors.accent);
   }
@@ -3389,14 +3408,14 @@ async function generateRunFile(options = {}) {
 
 async function loadPreview() {
   if (!filePath) {
-    pathEl.textContent = 'Missing path query parameter.';
+    redirectToFiles();
     return;
   }
 
   pathEl.textContent = filePath;
   const res = await fetch(`/api/download?path=${encodeURIComponent(filePath)}`);
   if (!res.ok) {
-    pathEl.textContent = `Could not download ${filePath}`;
+    redirectToFiles(filePath);
     return;
   }
 
@@ -3643,7 +3662,11 @@ renderArmPanel();
 jobReadinessPromise.then(renderReadiness).catch((err) => {
   if (readinessSummaryEl) readinessSummaryEl.textContent = `Readiness unavailable: ${err.message}`;
 });
-loadPreview();
+loadPreview().catch(() => redirectToFiles(filePath));
+window.CncTelemetry?.subscribe('job', (data) => {
+  applyJobRunStatus(data).catch((err) => appendRunLog(`Status update failed: ${err.message}`));
+});
+window.CncTelemetry?.start();
 if (runPanel) refreshJobStatus().catch(() => {
   jobStatusHealthy = false;
   renderRunPanel();

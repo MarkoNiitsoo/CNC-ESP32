@@ -222,7 +222,7 @@ export async function createMockServer(options = {}) {
           ...env.jog,
           state: 'JOGGING',
           safeJog: body.safeJog !== false,
-          safeLiftZ: Number(body.safeLiftZ ?? 70),
+          safeLiftZ: Math.max(0, Math.min(70, Number(body.safeLiftZ ?? 70))),
           restoreZAfterJog: body.restoreZAfterJog !== false,
           xyFeedMax: Number(body.xyFeedMax ?? 3000),
           zFeedMax: Number(body.zFeedMax ?? 400),
@@ -231,8 +231,8 @@ export async function createMockServer(options = {}) {
           lastUpdateAt: Date.now(),
         };
         if (env.jog.safeJog) {
-          for (const command of ['M5', 'G90', `G0 Z${env.jog.safeLiftZ.toFixed(3)} F${env.jog.zFeedMax}`, 'G90']) {
-            const result = env.marlin.execute(command, { priority: true });
+          for (const command of ['M5', 'G90', `G53 G0 Z${env.jog.safeLiftZ.toFixed(3)} F${env.jog.zFeedMax}`, 'G90']) {
+            const result = env.marlin.execute(command, { priority: true, allowMachineCoordinates: command.startsWith('G53 ') });
             if (!result.ok) {
               env.jog.state = 'ERROR';
               env.jog.lastError = result.error;
@@ -240,6 +240,7 @@ export async function createMockServer(options = {}) {
             }
             env.jog.lastCommand = command;
           }
+          env.jog.safeLiftWorkZ = env.marlin.position.z;
           env.jog.zLiftedForJog = true;
         }
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });

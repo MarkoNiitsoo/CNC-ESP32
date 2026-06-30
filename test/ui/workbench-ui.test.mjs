@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import {
   actionPolicy,
   adaptiveGridStep,
@@ -11,9 +12,12 @@ import {
   reduceWorkbenchState,
   translateBounds,
   translatePosition,
+  workCoordinateAtMachine,
   workZeroTablePosition,
   zoomPanForGesture,
 } from '../../www/lib/workbench-ui.js';
+
+const controllerSource = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
 
 const sourceJob = {
   gcodePath: '/gcode/test.gc',
@@ -47,6 +51,13 @@ describe('canvas workbench responsive state', () => {
     expect(translateBounds({ xMin: 0, xMax: 20, yMin: -5, yMax: 10 }, zero)).toMatchObject({
       xMin: 120, xMax: 140, yMin: 335, yMax: 350,
     });
+  });
+
+  it('keeps grid lines in machine space while ruler values use work zero', () => {
+    expect(workCoordinateAtMachine(0, 100)).toBe(-100);
+    expect(workCoordinateAtMachine(100, 100)).toBe(0);
+    expect(workCoordinateAtMachine(0, 500)).toBe(-500);
+    expect(workCoordinateAtMachine(750, 500)).toBe(250);
   });
 
   it('prefers the selected work-zero history anchor over the compatibility capture', () => {
@@ -125,6 +136,12 @@ describe('canvas workbench responsive state', () => {
     expect(before.y(world.y)).toBeCloseTo(start.y, 8);
     expect(after.x(world.x)).toBeCloseTo(current.x, 8);
     expect(after.y(world.y)).toBeCloseTo(current.y, 8);
+  });
+
+  it('rebases the remaining pointer after pinch without triggering double tap fit', () => {
+    expect(controllerSource).toContain('gestureHadPinch = true');
+    expect(controllerSource).toMatch(/pointers\.size === 1[\s\S]*dragStart = \{ point: remaining, panX: view\.panX, panY: view\.panY \}/);
+    expect(controllerSource).toContain("if (!gestureHadPinch && event.type === 'pointerup')");
   });
 
   it('uses edge drawers on phones and overlay/sidebar modes on larger screens', () => {

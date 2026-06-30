@@ -106,6 +106,13 @@ export function adaptiveGridStep(scale, targetPixels = 80) {
   return nice * power;
 }
 
+export function workCoordinateAtMachine(machineValue, workZeroValue = 0) {
+  const machine = Number(machineValue);
+  const zero = Number(workZeroValue);
+  if (!Number.isFinite(machine)) return null;
+  return machine - (Number.isFinite(zero) ? zero : 0);
+}
+
 export function createWorkbenchState(width = 0) {
   return {
     layoutMode: layoutModeForWidth(width),

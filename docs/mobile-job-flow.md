@@ -1,5 +1,14 @@
 # Mobile Job Flow
 
+## Browser telemetry budget
+
+`/www/telemetry.js` is the single per-page owner of read-only HTTP telemetry. Machine Bar and page
+controllers subscribe to its events instead of starting independent intervals. It deduplicates
+in-flight requests, polls job status every 1 second only while a job is active and every 10 seconds
+when idle, and polls health every 30 seconds. Marlin log and jog status are demand-driven while the
+related drawer/view is open. Position `M114` is manual until firmware-owned delta telemetry is
+available; the browser must not add a periodic `M114` poll.
+
 ## Mock Mode Indicator
 
 When `/api/health` reports `mockMode: true`, the shared Machine Bar shows a compact `DEV MOCK` badge
@@ -46,6 +55,9 @@ Touch and mouse:
 
 - One pointer or mouse drag pans.
 - Two pointers pinch zoom.
+- Releasing one pointer after pinch rebases the remaining pointer at the current pan position, so
+  continuing with one finger cannot jump back to the pre-pinch drag origin. A pinch is not counted
+  as a double tap.
 - Mouse wheel zooms around the pointer.
 - Double tap or double click fits the active run.
 - The canvas uses Pointer Events and `touch-action: none`; separate competing touch/mouse gesture
@@ -141,6 +153,12 @@ Current implementation uses a compact layout:
 - X/Y/Z homing on one row, then Home All and M119
 - X0/Y0/XY0 work-zero moves on one row with Safe move enabled by default
 - command dropdown followed immediately by the shared Marlin command/response log
+
+The canvas keeps physical table grid lines anchored to homed machine coordinates. Job geometry and
+the Work Zero marker are translated to the captured pre-G92 machine position, while ruler labels
+are shown relative to Work Zero. For example, Work Zero at machine `X100 Y500` places the job at
+that physical table location and labels the homed table edges `X-100` and `Y-500` without moving
+the physical grid.
 
 While a job is active, the latest Marlin response is visible in the Machine Bar. Critical Marlin
 messages remain globally visible even outside an active run. Pause/Resume, Stop, and M5 stay in the
@@ -301,6 +319,8 @@ secondary convenience, but it should not be the main way to reach urgent control
 The SD-hosted `/www` UI now follows this direction without new firmware movement behavior:
 
 - `/` opens to Files first when no current job is selected.
+- `/#job` and `/preview.html` automatically return to `/#files` when no current G-code exists or
+  the selected file cannot be opened; the UI does not present an empty "No Job" destination.
 - Opening a G-code file stores a browser-side current job pointer and switches to Current Job.
 - Current Job shows job metadata, work/Z zero status, warnings, dry-run status, arm state, and one
   next action.

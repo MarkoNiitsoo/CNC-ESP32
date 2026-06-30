@@ -10,7 +10,8 @@ Automated mock coverage verifies:
 
 - path traversal rejection and persistent SD file operations
 - M114/G92 position behavior, M5, M220, and G0/G1 state
-- X/Y/Z soft-limit errors plus unexpected G28/G53 rejection
+- X/Y/Z soft-limit errors plus unexpected file/manual G28/G53 rejection
+- explicit firmware-internal Safe Jog `G53` movement to the clamped machine Z ceiling after G92
 - exact source/generated active-run streaming with no silent source fallback
 - stale or missing generated run blocking
 - completion, pause, resume, stop, priority M5, feed override, and error status

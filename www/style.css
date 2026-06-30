@@ -293,7 +293,7 @@ button.machine-danger-dark {
   position: fixed;
   right: 0;
   bottom: calc(84px + env(safe-area-inset-bottom));
-  z-index: 96;
+  z-index: 120;
   width: min(84vw, 260px);
   display: block;
   padding: 0;
@@ -303,7 +303,8 @@ button.machine-danger-dark {
   box-shadow: none;
   transform: translateX(0);
   transition: transform 180ms ease;
-  pointer-events: auto;
+  pointer-events: none;
+  isolation: isolate;
 }
 
 .machine-jog-dock.is-open {
@@ -315,24 +316,33 @@ button.machine-danger-dark {
   right: 0;
   bottom: 0;
   z-index: 2;
-  width: 40px;
-  min-height: 120px;
-  padding: 0;
-  border: 1px solid rgba(159, 177, 191, 0.24);
-  border-right: 0;
-  border-radius: 20px 0 0 20px;
-  background: color-mix(in srgb, var(--cnc-panel-strong) 58%, transparent);
-  box-shadow: -8px 0 18px rgba(0, 0, 0, 0.18);
+  width: 28px;
+  min-height: 74px;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px 0 0 6px;
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
+  box-shadow: none;
   display: grid;
+  align-content: center;
   place-items: center;
+  gap: 4px;
+  pointer-events: auto;
 }
 
 .machine-jog-handle-icon {
   position: relative;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   display: block;
   color: rgba(233, 249, 255, 0.96);
+}
+
+.machine-jog-handle-label {
+  writing-mode: vertical-rl;
+  font-size: 0.66rem;
+  line-height: 1;
+  color: #fff;
 }
 
 .machine-jog-handle-glyph,
@@ -346,7 +356,7 @@ button.machine-danger-dark {
 
 .machine-jog-dock-panel {
   position: absolute;
-  right: 40px;
+  right: 28px;
   bottom: 0;
   width: min(62vw, 190px);
   display: grid;
@@ -354,6 +364,7 @@ button.machine-danger-dark {
   align-content: end;
   padding: 0 8px 0 0;
   background: transparent;
+  pointer-events: auto;
 }
 
 .machine-jog-dock-panel[hidden] {
@@ -407,6 +418,8 @@ button.machine-danger-dark {
   background: transparent;
   border-color: rgba(233, 249, 255, 0.88);
   box-shadow: 0 0 0 4px rgba(45, 128, 199, 0.12);
+  transition: none;
+  will-change: transform;
 }
 
 .machine-jog-dock-settings {
@@ -460,6 +473,10 @@ button.machine-danger-dark {
 .machine-jog-dock .machine-jog-z-settings button {
   min-height: 42px;
   padding: 8px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .machine-jog-dock-settings .warning {

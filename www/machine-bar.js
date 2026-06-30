@@ -13,12 +13,18 @@
   };
   let jogTimer = null;
   let jogUpdatePending = false;
+  let jogStartPending = false;
   let jogPointerId = null;
+  let jogSessionId = 0;
 
   const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
   const PAUSED_STATES = new Set(['PAUSED']);
   const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'COMPLETED', 'ERROR']);
+  const JOG_TICK_SECONDS = 0.15;
+  const JOG_MAX_XY_STEP_MM = 15;
+  const JOG_MAX_Z_STEP_MM = 0.5;
+  const MACHINE_Z_MAX_MM = 70;
 
   window.LowRiderMachineBar = {
     lastCritical: () => STATE.marlinLog?.lastCritical || '',
@@ -37,6 +43,12 @@
     return Number.isFinite(value) ? Math.max(10, Math.min(200, Math.round(value))) : 100;
   }
 
+  function publishPosition(source) {
+    window.dispatchEvent(new CustomEvent('cnc-position-update', {
+      detail: { ...STATE.position, source, updatedAt: Date.now() },
+    }));
+  }
+
   function parseM114(text) {
     const match = String(text).match(/X:\s*(-?\d+(?:\.\d+)?).*?Y:\s*(-?\d+(?:\.\d+)?).*?Z:\s*(-?\d+(?:\.\d+)?)/s);
     if (!match) return false;
@@ -45,9 +57,7 @@
       y: Number(match[2]),
       z: Number(match[3]),
     };
-    window.dispatchEvent(new CustomEvent('cnc-position-update', {
-      detail: { ...STATE.position, source: 'M114', updatedAt: Date.now() },
-    }));
+    publishPosition('M114');
     return true;
   }
 
@@ -159,6 +169,7 @@
 
   async function refreshHealth() {
     try {
+      if (window.CncTelemetry) return await window.CncTelemetry.request('health');
       const res = await fetch('/api/health');
       STATE.health = await readJson(res);
     } catch (err) {
@@ -169,6 +180,7 @@
 
   async function refreshJobStatus() {
     try {
+      if (window.CncTelemetry) return await window.CncTelemetry.request('job');
       const res = await fetch('/api/job/status');
       STATE.job = await readJson(res);
       if (!res.ok) throw new Error(STATE.job.error || 'job status failed');
@@ -180,6 +192,7 @@
 
   async function refreshMarlinLog() {
     try {
+      if (window.CncTelemetry) return await window.CncTelemetry.request('log');
       const res = await fetch('/api/marlin/log');
       const data = await readJson(res);
       if (!res.ok || data.ok === false) throw new Error(data.error || 'Marlin log failed');
@@ -267,7 +280,7 @@
     const zSpeed = Math.max(1, Math.min(10, Number(el('mb-jog-z-speed')?.value || 5)));
     return {
       safeJog,
-      safeLiftZ: Math.max(1, Math.min(200, Number(el('mb-jog-safe-z')?.value || 70))),
+      safeLiftZ: Math.max(1, Math.min(MACHINE_Z_MAX_MM, Number(el('mb-jog-safe-z')?.value || MACHINE_Z_MAX_MM))),
       restoreZAfterJog: safeJog && Boolean(el('mb-jog-restore-z')?.checked),
       restoreDelayMs: 5000,
       xyFeedMax: Math.round(xySpeed * 60),
@@ -279,8 +292,39 @@
     return ['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'].includes(String(STATE.jog?.state || ''));
   }
 
+  function resetJoystickVisual() {
+    STATE.jogVector = { x: 0, y: 0, z: 0, speed: 0 };
+    const knob = el('mb-jog-knob');
+    if (knob) knob.style.transform = 'translate(-50%, -50%)';
+  }
+
+  function applyPredictedJogTick(vector, settings) {
+    const x = Math.max(-1, Math.min(1, Number(vector.x) || 0));
+    const y = Math.max(-1, Math.min(1, Number(vector.y) || 0));
+    const z = Math.max(-1, Math.min(1, Number(vector.z) || 0));
+    const speed = Math.max(0, Math.min(1, Number(vector.speed) || 0));
+    const xyStep = Math.min(JOG_MAX_XY_STEP_MM, (settings.xyFeedMax / 60) * JOG_TICK_SECONDS);
+    const zStep = Math.min(JOG_MAX_Z_STEP_MM, (settings.zFeedMax / 60) * JOG_TICK_SECONDS) * speed;
+    let changed = false;
+
+    if (Number.isFinite(STATE.position.x) && Math.abs(x * xyStep) >= 0.01) {
+      STATE.position.x += x * xyStep;
+      changed = true;
+    }
+    if (Number.isFinite(STATE.position.y) && Math.abs(y * xyStep) >= 0.01) {
+      STATE.position.y += y * xyStep;
+      changed = true;
+    }
+    if (Number.isFinite(STATE.position.z) && Math.abs(z * zStep) >= 0.005) {
+      STATE.position.z += z * zStep;
+      changed = true;
+    }
+    if (changed) publishPosition('JOG_CMD');
+  }
+
   async function refreshJogStatus() {
     try {
+      if (window.CncTelemetry) return await window.CncTelemetry.request('jog');
       const res = await fetch('/api/jog/status');
       const data = await readJson(res);
       if (!res.ok || data.ok === false) throw new Error(data.error || 'Jog status unavailable');
@@ -293,9 +337,14 @@
 
   async function sendJogUpdate() {
     if (jogUpdatePending || STATE.jog?.state !== 'JOGGING') return;
+    const sessionId = jogSessionId;
+    const vector = { ...STATE.jogVector };
+    const settings = jogSettings(Boolean(STATE.jog?.safeJog));
     jogUpdatePending = true;
     try {
-      STATE.jog = await apiPost('/api/jog/update', STATE.jogVector);
+      const jog = await apiPost('/api/jog/update', vector);
+      applyPredictedJogTick(vector, settings);
+      if (sessionId === jogSessionId) STATE.jog = jog;
     } finally {
       jogUpdatePending = false;
       render();
@@ -303,26 +352,42 @@
   }
 
   async function startJog(safeJog) {
-    if (jogTimer || STATE.jog?.state === 'JOGGING') return;
-    STATE.jog = await apiPost('/api/jog/start', jogSettings(safeJog));
-    jogTimer = setInterval(() => {
-      sendJogUpdate().catch((err) => {
-        setMessage(`Jog stopped: ${err.message}`);
-        stopJog().catch(() => {});
-      });
-    }, 150);
-    await sendJogUpdate();
-    render();
+    if (jogStartPending || jogTimer || STATE.jog?.state === 'JOGGING') return;
+    const sessionId = ++jogSessionId;
+    const settings = jogSettings(safeJog);
+    jogStartPending = true;
+    try {
+      const jog = await apiPost('/api/jog/start', settings);
+      if (sessionId !== jogSessionId) {
+        apiPost('/api/jog/stop').catch(() => {});
+        return;
+      }
+      STATE.jog = jog;
+      if (safeJog && jog.zLiftedForJog && Number.isFinite(Number(jog.safeLiftWorkZ))) {
+        STATE.position.z = Number(jog.safeLiftWorkZ);
+        publishPosition('JOG_CMD');
+      }
+      jogTimer = setInterval(() => {
+        sendJogUpdate().catch((err) => {
+          setMessage(`Jog stopped: ${err.message}`);
+          stopJog().catch(() => {});
+        });
+      }, 150);
+      await sendJogUpdate();
+      render();
+    } finally {
+      jogStartPending = false;
+    }
   }
 
   async function stopJog(force = false) {
-    if (!force && !jogTimer && !jogIsUiActive()) return;
+    const shouldStop = force || jogStartPending || Boolean(jogTimer) || jogIsUiActive();
+    jogSessionId += 1;
+    resetJoystickVisual();
     if (jogTimer) clearInterval(jogTimer);
     jogTimer = null;
     jogUpdatePending = false;
-    STATE.jogVector = { x: 0, y: 0, z: 0, speed: 0 };
-    const knob = el('mb-jog-knob');
-    if (knob) knob.style.transform = 'translate(-50%, -50%)';
+    if (!shouldStop) return;
     try {
       STATE.jog = await apiPost('/api/jog/stop');
     } catch (err) {
@@ -356,6 +421,7 @@
     const pad = el('mb-jog-pad');
     pad?.addEventListener('pointerdown', (event) => {
       if (jogPointerId !== null) return;
+      event.preventDefault();
       jogPointerId = event.pointerId;
       pad.setPointerCapture?.(event.pointerId);
       updateJoystickVector(event);
@@ -366,20 +432,26 @@
       });
     });
     pad?.addEventListener('pointermove', (event) => {
-      if (event.pointerId === jogPointerId) updateJoystickVector(event);
+      if (event.pointerId !== jogPointerId) return;
+      event.preventDefault();
+      const samples = event.getCoalescedEvents?.() || [event];
+      updateJoystickVector(samples[samples.length - 1]);
     });
     const end = (event) => {
       if (event.pointerId !== jogPointerId) return;
       jogPointerId = null;
+      resetJoystickVisual();
       stopJog().catch((err) => setMessage(`Jog stop failed: ${err.message}`));
     };
-    pad?.addEventListener('pointerup', end);
-    pad?.addEventListener('pointercancel', end);
+    window.addEventListener('pointerup', end, true);
+    window.addEventListener('pointercancel', end, true);
+    pad?.addEventListener('lostpointercapture', end);
 
     document.querySelectorAll('[data-mb-jog-z]').forEach((item) => {
       let pointerId = null;
       item.addEventListener('pointerdown', (event) => {
         if (pointerId !== null) return;
+        event.preventDefault();
         pointerId = event.pointerId;
         item.setPointerCapture?.(event.pointerId);
         STATE.jogVector = { x: 0, y: 0, z: Number(item.dataset.mbJogZ), speed: 1 };
@@ -396,6 +468,9 @@
       };
       item.addEventListener('pointerup', stop);
       item.addEventListener('pointercancel', stop);
+      item.addEventListener('contextmenu', (event) => event.preventDefault());
+      item.addEventListener('selectstart', (event) => event.preventDefault());
+      item.addEventListener('dragstart', (event) => event.preventDefault());
     });
   }
 
@@ -428,6 +503,7 @@
     if (!confirmUnknown('homing')) return;
     if (!confirm(message)) return;
     await sendCmd(cmd);
+    await refreshPosition();
   }
 
   function button(id, action) {
@@ -458,6 +534,8 @@
     const overlay = el('machine-drawer-overlay');
     if (shell) shell.hidden = !STATE.drawerOpen;
     if (overlay) overlay.hidden = !STATE.drawerOpen;
+    window.CncTelemetry?.setDemand('log', 'machine-drawer', STATE.drawerOpen);
+    window.CncTelemetry?.setDemand('jog', 'machine-drawer', STATE.drawerOpen);
   }
 
   function syncJogDock() {
@@ -632,6 +710,7 @@
               <path d="M6.5 18h11a2 2 0 0 1 2 2v1h-15v-1a2 2 0 0 1 2-2z" />
             </svg>
           </span>
+          <span class="machine-jog-handle-label" aria-hidden="true">Jog</span>
         </button>
         <div class="machine-jog-dock-panel" hidden>
           <button id="mb-jog-settings-toggle" class="machine-jog-settings-toggle" type="button" aria-label="Expand joystick settings" aria-controls="mb-jog-settings" aria-expanded="false" title="Expand joystick settings">
@@ -645,7 +724,7 @@
               <label><input id="mb-jog-safe" type="checkbox" checked> Safe</label>
               <label><input id="mb-jog-restore-z" type="checkbox" checked> Restore Z</label>
             </div>
-            <label class="machine-jog-setting-field"><span>Safe Z</span><input id="mb-jog-safe-z" type="number" min="1" max="200" step="1" value="70"></label>
+            <label class="machine-jog-setting-field"><span>Safe Z</span><input id="mb-jog-safe-z" type="number" min="1" max="70" step="1" value="70"></label>
             <label class="machine-jog-setting-field"><span>XY max <output id="mb-jog-xy-output">50 mm/s</output></span><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50"></label>
             <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5"></label>
             <div class="machine-jog-z machine-jog-z-settings" aria-label="Z jog controls">
@@ -840,37 +919,41 @@
       });
     });
 
-    setInterval(() => {
-      if (!document.hidden) refreshJobStatus();
-    }, 2000);
-    setInterval(() => {
-      if (!document.hidden) refreshHealth();
-    }, 5000);
-    setInterval(() => {
-      if (!document.hidden) pollPosition().catch(() => {});
-    }, 5000);
-    setInterval(() => {
-      if (!document.hidden) refreshMarlinLog();
-    }, 2500);
-    setInterval(() => {
-      if (!document.hidden && STATE.drawerOpen) refreshJogStatus();
-    }, 1000);
+    window.CncTelemetry?.subscribe('health', (data) => {
+      STATE.health = data;
+      render();
+    });
+    window.CncTelemetry?.subscribe('job', (data) => {
+      STATE.job = data;
+      render();
+    });
+    window.CncTelemetry?.subscribe('log', (data) => {
+      STATE.marlinLog = {
+        entries: Array.isArray(data.entries) ? data.entries.slice(-20) : [],
+        lastCritical: data.lastCritical || null,
+      };
+      render();
+    });
+    window.CncTelemetry?.subscribe('jog', (data) => {
+      STATE.jog = data;
+      render();
+    });
+    window.CncTelemetry?.subscribe('position', (data) => {
+      if (![data?.x, data?.y, data?.z].every(Number.isFinite)) return;
+      STATE.position = { x: data.x, y: data.y, z: data.z };
+      publishPosition('MARLIN');
+      render();
+    });
     window.addEventListener('blur', () => stopJog().catch(() => {}));
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        refreshJobStatus();
-        refreshHealth();
-        refreshMarlinLog();
-        refreshJogStatus();
-        pollPosition().catch(() => {});
-      } else {
-        stopJog().catch(() => {});
-      }
+      if (document.hidden) stopJog().catch(() => {});
     });
 
-    refreshJobStatus();
-    refreshHealth();
-    refreshMarlinLog();
+    if (window.CncTelemetry) window.CncTelemetry.start();
+    else {
+      refreshJobStatus().catch(() => {});
+      refreshHealth().catch(() => {});
+    }
     syncJogDock();
     render();
   }

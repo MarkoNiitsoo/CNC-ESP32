@@ -57,6 +57,10 @@ or job runner functionality.
   - Keeps normal file streaming separate from priority controls such as Pause, Stop, M5, and
     feed override.
   - Captures recent Marlin commands/responses in a bounded log for global UI visibility.
+- Delta telemetry:
+  - Keeps command and safety actions on HTTP.
+  - Publishes an initial job/jog snapshot and revisioned state changes over WebSocket port `81`.
+  - Throttles broadcasts to at most 10 Hz and falls back to sparse HTTP polling when disconnected.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, short relative movement ticks, and

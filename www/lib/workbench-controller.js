@@ -21,6 +21,7 @@ export function installWorkbench(options = {}) {
   const pointers = new Map();
   let dragStart = null;
   let pinchStart = null;
+  let gestureHadPinch = false;
   let edgeStart = null;
   let lastTapAt = 0;
 
@@ -131,12 +132,14 @@ export function installWorkbench(options = {}) {
     pointers.set(event.pointerId, current);
     canvas.classList.add('is-dragging');
     if (pointers.size === 1) {
+      gestureHadPinch = false;
       dragStart = { point: current, panX: view.panX, panY: view.panY };
       const width = canvas.getBoundingClientRect().width;
       if (current.x <= 18) edgeStart = { side: 'left', x: current.x };
       else if (current.x >= width - 18) edgeStart = { side: 'right', x: current.x };
       else edgeStart = null;
     } else if (pointers.size === 2) {
+      gestureHadPinch = true;
       const [a, b] = [...pointers.values()];
       pinchStart = {
         distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
@@ -190,14 +193,24 @@ export function installWorkbench(options = {}) {
 
   function endPointer(event) {
     pointers.delete(event.pointerId);
-    if (pointers.size < 2) pinchStart = null;
+    if (pointers.size < 2) {
+      pinchStart = null;
+      if (pointers.size === 1) {
+        const remaining = [...pointers.values()][0];
+        dragStart = { point: remaining, panX: view.panX, panY: view.panY };
+        edgeStart = null;
+      }
+    }
     if (pointers.size === 0) {
       canvas?.classList.remove('is-dragging');
       dragStart = null;
       edgeStart = null;
-      const now = Date.now();
-      if (now - lastTapAt < 320) fit('active');
-      lastTapAt = now;
+      if (!gestureHadPinch && event.type === 'pointerup') {
+        const now = Date.now();
+        if (now - lastTapAt < 320) fit('active');
+        lastTapAt = now;
+      }
+      gestureHadPinch = false;
     }
   }
 
