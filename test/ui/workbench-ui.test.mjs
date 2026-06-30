@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   actionPolicy,
+  adaptiveGridStep,
   activeRunBadge,
   buildWorkbenchStatus,
   commandedPositionAtLine,
@@ -8,6 +9,9 @@ import {
   createWorkbenchState,
   layoutModeForWidth,
   reduceWorkbenchState,
+  translateBounds,
+  translatePosition,
+  workZeroTablePosition,
   zoomPanForGesture,
 } from '../../www/lib/workbench-ui.js';
 
@@ -25,6 +29,38 @@ const generatedJob = {
 };
 
 describe('canvas workbench responsive state', () => {
+  it('chooses readable 1/2/5 grid intervals as canvas scale changes', () => {
+    expect(adaptiveGridStep(0.1, 80)).toBe(1000);
+    expect(adaptiveGridStep(1, 80)).toBe(100);
+    expect(adaptiveGridStep(4, 80)).toBe(20);
+    expect(adaptiveGridStep(20, 80)).toBe(5);
+  });
+
+  it('places work zero, job geometry, and tool position in homing-table coordinates', () => {
+    const job = {
+      workZero: { beforeG92: { position: { x: 120, y: 340, z: 12 } } },
+    };
+    const zero = workZeroTablePosition(job);
+
+    expect(zero).toEqual({ x: 120, y: 340, z: 12 });
+    expect(translatePosition({ x: 5, y: -2, z: 1 }, zero)).toMatchObject({ x: 125, y: 338, z: 1 });
+    expect(translateBounds({ xMin: 0, xMax: 20, yMin: -5, yMax: 10 }, zero)).toMatchObject({
+      xMin: 120, xMax: 140, yMin: 335, yMax: 350,
+    });
+  });
+
+  it('prefers the selected work-zero history anchor over the compatibility capture', () => {
+    const job = {
+      activeWorkZeroId: 'zero-selected',
+      zeroHistory: [
+        { id: 'zero-selected', type: 'workZero', positionBefore: { x: 500, y: 600, z: 7 } },
+      ],
+      workZero: { beforeG92: { position: { x: 10, y: 20, z: 3 } } },
+    };
+
+    expect(workZeroTablePosition(job)).toEqual({ x: 500, y: 600, z: 7 });
+  });
+
   it('maps acknowledged G-code line progress to the last commanded tool endpoint', () => {
     const segments = [
       { to: { x: 999, y: 999, z: 999 } },

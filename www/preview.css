@@ -415,6 +415,13 @@ body.workbench-page {
   background: var(--cnc-bg);
 }
 
+.workbench-page {
+  --workbench-glass-top: color-mix(in srgb, var(--cnc-panel-strong) 78%, transparent);
+  --workbench-glass-panel: color-mix(in srgb, var(--cnc-panel-strong) 72%, transparent);
+  --workbench-glass-soft: color-mix(in srgb, var(--cnc-panel) 68%, transparent);
+  --workbench-glass-chip: rgba(20, 31, 40, 0.7);
+}
+
 .workbench-page .machine-shell {
   width: 100%;
   max-width: none;
@@ -441,7 +448,7 @@ body.workbench-page {
   gap: 6px;
   padding: 6px 8px;
   border-bottom: 1px solid rgba(159, 177, 191, 0.18);
-  background: var(--cnc-panel-strong);
+  background: var(--workbench-glass-top);
   backdrop-filter: blur(14px);
 }
 
@@ -454,7 +461,7 @@ body.workbench-page {
   padding: 6px 9px;
   border: 1px solid rgba(159, 177, 191, 0.28);
   border-radius: 6px;
-  background: rgba(20, 31, 40, 0.9);
+  background: var(--workbench-glass-chip);
   color: var(--cnc-text);
   font-size: 0.72rem;
   font-weight: 850;
@@ -513,7 +520,7 @@ body.workbench-page {
   padding: 6px;
   border: 1px solid #273640;
   border-radius: 7px;
-  background: rgba(12, 19, 24, 0.98);
+  background: color-mix(in srgb, #0c1318 84%, transparent);
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
 }
 
@@ -568,7 +575,7 @@ body.workbench-page {
   padding: 7px 9px;
   border: 1px solid rgba(159, 177, 191, 0.18);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--cnc-panel-strong) 76%, transparent);
+  background: color-mix(in srgb, var(--cnc-panel-strong) 66%, transparent);
   backdrop-filter: blur(8px);
 }
 
@@ -588,28 +595,11 @@ body.workbench-page {
   font-size: 0.76rem;
 }
 
-.canvas-zero-label {
-  top: 12px;
-  right: 12px;
-  color: var(--cnc-zero, var(--cnc-warning));
-  font-size: 0.7rem;
-  font-weight: 800;
-  display: grid;
-  gap: 2px;
-  text-align: right;
-}
-
-.canvas-zero-label span:last-child {
-  color: var(--cnc-current-position, #62b0ff);
-  font-size: 0.66rem;
-  font-weight: 700;
-}
-
 .workbench-scrim {
   position: absolute;
   inset: 50px 0 0;
   z-index: 20;
-  background: rgba(0, 0, 0, 0.24);
+  background: rgba(0, 0, 0, 0.16);
 }
 
 .workbench-drawer {
@@ -621,7 +611,7 @@ body.workbench-page {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   border: 1px solid rgba(159, 177, 191, 0.25);
-  background: color-mix(in srgb, var(--cnc-panel-strong) 90%, transparent);
+  background: var(--workbench-glass-panel);
   backdrop-filter: blur(16px);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
   transition: transform 180ms ease;
@@ -669,13 +659,13 @@ body.workbench-page {
 .drawer-tabs button {
   min-height: 38px;
   padding: 6px;
-  background: rgba(24, 35, 45, 0.78);
+  background: color-mix(in srgb, #18232d 72%, transparent);
   color: #cbd8e1;
   font-size: 0.78rem;
 }
 
 .drawer-tabs button.active {
-  background: var(--cnc-accent);
+  background: color-mix(in srgb, var(--cnc-accent) 78%, transparent);
   color: #fff;
 }
 
@@ -690,7 +680,7 @@ body.workbench-page {
   margin: 0 0 8px;
   padding: 11px;
   border-color: rgba(159, 177, 191, 0.18);
-  background: var(--cnc-panel);
+  background: var(--workbench-glass-soft);
   box-shadow: none;
 }
 
@@ -721,7 +711,7 @@ body.workbench-page {
   min-height: 74px;
   padding: 4px;
   border-radius: 0 6px 6px 0;
-  background: color-mix(in srgb, var(--cnc-accent) 76%, transparent);
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
   color: #fff;
   writing-mode: vertical-rl;
   font-size: 0.66rem;
@@ -745,7 +735,7 @@ body.workbench-page {
   gap: 5px;
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   border-top: 1px solid rgba(159, 177, 191, 0.22);
-  background: color-mix(in srgb, var(--cnc-panel-strong) 92%, transparent);
+  background: color-mix(in srgb, var(--cnc-panel-strong) 78%, transparent);
   backdrop-filter: blur(14px);
 }
 
@@ -759,6 +749,7 @@ body.workbench-page {
   flex: 0 0 auto;
   min-height: 42px;
   padding: 7px 10px;
+  background: color-mix(in srgb, #18232d 74%, transparent);
   font-size: 0.75rem;
 }
 
@@ -781,7 +772,7 @@ body.workbench-page {
   padding: 5px;
   border: 1px solid rgba(159, 177, 191, 0.18);
   border-radius: 5px;
-  background: rgba(20, 31, 40, 0.82);
+  background: color-mix(in srgb, #14202a 72%, transparent);
   font-size: 0.7rem;
 }
 
@@ -817,9 +808,6 @@ body.workbench-page {
     max-width: 58vw;
   }
 
-  .canvas-zero-label {
-    top: 58px;
-  }
 }
 
 @media (min-width: 681px) {

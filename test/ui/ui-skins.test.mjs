@@ -82,6 +82,9 @@ describe('UI skin loading and persistence', () => {
     const previewJs = readFileSync(join('www', 'preview.js'), 'utf8');
     expect(previewCss).toContain('var(--cnc-panel-strong)');
     expect(previewCss).toContain('var(--cnc-accent)');
+    expect(previewCss).toContain('--workbench-glass-top');
+    expect(previewCss).toContain('--workbench-glass-panel');
+    expect(previewCss).toContain('--workbench-glass-soft');
     expect(previewJs).toContain("themeColor('--cnc-path-generated'");
     expect(previewJs).toContain("themeColor('--cnc-zero'");
   });

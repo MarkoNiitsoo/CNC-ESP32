@@ -65,6 +65,47 @@ export function commandedPositionAtLine(segments = [], lineNumber = 0) {
   return position;
 }
 
+export function workZeroTablePosition(job = {}) {
+  const activeId = job.activeWorkZeroId;
+  const activeZero = Array.isArray(job.zeroHistory)
+    ? job.zeroHistory.find((entry) => entry?.id === activeId && entry?.type === 'workZero')
+    : null;
+  const position = activeZero?.positionBefore || job.workZero?.beforeG92?.position;
+  if (!Number.isFinite(Number(position?.x)) || !Number.isFinite(Number(position?.y))) return null;
+  return {
+    x: Number(position.x),
+    y: Number(position.y),
+    z: Number.isFinite(Number(position.z)) ? Number(position.z) : null,
+  };
+}
+
+export function translatePosition(position, offset) {
+  if (!Number.isFinite(Number(position?.x)) || !Number.isFinite(Number(position?.y))) return null;
+  return {
+    ...position,
+    x: Number(position.x) + (Number(offset?.x) || 0),
+    y: Number(position.y) + (Number(offset?.y) || 0),
+  };
+}
+
+export function translateBounds(bounds, offset) {
+  if (!bounds || !Number.isFinite(bounds.xMin) || !Number.isFinite(bounds.xMax) ||
+      !Number.isFinite(bounds.yMin) || !Number.isFinite(bounds.yMax)) return null;
+  const x = Number(offset?.x) || 0;
+  const y = Number(offset?.y) || 0;
+  return { ...bounds, xMin: bounds.xMin + x, xMax: bounds.xMax + x, yMin: bounds.yMin + y, yMax: bounds.yMax + y };
+}
+
+export function adaptiveGridStep(scale, targetPixels = 80) {
+  const pixelsPerMm = Number(scale);
+  if (!Number.isFinite(pixelsPerMm) || pixelsPerMm <= 0) return 100;
+  const rawStep = Math.max(0.001, Number(targetPixels) / pixelsPerMm);
+  const power = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / power;
+  const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return nice * power;
+}
+
 export function createWorkbenchState(width = 0) {
   return {
     layoutMode: layoutModeForWidth(width),
