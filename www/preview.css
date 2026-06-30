@@ -449,7 +449,6 @@ body.workbench-page {
   padding: 6px 8px;
   border-bottom: 1px solid rgba(159, 177, 191, 0.18);
   background: var(--workbench-glass-top);
-  backdrop-filter: blur(14px);
 }
 
 .workbench-topbar .icon-button,
@@ -576,7 +575,6 @@ body.workbench-page {
   border: 1px solid rgba(159, 177, 191, 0.18);
   border-radius: 6px;
   background: color-mix(in srgb, var(--cnc-panel-strong) 66%, transparent);
-  backdrop-filter: blur(8px);
 }
 
 .canvas-job-label {
@@ -612,7 +610,6 @@ body.workbench-page {
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   border: 1px solid rgba(159, 177, 191, 0.25);
   background: var(--workbench-glass-panel);
-  backdrop-filter: blur(16px);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
   transition: transform 180ms ease;
 }
@@ -736,7 +733,6 @@ body.workbench-page {
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
   border-top: 1px solid rgba(159, 177, 191, 0.22);
   background: color-mix(in srgb, var(--cnc-panel-strong) 78%, transparent);
-  backdrop-filter: blur(14px);
 }
 
 .canvas-toolbar-main {

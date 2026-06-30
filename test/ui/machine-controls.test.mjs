@@ -20,11 +20,14 @@ describe('compact machine drawer', () => {
     expect(machineBar).toContain("const pauseLabel = paused ? 'Resume' : 'Pause'");
   });
 
-  it('keeps feed presets, homing, terminal, log, and joystick controls compact and present', () => {
+  it('keeps feed presets, homing, terminal, and the joystick edge dock compact and present', () => {
     expect(machineBar).toMatch(/machine-feed-adjust[\s\S]*machine-feed-presets/);
     expect(machineBar).toMatch(/machine-homing-axis-row[\s\S]*machine-homing-action-row/);
     expect(machineBar).toMatch(/mb-terminal-select[\s\S]*mb-marlin-log/);
-    expect(machineBar).toMatch(/mb-jog-pad[\s\S]*data-mb-jog-z="1"[\s\S]*data-mb-jog-z="-1"/);
+    expect(machineBar).toMatch(/machine-jog-dock[\s\S]*mb-jog-dock-toggle[\s\S]*mb-jog-settings-toggle[\s\S]*mb-jog-pad/);
+    expect(machineBar).toMatch(/machine-jog-dock-settings[\s\S]*data-mb-jog-z="1"[\s\S]*data-mb-jog-z="-1"/);
+    expect(machineBar.indexOf('mb-jog-pad')).toBeLessThan(machineBar.indexOf('id="machine-drawer"'));
+    expect(machineBar).toContain('if (!STATE.jogDockOpen) STATE.jogSettingsOpen = false');
   });
 
   it('stops active jog on pointer release, cancel, blur, and visibility loss', () => {

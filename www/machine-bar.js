@@ -4,6 +4,8 @@
     health: null,
     position: { x: null, y: null, z: null },
     drawerOpen: false,
+    jogDockOpen: false,
+    jogSettingsOpen: false,
     lastMessage: '',
     marlinLog: { entries: [], lastCritical: null },
     jog: { state: 'IDLE', zLiftedForJog: false, heartbeatAgeMs: 0, lastCommand: '', lastError: '' },
@@ -446,11 +448,42 @@
 
   function toggleDrawer(open = !STATE.drawerOpen) {
     STATE.drawerOpen = Boolean(open);
+    if (STATE.drawerOpen) {
+      STATE.jogDockOpen = false;
+      STATE.jogSettingsOpen = false;
+    }
     document.body.classList.toggle('machine-drawer-open', STATE.drawerOpen);
+    document.body.classList.toggle('machine-jog-dock-open', STATE.jogDockOpen);
     const shell = el('machine-drawer');
     const overlay = el('machine-drawer-overlay');
     if (shell) shell.hidden = !STATE.drawerOpen;
     if (overlay) overlay.hidden = !STATE.drawerOpen;
+  }
+
+  function syncJogDock() {
+    const dock = el('machine-jog-dock');
+    const panel = dock?.querySelector('.machine-jog-dock-panel');
+    const settings = el('mb-jog-settings');
+    const toggle = el('mb-jog-settings-toggle');
+    const handle = el('mb-jog-dock-toggle');
+    if (dock) dock.classList.toggle('is-open', STATE.jogDockOpen);
+    if (panel) panel.hidden = !STATE.jogDockOpen;
+    if (settings) settings.hidden = !STATE.jogSettingsOpen || !STATE.jogDockOpen;
+    if (toggle) toggle.setAttribute('aria-expanded', String(STATE.jogSettingsOpen && STATE.jogDockOpen));
+    if (handle) handle.setAttribute('aria-expanded', String(STATE.jogDockOpen));
+    document.body.classList.toggle('machine-jog-dock-open', STATE.jogDockOpen);
+  }
+
+  function toggleJogDock(open = !STATE.jogDockOpen) {
+    STATE.jogDockOpen = Boolean(open);
+    if (!STATE.jogDockOpen) STATE.jogSettingsOpen = false;
+    syncJogDock();
+  }
+
+  function toggleJogSettings(open = !STATE.jogSettingsOpen) {
+    STATE.jogSettingsOpen = Boolean(open);
+    if (STATE.jogSettingsOpen) STATE.jogDockOpen = true;
+    syncJogDock();
   }
 
   function render() {
@@ -476,6 +509,7 @@
     const drawerPauseResumeEl = el('mb-drawer-pause-resume');
     const liveMarlinEl = el('mb-live-marlin');
     const jogStatusEl = el('mb-jog-status');
+    const jogSettingsToggleEl = el('mb-jog-settings-toggle');
     const xyzText = `X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`;
     const feed = feedPercent();
     const entries = STATE.marlinLog?.entries || [];
@@ -545,6 +579,8 @@
       const jog = STATE.jog || {};
       jogStatusEl.textContent = `${jog.state || 'IDLE'} | Safe Z ${jog.zLiftedForJog ? 'lifted' : 'not lifted'} | ${jog.lastError || jog.lastCommand || 'ready'}`;
     }
+    if (jogSettingsToggleEl) jogSettingsToggleEl.setAttribute('aria-expanded', String(STATE.jogSettingsOpen));
+    syncJogDock();
 
     setDisabled('mb-pause', !(running || paused || isUnknown()));
     setDisabled('mb-stop', state === 'STOPPING');
@@ -587,6 +623,44 @@
         <p id="mb-live-marlin" class="machine-live-message" hidden></p>
       </div>
       <div id="machine-drawer-overlay" class="machine-drawer-overlay" hidden></div>
+      <div id="machine-jog-dock" class="machine-jog-dock" aria-label="Joystick controls">
+        <button id="mb-jog-dock-toggle" class="machine-jog-handle" type="button" aria-label="Open joystick" aria-expanded="false">
+          <span class="machine-jog-handle-icon" aria-hidden="true">
+            <svg class="cnc-icon machine-jog-handle-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="7" r="4.2" />
+              <path d="M12 11.5v6" />
+              <path d="M6.5 18h11a2 2 0 0 1 2 2v1h-15v-1a2 2 0 0 1 2-2z" />
+            </svg>
+          </span>
+        </button>
+        <div class="machine-jog-dock-panel" hidden>
+          <button id="mb-jog-settings-toggle" class="machine-jog-settings-toggle" type="button" aria-label="Expand joystick settings" aria-controls="mb-jog-settings" aria-expanded="false" title="Expand joystick settings">
+            <svg class="cnc-icon machine-jog-settings-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 14l6-6 6 6" />
+            </svg>
+          </button>
+          <div id="mb-jog-settings" class="machine-jog-settings machine-jog-dock-settings" hidden>
+            <p class="warning">Software controls are not a physical emergency stop.</p>
+            <div class="machine-jog-setting-toggles">
+              <label><input id="mb-jog-safe" type="checkbox" checked> Safe</label>
+              <label><input id="mb-jog-restore-z" type="checkbox" checked> Restore Z</label>
+            </div>
+            <label class="machine-jog-setting-field"><span>Safe Z</span><input id="mb-jog-safe-z" type="number" min="1" max="200" step="1" value="70"></label>
+            <label class="machine-jog-setting-field"><span>XY max <output id="mb-jog-xy-output">50 mm/s</output></span><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50"></label>
+            <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5"></label>
+            <div class="machine-jog-z machine-jog-z-settings" aria-label="Z jog controls">
+              <button type="button" data-mb-jog-z="1">Z+</button>
+              <button type="button" data-mb-jog-z="-1">Z-</button>
+            </div>
+          </div>
+          <div class="machine-jog-dock-core">
+            <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick">
+              <span id="mb-jog-knob" class="machine-jog-knob"></span>
+            </div>
+            <p id="mb-jog-status" class="compact-status">IDLE | Safe Z not lifted | ready</p>
+          </div>
+        </div>
+      </div>
       <aside id="machine-drawer" class="machine-drawer" hidden aria-label="Machine safety drawer">
         <div class="machine-drawer-head">
           <div>
@@ -623,28 +697,6 @@
             <button type="button" data-mb-feed="125">125%</button>
             <button type="button" data-mb-feed="150" class="machine-warn">150%</button>
           </div>
-        </div>
-        <div class="machine-drawer-card">
-          <h2>Joystick</h2>
-          <div class="machine-jog-settings">
-            <label><input id="mb-jog-safe" type="checkbox" checked> Safe</label>
-            <label>Safe Z <input id="mb-jog-safe-z" type="number" min="1" max="200" step="1" value="70"></label>
-            <label><input id="mb-jog-restore-z" type="checkbox" checked> Restore Z</label>
-          </div>
-          <div class="machine-jog-layout">
-            <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick">
-              <span id="mb-jog-knob" class="machine-jog-knob"></span>
-            </div>
-            <div class="machine-jog-z">
-              <button type="button" data-mb-jog-z="1">Z+</button>
-              <button type="button" data-mb-jog-z="-1">Z-</button>
-            </div>
-          </div>
-          <label>XY max <output id="mb-jog-xy-output">50 mm/s</output><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50"></label>
-          <label>Z max <output id="mb-jog-z-output">5 mm/s</output><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5"></label>
-          <p id="mb-jog-status" class="compact-status">IDLE | Safe Z not lifted | ready</p>
-          <button id="mb-jog-stop" class="machine-danger" type="button">Stop Jog: M410 + M5</button>
-          <p class="warning">Not a physical emergency stop.</p>
         </div>
         <div class="machine-drawer-card">
           <h2>Position</h2>
@@ -713,13 +765,20 @@
     button('mb-toggle', () => toggleDrawer());
     button('mb-close', () => toggleDrawer(false));
     button('machine-drawer-overlay', () => toggleDrawer(false));
+    button('mb-jog-dock-toggle', () => toggleJogDock());
+    button('mb-jog-settings-toggle', () => {
+      if (!STATE.jogDockOpen) {
+        toggleJogDock(true);
+      } else {
+        toggleJogSettings();
+      }
+    });
     button('mb-pause', pauseOrResumeJob);
     button('mb-drawer-pause-resume', pauseOrResumeJob);
     button('mb-stop', stopJob);
     button('mb-drawer-stop', stopJob);
     button('mb-m5', () => sendCmd('M5'));
     button('mb-drawer-m5', () => sendCmd('M5'));
-    button('mb-jog-stop', () => stopJog(true));
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
       item.addEventListener('click', () => {
         goToWorkZero(item.dataset.mbGotoZero).catch((err) => {
@@ -812,6 +871,7 @@
     refreshJobStatus();
     refreshHealth();
     refreshMarlinLog();
+    syncJogDock();
     render();
   }
 
