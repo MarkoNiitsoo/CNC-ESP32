@@ -5,6 +5,7 @@ import {
   defaultActiveRun,
   desiredRunModeForPlacement,
   ensureActiveRun,
+  fingerprintsMatch,
   assertCanUseActiveRunForExecution,
   getActiveRun,
   getActiveRunFingerprint,
@@ -216,6 +217,29 @@ describe('active run selection', () => {
 });
 
 describe('generated validation safety', () => {
+  it('treats size+fnv1a and size+fnv1a+cyrb53 as the same generated file', () => {
+    const shortFingerprint = 'size:471:fnv1a:620fdd86';
+    const browserFingerprint = `${shortFingerprint}:cyrb53:48b19ad93e0d9`;
+    const job = {
+      gcodePath: '/gcode/test.gc',
+      sourceGcodePath: '/gcode/test.gc',
+      placement: { rotationDeg: 10, generatedRunPath: '/jobs/generated/test.run.gc', dirty: false },
+      activeRun: {
+        mode: 'generated', path: '/jobs/generated/test.run.gc',
+        generatedFingerprint: browserFingerprint, transformFingerprint: 'placement-a',
+      },
+      generatedValidation: {
+        status: 'valid', generatedFingerprint: shortFingerprint, transformFingerprint: 'placement-a',
+      },
+    };
+
+    expect(fingerprintsMatch(browserFingerprint, shortFingerprint)).toBe(true);
+    expect(isGeneratedRunUsable(job)).toMatchObject({ ok: true });
+    expect(assertCanUseActiveRunForExecution(job)).toMatchObject({ ok: true });
+    expect(fingerprintsMatch(browserFingerprint, 'size:471:fnv1a:deadbeef')).toBe(false);
+    expect(fingerprintsMatch(browserFingerprint, 'size:470:fnv1a:620fdd86')).toBe(false);
+  });
+
   it('accepts a generated file with expected preamble', () => {
     const generated = generatedFixture();
     const validation = validateGeneratedRun({

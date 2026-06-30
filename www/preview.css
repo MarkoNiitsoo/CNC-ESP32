@@ -205,6 +205,20 @@
   max-height: 180px;
 }
 
+.placement-policy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.placement-policy span {
+  padding: 4px 6px;
+  border: 1px solid rgba(63, 196, 117, 0.28);
+  border-radius: 5px;
+  color: #b9f7ce;
+  font-size: 0.72rem;
+}
+
 .job-result {
   color: #b9f7ce;
   min-height: 1.4em;
@@ -390,5 +404,430 @@
   #preview-canvas {
     height: 28vh;
     min-height: 180px;
+  }
+}
+
+/* Canvas-first workbench */
+body.workbench-page {
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--cnc-bg);
+}
+
+.workbench-page {
+  --workbench-glass-top: color-mix(in srgb, var(--cnc-panel-strong) 78%, transparent);
+  --workbench-glass-panel: color-mix(in srgb, var(--cnc-panel-strong) 72%, transparent);
+  --workbench-glass-soft: color-mix(in srgb, var(--cnc-panel) 68%, transparent);
+  --workbench-glass-chip: rgba(20, 31, 40, 0.7);
+}
+
+.workbench-page .machine-shell {
+  width: 100%;
+  max-width: none;
+}
+
+.preview-app {
+  position: fixed;
+  inset: var(--machine-bar-height, 58px) 0 0;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: block;
+}
+
+.workbench-topbar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 35;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(159, 177, 191, 0.18);
+  background: var(--workbench-glass-top);
+}
+
+.workbench-topbar .icon-button,
+.workbench-chip,
+.workbench-overflow summary {
+  min-height: 36px;
+  display: inline-grid;
+  place-items: center;
+  padding: 6px 9px;
+  border: 1px solid rgba(159, 177, 191, 0.28);
+  border-radius: 6px;
+  background: var(--workbench-glass-chip);
+  color: var(--cnc-text);
+  font-size: 0.72rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.workbench-chip.muted {
+  color: var(--cnc-muted);
+}
+
+.workbench-chip.ok {
+  color: var(--cnc-ok);
+  border-color: var(--cnc-ok);
+}
+
+.workbench-chip.warn {
+  color: var(--cnc-warning);
+  border-color: var(--cnc-warning);
+}
+
+.workbench-chip.fail {
+  color: color-mix(in srgb, var(--cnc-danger) 45%, white);
+  border-color: var(--cnc-danger);
+}
+
+.workbench-chip.active {
+  color: var(--cnc-text);
+  background: color-mix(in srgb, var(--cnc-ok) 26%, var(--cnc-panel-strong));
+  border-color: var(--cnc-ok);
+}
+
+.status-trigger {
+  margin-left: auto;
+}
+
+.workbench-overflow {
+  position: relative;
+}
+
+.workbench-overflow summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.workbench-overflow summary::-webkit-details-marker {
+  display: none;
+}
+
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 150px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid #273640;
+  border-radius: 7px;
+  background: color-mix(in srgb, #0c1318 84%, transparent);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
+}
+
+.overflow-menu a,
+.drawer-link-row a {
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 7px;
+  color: #cbd8e1;
+  text-decoration: none;
+}
+
+.workbench-page .status-header,
+.workbench-page > .bottom-nav,
+.preview-app > .file-toolbar {
+  display: none;
+}
+
+.preview-stage {
+  position: absolute;
+  inset: 50px 0 0;
+  z-index: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--cnc-bg);
+}
+
+#preview-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  touch-action: none;
+  cursor: grab;
+}
+
+#preview-canvas.is-dragging {
+  cursor: grabbing;
+}
+
+#preview-canvas.select-mode {
+  cursor: crosshair;
+}
+
+.canvas-overlay {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  padding: 7px 9px;
+  border: 1px solid rgba(159, 177, 191, 0.18);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cnc-panel-strong) 66%, transparent);
+}
+
+.canvas-job-label {
+  top: 12px;
+  left: 12px;
+  max-width: min(72vw, 520px);
+  display: grid;
+  gap: 2px;
+}
+
+.canvas-job-label span {
+  color: var(--cnc-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+}
+
+.workbench-scrim {
+  position: absolute;
+  inset: 50px 0 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.workbench-drawer {
+  position: absolute;
+  top: 50px;
+  bottom: 72px;
+  z-index: 30;
+  width: min(82vw, 390px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border: 1px solid rgba(159, 177, 191, 0.25);
+  background: var(--workbench-glass-panel);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
+  transition: transform 180ms ease;
+}
+
+.workbench-drawer-left {
+  left: 0;
+  border-left: 0;
+  transform: translateX(-102%);
+}
+
+.workbench-drawer-right {
+  right: 0;
+  border-right: 0;
+  transform: translateX(102%);
+}
+
+.workbench-drawer.open {
+  transform: translateX(0);
+}
+
+.drawer-titlebar {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid rgba(159, 177, 191, 0.18);
+}
+
+.drawer-titlebar h2,
+.drawer-titlebar p {
+  margin: 0;
+}
+
+.drawer-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid rgba(159, 177, 191, 0.14);
+}
+
+.drawer-tabs button {
+  min-height: 38px;
+  padding: 6px;
+  background: color-mix(in srgb, #18232d 72%, transparent);
+  color: #cbd8e1;
+  font-size: 0.78rem;
+}
+
+.drawer-tabs button.active {
+  background: color-mix(in srgb, var(--cnc-accent) 78%, transparent);
+  color: #fff;
+}
+
+.drawer-scroll {
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.drawer-scroll > .panel {
+  margin: 0 0 8px;
+  padding: 11px;
+  border-color: rgba(159, 177, 191, 0.18);
+  background: var(--workbench-glass-soft);
+  box-shadow: none;
+}
+
+.drawer-scroll h2 {
+  font-size: 1rem;
+}
+
+.drawer-scroll p,
+.drawer-scroll label,
+.drawer-scroll dt,
+.drawer-scroll dd {
+  font-size: 0.82rem;
+}
+
+.drawer-link-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 6px;
+  border-top: 1px solid rgba(159, 177, 191, 0.16);
+}
+
+.edge-handle {
+  position: absolute;
+  top: 46%;
+  z-index: 12;
+  width: 28px;
+  min-height: 74px;
+  padding: 4px;
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
+  color: #fff;
+  writing-mode: vertical-rl;
+  font-size: 0.66rem;
+}
+
+.edge-handle-left {
+  left: 0;
+}
+
+.edge-handle-right {
+  right: 0;
+  border-radius: 6px 0 0 6px;
+}
+
+.canvas-toolbar {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 25;
+  min-height: 64px;
+  display: grid;
+  gap: 5px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(159, 177, 191, 0.22);
+  background: color-mix(in srgb, var(--cnc-panel-strong) 78%, transparent);
+}
+
+.canvas-toolbar-main {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+}
+
+.canvas-toolbar button {
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, #18232d 74%, transparent);
+  font-size: 0.75rem;
+}
+
+.canvas-layer-toggles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 5px 0;
+}
+
+.canvas-layer-toggles[hidden] {
+  display: none;
+}
+
+.canvas-layer-toggles label {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid rgba(159, 177, 191, 0.18);
+  border-radius: 5px;
+  background: color-mix(in srgb, #14202a 72%, transparent);
+  font-size: 0.7rem;
+}
+
+.hold-to-confirm {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.hold-to-confirm::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: -1;
+  width: calc(var(--hold-progress, 0) * 100%);
+  background: rgba(63, 196, 117, 0.5);
+}
+
+@media (max-width: 560px) {
+  .workbench-topbar .icon-button,
+  .workbench-chip,
+  .workbench-overflow summary {
+    min-height: 34px;
+    padding-inline: 7px;
+    font-size: 0.66rem;
+  }
+
+  .workbench-connection {
+    display: none;
+  }
+
+  .canvas-job-label {
+    max-width: 58vw;
+  }
+
+}
+
+@media (min-width: 681px) {
+  .workbench-drawer {
+    width: min(44vw, 430px);
+  }
+
+  .edge-handle {
+    min-height: 86px;
+  }
+}
+
+@media (min-width: 1101px) {
+  .workbench-drawer {
+    width: 420px;
+  }
+
+  .canvas-toolbar {
+    left: 50%;
+    right: auto;
+    width: min(760px, calc(100% - 40px));
+    transform: translateX(-50%);
+    border: 1px solid rgba(159, 177, 191, 0.22);
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
   }
 }

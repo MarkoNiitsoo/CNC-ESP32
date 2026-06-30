@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev:mock": "node dev/mock-server.mjs",
+    "dev:mock:reset": "node dev/reset-mock-sd.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

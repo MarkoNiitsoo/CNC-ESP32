@@ -3,6 +3,7 @@ import {
   getActiveRun,
   getActiveRunFingerprint,
   getSourceGcodePath,
+  fingerprintsMatch,
   requiresGeneratedRun,
 } from './job-active-run.js';
 
@@ -48,7 +49,7 @@ function dryRunStatus(job = {}) {
   const active = getActiveRun(job);
   const activeFingerprint = getActiveRunFingerprint(job);
   if (dryRun.activeRunPath && dryRun.activeRunPath !== active.path) return 'stale';
-  if (dryRun.activeRunFingerprint && activeFingerprint && dryRun.activeRunFingerprint !== activeFingerprint) return 'stale';
+  if (dryRun.activeRunFingerprint && activeFingerprint && !fingerprintsMatch(dryRun.activeRunFingerprint, activeFingerprint)) return 'stale';
   if (dryRun.lastBoundingBoxTraceStatus === 'stale' || dryRun.lastAircutStatus === 'stale') return 'stale';
   return 'ok';
 }
@@ -61,7 +62,7 @@ function armStatus(job = {}) {
   const fingerprint = getActiveRunFingerprint(job);
   if (arm.activeRunPath && arm.activeRunPath !== active.path) return 'stale';
   if (arm.activeRunMode && arm.activeRunMode !== active.mode) return 'stale';
-  if (arm.activeRunFingerprint && fingerprint && arm.activeRunFingerprint !== fingerprint) return 'stale';
+  if (arm.activeRunFingerprint && fingerprint && !fingerprintsMatch(arm.activeRunFingerprint, fingerprint)) return 'stale';
   if (active.mode === 'generated' && arm.transformFingerprint && active.transformFingerprint && arm.transformFingerprint !== active.transformFingerprint) return 'stale';
   return 'armed';
 }

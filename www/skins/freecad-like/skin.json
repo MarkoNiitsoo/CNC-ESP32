@@ -1,0 +1,30 @@
+{
+  "id": "freecad-like",
+  "name": "FreeCAD-like",
+  "description": "CAD-style familiar icons without copying FreeCAD artwork.",
+  "version": "1.0.0",
+  "author": "CNC-ESP32 project",
+  "license": "MIT",
+  "icons": {
+    "menu": "icon-menu", "placement": "icon-placement", "rotate": "icon-rotate",
+    "origin": "icon-origin", "zero": "icon-zero", "workZero": "icon-work-zero",
+    "zZero": "icon-z-zero", "fitJob": "icon-fit-job", "fitTable": "icon-fit-table",
+    "fitWorkArea": "icon-fit-work-area", "pan": "icon-pan", "zoomIn": "icon-zoom-in",
+    "zoomOut": "icon-zoom-out", "source": "icon-source", "generated": "icon-generated",
+    "bounds": "icon-bounds", "dryRun": "icon-dry-run", "arm": "icon-arm",
+    "start": "icon-start", "pause": "icon-pause", "stop": "icon-stop",
+    "m5": "icon-spindle-off", "warning": "icon-warning", "ok": "icon-ok",
+    "blocked": "icon-blocked", "files": "icon-files", "settings": "icon-settings",
+    "terminal": "icon-terminal", "log": "icon-log"
+  },
+  "colors": {
+    "background": "#111318", "panel": "rgba(20, 24, 28, 0.82)",
+    "panelStrong": "rgba(20, 24, 28, 0.94)", "text": "#f0f3f6",
+    "mutedText": "#aab2bd", "accent": "#2f80ed", "ok": "#2ea043",
+    "warning": "#d99000", "danger": "#d94343", "blocked": "#b95000",
+    "sourcePath": "#8b949e", "generatedPath": "#2f80ed", "travelPath": "#2ea043",
+    "cutPath": "#2f80ed", "rawBounds": "#d99000", "cutBounds": "#f2cc60",
+    "placementBounds": "#bf5af2", "zero": "#2ea043", "currentPosition": "#ffcc00"
+  },
+  "touch": { "buttonSize": 44, "largeButtonSize": 56, "iconStrokeWidth": 2 }
+}

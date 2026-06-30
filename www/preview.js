@@ -1,5 +1,6 @@
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
+const currentJobKey = 'lowrider.currentJob';
 const pathEl = document.querySelector('#file-path');
 const canvas = document.querySelector('#preview-canvas');
 const statsEl = document.querySelector('#stats');
@@ -81,6 +82,11 @@ const runSafeStartZInput = document.querySelector('#run-safe-start-z');
 const runChecklistInputs = [...document.querySelectorAll('[data-run-check]')];
 const previewTabButtons = [...document.querySelectorAll('[data-preview-tab-button]')];
 const previewTabPanels = [...document.querySelectorAll('[data-preview-tab]')];
+const workbenchConnectionEl = document.querySelector('#workbench-connection');
+const workbenchActiveRunEl = document.querySelector('#workbench-active-run');
+const workbenchReadinessEl = document.querySelector('#open-readiness-drawer');
+const canvasJobNameEl = document.querySelector('#canvas-job-name');
+const canvasActivePathEl = document.querySelector('#canvas-active-path');
 const ctx = canvas.getContext('2d');
 
 const MACHINE = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800 };
@@ -103,7 +109,7 @@ let gcodeFingerprintAlgorithm = '';
 let gcodeFingerprintWarning = '';
 let jobRunStatus = null;
 let jobRunPollTimer = null;
-let jobStatusHealthy = true;
+let jobStatusHealthy = false;
 let transformedPreview = null;
 let placementWarnings = [];
 let sourceParsed = null;
@@ -115,6 +121,24 @@ let activeRunPath = filePath;
 let activeRunMode = 'source';
 let placementUpdateTimer = null;
 let suppressPlacementChange = false;
+let workbenchUiModule = null;
+let workbenchController = null;
+let liveToolPosition = null;
+let redirectingToFiles = false;
+
+function redirectToFiles(failedPath = '') {
+  if (redirectingToFiles) return;
+  redirectingToFiles = true;
+  if (failedPath) {
+    try {
+      const current = JSON.parse(localStorage.getItem(currentJobKey) || 'null');
+      if (current?.gcodePath === failedPath) localStorage.removeItem(currentJobKey);
+    } catch (err) {
+      localStorage.removeItem(currentJobKey);
+    }
+  }
+  window.location.replace('/#files');
+}
 
 const toolpathModulesPromise = Promise.all([
   import('/lib/toolpath-model.js'),
@@ -132,6 +156,11 @@ const jobReadinessPromise = import('/lib/job-readiness.js').then((module) => {
   jobReadinessModule = module;
   return module;
 });
+const workbenchUiPromise = import('/lib/workbench-ui.js').then((module) => {
+  workbenchUiModule = module;
+  return module;
+});
+const workbenchControllerPromise = import('/lib/workbench-controller.js');
 
 function showPreviewTab(tabName) {
   const activeTab = tabName || 'preview';
@@ -141,6 +170,58 @@ function showPreviewTab(tabName) {
   previewTabPanels.forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.previewTab === activeTab);
   });
+}
+
+function workbenchChipClass(level) {
+  return ['ok', 'warn', 'fail', 'active'].includes(level) ? level : 'muted';
+}
+
+function activeRunIcon(label) {
+  if (label === 'GENERATED') return 'generated';
+  if (label === 'STALE') return 'warning';
+  if (label === 'BLOCKED') return 'blocked';
+  return 'source';
+}
+
+function readinessIcon(label) {
+  if (label === 'READY' || label === 'ARMED' || label === 'RUNNING') return 'ok';
+  if (label === 'PAUSED') return 'pause';
+  return 'blocked';
+}
+
+function actionIcon(action = {}) {
+  return ({
+    choose_file: 'files', update_run_file: 'generated', set_work_zero: 'workZero', set_z_zero: 'zZero',
+    run_dry_run: 'dryRun', arm_job: 'arm', start_cut: 'start', monitor_job: 'log', resume_job: 'start',
+    review_last_run: 'log', pause_job: 'pause', stop_job: 'stop', m5: 'm5',
+  })[action.id] || 'ok';
+}
+
+function renderWorkbenchStatus() {
+  if (!workbenchUiModule) return;
+  const status = workbenchUiModule.buildWorkbenchStatus(previewReadinessJob(), {
+    currentJob: { gcodePath: filePath, jobPath: jobPathFor(filePath) },
+    jobStatus: jobRunStatus || {},
+  });
+  if (workbenchConnectionEl) {
+    workbenchConnectionEl.textContent = jobStatusHealthy ? 'ONLINE' : 'OFFLINE';
+    workbenchConnectionEl.className = `workbench-chip ${jobStatusHealthy ? 'ok' : 'fail'}`;
+  }
+  if (workbenchActiveRunEl) {
+    workbenchActiveRunEl.textContent = status.activeRun.label;
+    workbenchActiveRunEl.title = status.activeRunPath || '';
+    workbenchActiveRunEl.className = `workbench-chip ${workbenchChipClass(status.activeRun.level)}`;
+    workbenchActiveRunEl.dataset.icon = activeRunIcon(status.activeRun.label);
+    window.CncSkin?.applyIcons(workbenchActiveRunEl);
+  }
+  if (workbenchReadinessEl) {
+    workbenchReadinessEl.textContent = status.readiness.label;
+    workbenchReadinessEl.className = `workbench-chip status-trigger ${workbenchChipClass(status.readiness.level)}`;
+    workbenchReadinessEl.dataset.icon = readinessIcon(status.readiness.label);
+    window.CncSkin?.applyIcons(workbenchReadinessEl);
+  }
+  if (canvasJobNameEl) canvasJobNameEl.textContent = basename(filePath) || 'No job';
+  if (canvasActivePathEl) canvasActivePathEl.textContent = status.activeRunPath || 'Choose a G-code file';
 }
 
 function routePreviewTab() {
@@ -166,6 +247,16 @@ function badgeClass(level) {
   if (level === 'active') return 'active-badge';
   if (level === 'warn') return 'caution';
   return '';
+}
+
+function compactReadinessReason(message) {
+  const text = String(message || 'Review job setup.');
+  if (/generated/i.test(text) && /valid|stale|missing|update/i.test(text)) return 'Update run file.';
+  if (/work zero/i.test(text)) return 'Set work zero.';
+  if (/z zero/i.test(text)) return 'Set Z zero.';
+  if (/dry run/i.test(text)) return 'Complete dry run.';
+  if (/arm/i.test(text)) return 'Review and arm job.';
+  return text.length > 86 ? `${text.slice(0, 83)}...` : text;
 }
 
 function actionTab(action) {
@@ -199,6 +290,7 @@ async function handleReadinessAction(action) {
   }
   if (action.id === 'update_run_file') {
     showPreviewTab('preview');
+    workbenchController?.openForTab('preview');
     history.replaceState(null, '', '#preview');
     await generateRunFile({ overwrite: true });
     renderReadiness();
@@ -207,6 +299,7 @@ async function handleReadinessAction(action) {
   const tab = actionTab(action);
   if (previewTabButtons.some((button) => button.dataset.previewTabButton === tab)) {
     showPreviewTab(tab);
+    workbenchController?.openForTab(tab);
     history.replaceState(null, '', `#${tab}`);
   }
   focusReadinessTarget(action);
@@ -228,23 +321,16 @@ function renderReadiness() {
     .map((badge) => `<span class="status-badge ${badgeClass(badge.level)}">${html(badge.label)}</span>`)
     .join('');
   const blockerHtml = blockers.length
-    ? `<ul class="readiness-blockers">${blockers.map((reason) => `<li>${html(reason.message)}</li>`).join('')}</ul>`
+    ? `<ul class="readiness-blockers">${blockers.map((reason) => `<li>${html(compactReadinessReason(reason.message))}</li>`).join('')}</ul>`
     : '<p class="ok-text">No readiness blockers before the next action.</p>';
 
   readinessSummaryEl.innerHTML = `
     <div class="readiness-badges">${badgeHtml}</div>
     <dl>
-      <dt>Source file</dt><dd>${html(readiness.sourcePath || filePath || '-')}</dd>
       <dt>Active run file</dt><dd>${html(readiness.activeRun?.path || '-')}</dd>
       <dt>Active mode</dt><dd>${html(readiness.activeRun?.mode || '-')}</dd>
       <dt>Placement</dt><dd>${placement.identity ? 'Original placement' : 'Transformed placement'}${placement.dirty ? ' (update needed)' : ''}</dd>
       <dt>Rotation</dt><dd>${Number(placement.rotationDeg || 0).toFixed(2)} deg</dd>
-      <dt>Origin / bounds</dt><dd>${html(placement.originAnchor || '-')} / ${html(placement.placementBoundsMode || '-')}</dd>
-      <dt>Normalize</dt><dd>${placement.normalizeToOrigin ? 'Yes' : 'No'}</dd>
-      <dt>Work zero</dt><dd>${html(readiness.zero?.workZero || '-')}</dd>
-      <dt>Z zero</dt><dd>${html(readiness.zero?.zZero || '-')}</dd>
-      <dt>Dry run</dt><dd>${html(readiness.dryRun?.status || '-')} ${html(readiness.dryRun?.staleReason || '')}</dd>
-      <dt>Arm</dt><dd>${html(readiness.arm?.status || '-')} ${html(readiness.arm?.staleReason || '')}</dd>
       <dt>Latest run</dt><dd>${html(readiness.run?.status || '-')}</dd>
     </dl>
     <h3>Blocking reasons</h3>
@@ -257,6 +343,7 @@ function renderReadiness() {
   primaryButton.type = 'button';
   primaryButton.className = 'primary-action';
   primaryButton.textContent = primary?.label || 'Review Job';
+  primaryButton.dataset.icon = actionIcon(primary);
   primaryButton.addEventListener('click', () => {
     handleReadinessAction(primary).catch((err) => {
       if (jobResultEl) {
@@ -272,11 +359,13 @@ function renderReadiness() {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = secondary.label;
+    button.dataset.icon = actionIcon(secondary);
     button.addEventListener('click', () => {
       handleReadinessAction(secondary).catch((err) => appendRunLog(`Readiness action failed: ${err.message}`));
     });
     readinessSecondaryEl.append(button);
   });
+  renderWorkbenchStatus();
 }
 
 function basename(path) {
@@ -380,7 +469,7 @@ function parseAxisTriplet(text, regex) {
 }
 
 function parseM114(response) {
-  return {
+  const capture = {
     rawM114: response,
     position: {
       x: parseAxisTriplet(response, /(?:^|\s)X:\s*(-?\d+(?:\.\d+)?)/i),
@@ -393,6 +482,42 @@ function parseM114(response) {
       z: parseAxisTriplet(response, /Count\s+.*?\bZ:\s*(-?\d+(?:\.\d+)?)/i),
     },
   };
+  if (Number.isFinite(capture.position.x) && Number.isFinite(capture.position.y)) {
+    window.dispatchEvent(new CustomEvent('cnc-position-update', {
+      detail: { ...capture.position, source: 'M114', updatedAt: Date.now() },
+    }));
+  }
+  return capture;
+}
+
+function canvasToolPosition() {
+  const state = String(jobRunStatus?.state || '').toUpperCase();
+  const active = ['RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(state);
+  const statusPosition = jobRunStatus?.position || jobRunStatus?.lastKnownPosition;
+  if (active && Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
+    return { ...statusPosition, source: 'STATUS' };
+  }
+  if (active) {
+    const commanded = workbenchUiModule?.commandedPositionAtLine(parsed?.segments || [], jobRunStatus?.currentLineNumber);
+    if (commanded) return { ...commanded, source: 'CMD' };
+  }
+  if (liveToolPosition) return liveToolPosition;
+  if (Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
+    return { ...statusPosition, source: 'STATUS' };
+  }
+  return null;
+}
+
+function canvasWorkZeroPosition() {
+  return workbenchUiModule?.workZeroTablePosition(jobState) || null;
+}
+
+function canvasTablePosition(position) {
+  return workbenchUiModule?.translatePosition(position, canvasWorkZeroPosition()) || position;
+}
+
+function canvasTableBounds(bounds) {
+  return workbenchUiModule?.translateBounds(bounds, canvasWorkZeroPosition()) || bounds;
 }
 
 function previewSummary() {
@@ -756,11 +881,15 @@ function visibleArmState() {
   if (arm?.state === 'STALE') return 'STALE';
   if (arm?.state === 'ARMED') {
     const savedFingerprint = arm.gcodeFingerprint || arm.gcodeHashSha256;
-    const savedAlgorithm = arm.gcodeFingerprintAlgorithm || (arm.gcodeHashSha256 ? 'sha-256-webcrypto' : '');
-    if (savedFingerprint !== gcodeFingerprint || savedAlgorithm !== gcodeFingerprintAlgorithm) return 'STALE';
+    const sameFingerprint = jobActiveRunModule?.fingerprintsMatch
+      ? jobActiveRunModule.fingerprintsMatch(savedFingerprint, gcodeFingerprint)
+      : savedFingerprint === gcodeFingerprint;
+    if (!sameFingerprint) return 'STALE';
     if (arm.activeRunPath && arm.activeRunPath !== currentRunPath()) return 'STALE';
     if (arm.activeRunMode && arm.activeRunMode !== currentRunMode()) return 'STALE';
-    if (arm.activeRunFingerprint && arm.activeRunFingerprint !== gcodeFingerprint) return 'STALE';
+    if (arm.activeRunFingerprint && !(jobActiveRunModule?.fingerprintsMatch
+      ? jobActiveRunModule.fingerprintsMatch(arm.activeRunFingerprint, gcodeFingerprint)
+      : arm.activeRunFingerprint === gcodeFingerprint)) return 'STALE';
     if (currentRunMode() === 'generated' && arm.transformFingerprint && arm.transformFingerprint !== jobState?.activeRun?.transformFingerprint) return 'STALE';
     if (arm.activeRun?.path && arm.activeRun.path !== currentRunPath()) return 'STALE';
     if (arm.activeRun?.mode && arm.activeRun.mode !== currentRunMode()) return 'STALE';
@@ -945,27 +1074,27 @@ async function setLiveFeedOverride(percent) {
 }
 
 function updateJobRunPolling() {
-  const state = jobRunStatus?.state;
-  const shouldPoll = state === 'RUNNING' || state === 'PAUSED' || state === 'PREPARING' ||
-    state === 'PAUSING' || state === 'RESUMING' || state === 'STOPPING';
-  if (shouldPoll && !jobRunPollTimer) {
-    jobRunPollTimer = setInterval(() => refreshJobStatus().catch((err) => appendRunLog(`Status failed: ${err.message}`)), 2000);
-  } else if (!shouldPoll && jobRunPollTimer) {
+  if (jobRunPollTimer) {
     clearInterval(jobRunPollTimer);
     jobRunPollTimer = null;
   }
 }
 
-async function refreshJobStatus() {
-  const res = await fetch('/api/job/status');
-  const data = await readJsonOrThrow(res);
-  if (!res.ok) throw new Error(data.error || 'status failed');
+async function applyJobRunStatus(data) {
   jobRunStatus = data;
   jobStatusHealthy = true;
   await syncRunHistoryFromStatus(data);
   renderRunPanel();
   updateJobRunPolling();
   return data;
+}
+
+async function refreshJobStatus() {
+  if (window.CncTelemetry) return window.CncTelemetry.request('job');
+  const res = await fetch('/api/job/status');
+  const data = await readJsonOrThrow(res);
+  if (!res.ok) throw new Error(data.error || 'status failed');
+  return applyJobRunStatus(data);
 }
 
 async function readJsonOrThrow(res) {
@@ -1108,10 +1237,8 @@ async function startJobRun() {
     return;
   }
 
-  const text = 'This will start streaming the G-code file from ESP32 SD to Marlin. Keep your hand near the physical emergency stop.';
-  if (!confirm(text)) return;
   const warnings = armWarnings();
-  if (warnings.length && !confirm(`${warnings.length} warning(s) exist. Confirm that you have reviewed them before starting this job.`)) return;
+  if (warnings.length) appendRunLog(`Starting after deliberate hold with ${warnings.length} reviewed warning(s).`);
 
   const job = ensureJobState();
   const history = await jobHistoryPromise;
@@ -1376,6 +1503,7 @@ async function selectHistoryZero(id, type) {
   renderToolZeroPanel();
   renderHistoryPanels();
   renderArmPanel();
+  draw();
 }
 
 async function labelHistoryZero(id) {
@@ -1946,6 +2074,7 @@ function applyActiveRunParse(run, options = {}) {
     else jobState.activeRun.generatedFingerprint = run.fingerprint.value;
   }
   pathEl.textContent = `${filePath} | Active: ${run.path}`;
+  renderWorkbenchStatus();
 }
 
 async function validateGeneratedRunFromPath(path = jobState?.placement?.generatedRunPath || jobState?.generatedRunPath) {
@@ -2391,6 +2520,7 @@ async function setWorkZeroWithCapture() {
   renderPreflight();
   renderArmPanel();
   generateTraceCommands();
+  draw();
 }
 
 function downloadJobJson() {
@@ -2448,15 +2578,15 @@ function targetPosition(pos, words, scale, absolute) {
   return next;
 }
 
-function addLinear(segments, bounds, from, to, rapid, feedrate = null) {
+function addLinear(segments, bounds, from, to, rapid, feedrate = null, lineNumber = null) {
   updateBounds(bounds, from);
   updateBounds(bounds, to);
   if (from.x !== to.x || from.y !== to.y) {
-    segments.push({ from: { ...from }, to: { ...to }, rapid, feedrate });
+    segments.push({ from: { ...from }, to: { ...to }, rapid, feedrate, lineNumber });
   }
 }
 
-function addArc(segments, bounds, from, to, words, scale, clockwise, warnings, feedrate) {
+function addArc(segments, bounds, from, to, words, scale, clockwise, warnings, feedrate, lineNumber) {
   if (words.I === undefined && words.J === undefined) {
     warnings.push('Arc without I/J center offset was skipped.');
     return false;
@@ -2487,7 +2617,7 @@ function addArc(segments, bounds, from, to, words, scale, clockwise, warnings, f
       y: cy + Math.sin(angle) * radius,
       z: from.z + (to.z - from.z) * t,
     };
-    addLinear(segments, bounds, prev, next, false, feedrate);
+    addLinear(segments, bounds, prev, next, false, feedrate, lineNumber);
     prev = next;
   }
   return true;
@@ -2582,9 +2712,9 @@ function parseGcode(text) {
 
     const next = targetPosition(pos, words, unitsScale, absolute);
     if (motion === 0 || motion === 1) {
-      addLinear(segments, bounds, pos, next, motion === 0, motion === 1 ? feedrate : null);
+      addLinear(segments, bounds, pos, next, motion === 0, motion === 1 ? feedrate : null, parsedLines);
     } else if (motion === 2 || motion === 3) {
-      if (addArc(segments, bounds, pos, next, words, unitsScale, motion === 2, warnings, feedrate)) {
+      if (addArc(segments, bounds, pos, next, words, unitsScale, motion === 2, warnings, feedrate, parsedLines)) {
         arcApproximated += 1;
       } else {
         arcSkipped += 1;
@@ -2660,6 +2790,132 @@ function fitBounds(bounds) {
   };
 }
 
+function unionBounds(...items) {
+  const valid = items.filter(hasBounds);
+  if (!valid.length) return null;
+  return valid.reduce((out, item) => ({
+    xMin: Math.min(out.xMin, item.xMin),
+    xMax: Math.max(out.xMax, item.xMax),
+    yMin: Math.min(out.yMin, item.yMin),
+    yMax: Math.max(out.yMax, item.yMax),
+  }), { ...valid[0] });
+}
+
+function workbenchViewBounds(mode) {
+  if (mode === 'table') return MACHINE;
+  if (mode === 'job') return canvasTableBounds(sourceParsed?.bounds || parsed?.bounds);
+  if (mode === 'zero') {
+    const active = canvasTableBounds(parsed?.bounds);
+    const zero = canvasWorkZeroPosition() || { x: 0, y: 0 };
+    const span = active && hasBounds(active)
+      ? Math.max(40, Math.min(400, Math.max(active.xMax - active.xMin, active.yMax - active.yMin) * 0.35))
+      : 100;
+    return { xMin: zero.x - span / 2, xMax: zero.x + span / 2, yMin: zero.y - span / 2, yMax: zero.y + span / 2 };
+  }
+  return unionBounds(canvasTableBounds(parsed?.bounds), canvasTableBounds(transformedPreview?.generatedRunBounds)) ||
+    canvasTableBounds(parsed?.bounds);
+}
+
+function strokeBounds(ctx2d, bounds, px, py, color, dash = []) {
+  if (!hasBounds(bounds)) return;
+  ctx2d.save();
+  ctx2d.strokeStyle = color;
+  ctx2d.lineWidth = 1;
+  ctx2d.setLineDash(dash);
+  ctx2d.strokeRect(px(bounds.xMin), py(bounds.yMax), px(bounds.xMax) - px(bounds.xMin), py(bounds.yMin) - py(bounds.yMax));
+  ctx2d.restore();
+}
+
+function drawSegments(segments, px, py, options = {}) {
+  (segments || []).forEach((segment) => {
+    const rapid = segment.rapid || segment.type === 'rapid' || segment.type === 'retract';
+    if (rapid && options.showTravel === false) return;
+    ctx.beginPath();
+    ctx.moveTo(px(segment.from.x), py(segment.from.y));
+    const points = segment.points?.length ? segment.points : [segment.to];
+    points.forEach((point) => ctx.lineTo(px(point.x), py(point.y)));
+    ctx.strokeStyle = rapid ? (options.travelColor || '#59707d') : (options.cutColor || '#65d28e');
+    ctx.globalAlpha = options.alpha ?? 1;
+    ctx.lineWidth = rapid ? (options.travelWidth || 0.9) : (options.cutWidth || 1.7);
+    ctx.setLineDash(rapid ? [4, 4] : []);
+    ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+}
+
+function themeColor(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function drawMachineGrid(ctx2d, options) {
+  const { px, py, scale, view, panX, panY, width, height, color, textColor, workZero } = options;
+  const step = workbenchUiModule?.adaptiveGridStep(scale, 74) || 100;
+  const originX = (width - (view.xMax - view.xMin) * scale) / 2;
+  const originY = (height - (view.yMax - view.yMin) * scale) / 2;
+  const worldX = (screenX) => (screenX - originX - panX) / scale + view.xMin;
+  const worldY = (screenY) => (height + panY - screenY - originY) / scale + view.yMin;
+  const visible = {
+    xMin: Math.max(MACHINE.xMin, worldX(0)),
+    xMax: Math.min(MACHINE.xMax, worldX(width)),
+    yMin: Math.max(MACHINE.yMin, worldY(height)),
+    yMax: Math.min(MACHINE.yMax, worldY(0)),
+  };
+  if (visible.xMin > visible.xMax || visible.yMin > visible.yMax) return;
+
+  const left = Math.min(px(MACHINE.xMin), px(MACHINE.xMax));
+  const right = Math.max(px(MACHINE.xMin), px(MACHINE.xMax));
+  const top = Math.min(py(MACHINE.yMin), py(MACHINE.yMax));
+  const bottom = Math.max(py(MACHINE.yMin), py(MACHINE.yMax));
+  const xStart = Math.ceil(visible.xMin / step) * step;
+  const yStart = Math.ceil(visible.yMin / step) * step;
+
+  ctx2d.save();
+  ctx2d.beginPath();
+  ctx2d.rect(left, top, right - left, bottom - top);
+  ctx2d.clip();
+  ctx2d.strokeStyle = color;
+  ctx2d.lineWidth = 1;
+  ctx2d.setLineDash([]);
+  ctx2d.beginPath();
+  for (let x = xStart; x <= visible.xMax + step * 0.001; x += step) {
+    ctx2d.moveTo(px(x), top);
+    ctx2d.lineTo(px(x), bottom);
+  }
+  for (let y = yStart; y <= visible.yMax + step * 0.001; y += step) {
+    ctx2d.moveTo(left, py(y));
+    ctx2d.lineTo(right, py(y));
+  }
+  ctx2d.stroke();
+  ctx2d.restore();
+
+  ctx2d.save();
+  ctx2d.fillStyle = textColor;
+  ctx2d.font = '600 10px system-ui, sans-serif';
+  ctx2d.textBaseline = 'top';
+  const xLabelY = Math.min(height - 84, Math.max(4, bottom - 15));
+  const yLabelX = Math.min(width - 48, Math.max(4, left + 5));
+  ctx2d.textAlign = 'center';
+  for (let x = xStart; x <= visible.xMax + step * 0.001; x += step) {
+    const screenX = px(x);
+    const label = workbenchUiModule?.workCoordinateAtMachine(x, workZero?.x) ?? x;
+    if (screenX >= 18 && screenX <= width - 18) ctx2d.fillText(`${Math.round(label)}`, screenX, xLabelY);
+  }
+  ctx2d.textAlign = 'left';
+  ctx2d.textBaseline = 'middle';
+  for (let y = yStart; y <= visible.yMax + step * 0.001; y += step) {
+    const screenY = py(y);
+    const label = workbenchUiModule?.workCoordinateAtMachine(y, workZero?.y) ?? y;
+    if (screenY >= 12 && screenY <= height - 82) ctx2d.fillText(`${Math.round(label)}`, yLabelX, screenY);
+  }
+  if (top >= 0 && top < height - 80) {
+    ctx2d.textBaseline = 'top';
+    ctx2d.fillText('mm', yLabelX, Math.max(4, top + 5));
+  }
+  ctx2d.restore();
+}
+
 function hasBounds(bounds) {
   return bounds && Number.isFinite(bounds.xMin) && Number.isFinite(bounds.xMax) &&
     Number.isFinite(bounds.yMin) && Number.isFinite(bounds.yMax);
@@ -2678,6 +2934,7 @@ function estimateText(seconds) {
 }
 
 function draw() {
+  const visibleToolPosition = canvasTablePosition(canvasToolPosition());
   if (!parsed) return;
   const rect = canvas.getBoundingClientRect();
   const ratio = devicePixelRatio || 1;
@@ -2691,49 +2948,149 @@ function draw() {
   ctx.fillStyle = '#080b0d';
   ctx.fillRect(0, 0, w, h);
 
-  const viewBounds = transformedPreview?.generatedRunBounds && hasBounds(transformedPreview.generatedRunBounds)
-    ? {
-        xMin: Math.min(parsed.bounds.xMin, transformedPreview.generatedRunBounds.xMin),
-        xMax: Math.max(parsed.bounds.xMax, transformedPreview.generatedRunBounds.xMax),
-        yMin: Math.min(parsed.bounds.yMin, transformedPreview.generatedRunBounds.yMin),
-        yMax: Math.max(parsed.bounds.yMax, transformedPreview.generatedRunBounds.yMax),
-      }
-    : parsed.bounds;
+  const workbenchView = workbenchController?.getView() || { zoom: 1, panX: 0, panY: 0, fitMode: 'active' };
+  const layers = workbenchController?.getLayers() || {
+    path: true, bounds: true, zero: true, travel: true, source: true, generated: true, table: true,
+  };
+  const viewBounds = workbenchViewBounds(workbenchView.fitMode) || parsed.bounds;
   const view = fitBounds(viewBounds);
   const sx = w / (view.xMax - view.xMin);
   const sy = h / (view.yMax - view.yMin);
-  const scale = Math.min(sx, sy);
-  const ox = (w - (view.xMax - view.xMin) * scale) / 2;
-  const oy = (h - (view.yMax - view.yMin) * scale) / 2;
-  const px = (x) => ox + (x - view.xMin) * scale;
-  const py = (y) => h - (oy + (y - view.yMin) * scale);
+  const scale = Math.min(sx, sy) * workbenchView.zoom;
+  const projection = workbenchUiModule?.createCanvasProjection({
+    width: w,
+    height: h,
+    bounds: view,
+    scale,
+    panX: workbenchView.panX,
+    panY: workbenchView.panY,
+  }) || {
+    x: (x) => (w - (view.xMax - view.xMin) * scale) / 2 + (x - view.xMin) * scale + workbenchView.panX,
+    y: (y) => h - ((h - (view.yMax - view.yMin) * scale) / 2 + (y - view.yMin) * scale) + workbenchView.panY,
+  };
+  const px = projection.x;
+  const py = projection.y;
+  const workZero = canvasWorkZeroPosition();
+  const jobPx = (x) => px(x + (workZero?.x || 0));
+  const jobPy = (y) => py(y + (workZero?.y || 0));
 
-  ctx.strokeStyle = '#263640';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(px(MACHINE.xMin), py(MACHINE.yMax), (MACHINE.xMax - MACHINE.xMin) * scale, (MACHINE.yMax - MACHINE.yMin) * scale);
-
-  parsed.segments.forEach((segment) => {
-    ctx.beginPath();
-    ctx.moveTo(px(segment.from.x), py(segment.from.y));
-    const points = segment.points?.length ? segment.points : [segment.to];
-    points.forEach((point) => ctx.lineTo(px(point.x), py(point.y)));
-    ctx.strokeStyle = segment.rapid ? '#697985' : '#65d28e';
-    ctx.lineWidth = segment.rapid ? 1 : 1.6;
-    ctx.stroke();
-  });
-
-  if (transformedPreview?.segments?.length) {
-    transformedPreview.segments.forEach((segment) => {
-      ctx.beginPath();
-      ctx.moveTo(px(segment.from.x), py(segment.from.y));
-      const points = segment.points?.length ? segment.points : [segment.to];
-      points.forEach((point) => ctx.lineTo(px(point.x), py(point.y)));
-      ctx.strokeStyle = segment.engaged ? '#ffd166' : '#2f86d1';
-      ctx.lineWidth = segment.engaged ? 1.4 : 0.9;
-      ctx.setLineDash(segment.engaged ? [] : [4, 4]);
-      ctx.stroke();
+  const colors = {
+    accent: themeColor('--cnc-accent', '#2d80c7'),
+    source: themeColor('--cnc-path-source', '#4c8f69'),
+    generated: themeColor('--cnc-path-generated', '#ffd166'),
+    travel: themeColor('--cnc-path-travel', '#2f86d1'),
+    cut: themeColor('--cnc-path-cut', '#65d28e'),
+    rawBounds: themeColor('--cnc-bounds-raw', '#9fb1bf'),
+    cutBounds: themeColor('--cnc-bounds-cut', '#3fc475'),
+    placementBounds: themeColor('--cnc-bounds-placement', '#ffd166'),
+    zero: themeColor('--cnc-zero', '#ffd166'),
+    position: themeColor('--cnc-current-position', '#62b0ff'),
+    grid: themeColor('--cnc-table-grid', 'rgba(98, 176, 255, 0.13)'),
+    gridText: themeColor('--cnc-table-grid-text', 'rgba(185, 207, 220, 0.72)'),
+  };
+  if (layers.table) {
+    drawMachineGrid(ctx, {
+      px, py, scale, view,
+      panX: workbenchView.panX,
+      panY: workbenchView.panY,
+      width: w,
+      height: h,
+      color: colors.grid,
+      textColor: colors.gridText,
+      workZero,
     });
-    ctx.setLineDash([]);
+    strokeBounds(ctx, MACHINE, px, py, colors.accent);
+  }
+  if (layers.bounds) {
+    strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, jobPx, jobPy, colors.rawBounds, [7, 5]);
+    strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, jobPx, jobPy, colors.cutBounds, [3, 3]);
+    strokeBounds(ctx, transformedPreview?.generatedRunBounds, jobPx, jobPy, colors.placementBounds, [8, 4]);
+    const dryRunComplete = jobState?.dryRun?.lastBoundingBoxTraceStatus === 'complete' ||
+      jobState?.dryRun?.lastAircutStatus === 'complete';
+    if (dryRunComplete) {
+      const margin = Number(jobState?.dryRun?.margin || 0);
+      const active = parsed?.bounds;
+      if (hasBounds(active)) {
+        strokeBounds(ctx, {
+          xMin: active.xMin - margin,
+          xMax: active.xMax + margin,
+          yMin: active.yMin - margin,
+          yMax: active.yMax + margin,
+        }, jobPx, jobPy, colors.placementBounds, [10, 4]);
+      }
+    }
+  }
+  if (layers.source && sourceParsed?.segments?.length) {
+    drawSegments(sourceParsed.segments, jobPx, jobPy, {
+      showTravel: layers.travel,
+      cutColor: colors.source,
+      travelColor: colors.rawBounds,
+      alpha: currentRunMode() === 'source' ? 0.62 : 0.34,
+      cutWidth: 1.2,
+    });
+  }
+  if (layers.path) {
+    drawSegments(parsed.segments, jobPx, jobPy, {
+      showTravel: layers.travel,
+      cutColor: currentRunMode() === 'generated' ? colors.generated : colors.cut,
+      travelColor: colors.travel,
+    });
+  }
+  if (layers.generated && transformedPreview?.segments?.length) {
+    drawSegments(transformedPreview.segments, jobPx, jobPy, {
+      showTravel: layers.travel,
+      cutColor: colors.generated,
+      travelColor: colors.travel,
+      alpha: 0.92,
+      cutWidth: 2,
+    });
+  }
+  if (layers.zero) {
+    ctx.save();
+    if (layers.table) {
+      ctx.strokeStyle = colors.accent;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(px(0) - 6, py(0));
+      ctx.lineTo(px(0) + 6, py(0));
+      ctx.moveTo(px(0), py(0) - 6);
+      ctx.lineTo(px(0), py(0) + 6);
+      ctx.stroke();
+    }
+    if (workZero) {
+      const zeroX = px(workZero.x);
+      const zeroY = py(workZero.y);
+      ctx.strokeStyle = colors.zero;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(zeroX - 9, zeroY);
+      ctx.lineTo(zeroX + 9, zeroY);
+      ctx.moveTo(zeroX, zeroY - 9);
+      ctx.lineTo(zeroX, zeroY + 9);
+      ctx.stroke();
+      ctx.fillStyle = colors.zero;
+      ctx.font = '700 11px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const labelY = zeroY > h - 90 ? zeroY - 24 : zeroY + 9;
+      ctx.fillText('WORK ZERO', Math.min(zeroX + 8, w - 76), labelY);
+    }
+    ctx.restore();
+  }
+  if (Number.isFinite(visibleToolPosition?.x) && Number.isFinite(visibleToolPosition?.y)) {
+    const toolX = px(visibleToolPosition.x);
+    const toolY = py(visibleToolPosition.y);
+    ctx.save();
+    ctx.fillStyle = colors.position;
+    ctx.beginPath();
+    ctx.arc(toolX, toolY, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = colors.position;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(toolX, toolY, 9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -3051,14 +3408,14 @@ async function generateRunFile(options = {}) {
 
 async function loadPreview() {
   if (!filePath) {
-    pathEl.textContent = 'Missing path query parameter.';
+    redirectToFiles();
     return;
   }
 
   pathEl.textContent = filePath;
   const res = await fetch(`/api/download?path=${encodeURIComponent(filePath)}`);
   if (!res.ok) {
-    pathEl.textContent = `Could not download ${filePath}`;
+    redirectToFiles(filePath);
     return;
   }
 
@@ -3123,6 +3480,63 @@ function guardedRunClick(label, action) {
   };
 }
 
+function installHoldAction(button, action, policy = {}) {
+  if (!button) return;
+  const holdMs = Math.max(600, Number(policy.holdMs || 1000));
+  let timer = null;
+  let frame = null;
+  let startedAt = 0;
+  let completed = false;
+
+  const reset = () => {
+    if (timer) clearTimeout(timer);
+    if (frame) cancelAnimationFrame(frame);
+    timer = null;
+    frame = null;
+    startedAt = 0;
+    button.style.setProperty('--hold-progress', '0');
+    button.classList.remove('holding');
+  };
+
+  const update = () => {
+    if (!startedAt) return;
+    const progress = Math.min(1, (performance.now() - startedAt) / holdMs);
+    button.style.setProperty('--hold-progress', String(progress));
+    if (progress < 1) frame = requestAnimationFrame(update);
+  };
+
+  const begin = (event) => {
+    if (button.disabled || timer) return;
+    event.preventDefault();
+    completed = false;
+    startedAt = performance.now();
+    button.classList.add('holding');
+    frame = requestAnimationFrame(update);
+    timer = setTimeout(() => {
+      completed = true;
+      reset();
+      Promise.resolve(action()).catch((err) => appendRunLog(`Start failed: ${err.message}`));
+    }, holdMs);
+  };
+
+  const cancel = (event) => {
+    if (event) event.preventDefault();
+    if (!completed) reset();
+  };
+
+  button.addEventListener('pointerdown', begin);
+  button.addEventListener('pointerup', cancel);
+  button.addEventListener('pointercancel', cancel);
+  button.addEventListener('pointerleave', cancel);
+  button.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') begin(event);
+  });
+  button.addEventListener('keyup', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') cancel(event);
+  });
+  button.addEventListener('click', (event) => event.preventDefault());
+}
+
 fitButton.addEventListener('click', draw);
 reloadButton.addEventListener('click', loadPreview);
 rotateDeltaButtons.forEach((button) => {
@@ -3166,7 +3580,9 @@ toolCapturePositionButton?.addEventListener('click', () => captureToolPosition()
 setZZeroButton?.addEventListener('click', () => setZZeroWithCapture().catch((err) => setToolZeroResult(err.message, true)));
 captureSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture().catch((err) => setToolZeroResult(err.message, true)));
 saveToolZeroButton?.addEventListener('click', () => saveToolZeroToJob().catch((err) => setToolZeroResult(err.message, true)));
-startJobButton?.addEventListener('click', guardedRunClick('Start', startJobRun));
+workbenchUiPromise.then((ui) => {
+  installHoldAction(startJobButton, startJobRun, ui.actionPolicy('start_cut'));
+});
 pauseJobButton?.addEventListener('click', guardedRunClick('Pause', pauseJobRun));
 resumeJobButton?.addEventListener('click', guardedRunClick('Resume', resumeJobRun));
 stopJobButton?.addEventListener('click', guardedRunClick('Stop', stopJobRun));
@@ -3198,11 +3614,19 @@ previewTabButtons.forEach((button) => {
     const tab = button.dataset.previewTabButton;
     history.replaceState(null, '', `#${tab}`);
     showPreviewTab(tab);
+    workbenchController?.openForTab(tab);
     if (tab === 'preview') draw();
   });
 });
 addEventListener('hashchange', routePreviewTab);
 addEventListener('resize', draw);
+addEventListener('cnc-skin-change', draw);
+addEventListener('cnc-position-update', (event) => {
+  const position = event.detail || {};
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+  liveToolPosition = { ...position };
+  draw();
+});
 addEventListener('error', (event) => {
   appendRunLog(`Browser error: ${event.message}`);
   if (stopJobButton) stopJobButton.disabled = false;
@@ -3212,6 +3636,20 @@ addEventListener('unhandledrejection', (event) => {
   if (stopJobButton) stopJobButton.disabled = false;
 });
 jobState = newJobState();
+Promise.all([workbenchUiPromise, workbenchControllerPromise])
+  .then(([, controllerModule]) => {
+    workbenchController = controllerModule.installWorkbench({
+      canvas,
+      onViewChange: draw,
+      onTabRequested: (tab) => {
+        history.replaceState(null, '', `#${tab}`);
+        showPreviewTab(tab);
+      },
+    });
+    renderWorkbenchStatus();
+    draw();
+  })
+  .catch((err) => appendRunLog(`Workbench unavailable: ${err.message}`));
 routePreviewTab();
 renderJobPanel();
 renderToolZeroPanel();
@@ -3224,5 +3662,13 @@ renderArmPanel();
 jobReadinessPromise.then(renderReadiness).catch((err) => {
   if (readinessSummaryEl) readinessSummaryEl.textContent = `Readiness unavailable: ${err.message}`;
 });
-loadPreview();
-if (runPanel) refreshJobStatus().catch(() => {});
+loadPreview().catch(() => redirectToFiles(filePath));
+window.CncTelemetry?.subscribe('job', (data) => {
+  applyJobRunStatus(data).catch((err) => appendRunLog(`Status update failed: ${err.message}`));
+});
+window.CncTelemetry?.start();
+if (runPanel) refreshJobStatus().catch(() => {
+  jobStatusHealthy = false;
+  renderRunPanel();
+  renderWorkbenchStatus();
+});

@@ -1,5 +1,102 @@
 # Mobile Job Flow
 
+## Browser telemetry budget
+
+`/www/telemetry.js` is the single per-page owner of read-only HTTP telemetry. Machine Bar and page
+controllers subscribe to its events instead of starting independent intervals. It deduplicates
+in-flight requests, polls job status every 1 second only while a job is active and every 10 seconds
+when idle, and polls health every 30 seconds. Marlin log and jog status are demand-driven while the
+related drawer/view is open. Position `M114` is manual until firmware-owned delta telemetry is
+available; the browser must not add a periodic `M114` poll.
+
+## Mock Mode Indicator
+
+When `/api/health` reports `mockMode: true`, the shared Machine Bar shows a compact `DEV MOCK` badge
+beside machine state and XYZ. The badge is intentionally global so Dashboard, Files, Preview,
+drawers, and settings cannot be mistaken for a live CNC session without consuming a separate row.
+
+Production firmware does not return `mockMode`, so the badge remains hidden on the ESP32. The mock
+indicator changes presentation only; it does not alter active-run, readiness, arming, or command
+logic.
+
+## Canvas-First Workbench
+
+The selected job opens in `/preview.html?path=...` as a fixed full-screen workbench. The graphical
+work area is the main view and does not page-scroll during the normal job workflow. Existing job
+panels are reused inside translucent overlays so desktop, tablet, and phone share one component and
+state model.
+
+Top action area:
+
+- The existing Machine Bar remains the first row with direct Pause, Stop, and M5 actions.
+- A compact workbench row shows connection, `activeRun` state, readiness, Tools, and overflow links.
+- `activeRun.path` remains execution truth. Badges are ORIGINAL, GENERATED, STALE, or BLOCKED.
+- Readiness is READY, BLOCKED, ARMED, RUNNING, or PAUSED.
+
+Edge drawers:
+
+- Left Tools drawer: Placement, Zero/Setup, Dry Run, Files, and Settings.
+- Right Readiness drawer: active path, status chips, blockers, primary next action, Preflight, Arm,
+  and Run.
+- On phone widths the drawers cover about 82% of the screen and slide over the canvas.
+- Drawers open from top buttons, edge buttons, or edge swipes and close with the scrim, close button,
+  or outward swipe.
+- Drawer state never changes job metadata or `activeRun`.
+
+Bottom canvas toolbar:
+
+- Fit Job, Fit Table, Fit Active, and Fit Zero.
+- Zoom in/out.
+- Pan/select interaction mode.
+- Layer toggles for Path, Bounds, Zero, Travel, Source, Generated, and Table.
+- Completed dry-run bounds and current position appear when existing metadata exposes them.
+
+Touch and mouse:
+
+- One pointer or mouse drag pans.
+- Two pointers pinch zoom.
+- Releasing one pointer after pinch rebases the remaining pointer at the current pan position, so
+  continuing with one finger cannot jump back to the pre-pinch drag origin. A pinch is not counted
+  as a double tap.
+- Mouse wheel zooms around the pointer.
+- Double tap or double click fits the active run.
+- The canvas uses Pointer Events and `touch-action: none`; separate competing touch/mouse gesture
+  implementations are avoided.
+
+Responsive modes from `www/lib/workbench-ui.js`:
+
+- `edge`: up to 680 px, phone edge drawers.
+- `overlay`: 681-1100 px, larger overlay drawers.
+- `sidebar`: above 1100 px, desktop-sized overlay/sidebar presentation with the same components.
+
+The current placement policy intentionally remains simple: rotation `0` uses the source file;
+non-zero rotation uses the complete raw travel path, lower-left origin, and normalization. These
+fixed choices are shown as compact read-only chips instead of reintroducing options that can make
+the visible placement disagree with executable travel.
+
+Safety interaction policy:
+
+- Start Cut requires a continuous one-second hold after existing arm, checklist, preflight, and
+  active-run checks pass.
+- Pause, Stop, and M5 remain direct one-tap actions and do not show modal confirmations.
+- Drawer, pan, zoom, fit, and layer interactions send no G-code.
+- No homing, zero restore, resume, or new movement behavior is introduced by the workbench.
+
+Mobile text is reduced to badges, short blocker reasons, one primary next action, and expandable
+details in the drawers. Full logs and file management remain separate pages linked from overlays.
+
+## Skins And Semantic Icons
+
+The workbench uses semantic icon roles and `--cnc-*` theme variables. The bundled Default,
+FreeCAD-like, and High Contrast skins share one UI/component model. Appearance selection is stored
+locally in the browser and applies to the Machine Bar, canvas controls, drawers, readiness badges,
+critical actions, and path/bounds/zero colors.
+
+FreeCAD-like is conceptual inspiration only. Its icons are original CNC-ESP32 artwork; no FreeCAD
+SVG paths or artwork are copied. Critical actions always retain text and accessible labels.
+
+See `docs/ui-skins.md` for role mapping, fallback rules, and custom skin instructions.
+
 ## Purpose
 
 The mobile UI should guide the CNC operator through the next useful physical action. It should not
@@ -47,6 +144,25 @@ The drawer should contain machine controls:
 
 The drawer is for machine control, not for the job story. The joystick should move from the
 Controls page into the drawer so it is reachable from every main view.
+
+Current implementation uses a compact layout:
+
+- one state-aware Pause/Resume button beside direct Stop and M5
+- feed current value centered between -10/-1 and +1/+10, with five presets below
+- firmware-deadman XY joystick, Z hold buttons, Safe Z, speed limits, and explicit Stop Jog
+- X/Y/Z homing on one row, then Home All and M119
+- X0/Y0/XY0 work-zero moves on one row with Safe move enabled by default
+- command dropdown followed immediately by the shared Marlin command/response log
+
+The canvas keeps physical table grid lines anchored to homed machine coordinates. Job geometry and
+the Work Zero marker are translated to the captured pre-G92 machine position, while ruler labels
+are shown relative to Work Zero. For example, Work Zero at machine `X100 Y500` places the job at
+that physical table location and labels the homed table edges `X-100` and `Y-500` without moving
+the physical grid.
+
+While a job is active, the latest Marlin response is visible in the Machine Bar. Critical Marlin
+messages remain globally visible even outside an active run. Pause/Resume, Stop, and M5 stay in the
+sticky drawer header while the rest scrolls.
 
 ## Files-First Home
 
@@ -203,6 +319,8 @@ secondary convenience, but it should not be the main way to reach urgent control
 The SD-hosted `/www` UI now follows this direction without new firmware movement behavior:
 
 - `/` opens to Files first when no current job is selected.
+- `/#job` and `/preview.html` automatically return to `/#files` when no current G-code exists or
+  the selected file cannot be opened; the UI does not present an empty "No Job" destination.
 - Opening a G-code file stores a browser-side current job pointer and switches to Current Job.
 - Current Job shows job metadata, work/Z zero status, warnings, dry-run status, arm state, and one
   next action.
@@ -219,4 +337,4 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
 - Placement / Origin controls on full preview define the intended active run. If placement differs
   from identity/default, Start Job uses the validated generated run path, not the original source.
 
-This pass intentionally does not implement resume/recovery logic or joystick behavior changes.
+This pass intentionally does not implement resume/recovery logic.

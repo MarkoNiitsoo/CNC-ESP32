@@ -1,0 +1,15 @@
+{
+  "port": 8097,
+  "host": "0.0.0.0",
+  "lineDelayMs": 20,
+  "machine": {
+    "xMin": 0,
+    "xMax": 1625,
+    "yMin": 0,
+    "yMax": 5800,
+    "zMin": -30,
+    "zMax": 120,
+    "safeZ": 15
+  },
+  "allowHoming": false
+}

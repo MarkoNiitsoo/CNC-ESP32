@@ -1,0 +1,30 @@
+{
+  "id": "high-contrast",
+  "name": "High Contrast",
+  "description": "Black workbench with high-contrast controls and paths.",
+  "version": "1.0.0",
+  "author": "CNC-ESP32 project",
+  "license": "MIT",
+  "icons": {
+    "menu": "icon-menu", "placement": "icon-placement", "rotate": "icon-rotate",
+    "origin": "icon-origin", "zero": "icon-zero", "workZero": "icon-work-zero",
+    "zZero": "icon-z-zero", "fitJob": "icon-fit-job", "fitTable": "icon-fit-table",
+    "fitWorkArea": "icon-fit-work-area", "pan": "icon-pan", "zoomIn": "icon-zoom-in",
+    "zoomOut": "icon-zoom-out", "source": "icon-source", "generated": "icon-generated",
+    "bounds": "icon-bounds", "dryRun": "icon-dry-run", "arm": "icon-arm",
+    "start": "icon-start", "pause": "icon-pause", "stop": "icon-stop",
+    "m5": "icon-spindle-off", "warning": "icon-warning", "ok": "icon-ok",
+    "blocked": "icon-blocked", "files": "icon-files", "settings": "icon-settings",
+    "terminal": "icon-terminal", "log": "icon-log"
+  },
+  "colors": {
+    "background": "#000000", "panel": "rgba(0, 0, 0, 0.9)",
+    "panelStrong": "#000000", "text": "#ffffff", "mutedText": "#d7d7d7",
+    "accent": "#00b7ff", "ok": "#46ff72", "warning": "#ffe600",
+    "danger": "#ff4141", "blocked": "#ff7a00", "sourcePath": "#ffffff",
+    "generatedPath": "#00b7ff", "travelPath": "#46ff72", "cutPath": "#00e5ff",
+    "rawBounds": "#ffe600", "cutBounds": "#ffffff", "placementBounds": "#ff59ff",
+    "zero": "#46ff72", "currentPosition": "#ffe600"
+  },
+  "touch": { "buttonSize": 48, "largeButtonSize": 60, "iconStrokeWidth": 2.5 }
+}

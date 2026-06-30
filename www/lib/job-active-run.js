@@ -15,6 +15,24 @@ function safeFingerprint(text = '') {
   return `size:${new TextEncoder().encode(text).length}:fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+export function fingerprintParts(value = '') {
+  const text = String(value || '').trim();
+  return {
+    value: text,
+    size: text.match(/(?:^|:)size:(\d+)(?=:|$)/i)?.[1] || '',
+    fnv1a: text.match(/(?:^|:)fnv1a(?:32)?:([0-9a-f]+)(?=:|$)/i)?.[1]?.toLowerCase() || '',
+    cyrb53: text.match(/(?:^|:)cyrb53:([0-9a-f]+)(?=:|$)/i)?.[1]?.toLowerCase() || '',
+  };
+}
+
+export function fingerprintsMatch(left, right) {
+  const a = fingerprintParts(left);
+  const b = fingerprintParts(right);
+  if (!a.value || !b.value) return false;
+  if (a.value === b.value) return true;
+  return Boolean(a.size && b.size && a.fnv1a && b.fnv1a && a.size === b.size && a.fnv1a === b.fnv1a);
+}
+
 function stripComments(line) {
   return String(line || '').replace(/\([^)]*\)/g, '').replace(/;.*/, '').trim();
 }
@@ -126,7 +144,8 @@ export function isGeneratedRunUsable(job = {}) {
         : 'generated_invalid';
     return { ok: false, reason, message: 'Placement is transformed, but generated run file is not valid. Update Run File before dry run or cutting.' };
   }
-  if (active.generatedFingerprint && validation.generatedFingerprint && active.generatedFingerprint !== validation.generatedFingerprint) {
+  if (active.generatedFingerprint && validation.generatedFingerprint &&
+      !fingerprintsMatch(active.generatedFingerprint, validation.generatedFingerprint)) {
     return { ok: false, reason: 'generated_stale', message: 'Generated run fingerprint changed. Review and re-arm before cutting.' };
   }
   if (active.transformFingerprint && validation.transformFingerprint && active.transformFingerprint !== validation.transformFingerprint) {
@@ -162,7 +181,7 @@ export function assertCanUseActiveRunForExecution(job = {}, options = {}) {
       reasons.push({ reason: 'arm_stale', message: 'Active run mode changed after arming. Review and re-arm the job.' });
     }
     const currentFingerprint = getActiveRunFingerprint(job);
-    if (arm.activeRunFingerprint && currentFingerprint && arm.activeRunFingerprint !== currentFingerprint) {
+    if (arm.activeRunFingerprint && currentFingerprint && !fingerprintsMatch(arm.activeRunFingerprint, currentFingerprint)) {
       reasons.push({ reason: 'arm_stale', message: 'Active run fingerprint changed after arming. Review and re-arm the job.' });
     }
     if (active.mode === 'generated' && arm.transformFingerprint && active.transformFingerprint && arm.transformFingerprint !== active.transformFingerprint) {
@@ -180,7 +199,7 @@ export function assertCanUseActiveRunForExecution(job = {}, options = {}) {
       reasons.push({ reason: 'dry_run_stale', message: 'Dry run has not been completed for the active run file.' });
     } else if (dryRunPath && dryRunPath !== active.path) {
       reasons.push({ reason: 'dry_run_stale', message: 'Dry run was completed for another run file. Repeat dry run before arming.' });
-    } else if (dryRunFingerprint && currentFingerprint && dryRunFingerprint !== currentFingerprint) {
+    } else if (dryRunFingerprint && currentFingerprint && !fingerprintsMatch(dryRunFingerprint, currentFingerprint)) {
       reasons.push({ reason: 'dry_run_stale', message: 'Dry run fingerprint is stale. Repeat dry run before arming.' });
     }
   }
@@ -234,10 +253,10 @@ export function validateGeneratedRun(options = {}) {
 
   const model = parseGCodeToToolpath(text);
   const generatedFingerprint = safeFingerprint(text);
-  if (expectedGeneratedFingerprint && generatedFingerprint !== expectedGeneratedFingerprint) {
+  if (expectedGeneratedFingerprint && !fingerprintsMatch(generatedFingerprint, expectedGeneratedFingerprint)) {
     errors.push('Generated file fingerprint does not match job metadata.');
   }
-  if (expectedSourceFingerprint && sourceFingerprint && sourceFingerprint !== expectedSourceFingerprint) {
+  if (expectedSourceFingerprint && sourceFingerprint && !fingerprintsMatch(sourceFingerprint, expectedSourceFingerprint)) {
     errors.push('Source file fingerprint changed after generation.');
   }
   if (expectedTransformFingerprint && transformFingerprint && transformFingerprint !== expectedTransformFingerprint) {

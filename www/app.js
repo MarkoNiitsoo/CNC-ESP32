@@ -109,7 +109,9 @@ async function readJson(res) {
 }
 
 function showView(name) {
-  const viewName = name || (currentJob ? 'job' : 'files');
+  const requested = name || (currentJob ? 'job' : 'files');
+  const viewName = requested === 'job' && !currentJob ? 'files' : requested;
+  window.CncTelemetry?.setDemand('log', 'app-log-view', viewName === 'logs');
   document.querySelectorAll('.view-section').forEach((section) => {
     section.classList.toggle('active', section.dataset.view === viewName);
   });
@@ -129,6 +131,11 @@ function showView(name) {
 
 function routeFromHash() {
   const target = (window.location.hash || '').slice(1);
+  if (target === 'job' && !currentJob) {
+    history.replaceState(null, '', '#files');
+    showView('files');
+    return;
+  }
   if (['files', 'job', 'logs', 'settings'].includes(target)) {
     showView(target);
     return;
@@ -136,10 +143,7 @@ function routeFromHash() {
   showView(currentJob ? 'job' : 'files');
 }
 
-async function refreshHealth() {
-  try {
-    const res = await fetch('/api/health');
-    const data = await readJson(res);
+function applyHealth(data) {
     const wifi = data.wifiMode && data.ipAddress ? `${data.wifiMode} ${data.ipAddress}` : 'WiFi unknown';
     if (health) health.textContent = `${data.firmwareVersion || data.firmware || 'Pendant'} | ${wifi}`;
     if (systemSummary) {
@@ -154,19 +158,32 @@ async function refreshHealth() {
         </dl>
       `;
     }
+}
+
+async function refreshHealth() {
+  try {
+    if (window.CncTelemetry) return await window.CncTelemetry.request('health');
+    const res = await fetch('/api/health');
+    applyHealth(await readJson(res));
   } catch (err) {
     if (health) health.textContent = `Offline: ${err.message}`;
   }
 }
 
+function applyJobStatus(data) {
+  jobStatus = data;
+  if (!currentJob && jobStatus.gcodePath) {
+    saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: jobStatus.jobPath || jobPathFor(jobStatus.gcodePath) });
+  }
+}
+
 async function refreshJobStatus() {
   try {
+    if (window.CncTelemetry) return await window.CncTelemetry.request('job');
     const res = await fetch('/api/job/status');
-    jobStatus = await readJson(res);
-    if (!res.ok) throw new Error(jobStatus.error || 'job status failed');
-    if (!currentJob && jobStatus.gcodePath) {
-      saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: jobStatus.jobPath || jobPathFor(jobStatus.gcodePath) });
-    }
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.error || 'job status failed');
+    applyJobStatus(data);
   } catch (err) {
     jobStatus = { state: 'UNKNOWN', lastError: err.message };
   }
@@ -182,6 +199,25 @@ async function loadJobMeta() {
   } catch (err) {
     jobMeta = null;
   }
+}
+
+async function validateCurrentJobFile() {
+  if (!currentJob?.gcodePath) return false;
+  const path = String(currentJob.gcodePath);
+  const index = path.lastIndexOf('/');
+  const parent = index > 0 ? path.slice(0, index) : '/gcode';
+  try {
+    const res = await fetch(`/api/files?path=${encodeURIComponent(parent)}`);
+    const data = await readJson(res);
+    const exists = res.ok && Array.isArray(data.items) &&
+      data.items.some((item) => item.type === 'file' && item.path === path);
+    if (exists) return true;
+  } catch (err) {
+    // Fall through: an unopenable current job must not leave an empty Job destination.
+  }
+  saveCurrentJob(null);
+  jobMeta = null;
+  return false;
 }
 
 function previewBounds(meta = jobMeta) {
@@ -314,14 +350,8 @@ function renderCurrentJob() {
   if (!currentJobCard || !nextActionCard) return;
 
   if (!currentJob) {
-    currentJobCard.innerHTML = `
-      <h2>No Current Job</h2>
-      <p>Select a G-code file to start the job story.</p>
-    `;
-    nextActionCard.innerHTML = `
-      <h2>Next Action</h2>
-      <button class="primary-action" type="button" data-action-view="files">Choose G-code File</button>
-    `;
+    currentJobCard.textContent = '';
+    nextActionCard.textContent = '';
     return;
   }
 
@@ -497,11 +527,7 @@ async function loadFiles(path = '/gcode') {
 
 async function openJob(gcodePath) {
   saveCurrentJob({ gcodePath, jobPath: jobPathFor(gcodePath) });
-  await loadJobMeta();
-  await refreshJobStatus();
-  renderCurrentJob();
-  history.replaceState(null, '', '#job');
-  showView('job');
+  window.location.href = previewUrl(gcodePath);
 }
 
 async function deleteFile(path) {
@@ -657,10 +683,7 @@ async function uploadGcode(event) {
   await loadFiles();
 }
 
-async function refreshLogs() {
-  try {
-    const res = await fetch('/api/marlin/log');
-    const data = await readJson(res);
+function applyLogs(data) {
     const entries = Array.isArray(data.entries) ? data.entries.slice(-80) : [];
     if (criticalLogEl) {
       criticalLogEl.hidden = !data.lastCritical;
@@ -676,6 +699,13 @@ async function refreshLogs() {
         }).join('\n')
         : 'No recent Marlin log entries.';
     }
+}
+
+async function refreshLogs() {
+  try {
+    if (window.CncTelemetry) return await window.CncTelemetry.request('log');
+    const res = await fetch('/api/marlin/log');
+    applyLogs(await readJson(res));
   } catch (err) {
     if (marlinLogEl) marlinLogEl.textContent = `Marlin log unavailable: ${err.message}`;
   }
@@ -720,19 +750,21 @@ document.addEventListener('click', (event) => {
 window.addEventListener('hashchange', routeFromHash);
 
 async function init() {
+  window.CncTelemetry?.subscribe('health', applyHealth);
+  window.CncTelemetry?.subscribe('job', (data) => {
+    applyJobStatus(data);
+    renderCurrentJob();
+  });
+  window.CncTelemetry?.subscribe('log', applyLogs);
+  window.CncTelemetry?.start();
   await refreshHealth();
   await refreshJobStatus();
+  await validateCurrentJobFile();
   await loadJobMeta();
   renderCurrentJob();
   await loadFiles();
-  await refreshLogs();
   routeFromHash();
-  setInterval(refreshHealth, 5000);
-  setInterval(async () => {
-    await refreshJobStatus();
-    renderCurrentJob();
-  }, 2500);
-  setInterval(refreshLogs, 3000);
+  window.CncTelemetry?.setDemand('log', 'app-log-view', window.location.hash === '#logs');
 }
 
 init().catch((err) => {

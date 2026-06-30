@@ -4,11 +4,12 @@
 #include <SPIFFS.h>
 #include <Update.h>
 #include <WebServer.h>
+#include <WebSocketsServer.h>
 #include <WiFi.h>
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.4.7-active-run";
+constexpr const char *firmwareVersion = "0.5.0-telemetry-transport";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
@@ -25,13 +26,18 @@ constexpr const char *kSdJobLogPath = "/logs/job.log";
 constexpr const char *kSdRoots[] = {"/gcode", "/www", "/firmware", "/jobs", "/logs"};
 constexpr uint32_t kMarlinBaudrate = 250000;
 constexpr uint32_t kMarlinTimeoutMs = 1500;
+constexpr uint16_t kTelemetryWebSocketPort = 81;
+constexpr uint32_t kTelemetryMinBroadcastMs = 100;
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
 constexpr uint32_t kJogTickIntervalMs = 150;
 constexpr uint32_t kJogDeadmanMs = 500;
 constexpr uint32_t kJogRestoreDelayMs = 5000;
 constexpr float kJogMaxXyStepMm = 15.0f;
 constexpr float kJogMaxZStepMm = 0.5f;
+constexpr float kMachineZMaxMm = 70.0f;
 constexpr float kJobStartZFeed = 400.0f;
+constexpr float kGotoWorkZeroXyFeed = 3000.0f;
+constexpr float kGotoWorkZeroZFeed = 400.0f;
 constexpr size_t kMaxGcodeLineLength = 180;
 constexpr size_t kMarlinLogSize = 40;
 constexpr int kMarlinRxPin = 3;
@@ -97,9 +103,11 @@ struct JogStatus {
   bool zLiftedForJog = false;
   bool restoreZAfterJog = true;
   bool originalZCaptured = false;
+  bool safeLiftWorkZCaptured = false;
   bool zChangedDuringJog = false;
   bool zRestoreScheduled = false;
-  float safeLiftZ = 70.0f;
+  float safeLiftZ = kMachineZMaxMm;
+  float safeLiftWorkZ = 0.0f;
   float originalZ = 0.0f;
   float xyFeedMax = 3000.0f;
   float zFeedMax = 400.0f;
@@ -118,6 +126,7 @@ struct JogStatus {
 };
 
 struct MarlinLogEntry {
+  uint32_t id = 0;
   uint32_t timeMs = 0;
   String direction;
   bool priority = false;
@@ -125,7 +134,15 @@ struct MarlinLogEntry {
   String level = "info";
 };
 
+struct PositionTelemetry {
+  bool valid = false;
+  float x = 0;
+  float y = 0;
+  float z = 0;
+};
+
 WebServer server(80);
+WebSocketsServer telemetrySocket(kTelemetryWebSocketPort);
 Preferences wifiPrefs;
 String activeWifiMode = "ap";
 String activeWifiSsid = kSetupApSsid;
@@ -155,6 +172,15 @@ MarlinLogEntry marlinLog[kMarlinLogSize];
 size_t marlinLogNext = 0;
 size_t marlinLogCount = 0;
 String lastCriticalMarlinMessage;
+uint32_t nextMarlinLogId = 1;
+uint32_t telemetryLastLogId = 0;
+bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+bool telemetryJobDirty = true;
+bool telemetryJogDirty = true;
+bool telemetryPositionDirty = false;
+uint32_t telemetryRevision = 0;
+uint32_t telemetryLastBroadcastMs = 0;
+PositionTelemetry marlinPosition;
 
 String readJobJsonSnippet(const String &jobPath);
 bool jobJsonAllowsWorkspaceCommands(const String &jobPath);
@@ -163,6 +189,7 @@ bool handleWorkspaceCommand(const String &line);
 bool runJobStartPreamble();
 bool responseContainsToken(const String &response, const char *token);
 void resetFeedOverrideAfterJobIfNeeded();
+void updatePositionFromMarlinResponse(const String &response);
 
 String marlinMessageLevel(String text) {
   text.toLowerCase();
@@ -183,6 +210,7 @@ void addMarlinLog(const String &direction, bool priority, const String &text, co
   }
 
   MarlinLogEntry &entry = marlinLog[marlinLogNext];
+  entry.id = nextMarlinLogId++;
   entry.timeMs = millis();
   entry.direction = direction;
   entry.priority = priority;
@@ -503,6 +531,7 @@ bool jobIsActive() {
 
 void touchJobStatus() {
   jobStatus.updatedAtMs = millis();
+  telemetryJobDirty = true;
 }
 
 void logJobEvent(const String &event) {
@@ -637,6 +666,8 @@ String jogStatusJson() {
   json += jogStatus.originalZCaptured ? "true" : "false";
   json += ",\"originalZ\":";
   json += jogStatus.originalZCaptured ? String(jogStatus.originalZ, 3) : "null";
+  json += ",\"safeLiftWorkZ\":";
+  json += jogStatus.safeLiftWorkZCaptured ? String(jogStatus.safeLiftWorkZ, 3) : "null";
   json += ",\"zChangedDuringJog\":";
   json += jogStatus.zChangedDuringJog ? "true" : "false";
   json += ",\"zRestoreScheduled\":";
@@ -657,6 +688,126 @@ String jogStatusJson() {
   json += String(now);
   json += "}";
   return json;
+}
+
+String telemetryMessage(const char *type, const char *channel, const String &data) {
+  String json = "{\"type\":\"";
+  json += type;
+  json += "\",\"revision\":";
+  json += String(++telemetryRevision);
+  if (channel != nullptr) {
+    json += ",\"channel\":\"";
+    json += channel;
+    json += "\"";
+  }
+  json += ",\"data\":";
+  json += data;
+  json += "}";
+  return json;
+}
+
+void sendTelemetrySnapshot(uint8_t client) {
+  String data = "{\"job\":";
+  data += jobStatusJson();
+  data += ",\"jog\":";
+  data += jogStatusJson();
+  data += ",\"position\":";
+  if (marlinPosition.valid) {
+    data += "{\"x\":" + String(marlinPosition.x, 3) + ",\"y\":" + String(marlinPosition.y, 3) +
+            ",\"z\":" + String(marlinPosition.z, 3) + "}";
+  } else {
+    data += "null";
+  }
+  data += "}";
+  String payload = telemetryMessage("snapshot", nullptr, data);
+  telemetrySocket.sendTXT(client, payload);
+}
+
+void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
+  if (type == WStype_CONNECTED) {
+    telemetryLogSubscribed[client] = false;
+    sendTelemetrySnapshot(client);
+  } else if (type == WStype_DISCONNECTED) {
+    telemetryLogSubscribed[client] = false;
+  } else if (type == WStype_TEXT) {
+    String message;
+    message.reserve(length);
+    for (size_t i = 0; i < length; ++i) message += static_cast<char>(payload[i]);
+    telemetryLogSubscribed[client] = message.indexOf("\"log\":true") >= 0;
+  }
+}
+
+bool telemetryHasLogSubscriber() {
+  for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
+    if (telemetryLogSubscribed[client]) return true;
+  }
+  return false;
+}
+
+String marlinLogEntryJson(const MarlinLogEntry &entry) {
+  String json = "{\"id\":";
+  json += String(entry.id);
+  json += ",\"time\":\"";
+  json += String(entry.timeMs);
+  json += "\",\"direction\":\"";
+  json += jsonEscape(entry.direction);
+  json += "\",\"priority\":";
+  json += entry.priority ? "true" : "false";
+  json += ",\"text\":\"";
+  json += jsonEscape(entry.text);
+  json += "\",\"level\":\"";
+  json += jsonEscape(entry.level);
+  json += "\"}";
+  return json;
+}
+
+void broadcastPendingLogEntries() {
+  if (!telemetryHasLogSubscriber()) return;
+  for (size_t i = 0; i < marlinLogCount; ++i) {
+    const size_t index = (marlinLogNext + kMarlinLogSize - marlinLogCount + i) % kMarlinLogSize;
+    const MarlinLogEntry &entry = marlinLog[index];
+    if (entry.id <= telemetryLastLogId) continue;
+    String data = "{\"entries\":[";
+    data += marlinLogEntryJson(entry);
+    data += "],\"nextId\":";
+    data += String(entry.id);
+    data += ",\"lastCritical\":";
+    data += lastCriticalMarlinMessage.length() > 0 ? "\"" + jsonEscape(lastCriticalMarlinMessage) + "\"" : "null";
+    data += "}";
+    String message = telemetryMessage("delta", "log", data);
+    for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
+      if (telemetryLogSubscribed[client]) telemetrySocket.sendTXT(client, message);
+    }
+    telemetryLastLogId = entry.id;
+  }
+}
+
+void processTelemetrySocket() {
+  telemetrySocket.loop();
+  const uint32_t now = millis();
+  if (now - telemetryLastBroadcastMs < kTelemetryMinBroadcastMs) {
+    return;
+  }
+
+  if (telemetryJobDirty) {
+    String payload = telemetryMessage("delta", "job", jobStatusJson());
+    telemetrySocket.broadcastTXT(payload);
+    telemetryJobDirty = false;
+  }
+  if (telemetryJogDirty) {
+    String payload = telemetryMessage("delta", "jog", jogStatusJson());
+    telemetrySocket.broadcastTXT(payload);
+    telemetryJogDirty = false;
+  }
+  if (telemetryPositionDirty && marlinPosition.valid) {
+    String data = "{\"x\":" + String(marlinPosition.x, 3) + ",\"y\":" + String(marlinPosition.y, 3) +
+                  ",\"z\":" + String(marlinPosition.z, 3) + "}";
+    String payload = telemetryMessage("delta", "position", data);
+    telemetrySocket.broadcastTXT(payload);
+    telemetryPositionDirty = false;
+  }
+  broadcastPendingLogEntries();
+  telemetryLastBroadcastMs = now;
 }
 
 bool initializeSdCard() {
@@ -820,19 +971,24 @@ String extractCmdFromJson(const String &body) {
   return cmd;
 }
 
-String readMarlinResponse(bool priority = false) {
-  String response;
-  const uint32_t start = millis();
-
-  while (millis() - start < kMarlinTimeoutMs) {
-    while (Serial.available() > 0) {
-      response += static_cast<char>(Serial.read());
+bool marlinResponseIsTerminal(const String &response) {
+  int lineStart = 0;
+  while (lineStart < response.length()) {
+    int lineEnd = response.indexOf('\n', lineStart);
+    if (lineEnd < 0) {
+      lineEnd = response.length();
     }
-    delay(5);
-  }
 
-  addMarlinLog("rx", priority, response);
-  return response;
+    String line = response.substring(lineStart, lineEnd);
+    line.trim();
+    line.toUpperCase();
+    if (line == "OK" || line.startsWith("OK ") || line.startsWith("ERROR:") ||
+        line.startsWith("ALARM:") || line == "!!") {
+      return true;
+    }
+    lineStart = lineEnd + 1;
+  }
+  return false;
 }
 
 String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
@@ -840,14 +996,24 @@ String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
   const uint32_t start = millis();
 
   while (millis() - start < timeoutMs) {
+    bool received = false;
     while (Serial.available() > 0) {
       response += static_cast<char>(Serial.read());
+      received = true;
     }
-    delay(5);
+    if (received && marlinResponseIsTerminal(response)) {
+      break;
+    }
+    delay(1);
   }
 
   addMarlinLog("rx", priority, response);
+  updatePositionFromMarlinResponse(response);
   return response;
+}
+
+String readMarlinResponse(bool priority = false) {
+  return readMarlinResponseFor(kMarlinTimeoutMs, priority);
 }
 
 void drainMarlinInput() {
@@ -862,6 +1028,17 @@ void sendMarlinSafetyCommand(const char *cmd) {
   Serial.print(cmd);
   Serial.print('\n');
   readMarlinResponseFor(250, true);
+}
+
+bool sendMarlinControlCommand(const String &cmd, String &response) {
+  drainMarlinInput();
+  addMarlinLog("tx", true, cmd);
+  Serial.print(cmd);
+  Serial.print('\n');
+  response = readMarlinResponseFor(500, true);
+  String upper = response;
+  upper.toUpperCase();
+  return upper.indexOf("OK") >= 0 && upper.indexOf("ERROR") < 0 && upper.indexOf("ALARM") < 0;
 }
 
 bool isFeedOverrideCommand(const String &cmd) {
@@ -1055,6 +1232,7 @@ void sendJogCommand(const String &cmd) {
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
   readMarlinResponseFor(80, true);
+  telemetryJogDirty = true;
 }
 
 String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
@@ -1063,7 +1241,9 @@ String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
   Serial.print(cmd);
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  return readMarlinResponseFor(timeoutMs, true);
+  const String response = readMarlinResponseFor(timeoutMs, true);
+  telemetryJogDirty = true;
+  return response;
 }
 
 bool parseAxisFromM114(const String &response, char axis, float &value) {
@@ -1099,6 +1279,24 @@ bool parseAxisFromM114(const String &response, char axis, float &value) {
   return true;
 }
 
+void updatePositionFromMarlinResponse(const String &response) {
+  float x = 0;
+  float y = 0;
+  float z = 0;
+  if (!parseAxisFromM114(response, 'X', x) || !parseAxisFromM114(response, 'Y', y) ||
+      !parseAxisFromM114(response, 'Z', z)) {
+    return;
+  }
+  if (!marlinPosition.valid || fabs(marlinPosition.x - x) > 0.0005f ||
+      fabs(marlinPosition.y - y) > 0.0005f || fabs(marlinPosition.z - z) > 0.0005f) {
+    marlinPosition.valid = true;
+    marlinPosition.x = x;
+    marlinPosition.y = y;
+    marlinPosition.z = z;
+    telemetryPositionDirty = true;
+  }
+}
+
 bool captureJogOriginalZ() {
   sendJogCommand("M400");
   const String response = sendJogCommandForResponse("M114", 300);
@@ -1115,14 +1313,31 @@ bool captureJogOriginalZ() {
   return true;
 }
 
+bool captureJogSafeLiftWorkZ() {
+  sendJogCommand("M400");
+  const String response = sendJogCommandForResponse("M114", 300);
+  jogStatus.lastM114 = response;
+  float z = 0.0f;
+  if (!parseAxisFromM114(response, 'Z', z)) {
+    jogStatus.safeLiftWorkZCaptured = false;
+    jogStatus.lastError = "could not verify safe jog Z with M114";
+    return false;
+  }
+
+  jogStatus.safeLiftWorkZ = z;
+  jogStatus.safeLiftWorkZCaptured = true;
+  return true;
+}
+
 void scheduleJogZRestore() {
   if (!jogStatus.safeJog || !jogStatus.restoreZAfterJog || !jogStatus.zLiftedForJog ||
-      !jogStatus.originalZCaptured || jogStatus.zChangedDuringJog) {
+      !jogStatus.originalZCaptured || !jogStatus.safeLiftWorkZCaptured || jogStatus.zChangedDuringJog) {
     return;
   }
 
   jogStatus.zRestoreScheduled = true;
   jogStatus.zRestoreAtMs = millis() + jogStatus.restoreDelayMs;
+  telemetryJogDirty = true;
 }
 
 void stopJogInternal(bool sendStopCommands) {
@@ -1143,6 +1358,7 @@ void stopJogInternal(bool sendStopCommands) {
   }
   jogStatus.state = JogState::Idle;
   scheduleJogZRestore();
+  telemetryJogDirty = true;
 }
 
 void setJogError(const String &message) {
@@ -1152,6 +1368,7 @@ void setJogError(const String &message) {
   jogStatus.y = 0;
   jogStatus.z = 0;
   jogStatus.speed = 0;
+  telemetryJogDirty = true;
 }
 
 bool prepareSafeJogLift() {
@@ -1165,7 +1382,7 @@ bool prepareSafeJogLift() {
     return false;
   }
 
-  if (jogStatus.restoreZAfterJog && !captureJogOriginalZ()) {
+  if (jogStatus.restoreZAfterJog && !jogStatus.originalZCaptured && !captureJogOriginalZ()) {
     setJogError(jogStatus.lastError);
     return false;
   }
@@ -1173,9 +1390,19 @@ bool prepareSafeJogLift() {
   jogStatus.state = JogState::PreparingSafeZ;
   sendJogCommand("M5");
   sendJogCommand("G90");
-  sendJogCommand("G0 Z" + String(jogStatus.safeLiftZ, 3) + " F" + String(jogStatus.zFeedMax, 0));
+  const String liftResponse = sendJogCommandForResponse(
+      "G53 G0 Z" + String(jogStatus.safeLiftZ, 3) + " F" + String(jogStatus.zFeedMax, 0), 300);
+  if (responseContainsToken(liftResponse, "Error:") || responseContainsToken(liftResponse, "Unknown command")) {
+    setJogError("Marlin rejected machine-coordinate safe Z move");
+    return false;
+  }
   sendJogCommand("G90");
+  if (!captureJogSafeLiftWorkZ()) {
+    setJogError(jogStatus.lastError);
+    return false;
+  }
   jogStatus.zLiftedForJog = true;
+  telemetryJogDirty = true;
   return true;
 }
 
@@ -1246,6 +1473,7 @@ void processJogRunner() {
   jogStatus.lastCommand = cmd;
   readMarlinResponseFor(60, true);
   jogStatus.lastTickMs = now;
+  telemetryJogDirty = true;
 }
 
 void processJogZRestore() {
@@ -1272,7 +1500,7 @@ void processJogZRestore() {
     return;
   }
 
-  if (fabs(currentZ - jogStatus.safeLiftZ) > 0.5f) {
+  if (!jogStatus.safeLiftWorkZCaptured || fabs(currentZ - jogStatus.safeLiftWorkZ) > 0.5f) {
     jogStatus.lastError = "Z changed after jog; automatic restore skipped";
     return;
   }
@@ -1281,6 +1509,7 @@ void processJogZRestore() {
   sendJogCommand("G0 Z" + String(jogStatus.originalZ, 3) + " F" + String(jogStatus.zFeedMax, 0));
   sendJogCommand("G90");
   jogStatus.lastError = "";
+  telemetryJogDirty = true;
 }
 
 String stripParenComments(const String &line) {
@@ -1576,26 +1805,20 @@ void handleHealth() {
 }
 
 void handleMarlinLog() {
+  const uint32_t afterId = server.hasArg("after") ? static_cast<uint32_t>(server.arg("after").toInt()) : 0;
   String json = "{\"ok\":true,\"entries\":[";
+  bool first = true;
   for (size_t i = 0; i < marlinLogCount; ++i) {
     const size_t index = (marlinLogNext + kMarlinLogSize - marlinLogCount + i) % kMarlinLogSize;
     const MarlinLogEntry &entry = marlinLog[index];
-    if (i > 0) {
-      json += ",";
-    }
-    json += "{\"time\":\"";
-    json += String(entry.timeMs);
-    json += "\",\"direction\":\"";
-    json += jsonEscape(entry.direction);
-    json += "\",\"priority\":";
-    json += entry.priority ? "true" : "false";
-    json += ",\"text\":\"";
-    json += jsonEscape(entry.text);
-    json += "\",\"level\":\"";
-    json += jsonEscape(entry.level);
-    json += "\"}";
+    if (entry.id <= afterId) continue;
+    if (!first) json += ",";
+    json += marlinLogEntryJson(entry);
+    first = false;
   }
-  json += "],\"lastCritical\":";
+  json += "],\"nextId\":";
+  json += String(nextMarlinLogId > 0 ? nextMarlinLogId - 1 : 0);
+  json += ",\"lastCritical\":";
   if (lastCriticalMarlinMessage.length() > 0) {
     json += "\"";
     json += jsonEscape(lastCriticalMarlinMessage);
@@ -2021,21 +2244,14 @@ void handleCommand() {
     return;
   }
 
-  if (jobStatus.state == JobRunnerState::Running) {
-    const bool allowedDuringJob = upper == "M114" || upper == "M115" || upper == "M119" ||
-                                  upper == "M400" || upper == "M5";
-    if (!allowedDuringJob) {
-      sendJsonError(409, "job is running; manual command rejected");
-      return;
-    }
+  if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0) {
+    sendJsonError(409, "Marlin transport is busy with the active job; retry diagnostics when idle");
+    return;
   }
 
   if (jogIsActive()) {
-    const bool allowedDuringJog = upper == "M114" || upper == "M119" || upper == "M400" || upper == "M5";
-    if (!allowedDuringJog) {
-      sendJsonError(409, "safe jog is active; manual command rejected");
-      return;
-    }
+    sendJsonError(409, "Marlin transport is busy with safe jog; retry diagnostics after releasing jog");
+    return;
   }
 
   drainMarlinInput();
@@ -2438,10 +2654,13 @@ void handleJogStart() {
   }
 
   const String body = server.arg("plain");
+  const bool continuePendingRestore = jogStatus.zRestoreScheduled && jogStatus.originalZCaptured &&
+                                      !jogStatus.zChangedDuringJog;
+  const float pendingOriginalZ = jogStatus.originalZ;
   jogStatus = JogStatus();
   jogStatus.safeJog = extractJsonBool(body, "safeJog", true);
   jogStatus.restoreZAfterJog = extractJsonBool(body, "restoreZAfterJog", true);
-  jogStatus.safeLiftZ = clampFloat(extractJsonFloat(body, "safeLiftZ", 70.0f), 0.0f, 200.0f);
+  jogStatus.safeLiftZ = clampFloat(extractJsonFloat(body, "safeLiftZ", kMachineZMaxMm), 0.0f, kMachineZMaxMm);
   jogStatus.xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 3000.0f), 600.0f, 6000.0f);
   jogStatus.zFeedMax = clampFloat(extractJsonFloat(body, "zFeedMax", 400.0f), 20.0f, 800.0f);
   jogStatus.restoreDelayMs = static_cast<uint32_t>(clampFloat(extractJsonFloat(body, "restoreDelayMs", kJogRestoreDelayMs),
@@ -2449,6 +2668,10 @@ void handleJogStart() {
   jogStatus.startedAtMs = millis();
   jogStatus.lastUpdateMs = millis();
   jogStatus.lastTickMs = 0;
+  if (continuePendingRestore && jogStatus.restoreZAfterJog) {
+    jogStatus.originalZ = pendingOriginalZ;
+    jogStatus.originalZCaptured = true;
+  }
 
   // TODO: Add a future physical enable/arm button input before allowing jog movement.
   if (!prepareSafeJogLift()) {
@@ -2457,6 +2680,7 @@ void handleJogStart() {
   }
 
   jogStatus.state = JogState::Jogging;
+  telemetryJogDirty = true;
   server.send(200, "application/json", jogStatusJson());
 }
 
@@ -2491,6 +2715,76 @@ void handleJogUpdate() {
 void handleJogStop() {
   stopJogInternal(true);
   server.send(200, "application/json", jogStatusJson());
+}
+
+void handleGoToWorkZero() {
+  if (otaActive) {
+    sendJsonError(409, "OTA update in progress");
+    return;
+  }
+  if (jobIsActive()) {
+    sendJsonError(409, "go to work zero rejected while job is active");
+    return;
+  }
+  if (jogIsActive()) {
+    sendJsonError(409, "go to work zero rejected while jog is active");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  String axes = extractJsonString(body, "axes");
+  axes.toLowerCase();
+  if (axes != "x" && axes != "y" && axes != "xy") {
+    sendJsonError(400, "axes must be x, y, or xy");
+    return;
+  }
+  const bool safeMove = extractJsonBool(body, "safeMove", true);
+  const float safeZ = extractJsonFloat(body, "safeZ", 70.0f);
+  if (safeMove && (safeZ <= 0.0f || safeZ > 200.0f)) {
+    sendJsonError(400, "safeZ must be greater than 0 and no more than 200 mm");
+    return;
+  }
+
+  String response;
+  auto sendChecked = [&](const String &cmd) {
+    if (sendMarlinControlCommand(cmd, response)) {
+      return true;
+    }
+    sendJsonError(502, "Marlin rejected or did not acknowledge: " + cmd);
+    return false;
+  };
+
+  if (!sendChecked("M5") || !sendChecked("G21") || !sendChecked("G90") || !sendChecked("G54")) {
+    return;
+  }
+  if (safeMove) {
+    if (!sendChecked("G0 Z" + String(safeZ, 3) + " F" + String(kGotoWorkZeroZFeed, 0))) {
+      return;
+    }
+  }
+
+  String move = "G0";
+  if (axes == "x" || axes == "xy") move += " X0";
+  if (axes == "y" || axes == "xy") move += " Y0";
+  move += " F";
+  move += String(kGotoWorkZeroXyFeed, 0);
+  if (!sendChecked(move) || !sendChecked("G90")) {
+    return;
+  }
+
+  logJobEvent("go to work zero: " + axes + (safeMove ? " safe" : " direct"));
+  String json = "{\"ok\":true,\"axes\":\"";
+  json += axes;
+  json += "\",\"safeMove\":";
+  json += safeMove ? "true" : "false";
+  json += ",\"safeZ\":";
+  json += String(safeZ, 3);
+  json += ",\"message\":\"Work-zero move accepted. Z will remain at safe height after XY movement.\"}";
+  server.send(200, "application/json", json);
 }
 
 void handleUpdatePage() {
@@ -2780,6 +3074,7 @@ void startHttpServer() {
   server.on("/api/jog/update", HTTP_POST, handleJogUpdate);
   server.on("/api/jog/stop", HTTP_POST, handleJogStop);
   server.on("/api/jog/status", HTTP_GET, handleJogStatus);
+  server.on("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
   server.on("/update", HTTP_GET, handleUpdatePage);
   server.on("/api/update", HTTP_POST, handleUpdateComplete, handleUpdateUpload);
   server.on("/wifi", HTTP_GET, handleWifiPage);
@@ -2787,6 +3082,8 @@ void startHttpServer() {
   server.on("/api/wifi/forget", HTTP_POST, handleWifiForget);
   server.onNotFound(handleNotFound);
   server.begin();
+  telemetrySocket.begin();
+  telemetrySocket.onEvent(handleTelemetrySocket);
 }
 } // namespace
 
@@ -2805,6 +3102,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  processTelemetrySocket();
   processJobRunner();
   processJogRunner();
   processJogZRestore();

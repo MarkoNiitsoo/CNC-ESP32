@@ -361,6 +361,7 @@ Main routes currently documented or implemented:
 | `POST /api/jog/update` | Jog heartbeat/vector update |
 | `POST /api/jog/stop` | Stop jog |
 | `GET /api/jog/status` | Jog status |
+| `POST /api/work-zero/goto` | Bounded X0/Y0/XY0 move with optional Safe Z lift |
 | `GET /wifi` | WiFi settings page |
 | `POST /api/wifi/save` | Save WiFi credentials |
 | `POST /api/wifi/forget` | Forget WiFi credentials |
@@ -434,6 +435,32 @@ Do not rely on a root-level `firmware.bin`; it is ignored.
 - More detailed job history and run logs.
 
 ## Development Notes
+
+### Local UI And Workflow Simulation
+
+Run the complete SD-hosted UI against a desktop mock ESP32/Marlin backend:
+
+```powershell
+npm install
+npm run dev:mock
+```
+
+Open `http://localhost:8097`, or use the printed `LAN:` address from a device on the same trusted
+private network. Local pages show `DEV MOCK - NO REAL MACHINE` in the Machine Bar.
+The mock provides persistent SD files, sample G-code, Marlin commands, active-run validation, job
+streaming, Pause/Stop/M5, and feed override without opening a serial port.
+
+The mock LAN server has no authentication. Do not expose port 8097 to the internet or an untrusted
+network.
+
+Reset local state with:
+
+```powershell
+npm run dev:mock:reset
+```
+
+See [docs/mock-dev-server.md](docs/mock-dev-server.md) for supported APIs, samples, safety checks,
+and limitations.
 
 - Use PlatformIO with `board = esp32cam` and `framework = arduino`.
 - Keep the camera disabled unless explicitly adding camera functionality.
