@@ -6,6 +6,46 @@ const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 
 const styles = await readFile(new URL('../../www/style.css', import.meta.url), 'utf8');
 
 describe('compact machine drawer', () => {
+  it('prevents mobile long-press selection on interactive buttons', () => {
+    expect(styles).toMatch(/button,[\s\S]*?\[role="button"\][\s\S]*?user-select:\s*none;[\s\S]*?-webkit-user-select:\s*none;[\s\S]*?-webkit-touch-callout:\s*none;/);
+  });
+
+  it('sets and verifies Preview work zero before optional machine-reference discovery', async () => {
+    const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+    const start = preview.indexOf('async function setWorkZeroWithCapture()');
+    const end = preview.indexOf('function downloadJobJson()', start);
+    const action = preview.slice(start, end);
+    expect(action.indexOf("await sendCmd('G92 X0 Y0 Z0')")).toBeLessThan(action.indexOf("await sendCmd('M503')"));
+    expect(action).toContain('Marlin did not confirm work zero after G92');
+    expect(action).toMatch(/G92 X0 Y0 Z0'[\s\S]*const after = await captureM114\(\)/);
+    expect(action).toContain("job.startMode = 'use_active_work_zero'");
+    expect(action).toContain('startModeSelect.value = job.startMode');
+  });
+
+  it('restores the captured X/Y before restoring Z after bounding box trace', async () => {
+    const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+    const helperStart = preview.indexOf('function traceCommandsWithReturnPosition');
+    const helperEnd = preview.indexOf('function commandForSegment', helperStart);
+    const helper = preview.slice(helperStart, helperEnd);
+    expect(helper.indexOf('`G0 X${fmtMm(position.x)} Y${fmtMm(position.y)}')).toBeLessThan(helper.indexOf('`G0 Z${fmtMm(position.z)}'));
+    expect(helper).toContain("const finalWait = result.lastIndexOf('M400')");
+    const sendStart = preview.indexOf('async function sendBoundingBoxTrace()');
+    const sendEnd = preview.indexOf('async function sendAircutToolpath()', sendStart);
+    const send = preview.slice(sendStart, sendEnd);
+    expect(send).toContain('const returnCapture = await captureM114()');
+    expect(send).toContain('traceCommandsWithReturnPosition(traceCommands, returnCapture)');
+  });
+
+  it('normalizes missing zero objects in old or partial job JSON before capture', async () => {
+    const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+    expect(preview).toContain('function ensureZeroState(job)');
+    expect(preview).toMatch(/function ensureJobState\(\)[\s\S]*?ensureZeroState\(jobState\)/);
+    expect(preview).toMatch(/jobState = await res\.json\(\);\s*ensureZeroState\(jobState\)/);
+    expect(preview).toMatch(/jobState = existingJob;\s*ensureZeroState\(jobState\)/);
+    expect(preview).toContain('beforeG92: normalizedCapture(workZero.beforeG92)');
+    expect(preview).toContain('beforeG92Z: normalizedCapture(toolZero.beforeG92Z)');
+  });
+
   it('keeps mock identity inside the compact state and XYZ row', () => {
     const stateStart = machineBar.indexOf('<button id="mb-toggle"');
     const stateEnd = machineBar.indexOf('</button>', stateStart);
@@ -62,7 +102,10 @@ describe('compact machine drawer', () => {
 });
 
 describe('firmware-backed Go To Work Zero', () => {
-  const handler = firmware.slice(firmware.indexOf('void handleGoToWorkZero()'), firmware.indexOf('void handleUpdatePage()'));
+  const handler = firmware.slice(
+    firmware.indexOf('void handleGoToWorkZero()'),
+    firmware.indexOf('void handleRestoreWorkZero()')
+  );
 
   it('allows only X, Y, or XY and blocks active job, jog, and OTA', () => {
     expect(handler).toMatch(/axes != "x" && axes != "y" && axes != "xy"/);
@@ -73,6 +116,9 @@ describe('firmware-backed Go To Work Zero', () => {
     expect(handler.indexOf('G0 Z')).toBeLessThan(handler.indexOf('String move = "G0"'));
     expect(handler).toContain('Z will remain at safe height after XY movement');
     expect(handler).not.toMatch(/sendChecked\("(?:G92|G28|M3|M4)(?:\s|")/);
+    expect(handler).toContain('extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed)');
+    expect(handler).toContain('String(travelFeedMmMin, 0)');
+    expect(machineBar).toContain('travelFeedMmMin: Math.round(travelSpeedMmS * 60)');
   });
 });
 

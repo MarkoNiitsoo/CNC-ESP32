@@ -13,6 +13,17 @@ const systemSummary = document.querySelector('#system-summary');
 const marlinLogEl = document.querySelector('#marlin-log');
 const criticalLogEl = document.querySelector('#critical-log');
 const refreshLogsButton = document.querySelector('#refresh-logs');
+const travelSpeedInput = document.querySelector('#travel-speed');
+const travelSpeedNumberInput = document.querySelector('#travel-speed-number');
+const travelSpeedStatus = document.querySelector('#travel-speed-status');
+const readMarlinLimitsButton = document.querySelector('#read-marlin-limits');
+const machineInfoSummary = document.querySelector('#machine-info-summary');
+const refreshMachineInfoButton = document.querySelector('#refresh-machine-info');
+const refreshMachineConfigButton = document.querySelector('#refresh-machine-config');
+const machineConfigForms = [...document.querySelectorAll('[data-machine-group]')];
+const softwareEndstopStatus = document.querySelector('#software-endstop-status');
+const saveMarlinEepromButton = document.querySelector('#save-marlin-eeprom');
+const machineConfigResult = document.querySelector('#machine-config-result');
 
 const currentJobKey = 'lowrider.currentJob';
 let currentJob = readCurrentJob();
@@ -20,6 +31,17 @@ let jobMeta = null;
 let jobStatus = { state: 'UNKNOWN' };
 let activeFilePath = '';
 let pendingUploadPreview = null;
+let motionSettingsModule = null;
+let machineConfigModule = null;
+let machineSettingsLoaded = false;
+const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
+  motionSettingsModule = module;
+  return module;
+});
+const machineConfigPromise = import('/lib/machine-config.js').then((module) => {
+  machineConfigModule = module;
+  return module;
+});
 
 const toolpathModulePromise = import('/lib/toolpath-model.js').catch((err) => {
   console.warn('ToolpathModel unavailable', err);
@@ -65,6 +87,28 @@ function saveCurrentJob(job) {
   } else {
     localStorage.removeItem(currentJobKey);
   }
+}
+
+function showTravelSpeed(value, settings = motionSettingsModule?.loadMotionSettings()) {
+  const maximum = motionSettingsModule?.travelSpeedUpperLimit(settings) ?? 100;
+  const speed = motionSettingsModule?.normalizeTravelSpeed(value, maximum) ?? 50;
+  if (travelSpeedInput) travelSpeedInput.max = maximum;
+  if (travelSpeedNumberInput) travelSpeedNumberInput.max = maximum;
+  if (travelSpeedInput) travelSpeedInput.value = speed;
+  if (travelSpeedNumberInput) travelSpeedNumberInput.value = speed;
+  if (travelSpeedStatus) {
+    const detected = settings?.marlinMaxFeedrates;
+    const limits = detected ? ` Marlin M203: X${detected.x}, Y${detected.y}, Z${detected.z ?? '-'}.` : '';
+    travelSpeedStatus.textContent = `Automatic XY travel: ${speed} mm/s (${speed * 60} mm/min), selectable 10–${maximum} mm/s.${limits} Z safety moves remain slower.`;
+  }
+  return speed;
+}
+
+function saveTravelSpeed(value) {
+  if (!motionSettingsModule) return;
+  const settings = motionSettingsModule.saveMotionSettings({ travelSpeedMmS: value });
+  showTravelSpeed(settings.travelSpeedMmS, settings);
+  dispatchEvent(new CustomEvent('cnc-motion-settings-change', { detail: settings }));
 }
 
 function basename(path) {
@@ -126,6 +170,129 @@ function showView(name) {
         : viewName === 'settings'
           ? 'Settings'
           : 'Files';
+  }
+  if (viewName === 'settings' && !machineSettingsLoaded) {
+    machineSettingsLoaded = true;
+    loadMachineSettings().catch((err) => setMachineConfigResult(err.message, true));
+  }
+}
+
+function setMachineConfigResult(message, error = false) {
+  if (!machineConfigResult) return;
+  machineConfigResult.textContent = message;
+  machineConfigResult.classList.toggle('warning', error);
+}
+
+function areaText(area) {
+  return area ? `X ${area.xMin}..${area.xMax}, Y ${area.yMin}..${area.yMax}, Z ${area.zMin}..${area.zMax} mm` : '-';
+}
+
+function renderMachineInfo(info) {
+  if (!machineInfoSummary) return;
+  const caps = info?.capabilities || {};
+  if (saveMarlinEepromButton) {
+    saveMarlinEepromButton.disabled = info?.available && caps.eeprom !== true;
+    saveMarlinEepromButton.title = caps.eeprom === false ? 'Marlin M115 reports no EEPROM capability.' : '';
+  }
+  machineInfoSummary.innerHTML = `
+    <dl>
+      <dt>Status</dt><dd>${info?.refreshing ? 'Reading M115...' : info?.available ? 'Cached and available' : 'Not discovered'}</dd>
+      <dt>Marlin</dt><dd>${html(info?.firmwareName || '-')}</dd>
+      <dt>Machine</dt><dd>${html(info?.machineType || '-')}</dd>
+      <dt>Physical area</dt><dd>${html(areaText(info?.full))}</dd>
+      <dt>Workspace area</dt><dd>${html(areaText(info?.work))}</dd>
+      <dt>Capabilities</dt><dd>${[
+        caps.emergencyParser && 'Emergency parser', caps.arcs && 'Arcs', caps.autoreportPosition && 'Position autoreport',
+        caps.eeprom && 'EEPROM', caps.sdCard && 'SD card', caps.motionModes && 'Motion modes',
+      ].filter(Boolean).join(', ') || '-'}</dd>
+      <dt>Discovery</dt><dd>${info?.lastError ? html(info.lastError) : info?.refreshedAtMs ? `uptime ${Math.round(info.refreshedAtMs / 1000)} sec` : 'cached from NVS or waiting'}</dd>
+    </dl>`;
+}
+
+async function loadMachineInfo({ refresh = false } = {}) {
+  if (refresh) {
+    const queued = await fetch('/api/machine/refresh', { method: 'POST' });
+    const queuedData = await readJson(queued);
+    if (!queued.ok) throw new Error(queuedData.error || 'M115 refresh failed');
+  }
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const res = await fetch('/api/machine/info');
+    const info = await readJson(res);
+    if (!res.ok) throw new Error(info.error || 'Machine info failed');
+    renderMachineInfo(info);
+    if (!info.refreshing && (!refresh || info.available || info.lastError)) return info;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error('M115 discovery is still running');
+}
+
+async function sendDiagnostic(cmd) {
+  const res = await fetch('/api/cmd', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }),
+  });
+  const data = await readJson(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || `${cmd} failed`);
+  return data.response || '';
+}
+
+function fillMachineConfig(config) {
+  machineConfigForms.forEach((form) => {
+    const values = config?.[form.dataset.machineGroup];
+    if (!values) return;
+    Object.entries(values).forEach(([name, value]) => {
+      const input = form.elements.namedItem(name);
+      if (input) input.value = value;
+    });
+  });
+}
+
+async function refreshMachineConfiguration() {
+  await machineConfigPromise;
+  if (refreshMachineConfigButton) refreshMachineConfigButton.disabled = true;
+  try {
+    const m503 = await sendDiagnostic('M503');
+    const config = machineConfigModule.parseM503Configuration(m503);
+    fillMachineConfig(config);
+    if (config.M203 && motionSettingsModule) {
+      const settings = motionSettingsModule.saveMotionSettings({ marlinMaxFeedrates: config.M203 });
+      showTravelSpeed(settings.travelSpeedMmS, settings);
+    }
+    const m211 = await sendDiagnostic('M211');
+    const endstops = machineConfigModule.parseM211State(m211);
+    if (softwareEndstopStatus) {
+      softwareEndstopStatus.textContent = endstops.enabled === null
+        ? 'Software endstop state was not recognized.'
+        : `Software endstops: ${endstops.enabled ? 'ON' : 'OFF'}`;
+      softwareEndstopStatus.classList.toggle('warning', endstops.enabled !== true);
+    }
+    setMachineConfigResult('Configuration loaded from Marlin. Apply buttons change RAM only until M500 is used.');
+  } finally {
+    if (refreshMachineConfigButton) refreshMachineConfigButton.disabled = false;
+  }
+}
+
+async function loadMachineSettings() {
+  await Promise.all([motionSettingsPromise, machineConfigPromise]);
+  const info = await loadMachineInfo();
+  if (info.refreshing) await loadMachineInfo();
+  await refreshMachineConfiguration();
+}
+
+async function applyMachineGroup(form) {
+  const group = form.dataset.machineGroup;
+  const body = { group };
+  [...form.elements].filter((item) => item.name).forEach((input) => { body[input.name] = Number(input.value); });
+  const button = form.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch('/api/machine/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await readJson(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || `${group} apply failed`);
+    setMachineConfigResult(`${data.command} applied to Marlin RAM. Use M500 below to keep it after restart.`);
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -728,6 +895,58 @@ uploadFile?.addEventListener('change', () => {
   });
 });
 refreshLogsButton?.addEventListener('click', refreshLogs);
+travelSpeedInput?.addEventListener('input', (event) => saveTravelSpeed(event.currentTarget.value));
+travelSpeedNumberInput?.addEventListener('change', (event) => saveTravelSpeed(event.currentTarget.value));
+readMarlinLimitsButton?.addEventListener('click', async () => {
+  if (!motionSettingsModule) return;
+  readMarlinLimitsButton.disabled = true;
+  try {
+    const res = await fetch('/api/cmd', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'M503' }),
+    });
+    const data = await readJson(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'M503 failed');
+    const limits = motionSettingsModule.parseMarlinMaxFeedrates(data.response || '');
+    if (!limits) throw new Error('M503 response did not contain usable M203 X/Y limits');
+    const settings = motionSettingsModule.saveMotionSettings({ marlinMaxFeedrates: limits });
+    showTravelSpeed(settings.travelSpeedMmS, settings);
+    dispatchEvent(new CustomEvent('cnc-motion-settings-change', { detail: settings }));
+  } catch (err) {
+    if (travelSpeedStatus) travelSpeedStatus.textContent = `Could not read Marlin M203 limits: ${err.message}`;
+  } finally {
+    readMarlinLimitsButton.disabled = false;
+  }
+});
+refreshMachineInfoButton?.addEventListener('click', async () => {
+  refreshMachineInfoButton.disabled = true;
+  try {
+    await loadMachineInfo({ refresh: true });
+  } catch (err) {
+    setMachineConfigResult(err.message, true);
+  } finally {
+    refreshMachineInfoButton.disabled = false;
+  }
+});
+refreshMachineConfigButton?.addEventListener('click', () => {
+  refreshMachineConfiguration().catch((err) => setMachineConfigResult(err.message, true));
+});
+machineConfigForms.forEach((form) => form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  applyMachineGroup(form).catch((err) => setMachineConfigResult(err.message, true));
+}));
+saveMarlinEepromButton?.addEventListener('click', async () => {
+  saveMarlinEepromButton.disabled = true;
+  try {
+    const res = await fetch('/api/machine/save', { method: 'POST' });
+    const data = await readJson(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'M500 failed');
+    setMachineConfigResult('M500 succeeded. Applied Marlin settings are now stored in EEPROM.');
+  } catch (err) {
+    setMachineConfigResult(err.message, true);
+  } finally {
+    saveMarlinEepromButton.disabled = false;
+  }
+});
 document.addEventListener('click', (event) => {
   const apiTarget = event.target.closest('[data-primary-api]');
   if (apiTarget) {
@@ -750,6 +969,9 @@ document.addEventListener('click', (event) => {
 window.addEventListener('hashchange', routeFromHash);
 
 async function init() {
+  const motion = await motionSettingsPromise;
+  const savedMotion = motion.loadMotionSettings();
+  showTravelSpeed(savedMotion.travelSpeedMmS, savedMotion);
   window.CncTelemetry?.subscribe('health', applyHealth);
   window.CncTelemetry?.subscribe('job', (data) => {
     applyJobStatus(data);

@@ -126,7 +126,7 @@
       if (message.data?.position) emit('position', message.data.position);
       return;
     }
-    if (message.type === 'delta' && (channels[message.channel] || message.channel === 'position') && message.data) {
+    if (message.type === 'delta' && (channels[message.channel] || message.channel === 'position' || message.channel === 'motion') && message.data) {
       emit(message.channel, message.data);
     }
   }

@@ -42,9 +42,13 @@ describe('shared browser telemetry', () => {
     expect(telemetry).toContain("message.type === 'snapshot'");
     expect(telemetry).toContain("message.type === 'delta'");
     expect(telemetry).toContain("message.channel === 'position'");
+    expect(telemetry).toContain("message.channel === 'motion'");
     expect(telemetry).toContain("emit('position', message.data.position)");
     expect(telemetry).toContain('Number(message.revision) <= lastRevision');
     expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
     expect(telemetry).toContain("schedule('job')");
+    expect(preview).toContain("subscribe('motion', handleMotionTelemetry)");
+    expect(preview).toContain('requestAnimationFrame(frame)');
+    expect(preview).toContain('commandedPositionAtCommand');
   });
 });

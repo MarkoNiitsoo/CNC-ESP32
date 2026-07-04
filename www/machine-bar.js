@@ -16,6 +16,13 @@
   let jogStartPending = false;
   let jogPointerId = null;
   let jogSessionId = 0;
+  let motionSettingsModule = null;
+  let travelSpeedMmS = 50;
+  const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
+    motionSettingsModule = module;
+    travelSpeedMmS = module.loadMotionSettings().travelSpeedMmS;
+    return module;
+  }).catch(() => null);
 
   const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
@@ -225,10 +232,12 @@
 
   async function pauseOrResumeJob() {
     if (visibleJobState() === 'PAUSED') return resumeJob();
+    dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'pause' } }));
     return pauseJob();
   }
 
   async function stopJob() {
+    dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
     const state = visibleJobState();
     if (state === 'STOPPING') {
       setMessage('Stop already requested');
@@ -270,13 +279,15 @@
       ? `Move ${label} to work zero after lifting to Z${safeZ.toFixed(1)} mm? Z will remain at safe height.`
       : `DIRECT ${label} MOVE AT CURRENT Z: This can drag the tool through material. Continue?`;
     if (!confirm(message)) return;
-    const data = await apiPost('/api/work-zero/goto', { axes, safeMove, safeZ });
+    const data = await apiPost('/api/work-zero/goto', {
+      axes, safeMove, safeZ, travelFeedMmMin: Math.round(travelSpeedMmS * 60),
+    });
     setMessage(data.message || `${label} work-zero move complete`);
     await refreshPosition().catch(() => {});
   }
 
   function jogSettings(safeJog) {
-    const xySpeed = Math.max(10, Math.min(100, Number(el('mb-jog-xy-speed')?.value || 50)));
+    const xySpeed = Math.max(10, Math.min(100, Number(el('mb-jog-xy-speed')?.value || travelSpeedMmS)));
     const zSpeed = Math.max(1, Math.min(10, Number(el('mb-jog-z-speed')?.value || 5)));
     return {
       safeJog,
@@ -498,12 +509,15 @@
     await setZZero();
   }
 
-  async function home(cmd, message) {
+  async function home(cmd, message, fullHoming = false) {
     if (!canSetup()) return;
     if (!confirmUnknown('homing')) return;
     if (!confirm(message)) return;
     await sendCmd(cmd);
     await refreshPosition();
+    window.dispatchEvent(new CustomEvent('cnc-position-trust', {
+      detail: { trusted: true, fullHoming, source: fullHoming ? 'home-all' : 'partial-homing' },
+    }));
   }
 
   function button(id, action) {
@@ -655,7 +669,9 @@
     }
     if (jogStatusEl) {
       const jog = STATE.jog || {};
-      jogStatusEl.textContent = `${jog.state || 'IDLE'} | Safe Z ${jog.zLiftedForJog ? 'lifted' : 'not lifted'} | ${jog.lastError || jog.lastCommand || 'ready'}`;
+      const jogStatusText = `${jog.state || 'IDLE'} | Safe Z ${jog.zLiftedForJog ? 'lifted' : 'not lifted'} | ${jog.lastError || jog.lastCommand || 'ready'}`;
+      jogStatusEl.textContent = jogStatusText;
+      jogStatusEl.title = jogStatusText;
     }
     if (jogSettingsToggleEl) jogSettingsToggleEl.setAttribute('aria-expanded', String(STATE.jogSettingsOpen));
     syncJogDock();
@@ -856,8 +872,14 @@
     button('mb-drawer-pause-resume', pauseOrResumeJob);
     button('mb-stop', stopJob);
     button('mb-drawer-stop', stopJob);
-    button('mb-m5', () => sendCmd('M5'));
-    button('mb-drawer-m5', () => sendCmd('M5'));
+    button('mb-m5', () => {
+      dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'm5' } }));
+      return sendCmd('M5');
+    });
+    button('mb-drawer-m5', () => {
+      dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'm5' } }));
+      return sendCmd('M5');
+    });
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
       item.addEventListener('click', () => {
         goToWorkZero(item.dataset.mbGotoZero).catch((err) => {
@@ -892,7 +914,7 @@
     button('mb-home-x', () => home('G28 X', 'This will move the CNC X axis toward its endstop. Keep your hand near the physical emergency stop.'));
     button('mb-home-y', () => home('G28 Y', 'This will move the CNC Y axis toward its endstop. Keep your hand near the physical emergency stop.'));
     button('mb-home-z', () => home('G28 Z', 'This will move the CNC toward endstops.'));
-    button('mb-home-all', () => home('G28', 'HOME ALL AXES: This moves X/Y/Z. Make sure endstops are connected and machine is clear.'));
+    button('mb-home-all', () => home('G28', 'HOME ALL AXES: This moves X/Y/Z. Make sure endstops are connected and machine is clear.', true));
     button('mb-terminal-send', () => {
       const selected = el('mb-terminal-select')?.value;
       return terminalSend(selected === 'custom' ? el('mb-terminal-cmd')?.value : selected);
@@ -912,11 +934,28 @@
       }
     });
     installJoystick();
+    motionSettingsPromise.then(() => {
+      if (el('mb-jog-xy-speed')) el('mb-jog-xy-speed').value = travelSpeedMmS;
+      if (el('mb-jog-xy-output')) el('mb-jog-xy-output').textContent = `${travelSpeedMmS} mm/s`;
+    });
     ['mb-jog-xy-speed', 'mb-jog-z-speed'].forEach((id) => {
       el(id)?.addEventListener('input', (event) => {
         const output = el(id === 'mb-jog-xy-speed' ? 'mb-jog-xy-output' : 'mb-jog-z-output');
         if (output) output.textContent = `${event.currentTarget.value} mm/s`;
+        if (id === 'mb-jog-xy-speed' && motionSettingsModule) {
+          const settings = motionSettingsModule.saveMotionSettings({ travelSpeedMmS: event.currentTarget.value });
+          travelSpeedMmS = settings.travelSpeedMmS;
+          dispatchEvent(new CustomEvent('cnc-motion-settings-change', { detail: settings }));
+        }
       });
+    });
+    addEventListener('cnc-motion-settings-change', (event) => {
+      travelSpeedMmS = motionSettingsModule?.normalizeTravelSpeed(
+        event.detail?.travelSpeedMmS,
+        motionSettingsModule.travelSpeedUpperLimit(event.detail),
+      ) ?? travelSpeedMmS;
+      if (el('mb-jog-xy-speed')) el('mb-jog-xy-speed').value = travelSpeedMmS;
+      if (el('mb-jog-xy-output')) el('mb-jog-xy-output').textContent = `${travelSpeedMmS} mm/s`;
     });
 
     window.CncTelemetry?.subscribe('health', (data) => {

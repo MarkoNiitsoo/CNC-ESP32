@@ -289,6 +289,88 @@ button.machine-danger-dark {
   min-height: 38px;
 }
 
+.maintenance-header {
+  position: static;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.maintenance-header p {
+  margin: 0;
+}
+
+.motion-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 74px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.panel-title-row h2,
+.panel-title-row p {
+  margin-top: 0;
+}
+
+.machine-config-panel {
+  gap: 10px;
+}
+
+.machine-config-group {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.5fr) repeat(3, minmax(72px, 0.7fr)) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--cnc-panel-strong) 68%, transparent);
+}
+
+.machine-config-group.caution {
+  border-color: color-mix(in srgb, var(--cnc-warning) 55%, transparent);
+}
+
+.machine-config-group label,
+.machine-config-group small {
+  display: grid;
+  gap: 3px;
+  color: var(--cnc-muted);
+  font-size: 0.78rem;
+}
+
+.machine-config-group input {
+  width: 100%;
+  padding: 9px;
+}
+
+@media (max-width: 680px) {
+  .panel-title-row {
+    display: grid;
+  }
+
+  .machine-config-group {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .machine-config-group > div,
+  .machine-config-group > button {
+    grid-column: 1 / -1;
+  }
+}
+
+.motion-setting-row input {
+  min-width: 0;
+}
+
 .machine-jog-dock {
   position: fixed;
   right: 0;
@@ -374,10 +456,21 @@ button.machine-danger-dark {
 .machine-jog-dock-core {
   position: relative;
   display: grid;
+  grid-template-rows: auto 1.2rem;
   gap: 8px;
   align-content: end;
   padding: 8px 8px 8px 0;
   background: transparent;
+}
+
+.machine-jog-dock-core .compact-status {
+  min-width: 0;
+  height: 1.2rem;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.2rem;
 }
 
 .machine-jog-settings-toggle {
@@ -818,12 +911,21 @@ button,
   text-align: center;
 }
 
-button {
+button,
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+[role="button"] {
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 button:not(.danger-button):not(.warning-button) {
-  background: var(--cnc-accent);
+  border: 1px solid color-mix(in srgb, var(--cnc-accent) 72%, transparent);
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
 }
 
 .secondary-button,
@@ -1209,7 +1311,7 @@ pre {
 .primary-action {
   display: block;
   width: 100%;
-  background: #2d80c7;
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
 }
 
 .secondary-actions {
