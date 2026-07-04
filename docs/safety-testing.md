@@ -1,5 +1,31 @@
 # Safety Testing
 
+## Streaming and large-file separation
+
+1. Verify normal job execution reads through `File`/`readNextCleanJobLine` and never builds a RAM
+   string containing the complete G-code file.
+2. Run a G-code file above the 4 MiB preview warning threshold in DEV MOCK or a no-cutter fixture.
+   Confirm the browser shows a clear memory/performance warning.
+3. Confirm that warning does not change the selected `activeRun.path` and does not add a firmware
+   job-start rejection.
+4. Confirm generated test/resume streams above their separate 2 MiB safety cap are rejected before
+   motion, without changing normal job execution policy.
+
+## Machine profile and EEPROM settings
+
+1. Boot with Marlin attached and verify the cached profile appears immediately, then M115 refreshes
+   firmware identity, capabilities, and `area.full` / `area.work` while idle.
+2. Start a job or jog and verify machine refresh/apply/M500 return busy rather than sharing UART.
+3. Confirm M5 remains available during discovery.
+4. Read M503 and verify M92/M203/M201/M204 fields match Marlin output; M211 must visibly report ON,
+   OFF, or unrecognized.
+5. Apply a harmless test value, verify M503 changes, restart Marlin without M500, and verify the
+   value reverts.
+6. Apply again, press `Save applied changes to Marlin EEPROM (M500)`, restart Marlin, and verify the
+   value persists.
+7. Restore the original value and save it. Treat M92 as high risk because it changes physical travel
+   per commanded millimeter.
+
 ## Desktop Mock Layer
 
 `npm run dev:mock` provides a no-hardware workflow layer before SD-card or machine testing. It
@@ -32,6 +58,14 @@ stop. UI, browser, ESP32 firmware, WiFi, serial communication, and Marlin can fa
 Movement-related code is safety-critical. New movement logic must be tested with fake or simulated
 Marlin before being used on real hardware. Real machine testing must start with the spindle/router
 off and the tool safely above material.
+
+## Travel Speed Checks
+
+- Read M503 and verify the displayed M203 X/Y/Z values match Marlin configuration.
+- Confirm selectable XY travel does not exceed the slower X/Y M203 or the 100 mm/s UI ceiling.
+- Confirm bounding-box Z moves use F400 and XY moves use selected travel feed.
+- Confirm job start sends Safe Z at F400, waits with M400, then sets G0 feed before file lines.
+- Confirm file G1 feed values and feed override behavior remain unchanged.
 
 ## Start Preamble Tests
 
@@ -198,6 +232,14 @@ Test that:
 ## Marlin Message And Log Tests
 
 Test that:
+
+- Missing HTTP routes and other WebServer errors never appear on the Marlin UART.
+- SD rescue update diagnostics are written to `/logs/update.log`, never UART0.
+- With one visible UI client, M154 uses 2 seconds while idle and 1 second during job motion.
+- Closing/hiding the last UI eventually sends M154 S0 without interrupting an active command.
+- A physical Marlin joystick move while idle changes the UI position without browser M114 polling.
+- Motion telemetry contains only movement command events; Pause, Stop, and M5 remain HTTP controls.
+- G2/G3 marker animation follows the arc and creates no additional network requests per frame.
 
 - Marlin responses are captured.
 - Commands and responses are distinguishable.
@@ -368,3 +410,82 @@ Before testing real movement:
 6. Verify `M5`, Pause, and Stop before cutting.
 7. Verify work zero and Z zero.
 8. Verify generated run bounds.
+# Motion-only Recovery Test
+
+Start with no cutter/router/laser installed or with it positively disabled.
+
+1. Use a known small job and create a stopped/interrupted mock run.
+2. Confirm Recovery is blocked while position is untrusted.
+3. Home the machine or explicitly confirm it was homed in this powered session.
+4. Verify activeRun fingerprint and zero IDs match the interrupted run.
+5. For generated output, make validation stale and confirm recovery blocks without source fallback.
+6. Verify the resume marker and dashed Safe-Z path are inside the table.
+7. Execute Move Axes to Resume Point with a physical emergency stop within reach.
+8. Confirm M5 is first, Z lifts before XY, and the machine remains at Safe Z.
+9. Confirm no G28, G53, G92, M3, or M4 is sent.
+10. Confirm recoveryHistory records the test while the original run remains interrupted.
+11. Reboot firmware and confirm position trust clears before further recovery motion.
+
+This does not validate cutting resume. There is no cutting-depth descent or remaining-file stream.
+
+## Toolless Resume Test
+
+Only perform this test with no cutter/router installed and spindle/laser output positively off.
+
+1. Verify Recovery V0 selects the expected previous safe point.
+2. Verify activeRun identity, generated validation, zero IDs, and position trust all match.
+3. Confirm displayed first Z descent and minimum remaining Z are inside configured limits.
+4. Confirm commands start M5/G21/G90/G54 and lift Z before XY reposition.
+5. Confirm no generated command contains G28, G53, G92, M3, or M4.
+6. Start with the explicit no-cutter checkbox and single confirmation.
+7. Verify remaining X/Y/Z follows preview and spindle output stays off.
+8. Press M5 and confirm no further browser path commands are sent.
+9. Repeat with Stop; confirm M410+M5 is requested and position trust clears.
+10. Confirm history records `toolless-resume-test` while the original run remains interrupted.
+
+This is not production cutting resume. Do not repeat it with a cutter installed.
+
+Aircut and Toolless execution should also verify the firmware-owned stream transport:
+
+1. Confirm the browser uploads one temporary file under `/jobs/generated` and sends one
+   `/api/test-motion/start` request rather than one `/api/cmd` request per movement.
+2. Confirm valid XY arcs remain native `G2/G3` commands with I/J and feed.
+3. Confirm M3/M4/G28/G53/G92 files are rejected before the first command reaches Marlin.
+4. Confirm Aircut rejects any Z value different from configured Safe Z.
+5. Confirm Pause/Stop/M5 remain responsive during a long stream.
+6. Confirm `/api/job/status` reports progress and `streamMode` without changing normal run history.
+
+## Guarded Production Resume Test
+
+Before production testing, test Saved XY Work Zero Restore without a cutter: capture a zero, restart,
+Home All, and confirm Safe machine Z occurs before G53 XY. Partial homing, M92 mismatch, missing
+counts, active motion, and out-of-bounds XY must block. Confirm only G92 X0 Y0 is sent, Z zero is
+unchanged, and the original zero ID receives the restore audit entry.
+
+Only test with material secured, a known small fixture, and the physical emergency stop available.
+
+1. Confirm the exact `activeRun.path` and fingerprint match the interrupted run; generated output
+   must be valid and must never fall back to source.
+2. Confirm changed work zero blocks with the XY/material-origin warning.
+3. If Z zero changed after a deliberate tool replacement or re-touch, confirm both extra Z
+   acknowledgements are required before proceeding.
+4. Complete all six production checklist items and verify target XY, Safe Z, first descent, minimum
+   Z, remaining distance, and estimated time.
+5. Run Phase 1 and verify exactly M5, modal setup, Safe-Z lift, XY reposition, and M400. It must not
+   descend into the cut.
+6. Start and verify the router manually. The pendant must not send M3 or M4.
+7. Check the manual-router checkpoint, then hold the final action for 1.5 seconds.
+8. Verify the browser uploads one `.production-resume.gc` file and sends one
+   `/api/recovery/production/start` request; it must not send cutting lines through `/api/cmd`.
+9. Disconnect the browser/WiFi during a no-cutter fixture test and verify firmware continues its
+   already-authorized Phase 2 stream. Reconnect and verify status/history reconciliation.
+10. Verify Phase 2 follows only the controlled remaining ToolpathModel X/Y/Z path and no pre-resume
+   lines.
+11. Verify no phase sends G28, G53, G92, M3, or M4 and no automatic homing/zero restore occurs.
+12. Verify Pause, Stop, and M5 remain higher-priority firmware controls while connected.
+13. Confirm a separate `production-resume` event records checklist, activeRun, resume point, Safe Z,
+    Z-zero change acknowledgement, result, and reason while the original run stays interrupted.
+
+Manual router control remains operator-owned. Phase 2 command sequencing is firmware-owned, but
+power-loss recovery and durable on-device recovery history are not implemented. Test without a
+cutter first before considering any real cutting-resume trial.

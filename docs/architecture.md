@@ -16,6 +16,19 @@ Modify firmware only for new APIs, hardware access, protocol handling, OTA/recov
 The primary app UI is SD-hosted under `/www`; firmware is only changed for APIs, hardware behavior,
 or job runner functionality.
 
+## G-code memory ownership
+
+- Job execution is SD-streamed by firmware. The runner opens `File`, reads one bounded line, sends
+  it to Marlin, waits for `ok`, and then reads the next line. Normal execution never loads the full
+  G-code file into ESP32 RAM.
+- Browser preview and transform are content tools with their own memory profile. They may warn or
+  limit visual processing independently, but those limits must not become firmware execution
+  limits or silently alter the selected execution file.
+- The current UI gives soft warnings above 2 MiB for transform and 4 MiB for preview. These warnings
+  do not block original-file execution.
+- Validated temporary Aircut, Toolless, and Production Resume streams have a separate 2 MiB safety
+  cap. Firmware still validates them incrementally from SD and reopens the file for streaming.
+
 ## MVP Components
 
 - WiFi station mode with setup AP fallback.
@@ -26,6 +39,7 @@ or job runner functionality.
   - `app.js`
   - `style.css`
 - UART command bridge to Marlin:
+  - UART0 is Marlin-exclusive. Framework and application diagnostics must never be written to it.
   - Send command plus newline.
   - Wait up to 1500 ms.
   - Collect the response.
@@ -57,10 +71,18 @@ or job runner functionality.
   - Keeps normal file streaming separate from priority controls such as Pause, Stop, M5, and
     feed override.
   - Captures recent Marlin commands/responses in a bounded log for global UI visibility.
+  - Scans safety-critical job metadata with a bounded streaming window, so ARMED and active-run
+    checks do not fail when run history grows the JSON beyond an earlier snippet size.
 - Delta telemetry:
   - Keeps command and safety actions on HTTP.
   - Publishes an initial job/jog snapshot and revisioned state changes over WebSocket port `81`.
   - Throttles broadcasts to at most 10 Hz and falls back to sparse HTTP polling when disconnected.
+  - Batches compact motion-command events for browser-side animation instead of broadcasting full
+    job status for every send/ack transition; full progress is limited to 2 Hz.
+  - Uses Marlin M154 only while a visible telemetry client exists: 1 second during motion, 2
+    seconds while idle, and disabled when no client remains.
+  - Position reports are change-filtered. Predictive animation is deliberately not corrected by
+    reported-position error in this phase.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, short relative movement ticks, and
@@ -69,10 +91,30 @@ or job runner functionality.
     the captured Z after jogging stops if Z was not changed.
   - The XY speed slider sets the maximum feedrate; joystick distance from center sets each tick's
     movement length and the firmware scales feedrate so partial stick movement remains smooth.
+- Shared automatic travel speed:
+  - Browser settings store a 10–100 mm/s XY travel speed, default 50 mm/s.
+  - Bounding box, aircut rapid, recovery, work-zero travel, and job-start modal G0 use this value.
+  - Z safety moves stay at a separate conservative 400 mm/min.
+  - Settings may parse Marlin M503/M203 to narrow the UI maximum to the slower X/Y axis.
+- Validated test-motion streaming:
+  - Aircut and Toolless Resume generate temporary files under `/jobs/generated`.
+  - The browser uploads once and starts `/api/test-motion/start`; it does not send one HTTP request
+    per movement command.
+  - Firmware validates the whole file, then revalidates each command while the existing SD/UART
+    runner streams one command per Marlin `ok`.
+  - Native G2/G3 I/J arcs are retained, allowing Marlin's planner to execute continuous curves.
+  - Existing priority Pause, Stop, and M5 behavior remains above the test-motion stream.
 - WiFi settings route:
   - Browser form at `/wifi`.
   - Save endpoint at `/api/wifi/save`.
   - Forget endpoint at `/api/wifi/forget`.
+- Machine profile discovery:
+  - Loads the last valid profile from Preferences namespace `machine` during boot.
+  - Schedules one idle-only, non-blocking `M115` read after Marlin startup.
+  - Parses 515DL `area.full` / `area.work`, identity, and selected capabilities.
+  - Uses `area.full` for Preview and guarded restore/resume bounds; falls back to compiled defaults.
+  - Settings reads `M503` and `M211` on demand. Editable M92/M203/M201/M204 changes apply to
+    Marlin RAM only; `M500` persistence is always a separate explicit action.
 
 ## Explicitly Out Of Scope
 

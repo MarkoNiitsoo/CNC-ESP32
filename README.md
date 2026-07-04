@@ -38,6 +38,9 @@ Representative phone screenshots from the current SD-hosted `/www` UI:
 - SD-card rescue firmware update.
 - Firmware-backed safe analog jog with browser heartbeat timeout.
 - Feedrate override using Marlin `M220 S<percent>`.
+- Shared automatic XY travel speed with optional Marlin M203 limit detection.
+- Cached Marlin hardware profile from M115, including 515DL full/work area and capabilities.
+- Guarded Settings editors for M92/M203/M201/M204 with separate explicit M500 EEPROM persistence.
 
 ### SD File Management
 
@@ -357,11 +360,13 @@ Main routes currently documented or implemented:
 | `POST /api/job/resume` | Resume paused job |
 | `POST /api/job/stop` | Stop active job through priority controls |
 | `POST /api/job/feed-override` | Send Marlin `M220 S<percent>` |
+| `POST /api/test-motion/start` | Start a validated firmware-owned Aircut/Toolless stream |
 | `POST /api/jog/start` | Start firmware-owned safe jog |
 | `POST /api/jog/update` | Jog heartbeat/vector update |
 | `POST /api/jog/stop` | Stop jog |
 | `GET /api/jog/status` | Jog status |
 | `POST /api/work-zero/goto` | Bounded X0/Y0/XY0 move with optional Safe Z lift |
+| `POST /api/work-zero/restore` | Restore saved XY work zero after Home All |
 | `GET /wifi` | WiFi settings page |
 | `POST /api/wifi/save` | Save WiFi credentials |
 | `POST /api/wifi/forget` | Forget WiFi credentials |
@@ -408,8 +413,11 @@ Do not rely on a root-level `firmware.bin`; it is ignored.
 - Work zero and Tool / Z zero capture.
 - Preflight checks.
 - Bounding box and aircut dry runs.
+- Firmware-owned validated Aircut/Toolless streaming with native G2/G3 arcs.
 - Arm job flow.
 - Firmware-owned job runner.
+- SD-streamed G-code execution with one bounded line in ESP32 RAM; browser preview/transform size
+  warnings are separate and do not limit normal execution.
 - Priority Pause, Stop, and M5 behavior.
 - Feed override using `M220`.
 - Firmware-backed safe analog jog with deadman timeout.
@@ -420,12 +428,15 @@ Do not rely on a root-level `firmware.bin`; it is ignored.
 
 - Hardening job runner behavior and browser safety UI based on real machine testing.
 - Improving documentation and handoff notes as behavior changes.
+- Motion-only recovery, Toolless Resume Test, and a guarded two-phase Production Resume foundation.
+  Production Phase 2 is firmware-owned and still requires manual router verification.
 
 ### Planned / Ideas
 
 - More robust priority command handling and serial response handling.
 - More robust JSON parsing in firmware.
-- Better resume/recovery after interruptions.
+- Power-loss recovery, durable on-device history, richer modal reconstruction, and lead-in
+  strategy after interruptions.
 - Multi-fixture / multiple work area support.
 - HTTPS or stronger protection for sensitive routes.
 - Authentication before exposing beyond a private local network.

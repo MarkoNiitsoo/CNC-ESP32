@@ -898,3 +898,247 @@
 - 2026-06-30: Communication-efficiency integration verification complete. All 18 test files / 140 tests pass; changed JavaScript files pass syntax checks; `git diff --check` is clean. PlatformIO builds firmware `0.5.0-telemetry-transport` successfully with WebSockets 2.7.3 at 50,884 bytes RAM (15.5%) and 997,825 bytes flash (50.8%). Local mock browser verification confirmed the shared Machine Bar/dashboard state and demand-loaded Logs view on HTTP fallback.
 - 2026-06-30: Fixed the post-pinch canvas jump. When one pointer remains after a two-pointer zoom, its drag origin is now rebased to the current pan instead of retaining the pre-pinch single-pointer origin. Pinch gestures no longer enter double-tap Fit logic. UI-only change.
 - 2026-06-30: Post-pinch fix verification passes: all 18 test files / 141 tests, `node --check www/lib/workbench-controller.js`, and `git diff --check` are clean.
+- 2026-06-30: Started motion-only interrupted-job recovery on branch `codex/motion-only-recovery`. Added pure `www/lib/job-recovery.js` planner and command generator. It validates activeRun path/fingerprint, zero identities, position trust, Safe Z, acknowledged progress, and XYZ limits; selects only a previous non-cut clearance point; splits recovery overlay geometry; and generates only M5/G21/G90/G54/Safe-Z/XY/M400 commands. ToolpathModel segments now include firmware-compatible cleaned `commandNumber` alongside raw source `lineNumber`. Added focused planner, visual, limits, trust, and forbidden-command tests.
+- 2026-06-30: Corrected the out-of-bounds test fixture to exclude the actual X0 recovery candidate (`xMin: 1`); no planner behavior changed.
+- 2026-06-30: Added `recoveryHistory` metadata and `appendMotionOnlyRecoveryEvent()`. Motion tests record run ID, activeRun identity, Safe-Z resume point, result, and command summary without changing the interrupted run state or creating cutting-resume state. Added regression coverage.
+- 2026-06-30: Integrated Motion-only Recovery into the Preview readiness drawer. Added session-only position trust (successful homing or explicit confirmation), firmware reboot invalidation, active-job blocking, Recovery overlay/fit controls, completed/remaining path styling, interruption/resume markers, dashed Safe-Z travel, sequential `/api/cmd` movement, and additive recoveryHistory recording. No firmware or cutting-stream changes.
+- 2026-06-30: Verified Motion-only Recovery end to end against the local DEV MOCK server with an interrupted fixture. The UI initially blocked movement while position was untrusted, then sent only `M5`, `G21`, `G90`, `G54`, `G0 Z15`, `G0 X10 Y10`, and `M400` after explicit trust and confirmation. The completed event persisted in `recoveryHistory`; no cutting command, negative Z move, stream restart, or browser console error occurred.
+- 2026-07-01: Audited Recovery V0 against the complete task contract. Planner now considers only the newest run, applies normal generated-run validation with no source fallback, reports run mode/path and sent/acknowledged progress, rejects Safe Z outside configured Z limits, and records normalized `completed` recovery events with activeRun mode and reason. Recovery UI now shows interrupted/current path comparison and the exact motion-only command summary. Focused recovery/history suite passes 25 tests.
+- 2026-07-01: Final Recovery V0 verification passes all 19 test files / 160 tests, every requested `node --check`, and `git diff --check`. `src/main.cpp` is unchanged, so this feature requires SD `/www` updates only and no firmware flash.
+- 2026-07-01: Merge-readiness review tightened activeRun proof and history semantics. A missing interrupted-run path or detected run-mode mismatch now blocks recovery; user-initiated blocked motion attempts record `blocked` without modifying the original run. Renamed misleading `Cancel / Start Over` to `Hide Recovery`. No movement sequence or firmware behavior changed.
+- 2026-07-01: Merge-readiness verification complete: all 19 test files / 160 tests pass, every requested JavaScript syntax check passes, `git diff --check` is clean, and `src/main.cpp` remains unchanged. PlatformIO was intentionally not run.
+- 2026-07-02: Added shared browser motion settings in `www/lib/motion-settings.js`. Settings now owns automatic XY travel speed (default 50 mm/s), joystick XY max reads/writes the same value, and an explicit M503 action parses Marlin M203 X/Y/Z maxima. Detected X/Y limits can narrow the selectable 10–100 mm/s range; failure leaves the conservative default range intact. No Marlin movement behavior changed in this step.
+- 2026-07-02: Applied explicit feedrates to browser-generated automatic moves. Bounding box and aircut Z moves use conservative F400, their XY rapid moves use shared travel feed, and linear aircut moves preserve file F values. Motion-only recovery now emits separate Z and XY feedrates, and work-zero requests carry the selected XY travel feed. No cutting feed is rewritten.
+- 2026-07-02: Firmware `0.5.1-travel-speed` now accepts a clamped 600–6000 mm/min travel feed for job start and Go To Work Zero. Job start keeps Safe-Z lift at F400, waits with M400, then sends a no-axis `G0 F<travelFeed>` so the first file G0 no longer inherits the slow Z feed; a file-provided F still overrides it. Job status reports the active travel feed.
+- 2026-07-02: Added focused travel-setting, generated-command, recovery-order, firmware-preamble, and work-zero tests. DEV MOCK now returns configurable M203 maxima from M503 so the Settings detection flow can be tested without hardware. Focused suite and JavaScript syntax checks pass.
+- 2026-07-02: Final travel-speed verification passes 20 test files / 166 tests, changed JavaScript syntax checks, and `git diff --check`. PlatformIO builds firmware `0.5.1-travel-speed` successfully at 50,884 bytes RAM (15.5%) and 998,169 bytes flash (50.8%).
+- 2026-07-02: Added pure Toolless Resume planning and command generation to `www/lib/job-recovery.js`. It reuses Recovery V0 identity/trust checks, validates full remaining X/Y/Z path limits and non-rapid feeds, blocks unsafe coordinate commands, safely repositions at Safe Z, then emits controlled absolute G0/G1 commands from ToolpathModel. Arcs use existing line-segment approximation; raw M-codes are never streamed.
+- 2026-07-02: Added additive `toolless-resume-test` recovery history lifecycle helpers. Events record activeRun identity, resume line/point, Safe Z, minimum Z, command counts, timestamps, and state without changing the original interrupted run or marking production resume.
+- 2026-07-02: Added the Toolless Resume Test UI and browser execution loop. The Recovery drawer shows active run, resume line, Safe-Z reposition, first Z descent, min Z, estimate, blockers, warnings, and command count. A no-cutter checkbox plus one explicit confirmation gates execution. Pause/Stop/M5 cancel further browser commands; Pause/Stop also use existing `/api/jog/stop` M410+M5 and clear position trust. Backgrounding the page cancels the test. No new firmware behavior was added.
+- 2026-07-02: Added dedicated Toolless Resume tests and documentation. The focused 33-test recovery/history suite passes. Documentation now distinguishes Motion-only Recovery, Toolless Resume with real Z and no cutter, and future production cutting resume.
+- 2026-07-02: Final Toolless Resume verification passes 21 test files / 174 tests, all requested syntax checks, and `git diff --check`. DEV MOCK browser inspection showed an available plan with resume command 7, first descent Z15 to Z-2, min Z -2, 14 commands, no console errors, and a button that remains disabled until explicit no-cutter confirmation. No Toolless movement was executed during browser verification.
+- 2026-07-03: Added pure Guarded Production Resume planning. Z-zero changes are now warnings for Safe-Z/Toolless motion and require two additional Production acknowledgements instead of a hard block; work-zero mismatch remains blocking. Production commands are split into Safe-Z/XY Phase 1 and controlled remaining-path Phase 2, which stays unavailable until Phase 1 and manual-router checkpoint are complete. Forbidden commands remain rejected.
+- 2026-07-03: Added separate `production-resume` history lifecycle helpers with checklist snapshot, activeRun identity, previous/current Z-zero IDs, acknowledgement state, Phase-1 timestamp, command counts, and terminal state. Original interrupted run is not mutated.
+- 2026-07-03: Added the guarded two-phase Production Resume UI and corrected recovery tests so Motion-only, Toolless, and Production labels are verified within their own tiers. Run History now explains that recovery attempts are separate events instead of claiming resume is unavailable.
+- 2026-07-03: Focused recovery tests exposed and corrected one remaining terminology mismatch: the Safe-Z-only action is now labelled `Move Axes to Resume Point`, clearly separate from Toolless and Production resume actions.
+- 2026-07-03: Documented all three recovery tiers, Production Resume's two phases/manual-router checkpoint, unchanged-work-zero hard block, acknowledgement-gated Z-zero replacement, forbidden-command invariants, separate history event, and remaining browser-owned/power-loss limitations.
+- 2026-07-03: Final Guarded Production Resume verification passes 22 test files / 182 tests, all requested syntax checks, and `git diff --check`. DEV MOCK shows Motion-only, Toolless, and GUARDED Production tiers, eight total checklist controls (six base plus two conditional Z-change acknowledgements), disabled Phase 1/hold actions while blocked, and no console warnings/errors. No movement was executed during browser verification.
+- 2026-07-03: Removed stale README/current-task claims that all job resume is unimplemented. They now distinguish the guarded browser-owned foundation from future firmware-owned, automatic, and power-loss recovery.
+- 2026-07-03: Stabilized the floating joystick layout: its status now occupies one fixed-height ellipsis row, so long commands/errors cannot wrap and push the joystick upward. The full status remains available as a title tooltip.
+- 2026-07-03: Diagnosed Aircut/Toolless stutter: both flatten arcs to short G1 segments and then perform one complete HTTP `/api/cmd` round trip per segment. Chosen fix is a dedicated validated test-motion file mode using the existing firmware `ok`-paced SD streamer, with native G2/G3 preservation and existing priority Pause/Stop/M5 controls.
+- 2026-07-03: Added firmware `0.5.2-motion-stream` foundation with `POST /api/test-motion/start`. It accepts only `/jobs/generated` files in `aircut` or `toolless` mode, validates the complete file before motion, revalidates every streamed command, enforces size/command limits, requires M5 first and M400 last, and only permits G21/G90/G54/M5/M400 plus G0/G1/G2/G3 motion words. Aircut additionally rejects any Z differing from configured Safe Z.
+- 2026-07-03: Aircut and Toolless command generation now preserves valid XY arcs as single native Marlin G2/G3 commands with I/J offsets and feed, instead of expanding each arc into 2-4 mm G1 chords. Aircut now uses the shared ToolpathModel and includes explicit G54.
+- 2026-07-03: Aircut and Toolless UI execution now uploads a generated motion file once and starts the firmware-owned stream through `/api/test-motion/start`. Progress comes from shared job telemetry instead of per-command HTTP. Critical Pause/Stop/M5 and page hiding request firmware job-stop; normal run history ignores `aircut`/`toolless` stream states.
+- 2026-07-03: Added matching DEV MOCK test-motion validation/stream support so Aircut and Toolless can be exercised locally with the same path/mode/Safe-Z/allowlist rules before hardware flashing.
+- 2026-07-03: Added regression coverage for native G2/G3 Toolless output, firmware test-motion allowlisting, M5-first/M400-last framing, Aircut Safe-Z enforcement, forbidden M3 rejection before motion, and DEV MOCK native-arc streaming.
+- 2026-07-03: PlatformIO build passes for firmware `0.5.2-motion-stream`: RAM 15.5% (50,900 bytes), flash 51.1% (1,003,709 bytes). The OTA-ready binary is `.pio-build/esp32cam/firmware.bin`.
+- 2026-07-03: Hardened test-motion words with numeric validation and forced an immediate shared job-status refresh after stream start, avoiding the idle 10-second HTTP fallback interval while retaining low-rate telemetry updates.
+- 2026-07-03: Documented the validated test-motion API, allowlist and limits, native arc behavior, Aircut Safe-Z invariant, shared priority controls, streamMode telemetry, and hardware test procedure.
+- 2026-07-03: Updated travel-speed regression expectations for the shared ToolpathModel/native-arc generator and firmware `0.5.2-motion-stream`; no travel or cutting feed policy changed.
+- 2026-07-03: Added end-to-end mock HTTP coverage for multipart temporary-file upload, one `/api/test-motion/start` request, native G2 execution, telemetry status, and completion.
+- 2026-07-03: Final verification passes 22 test files / 186 tests, all changed JavaScript syntax checks, `git diff --check`, and PlatformIO firmware build. Final firmware usage is 15.5% RAM and 51.1% flash. Real machine motion was not executed automatically.
+- 2026-07-03: Added work-zero machine-reference helpers based on M114 step counts plus M503/M92 steps-per-mm. New zero-history entries can store the derived machine position; restore attempts are audited on the original zero entry so interrupted-run zero identity remains stable. Older entries with counts can be derived at restore time.
+- 2026-07-03: Added firmware `0.5.3-zero-restore` endpoint `POST /api/work-zero/restore`. While idle, it validates saved machine XY/Safe-Z limits and sends M5, G21/G90, G53 Safe-Z, G53 XY, G54, G92 X0 Y0, and M114 with M400 barriers. It never changes Z zero or homes automatically.
+- 2026-07-03: Added a dedicated Saved Work Zero block directly inside Recovery, with one `Restore Saved XY Work Zero` action and explicit text that homing is not automatic and Z zero remains unchanged.
+- 2026-07-03: Wired the one-action restore workflow. Recovery resolves the interrupted run's exact zero ID, requires session position trust, reads current M503/M92, blocks configuration mismatch, derives machine XY from saved counts, shows one exact movement confirmation, calls firmware restore, audits the restore, and reactivates the same zero ID. Work-zero capture now stores machineReference when M92 is available.
+- 2026-07-03: Tightened restore trust: partial X/Y/Z homing no longer qualifies for saved machine-coordinate restore. Only Home All or the explicit all-axes operator trust action sets `fullHoming`; firmware reboot/untrust clears it.
+- 2026-07-03: Extended DEV MOCK with realistic M114 step counts, M503/M92 output, and `/api/work-zero/restore`, including explicit G53 permission only for this guarded restore sequence.
+- 2026-07-03: Added tests for M92 parsing, counts-to-machine-coordinate conversion, machineReference creation, restore audit/zero-ID stability, firmware Safe-Z-before-XY ordering, no G28/G92 Z0, and end-to-end mock restore with unchanged Z zero.
+- 2026-07-03: Zero History now shows saved machine XY when available and the number of successful restores; legacy count-only entries are identified as derived during restore.
+- 2026-07-03: Documented the streamlined Home All -> Restore Saved XY -> review/re-touch Z -> Recovery workflow, machineReference schema, G53 endpoint exception, blockers, and no-cutter hardware test procedure.
+## 2026-07-03 - Saved work-zero restore test cleanup
+
+- Updated Recovery UI safety tests for the explicit full-homing trust signal.
+- Scoped the existing Go To Work Zero firmware test to its own handler so the separate guarded restore endpoint does not affect its forbidden-command assertions.
+- No production behavior changed in this cleanup step.
+## 2026-07-03 - Saved work-zero restore verified
+
+- Full Vitest suite passes: 22 test files, 190 tests.
+- JavaScript syntax checks pass for the changed UI, history, settings, and mock-server modules.
+- `git diff --check` passes; only existing Windows line-ending notices were reported.
+- PlatformIO firmware build passes for `esp32cam`: 15.5% RAM and 51.3% flash.
+- User flow is deliberately short: Home All, open Recovery, restore the saved XY work zero, review/re-touch Z zero, then continue the guarded recovery workflow.
+## 2026-07-03 - Firmware-owned Production Resume Phase 2 foundation
+
+- Added firmware `0.5.4-production-resume-stream` and guarded `POST /api/recovery/production/start`.
+- Firmware validates the complete generated Phase 2 file before motion, then revalidates every streamed command while pacing against Marlin `ok` responses.
+- Start requires matching saved Production Resume event, interrupted run, activeRun path/mode/fingerprint, completed Phase 1, and manual-router checkpoint metadata.
+- Production Resume accepts only G21/G90/G54, bounded G0/G1/G2/G3 movement, M400, and safe numeric words; G28/G53/G92/M3/M4 remain rejected.
+- Existing Pause, Stop, M5, feed override, and telemetry continue to use the shared firmware runner and priority controls.
+## 2026-07-03 - Production Resume UI and mock integration
+
+- Production Phase 2 now uploads one generated resume file and starts the guarded firmware endpoint instead of sending each cutting command through browser `/api/cmd` calls.
+- The browser becomes a status monitor after start; Pause, Stop, and M5 still target the shared firmware priority controls.
+- Production history stores the router-checkpoint timestamp and generated stream path, and terminal firmware status reconciles completed/stopped/error history after reconnect.
+- DEV MOCK implements the same metadata, command allowlist, bounds, and firmware-stream behavior for safe browser testing.
+## 2026-07-03 - Production Resume ownership documented
+
+- Documented the guarded Production Resume endpoint, metadata proof, command allowlist, firmware-owned Phase 2, reconnect behavior, and remaining power-loss limitations.
+- Updated safety testing to require a no-cutter WiFi-disconnect trial and to verify a single start request instead of per-line browser commands.
+## 2026-07-03 - Production Resume regression cleanup
+
+- Focused Production Resume, firmware transport, and mock HTTP tests pass: 3 files / 26 tests.
+- Full regression found only one stale firmware-version assertion; updated it to `0.5.4-production-resume-stream` without changing behavior.
+## 2026-07-03 - Production Resume long-job metadata hardening
+
+- Added one-shot `productionResumeAuthorization` metadata before firmware start and clear it after terminal status.
+- Firmware scans the complete job JSON for exact authorization tokens, avoiding false rejection when accumulated history exceeds the older 16 KiB snippet window.
+- DEV MOCK and tests use the same authorization contract.
+## 2026-07-03 - Firmware-owned Production Resume Phase 2 verified
+
+- Full suite passes: 22 test files / 192 tests.
+- Changed JavaScript and mock modules pass syntax checks; `git diff --check` passes with only existing Windows line-ending notices.
+- PlatformIO builds firmware `0.5.4-production-resume-stream`: 15.5% RAM and 51.7% flash.
+- Production Phase 2 is no longer browser-command-owned. After explicit hold and one guarded start request, ESP32 validates and streams the resume file independently of browser/WiFi continuity.
+## 2026-07-04 - Streaming execution and preview-size rules
+
+- Added two project rules to `AGENTS.md`: execution must stream without full-file RAM loading, while preview/transform limits must remain separate and visible.
+- Added a browser-only soft warning at 2 MiB for transform memory and 4 MiB for preview parsing. The warning explicitly states that firmware execution remains SD-streamed and is not limited by preview size.
+- No execution limit or firmware behavior changed in this step.
+## 2026-07-04 - Streaming execution audit coverage
+
+- Added regression tests for the two new project rules, bounded SD line streaming, and non-blocking browser size warnings.
+- Documented memory ownership in architecture, protocol, safety testing, and README.
+- Clarified that temporary Aircut/Toolless/Production Resume files retain their separate 2 MiB validation cap while still being read incrementally.
+## 2026-07-04 - Streaming/preview rules verified
+
+- Full suite passes: 23 test files / 195 tests.
+- `www/preview.js` and the new streaming policy test pass syntax checks; `git diff --check` passes with only existing Windows line-ending notices.
+- Firmware source was audited but not changed in this step, so PlatformIO was not rerun.
+- Compliance result: normal jobs are fully SD-streamed; browser preview/transform uses full-file browser memory but now shows independent soft warnings without changing execution eligibility.
+## 2026-07-04 - Workbench button cleanup
+
+- Removed the duplicate topbar Tools button; the persistent left-edge Tools handle remains the single entry point to the same drawer.
+- Standardized normal blue buttons to a 68% accent/transparent fill with a subtle accent border, matching the translucent active Checks tab.
+- Kept danger, warning, armed, and other semantic state colors separate.
+## 2026-07-04 - Workbench visual regression coverage
+
+- Added a UI regression test requiring one left-edge Tools entry point, no duplicate topbar Tools button, and the shared 68% translucent accent treatment.
+- Focused workbench/skin tests pass: 2 files / 26 tests before the new assertion.
+## 2026-07-04 - Workbench visual cleanup verified
+
+- Full suite passes: 23 test files / 196 tests.
+- `www/preview.js` syntax and `git diff --check` pass; only existing Windows line-ending notices remain.
+- No firmware behavior changed and PlatformIO was not rerun.
+## 2026-07-04 - Machine discovery and guarded configuration firmware
+
+- Added firmware `0.5.5-machine-profile` with delayed idle-only, non-blocking M115 discovery after boot.
+- Parses and caches Marlin identity, custom `area.full`/`area.work`, and EEPROM/ARCS/emergency-parser/autoreport-position/SD/motion-mode capabilities in Preferences namespace `machine`.
+- Added GET `/api/machine/info` and POST `/api/machine/refresh`.
+- Added idle-only validated POST `/api/machine/apply` for M92/M203/M201/M204 and explicit POST `/api/machine/save` for M500.
+- Manual M115 also refreshes the cache; M5 remains an immediate exception during discovery.
+## 2026-07-04 - Machine Configuration settings UI
+
+- Added Hardware Info with cached/refreshing M115 identity, physical/work area, and capability display.
+- Added editable M92, M203, M201, and M204 forms. Each Apply changes Marlin RAM only and reports the exact command.
+- Added explicit `Save applied changes to Marlin EEPROM (M500)` with a clear persistence result.
+- Settings reads M503 and M211 on first visit, fills supported fields, updates shared M203 travel limits, and warns when software endstops are not confirmed ON.
+## 2026-07-04 - Machine profile compile cleanup
+
+- Added forward declarations for discovery helpers used before their definitions.
+- Moved the M5-during-discovery exception from an accidentally matched feed-override helper into the actual command handler.
+- No behavior or API contract changed beyond placing the intended logic correctly.
+## 2026-07-04 - Machine Configuration DEV MOCK support
+
+- Mock M115 now reports identity, capabilities, and custom full/work area matching the real 515DL response shape.
+- Mock M503 reports M92/M203/M201/M204; M211 reports software-endstop state.
+- Mock apply endpoints update live values and M500 records an EEPROM save, with active-job rejection matching firmware intent.
+## 2026-07-04 - Discovered machine area connected to safety/UI
+
+- Preview loads cached `/api/machine/info` and uses `area.full` for table grid, bounds, preflight, recovery, and dry-run limits, with existing defaults as fallback.
+- Firmware Production Resume and saved-work-zero restore bounds now use the cached full machine profile instead of duplicated fixed XY/Z constants.
+- Hardware Info is therefore an active machine profile, not display-only metadata.
+## 2026-07-04 - Machine Configuration regression coverage
+
+- Added parser/UI/firmware contract tests for M115 cache, M503 groups, M211, idle-only apply, and explicit M500 persistence.
+- Extended mock unit and HTTP tests to verify live M92/M203/M201/M204 changes and EEPROM save behavior.
+## 2026-07-04 - Machine Configuration documented
+
+- Documented boot discovery, NVS cache, active `area.full` usage, API bodies, UART ownership, RAM-only Apply semantics, and explicit M500 persistence.
+- Added a safety procedure proving values revert without M500 and persist only after the dedicated save action.
+- M500 is disabled in UI when cached M115 explicitly reports no EEPROM capability.
+## 2026-07-04 - Machine profile regression cleanup
+
+- Updated the Production Resume source-contract test from fixed constants to discovered machine limit accessors.
+- Initial full run passed 200 tests; the only failure was this stale assertion.
+## 2026-07-04 - Machine Configuration verified
+
+- Full suite passes: 24 test files / 201 tests.
+- Changed JavaScript/mock files pass syntax checks and `git diff --check` passes with only existing Windows line-ending notices.
+- PlatformIO builds firmware `0.5.5-machine-profile`: 15.6% RAM and 52.9% flash.
+- Discovery, active machine area, guarded RAM edits, M211 visibility, and explicit M500 persistence are ready for real 515DL testing.
+## 2026-07-04 - Marlin UART contamination diagnosed and blocked
+
+- Interrupted KAK runs contained ESP32 `WebServer.cpp` error logs inside Marlin responses; one
+  framework log was concatenated with a real G2/G3 command and Marlin rejected it as unknown.
+- Disabled Arduino core debug output and removed SD rescue diagnostics from UART0.
+- Added a transport regression test enforcing that UART0 remains Marlin-only.
+- Verification passes: focused transport tests 11/11, full suite 24 files / 202 tests, and
+  PlatformIO firmware build at 15.5% RAM / 51.4% flash.
+## 2026-07-04 - SD downloads force attachment handling
+
+- `/api/download` now returns `Content-Disposition: attachment` with a sanitized original filename.
+- Text G-code such as `.gc` downloads instead of opening as a browser document.
+- DEV MOCK and endpoint contract coverage were updated to match firmware behavior.
+- Verification passes: 24 test files / 203 tests and PlatformIO firmware build at 15.5% RAM /
+  51.4% flash.
+## 2026-07-04 - Maintenance page header overlap fixed
+
+- Firmware Update and WiFi Settings no longer reuse the sticky main-page `.topbar`.
+- Their headers remain in normal document flow and cannot cover file/form controls.
+- Verification passes: 24 test files / 204 tests and PlatformIO firmware build at 15.5% RAM /
+  51.4% flash.
+## 2026-07-04 - Mobile button long-press selection disabled
+
+- All buttons, button inputs, and explicit button roles now suppress text selection and WebKit
+  touch callouts.
+- Normal page text and editable inputs remain selectable.
+- Verification passes: focused mobile-control test and full suite, 24 files / 205 tests.
+## 2026-07-04 - Preview Capture + Set Work Zero made atomic and verified
+
+- Preview now runs the same critical sequence as the working drawer action before any optional
+  machine-reference discovery: M400, M114, G92 X0 Y0 Z0, M400, M114.
+- M503 runs only after Marlin has confirmed X/Y/Z near zero.
+- Failed G92 confirmation is shown as an error and is not recorded as a valid job work zero.
+- A confirmed capture switches Start Job to `use_active_work_zero`, preventing start from replacing
+  the chosen zero after later jog or dry-run movement.
+- Verification passes: `node --check`, focused work-zero coverage, and 24 files / 206 tests.
+## 2026-07-04 - Bounding Box Trace restores starting Z
+
+- Trace captures current X/Y/Z before movement.
+- Completion returns to captured X/Y at Safe Z, then restores captured Z and waits with M400.
+- Invalid position capture blocks motion; failed/stopped traces do not automatically descend.
+- Verification passes: preview syntax, focused ordering coverage, and 24 files / 207 tests.
+## 2026-07-04 - Partial job zero-state migration fixed
+
+- Old/generated job JSON without `workZero` or `toolZero` is normalized before use.
+- Missing capture position/count subfields are filled without replacing existing values.
+- Capture and Set Work/Z Zero no longer throw while assigning `capturedAt`.
+- Verification passes: preview syntax, partial-job regression coverage, and 24 files / 208 tests.
+## 2026-07-04 - Large job JSON arm validation fixed
+
+- Diagnosed UI ARMED / firmware not-ARMED disagreement as an 8192-byte firmware snippet limit.
+- ARMED, workspace permission, and generated active-run checks now scan the complete SD file with
+  the existing bounded rolling-window helper.
+- Job JSON remains streamed and is not loaded fully into ESP32 RAM.
+- Verification passes: focused metadata coverage, 24 files / 209 tests, and PlatformIO build at
+  15.5% RAM / 51.4% flash.
+## 2026-07-04 - Event-driven motion telemetry integrated
+
+- Firmware batches compact motion events keyed by cleaned command number and limits full job
+  progress telemetry to 2 Hz.
+- Visible clients enable Marlin M154 at 1 s during motion and 2 s while idle; no client requests
+  M154 S0. Unchanged positions do not reach the browser.
+- Preview animates G0/G1 and native G2/G3 locally with requestAnimationFrame and no network polling.
+- Reported positions remain direct idle/external-motion information; prediction correction is
+  intentionally deferred.
+- Verification so far: JavaScript syntax checks, focused 40 tests, full 24 files / 212 tests, and
+  `git diff --check`. PlatformIO build is pending because the execution approval quota was reached
+  before compilation started.
+# 2026-07-04 - Automatic cut-bounds placement
+
+- Changed placement anchoring from raw travel bounds to actual engaged cut bounds.
+- An unrotated source file that already fits the discovered machine work area remains the original active run.
+- If the cut is outside the work area but its width and height fit, the UI automatically creates a generated run with the cut lower-left at work zero.
+- Oversize cuts remain outside and blocked; parking/lead-in travel does not choose the origin but remains visible to generated-run safety validation.
+- Added focused transform and active-run tests for automatic placement and source/generated selection.

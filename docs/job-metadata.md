@@ -343,6 +343,11 @@ terminal state. This is intentional; the history should not invent recovery data
 
 ## Zero And Run Relationship
 
+Work-zero entries may store `machineReference` with M114 `counts`, M92 `stepsPerMm`, derived machine
+`position`, and a `restores` audit array. Restore records stay on the same zero entry so the
+interrupted run's `zeroId` remains valid. Legacy count-only entries can derive the reference using
+current M92 at restore time.
+
 A zero entry should show whether:
 
 - It was used by a completed run.
@@ -358,6 +363,100 @@ stopped/interrupted run, used by error run, used by run, and unused. If a zero i
 active, that current-active status takes display priority.
 
 ## Resume Metadata
+
+The first implemented recovery stage is motion-only. `www/lib/job-recovery.js` examines the latest
+stopped/interrupted/error run and chooses a previous clearance point, but it does not generate a
+cutting continuation. Toolpath segments carry both raw `lineNumber` and firmware-compatible
+`commandNumber`; recovery progress must use `commandNumber` because run history counts cleaned,
+non-empty commands.
+
+Motion tests append a separate `recoveryHistory` entry:
+
+```json
+{
+  "type": "motion-only-recovery-move",
+  "motionOnly": true,
+  "runId": "run-...",
+  "activeRunPath": "/gcode/example.gc",
+  "activeRunMode": "source",
+  "resumeLineNumber": 12,
+  "resumePoint": { "x": 20, "y": 30, "z": 15 },
+  "safeZ": 15,
+  "result": "completed",
+  "commandsSent": ["M5", "G21", "G90", "G54", "G0 Z15 F400", "G0 X20 Y30 F3000", "M400"],
+  "reason": ""
+}
+```
+
+`result` is `completed`, `blocked`, or `error` for a user-initiated recovery motion test. This event
+does not change the interrupted run to resumed or completed.
+
+Toolless tests append a separate lifecycle event:
+
+```json
+{
+  "type": "toolless-resume-test",
+  "productionResume": false,
+  "runId": "run-...",
+  "activeRunPath": "/gcode/example.gc",
+  "activeRunMode": "source",
+  "startLineNumber": 12,
+  "resumePoint": { "x": 20, "y": 30, "z": 15 },
+  "safeZ": 15,
+  "minZ": -3,
+  "startedAt": "...",
+  "endedAt": "...",
+  "state": "completed",
+  "commandsCount": 120,
+  "commandsSent": 120,
+  "reason": ""
+}
+```
+
+State is `started`, `completed`, `stopped`, or `error`. The original run remains
+interrupted/stopped/error and is never marked as production-resumed.
+
+Guarded cutting attempts append a separate `production-resume` event rather than changing the
+original run:
+
+```json
+{
+  "type": "production-resume",
+  "runId": "run-...",
+  "activeRunPath": "/jobs/generated/example.run.gc",
+  "activeRunMode": "generated",
+  "startLineNumber": 12,
+  "resumePoint": { "x": 20, "y": 30, "z": 15 },
+  "safeZ": 15,
+  "minZ": -3,
+  "startedAt": "...",
+  "endedAt": "...",
+  "state": "completed",
+  "commandsCount": 120,
+  "checklist": {},
+  "zZeroChanged": true,
+  "previousZZeroId": "zero-z-old",
+  "currentZZeroId": "zero-z-new",
+  "zZeroChangeAcknowledged": true,
+  "phase1CompletedAt": "...",
+  "manualRouterConfirmedAt": "...",
+  "streamPath": "/jobs/generated/example.gc.production-resume.gc",
+  "reason": ""
+}
+```
+
+The event also records the Phase-1 completion timestamp, manual-router checkpoint timestamp,
+firmware stream path, and command summary. Terminal firmware status reconciles completed, stopped,
+or error state after a temporary browser disconnect.
+
+Immediately before firmware Phase 2 starts, the browser also stores a one-shot
+`productionResumeAuthorization` object containing `authorized`, event/run IDs, activeRun identity,
+fingerprint, stream path, and timestamp. Firmware scans the complete job file for this proof instead
+of relying on the older 16 KiB metadata snippet. The browser clears `authorized` after terminal
+firmware status is observed.
+Production Resume requires unchanged work-zero identity. Changed Z-zero identity is recorded and
+requires explicit acknowledgement, because deliberate tool replacement/re-touch is a valid CNC
+recovery workflow.
 
 Planned fields:
 

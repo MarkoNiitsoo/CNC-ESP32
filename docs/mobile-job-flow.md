@@ -19,6 +19,13 @@ Production firmware does not return `mockMode`, so the badge remains hidden on t
 indicator changes presentation only; it does not alter active-run, readiness, arming, or command
 logic.
 
+## Automatic Travel Speed
+
+Settings exposes one XY automatic travel speed shared with joystick XY max. The default is 50 mm/s
+and the normal UI range is 10–100 mm/s. Reading Marlin limits sends M503 and uses M203 X/Y to narrow
+the upper range when needed. Bounding box and other generated XY rapid moves use this feed; Safe-Z
+moves remain F400 and G-code G1 cutting feeds remain unchanged.
+
 ## Canvas-First Workbench
 
 The selected job opens in `/preview.html?path=...` as a fixed full-screen workbench. The graphical
@@ -234,8 +241,8 @@ Primary action priority:
 - Missing or stale dry run shows Run Bounding Box / Dry Run.
 - Missing or stale arm state shows Arm Job.
 - Armed and otherwise ready jobs show Start Cut.
-- Stopped, interrupted, or error run history shows Review Last Run. Resume/recovery is not
-  implemented.
+- Stopped, interrupted, or error run history shows Review Last Run. It opens the guarded Recovery
+  panel; it never starts cutting directly.
 
 The readiness card must always show the source `/gcode/...` file and the effective `activeRun.path`.
 When placement is transformed but the generated run file is not valid, the UI must not present the
@@ -328,8 +335,8 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
   `runHistory` state, and a stopped/interrupted badge when the last run did not complete.
 - Preview / Job setup includes Zero History and Run History panels. Selecting a previous zero is
   metadata-only: it does not move the CNC and does not send `G92`.
-- Stopped/interrupted runs show a future recovery placeholder only. Resume execution is not
-  implemented in this workflow pass.
+- Stopped/interrupted runs route to Review Recovery. The Recovery drawer separates Safe-Z
+  reposition, Toolless Resume Test, and guarded Production Resume.
 - Logs are promoted to a bottom-nav view and use the existing `/api/marlin/log` endpoint when
   available.
 - Machine controls live in the shared top Machine Bar / Drawer on `/`, `/files`, and preview pages.
@@ -337,4 +344,26 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
 - Placement / Origin controls on full preview define the intended active run. If placement differs
   from identity/default, Start Job uses the validated generated run path, not the original source.
 
-This pass intentionally does not implement resume/recovery logic.
+# Motion-only Recovery
+
+The right readiness drawer includes a Recovery tab for stopped/interrupted/error runs. Its canvas
+overlay separates completed and remaining geometry, marks interruption/resume positions, and shows
+the Safe-Z recovery travel. Movement remains disabled until position trust, activeRun identity,
+zero IDs, machine idle state, Safe Z, and XYZ limits pass. This panel has no cutting-resume action.
+Only the newest run is eligible. Generated runs must remain validated; recovery never falls back to
+the original source file when generated output is stale or invalid. Work-zero mismatch blocks.
+Z-zero change is a warning for this Safe-Z-only movement.
+
+The panel may also offer **Toolless Resume Test** when all Recovery V0 and full remaining X/Y/Z
+checks pass. It requires explicit no-cutter confirmation and displays first Z descent, minimum Z,
+estimate, and blockers. It follows controlled ToolpathModel G0/G1 motion including real Z while
+omitting spindle starts. It is not production cutting resume.
+
+The third tier is **Production Resume / Resume Cutting**. It requires matching activeRun and work
+zero, trusted position, valid limits, a complete checklist, and extra acknowledgement when the tool
+or Z zero changed intentionally. Phase 1 sends M5 and repositions at Safe Z. After the operator
+manually starts/verifies the router, Phase 2 requires a 1.5-second hold and follows only the
+controlled remaining ToolpathModel X/Y/Z commands. The UI never sends M3/M4, G28, G53, or G92 and
+never homes, restores zero, or falls back to source automatically. After the hold, the browser
+uploads one validated temporary file and firmware owns the Phase 2 SD/UART stream; browser or WiFi
+loss does not stop cutting.

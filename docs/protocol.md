@@ -26,6 +26,13 @@ Changed state is sent as a revisioned delta, throttled to at most 10 Hz:
 {"type":"delta","revision":2,"channel":"job","data":{}}
 ```
 
+Motion commands use a compact batched delta. `sequence` is the cleaned G-code command number and
+maps to the browser ToolpathModel without using source-file line numbers:
+
+```json
+{"type":"delta","channel":"motion","data":{"events":[{"sequence":12,"sentAtMs":1234,"command":"G1 X10 Y20 F1200"}],"dropped":0,"feedOverridePercent":100}}
+```
+
 Clients ignore duplicate/out-of-order revisions. If the socket disconnects, the SD UI resumes its
 sparse HTTP fallback automatically. Health remains a low-rate HTTP channel.
 
@@ -34,10 +41,11 @@ visible and `false` when hidden. Each entry has a monotonic `id`; live deltas co
 HTTP fallback uses `/api/marlin/log?after=<id>` and returns `nextId`, so it also avoids retransmitting
 the full ring buffer.
 
-Position telemetry is emitted only after firmware receives an M114-shaped X/Y/Z response and the
-parsed coordinates differ from the cached values. There is no periodic browser M114. The UI may
-show predicted commanded movement immediately, then replace it with a `position` delta when Marlin
-truth is explicitly refreshed. Homing performs one deliberate M114 after G28.
+Position telemetry is emitted only after firmware receives an M114/M154-shaped X/Y/Z response and
+the parsed coordinates differ from cached values. A visible WebSocket client enables M154 at one
+second during job/jog motion and two seconds while idle; no client disables it. The browser
+interpolates G0/G1/G2/G3 locally and uses reports for idle/external movement. Prediction error is
+not measured or corrected in this phase. Homing still performs one deliberate M114 after G28.
 
 ## Browser API
 
@@ -95,6 +103,8 @@ Example response:
 
 ## Marlin Serial Behavior
 
+- UART0 is a protocol transport, not a debug console. Arduino core logging is disabled and
+  application diagnostics must use bounded memory/SD logs instead of `Serial.print*`.
 - One command is sent per request.
 - Commands are trimmed before sending.
 - Empty commands are rejected by the HTTP API.
@@ -178,7 +188,8 @@ Lists files and directories for the requested path.
 
 ### `GET /api/download?path=/gcode/test.gcode`
 
-Downloads a file from an allowed path.
+Downloads a file from an allowed path. The response uses `Content-Disposition: attachment` so
+text G-code is saved with its original filename instead of being rendered inline.
 
 ### `POST /api/upload`
 
@@ -201,6 +212,11 @@ Accepts JSON with `from` and `to` paths. Existing targets are rejected.
 
 The browser does not stream G-code lines. It requests a job start and the ESP32 streams the selected
 SD file to Marlin from firmware `loop()`.
+
+Normal job execution has no browser preview-size dependency. Firmware opens the SD file, keeps only
+one bounded G-code line in RAM, waits for Marlin `ok`, and advances the byte offset. Preview or
+transform warnings must not change `gcodePath`, substitute another file, or reject an otherwise
+valid normal SD job.
 
 ### `POST /api/job/start`
 
@@ -225,22 +241,114 @@ normal workflow. The MVP verifies `ARMED` and generated active-run
 provenance with minimal string checks; robust JSON parsing is a TODO. The default `startMode` is
 `apply_current_position_as_work_zero`.
 
+ARMED, workspace permission, and generated active-run validation tokens are scanned across the
+complete SD file with a bounded rolling buffer. Their location is not limited to the first 8/16 KB
+of job history.
+
 Before streaming, the firmware sends this preamble:
 
 - `apply_current_position_as_work_zero`:
   `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`, `G92 X0 Y0 Z0`, `M114`,
-  `G0 Z<safeStartZ> F400`, `M400`
+  `G0 Z<safeStartZ> F400`, `M400`, `G0 F<travelFeedMmMin>`
 - `use_active_work_zero`:
   `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`,
-  `G0 Z<safeStartZ> F400`, `M400`
+  `G0 Z<safeStartZ> F400`, `M400`, `G0 F<travelFeedMmMin>`
 
 `startPercent` is read from job JSON `feedOverride.startPercent` and defaults to `100`.
+
+After Preview's **Capture + Set Work Zero** succeeds and Marlin confirms X/Y/Z zero, the UI changes
+the job to `use_active_work_zero`. This prevents a later dry run, jog, or positioning move from
+being mistaken for a new work zero when Start Job is pressed.
+
+Bounding Box Trace captures the current X/Y/Z before motion. After tracing at Safe Z, it returns
+to the captured X/Y while still high, restores the captured Z, and finishes with `M400`. A failed
+or stopped trace does not descend automatically because XY may no longer be at the return point.
 `safeStartZ` is a positive work-coordinate Z height before the first streamed file line and defaults
 to `15` when omitted.
+`travelFeedMmMin` comes from the browser's automatic XY travel setting and is clamped to
+600–6000 mm/min. The feed-only G0 occurs after the Safe-Z wait, so the first file G0 does not
+inherit F400. A file line with its own F value still overrides the modal value.
 
 During streaming, `G54` is allowed and logged as informational. `G55`, `G56`, `G57`, `G58`, `G59`,
 `G59.1`, `G59.2`, and `G59.3` are blocked unless the job JSON contains
 `"allowedWorkspaceCommands": true`.
+
+### `POST /api/test-motion/start`
+
+Starts a firmware-owned Aircut or Toolless stream from an uploaded temporary file:
+
+```json
+{
+  "path": "/jobs/generated/test.gc.aircut.gc",
+  "mode": "aircut",
+  "safeZ": 15
+}
+```
+
+### Machine profile and configuration
+
+`GET /api/machine/info` returns cached M115 identity, `area.full`, `area.work`, capabilities,
+refresh state, and last discovery error. The cache is loaded from Preferences namespace `machine`.
+Firmware schedules one M115 discovery after boot only when job, jog, priority control, and OTA are
+idle. A manual M115 response updates the same cache.
+
+`POST /api/machine/refresh` queues another idle-only M115 discovery and returns `202`.
+
+`POST /api/machine/apply` accepts only these validated groups:
+
+```json
+{ "group": "M92", "x": 100, "y": 100, "z": 400 }
+{ "group": "M203", "x": 100, "y": 100, "z": 5 }
+{ "group": "M201", "x": 1000, "y": 1000, "z": 100 }
+{ "group": "M204", "p": 500, "r": 500, "t": 800 }
+```
+
+Apply changes Marlin RAM immediately but does not persist them. Requests are rejected while any
+motion or discovery owns UART.
+
+`POST /api/machine/save` sends exactly `M500` while idle. It is the only Settings action that
+persists applied configuration to Marlin EEPROM. It is never invoked automatically.
+
+`path` must be under `/jobs/generated`; `mode` is `aircut` or `toolless`. Firmware validates the
+complete file before moving and revalidates every line while streaming. The first command must be
+`M5`, the last must be `M400`, file size is limited to 2 MiB, and command count to 20,000.
+
+Allowed commands are `M5`, `M400`, `G21`, `G90`, `G54`, and `G0/G1/G2/G3` motion words using only
+X/Y/Z/F and arc I/J/R as appropriate. `G28`, `G53`, `G92`, `M3`, `M4`, and all other commands are
+rejected before streaming. In `aircut` mode every supplied Z value must equal `safeZ`; Toolless mode
+may follow the already browser-validated remaining Z path.
+
+The endpoint does not run the normal job-start preamble and never applies G92. It uses the existing
+SD/UART `ok`-paced runner, so `/api/job/pause`, `/api/job/stop`, priority M5, and telemetry remain
+available. Job status reports `streamMode` as `aircut`, `toolless`, or `job`.
+
+### `POST /api/recovery/production/start`
+
+Starts a prepared Production Resume Phase 2 stream owned by firmware:
+
+```json
+{
+  "path": "/jobs/generated/example.gc.production-resume.gc",
+  "jobPath": "/jobs/example.gc.job.json",
+  "activeRunPath": "/gcode/example.gc",
+  "activeRunMode": "source",
+  "activeRunFingerprint": "size:...",
+  "eventId": "production-resume-...",
+  "interruptedRunId": "run-..."
+}
+```
+
+The generated path must be under `/jobs/generated` and end in `.production-resume.gc`. Firmware
+checks that job metadata contains the same prepared Production Resume event, interrupted run,
+activeRun identity/fingerprint, non-null Phase-1 completion, and manual-router confirmation. A
+generated activeRun must still be valid. A one-shot `productionResumeAuthorization.authorized=true`
+record carries the exact event/run/activeRun/stream identity; firmware searches the whole job file
+so long history metadata does not hide the authorization beyond a fixed-size read window.
+
+The complete file is validated before movement and each line is revalidated during streaming. It
+must begin `G21`, `G90`, `G54`, contain bounded `G0/G1/G2/G3` motion, and end `M400`. Only numeric
+X/Y/Z/F and applicable I/J/R words are accepted. `G28`, `G53`, `G92`, `M3`, `M4`, and arbitrary
+M-codes are rejected. Firmware then owns Marlin `ok` pacing independently of browser connectivity.
 
 ### `GET /api/job/status`
 
@@ -250,7 +358,10 @@ last command/response, and last error. Priority fields include `pauseRequested`,
 `streamingPausedReason`, and `currentLineNumber`. Feed override fields include
 `feedOverridePercent`, `lastFeedOverrideCommand`, `lastFeedOverrideResponse`, and
 `lastFeedOverrideError`. Compatibility aliases `lastSentCommand` and `lastMarlinResponse` mirror
-the latest streamed command and response.
+the latest streamed command and response. `travelFeedMmMin` reports the XY automatic travel feed
+selected for the current job start.
+`streamMode` distinguishes normal cutting jobs from validated Aircut, Toolless, and
+`production-resume` motion streams.
 
 ### `POST /api/job/feed-override`
 
@@ -420,7 +531,8 @@ Request body:
 {
   "axes": "xy",
   "safeMove": true,
-  "safeZ": 70
+  "safeZ": 70,
+  "travelFeedMmMin": 3000
 }
 ```
 
@@ -435,11 +547,12 @@ G21
 G90
 G54
 G0 Z<safeZ> F400
-G0 X0 Y0 F3000   ; selected axes only
+G0 X0 Y0 F<travelFeedMmMin>   ; selected axes only
 G90
 ```
 
-Safe Z must be greater than 0 and no more than 200 mm. Z deliberately remains at Safe Z after the
+Safe Z must be greater than 0 and no more than 200 mm. Travel feed is clamped to 600–6000 mm/min.
+Z deliberately remains at Safe Z after the
 XY move; firmware does not automatically plunge back toward material. With `safeMove: false`, the
 selected XY move happens at current Z and the UI requires a stronger warning confirmation.
 
@@ -447,6 +560,16 @@ Marlin's planner preserves the accepted Z-lift then XY command order. The endpoi
 move was accepted; it does not block the HTTP request until a long physical return has completed.
 This is controlled positioning, not a physical emergency stop. A Marlin error, alarm, or missing
 `ok` while accepting commands aborts the remaining sequence and returns HTTP 502.
+
+### `POST /api/work-zero/restore`
+
+Restores saved XY after Home All from M114 counts and M503/M92 steps-per-mm. Request fields are
+`machineX`, `machineY`, `safeMachineZ`, and `travelFeedMmMin`.
+
+The idle-only sequence is M5, G21/G90, M400, `G53 G0 Z<safeMachineZ>`, M400,
+`G53 G0 X<machineX> Y<machineY>`, M400, G54, `G92 X0 Y0`, M114. Z zero is never changed and
+homing is never automatic. Firmware validates XY/Z limits before motion. G53 remains forbidden in
+uploaded/generated/recovery streams; this endpoint is the narrow, fully owned Safe-Z-first exception.
 
 ## SD-Hosted UI
 
