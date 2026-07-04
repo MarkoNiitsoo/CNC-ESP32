@@ -1,4 +1,4 @@
-const NUMBER_WORD_RE = /([XYZFS])\s*(-?\d+(?:\.\d+)?)/gi;
+const NUMBER_WORD_RE = /([XYZFSPRT])\s*(-?\d+(?:\.\d+)?)/gi;
 
 function stripComments(command) {
   return String(command || '').replace(/\([^)]*\)/g, '').replace(/;.*/, '').trim();
@@ -17,6 +17,12 @@ export class MockMarlin {
       ...(config.machine || {}),
     };
     this.allowHoming = Boolean(config.allowHoming);
+    this.maxFeedrates = { x: 100, y: 100, z: 5, ...(config.maxFeedrates || {}) };
+    this.stepsPerMm = { x: 100, y: 100, z: 400, ...(config.stepsPerMm || {}) };
+    this.maxAccelerations = { x: 1000, y: 1000, z: 100, ...(config.maxAccelerations || {}) };
+    this.accelerations = { p: 500, r: 500, t: 800, ...(config.accelerations || {}) };
+    this.softwareEndstops = true;
+    this.eepromSaves = 0;
     this.machinePosition = { x: 0, y: 0, z: 0 };
     this.g92Offset = { x: 0, y: 0, z: 0 };
     this.units = 'mm';
@@ -76,14 +82,45 @@ export class MockMarlin {
       }
       return this.response('Homing simulated\nok');
     }
-    if (/\bM115\b/.test(upper)) return this.response('FIRMWARE_NAME:MockMarlin CNC-ESP32 SOURCE_CODE_URL:local PROTOCOL_VERSION:1.0\nok');
+    if (/\bM115\b/.test(upper)) {
+      const m = this.machine;
+      return this.response(`FIRMWARE_NAME:MockMarlin 2.1.1 SOURCE_CODE_URL:local PROTOCOL_VERSION:1.0 MACHINE_TYPE:DEV-MOCK EXTRUDER_COUNT:0\nCap:EEPROM:1\nCap:AUTOREPORT_POS:1\nCap:EMERGENCY_PARSER:1\nCap:SDCARD:1\nCap:MOTION_MODES:1\nCap:ARCS:1\narea:{full:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}},work:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}}}\nok`);
+    }
     if (/\bM114\b/.test(upper)) {
       const p = this.position;
-      return this.response(`X:${p.x.toFixed(4)} Y:${p.y.toFixed(4)} Z:${p.z.toFixed(4)} Count X:0 Y:0 Z:0\nok`);
+      return this.response(`X:${p.x.toFixed(4)} Y:${p.y.toFixed(4)} Z:${p.z.toFixed(4)} Count X:${Math.round(this.machinePosition.x * this.stepsPerMm.x)} Y:${Math.round(this.machinePosition.y * this.stepsPerMm.y)} Z:${Math.round(this.machinePosition.z * this.stepsPerMm.z)}\nok`);
     }
     if (/\bM119\b/.test(upper)) {
       const lines = Object.entries(this.endstops).map(([name, state]) => `${name}: ${state}`).join('\n');
       return this.response(`Reporting endstop status\n${lines}\nok`);
+    }
+    if (/\bM503\b/.test(upper)) {
+      const max = this.maxFeedrates;
+      const steps = this.stepsPerMm;
+      const accel = this.maxAccelerations;
+      const work = this.accelerations;
+      return this.response(`echo:Steps per unit:\n  M92 X${steps.x.toFixed(2)} Y${steps.y.toFixed(2)} Z${steps.z.toFixed(2)} E100.00\necho:Maximum feedrates (units/s):\n  M203 X${max.x.toFixed(2)} Y${max.y.toFixed(2)} Z${max.z.toFixed(2)} E25.00\necho:Maximum Acceleration (units/s2):\n  M201 X${accel.x.toFixed(0)} Y${accel.y.toFixed(0)} Z${accel.z.toFixed(0)} E1000\necho:Acceleration (units/s2):\n  M204 P${work.p.toFixed(0)} R${work.r.toFixed(0)} T${work.t.toFixed(0)}\nok`);
+    }
+    if (/\bM211\b/.test(upper)) return this.response(`Software Endstops: ${this.softwareEndstops ? 'On' : 'Off'}\nok`);
+    if (/\bM500\b/.test(upper)) {
+      this.eepromSaves += 1;
+      return this.response('echo:Settings Stored\nok');
+    }
+    if (/\bM92\b/.test(upper)) {
+      for (const axis of ['X', 'Y', 'Z']) if (Number.isFinite(args[axis])) this.stepsPerMm[axis.toLowerCase()] = args[axis];
+      return this.response('ok');
+    }
+    if (/\bM203\b/.test(upper)) {
+      for (const axis of ['X', 'Y', 'Z']) if (Number.isFinite(args[axis])) this.maxFeedrates[axis.toLowerCase()] = args[axis];
+      return this.response('ok');
+    }
+    if (/\bM201\b/.test(upper)) {
+      for (const axis of ['X', 'Y', 'Z']) if (Number.isFinite(args[axis])) this.maxAccelerations[axis.toLowerCase()] = args[axis];
+      return this.response('ok');
+    }
+    if (/\bM204\b/.test(upper)) {
+      for (const field of ['P', 'R', 'T']) if (Number.isFinite(args[field])) this.accelerations[field.toLowerCase()] = args[field];
+      return this.response('ok');
     }
     if (/\bM5\b/.test(upper)) {
       this.spindleOff = true;

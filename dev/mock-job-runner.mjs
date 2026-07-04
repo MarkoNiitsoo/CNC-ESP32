@@ -22,6 +22,7 @@ export class MockJobRunner {
   emptyStatus() {
     return {
       state: 'IDLE', gcodePath: '', jobPath: '', startMode: '', safeStartZ: 15,
+      streamMode: 'job',
       allowedWorkspaceCommands: false, fileSize: 0, currentByteOffset: 0, progressPercent: 0,
       sentLineCount: 0, acknowledgedLineCount: 0, currentLineNumber: 0,
       pauseRequested: false, stopRequested: false, priorityCommandInProgress: false,
@@ -95,6 +96,114 @@ export class MockJobRunner {
     }
 
     this.status.state = 'RUNNING';
+    const token = ++this.runToken;
+    this.stream(text, token, Boolean(job.feedOverride?.resetTo100AfterJob ?? true));
+    return this.snapshot();
+  }
+
+  async startTestMotion(request = {}) {
+    if (this.isActive()) throw new Error('another job is already active');
+    const mode = String(request.mode || '');
+    const path = String(request.path || '');
+    const safeZ = Number(request.safeZ);
+    if (!['aircut', 'toolless'].includes(mode)) throw new Error('test motion mode must be aircut or toolless');
+    if (!path.startsWith('/jobs/generated/')) throw new Error('test motion path must be under /jobs/generated');
+    if (!Number.isFinite(safeZ) || safeZ <= 0 || safeZ > 70) throw new Error('Safe Z is outside configured machine limits');
+
+    const text = await this.sd.readText(path);
+    const commands = text.split(/\r?\n/).map(cleanLine).filter(Boolean);
+    if (!commands.length || commands.length > 20000 || commands[0].toUpperCase() !== 'M5' ||
+        commands.at(-1).toUpperCase() !== 'M400') {
+      throw new Error('test motion file must start with M5, contain motion, and end with M400');
+    }
+    const allowedExact = new Set(['M5', 'M400', 'G21', 'G90', 'G54']);
+    let hasMotion = false;
+    for (const command of commands) {
+      const upper = command.toUpperCase();
+      if (allowedExact.has(upper)) continue;
+      const words = upper.split(/\s+/);
+      const code = words[0];
+      if (!['G0', 'G1', 'G2', 'G3'].includes(code)) throw new Error(`test motion contains forbidden or unsupported command: ${code}`);
+      hasMotion = true;
+      const allowedLetters = new Set(code === 'G2' || code === 'G3' ? ['X', 'Y', 'Z', 'I', 'J', 'R', 'F'] : ['X', 'Y', 'Z', 'F']);
+      if (words.slice(1).some((word) => !allowedLetters.has(word[0]) || !Number.isFinite(Number(word.slice(1))))) {
+        throw new Error('test motion contains unsupported word');
+      }
+      if (mode === 'aircut') {
+        const zWord = words.find((word) => word.startsWith('Z'));
+        if (zWord && Math.abs(Number(zWord.slice(1)) - safeZ) > 0.01) throw new Error('aircut Z command differs from configured Safe Z');
+      }
+    }
+    if (!hasMotion) throw new Error('test motion file must contain motion');
+
+    this.status = {
+      ...this.emptyStatus(), state: 'RUNNING', gcodePath: path, startMode: 'validated_test_motion',
+      streamMode: mode, safeStartZ: safeZ, fileSize: Buffer.byteLength(text),
+    };
+    const token = ++this.runToken;
+    this.stream(text, token, false);
+    return this.snapshot();
+  }
+
+  async startProductionResume(request = {}) {
+    if (this.isActive()) throw new Error('another job or motion stream is already active');
+    const path = String(request.path || '');
+    if (!path.startsWith('/jobs/generated/') || !path.endsWith('.production-resume.gc')) {
+      throw new Error('Production Resume path must be a generated .production-resume.gc file');
+    }
+    const job = JSON.parse(await this.sd.readText(request.jobPath));
+    const event = [...(job.recoveryHistory || [])].reverse().find((item) => item.id === request.eventId);
+    const authorization = job.productionResumeAuthorization;
+    if (!event || event.type !== 'production-resume' || event.state !== 'started' ||
+        event.runId !== request.interruptedRunId || event.activeRunPath !== request.activeRunPath ||
+        event.activeRunMode !== request.activeRunMode || !event.phase1CompletedAt ||
+        !event.manualRouterConfirmedAt || event.streamPath !== path) {
+      throw new Error('Production Resume metadata no longer matches the prepared recovery');
+    }
+    if (!authorization?.authorized || authorization.eventId !== request.eventId ||
+        authorization.interruptedRunId !== request.interruptedRunId ||
+        authorization.activeRunPath !== request.activeRunPath ||
+        authorization.activeRunMode !== request.activeRunMode || authorization.streamPath !== path) {
+      throw new Error('Production Resume authorization is missing or stale');
+    }
+    if (request.activeRunFingerprint && event.activeRunFingerprint !== request.activeRunFingerprint) {
+      throw new Error('Production Resume active run fingerprint changed');
+    }
+
+    const text = await this.sd.readText(path);
+    const commands = text.split(/\r?\n/).map(cleanLine).filter(Boolean);
+    if (commands.length < 5 || commands.length > 20000 ||
+        commands[0].toUpperCase() !== 'G21' || commands[1].toUpperCase() !== 'G90' ||
+        commands[2].toUpperCase() !== 'G54' || commands.at(-1).toUpperCase() !== 'M400') {
+      throw new Error('Production Resume must start G21/G90/G54, contain cutting motion, and end M400');
+    }
+    const exact = new Set(['G21', 'G90', 'G54', 'M400']);
+    let hasCuttingMove = false;
+    for (const command of commands) {
+      const upper = command.toUpperCase();
+      if (exact.has(upper)) continue;
+      const words = upper.split(/\s+/);
+      const code = words[0];
+      if (!['G0', 'G1', 'G2', 'G3'].includes(code)) throw new Error(`Production Resume contains forbidden or unsupported command: ${code}`);
+      hasCuttingMove ||= ['G1', 'G2', 'G3'].includes(code);
+      const allowed = new Set(code === 'G2' || code === 'G3' ? ['X', 'Y', 'Z', 'I', 'J', 'R', 'F'] : ['X', 'Y', 'Z', 'F']);
+      for (const word of words.slice(1)) {
+        const value = Number(word.slice(1));
+        if (!allowed.has(word[0]) || !Number.isFinite(value)) throw new Error('Production Resume contains unsupported word');
+        if (word[0] === 'X' && (value < 0 || value > 1625)) throw new Error('Production Resume X is outside configured limits');
+        if (word[0] === 'Y' && (value < 0 || value > 5800)) throw new Error('Production Resume Y is outside configured limits');
+        if (word[0] === 'Z' && (value < -30 || value > 70)) throw new Error('Production Resume Z is outside configured limits');
+      }
+    }
+    if (!hasCuttingMove) throw new Error('Production Resume file must contain cutting motion');
+
+    const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
+    this.status = {
+      ...this.emptyStatus(), state: 'RUNNING', gcodePath: path, jobPath: request.jobPath,
+      startMode: 'prepared_production_resume', streamMode: 'production-resume',
+      fileSize: Buffer.byteLength(text), feedOverridePercent: feed,
+    };
+    this.setFeedOverride(feed, { allowDuringTransition: true });
     const token = ++this.runToken;
     this.stream(text, token, Boolean(job.feedOverride?.resetTo100AfterJob ?? true));
     return this.snapshot();

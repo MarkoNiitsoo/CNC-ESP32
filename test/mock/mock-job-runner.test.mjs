@@ -107,4 +107,31 @@ describe('MockJobRunner', () => {
     expect(ctx.runner.status.feedOverridePercent).toBe(75);
     ctx.runner.stop();
   });
+
+  it('streams validated native-arc test motion without job arming', async () => {
+    const ctx = await fixture();
+    const motionPath = '/jobs/generated/job.aircut.gc';
+    await ctx.sd.writeText(motionPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G2 X10 Y0 I5 J0 F600', 'G3 X0 Y0 I-5 J0 F600', 'M400',
+    ].join('\n'));
+    await ctx.runner.startTestMotion({ path: motionPath, mode: 'aircut', safeZ: 15 });
+    expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
+    expect(ctx.runner.status.streamMode).toBe('aircut');
+    expect(ctx.marlin.log.filter((entry) => /^G[23] /.test(entry.text))).toHaveLength(2);
+  });
+
+  it('rejects forbidden test motion and Aircut cutting Z before streaming', async () => {
+    const forbidden = await fixture();
+    const forbiddenPath = '/jobs/generated/forbidden.toolless.gc';
+    await forbidden.sd.writeText(forbiddenPath, 'M5\nG21\nM3\nG1 X10 F600\nM400\n');
+    await expect(forbidden.runner.startTestMotion({ path: forbiddenPath, mode: 'toolless', safeZ: 15 })).rejects.toThrow(/forbidden|unsupported/i);
+    expect(forbidden.marlin.log).toHaveLength(0);
+
+    const cutting = await fixture();
+    const cuttingPath = '/jobs/generated/cutting.aircut.gc';
+    await cutting.sd.writeText(cuttingPath, 'M5\nG21\nG90\nG0 Z15 F400\nG1 X10 Z-1 F600\nM400\n');
+    await expect(cutting.runner.startTestMotion({ path: cuttingPath, mode: 'aircut', safeZ: 15 })).rejects.toThrow(/Safe Z/i);
+    expect(cutting.marlin.log).toHaveLength(0);
+  });
 });

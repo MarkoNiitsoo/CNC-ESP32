@@ -11,6 +11,27 @@ describe('MockMarlin', () => {
     expect(marlin.execute('M114').response).toContain('X:0.0000 Y:0.0000 Z:0.0000');
   });
 
+  it('reports M203 maximum feedrates through M503', () => {
+    const marlin = new MockMarlin({ maxFeedrates: { x: 120, y: 80, z: 6 } });
+    expect(marlin.execute('M503').response).toContain('M203 X120.00 Y80.00 Z6.00');
+  });
+
+  it('reports machine area and applies EEPROM-backed configuration commands', () => {
+    const marlin = new MockMarlin({ machine: { xMax: 1625, yMax: 5800, zMax: 70 } });
+    expect(marlin.execute('M115').response).toContain('area:{full:{min:');
+    expect(marlin.execute('M211').response).toContain('Software Endstops: On');
+    marlin.execute('M92 X101 Y102 Z401');
+    marlin.execute('M203 X120 Y80 Z6');
+    marlin.execute('M201 X1100 Y900 Z120');
+    marlin.execute('M204 P600 R500 T900');
+    expect(marlin).toMatchObject({
+      stepsPerMm: { x: 101, y: 102, z: 401 }, maxFeedrates: { x: 120, y: 80, z: 6 },
+      maxAccelerations: { x: 1100, y: 900, z: 120 }, accelerations: { p: 600, r: 500, t: 900 },
+    });
+    marlin.execute('M500');
+    expect(marlin.eepromSaves).toBe(1);
+  });
+
   it('tracks movement, M5, and feed override', () => {
     const marlin = new MockMarlin();
     marlin.execute('M3');

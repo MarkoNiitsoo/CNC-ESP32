@@ -9,7 +9,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.5.0-telemetry-transport";
+constexpr const char *firmwareVersion = "0.5.5-machine-profile";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
@@ -17,6 +17,7 @@ constexpr const char *kSetupApPassword = "12345678";
 constexpr const char *kWifiPrefsNamespace = "wifi";
 constexpr const char *kWifiPrefsSsidKey = "ssid";
 constexpr const char *kWifiPrefsPassKey = "pass";
+constexpr const char *kMachinePrefsNamespace = "machine";
 constexpr const char *kSdUpdateBinPath = "/firmware/update.bin";
 constexpr const char *kSdInstallMarkerPath = "/firmware/INSTALL.NOW";
 constexpr const char *kSdDoneBinPath = "/firmware/update.done.bin";
@@ -28,17 +29,23 @@ constexpr uint32_t kMarlinBaudrate = 250000;
 constexpr uint32_t kMarlinTimeoutMs = 1500;
 constexpr uint16_t kTelemetryWebSocketPort = 81;
 constexpr uint32_t kTelemetryMinBroadcastMs = 100;
+constexpr uint32_t kJobProgressBroadcastMs = 500;
+constexpr size_t kMotionTelemetrySize = 24;
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
 constexpr uint32_t kJogTickIntervalMs = 150;
 constexpr uint32_t kJogDeadmanMs = 500;
 constexpr uint32_t kJogRestoreDelayMs = 5000;
 constexpr float kJogMaxXyStepMm = 15.0f;
 constexpr float kJogMaxZStepMm = 0.5f;
+constexpr float kMachineXMaxMm = 1625.0f;
+constexpr float kMachineYMaxMm = 5800.0f;
 constexpr float kMachineZMaxMm = 70.0f;
 constexpr float kJobStartZFeed = 400.0f;
-constexpr float kGotoWorkZeroXyFeed = 3000.0f;
+constexpr float kDefaultTravelFeed = 3000.0f;
 constexpr float kGotoWorkZeroZFeed = 400.0f;
 constexpr size_t kMaxGcodeLineLength = 180;
+constexpr size_t kMaxTestMotionFileSize = 2 * 1024 * 1024;
+constexpr uint32_t kMaxTestMotionCommands = 20000;
 constexpr size_t kMarlinLogSize = 40;
 constexpr int kMarlinRxPin = 3;
 constexpr int kMarlinTxPin = 1;
@@ -61,8 +68,10 @@ struct JobRunnerStatus {
   String gcodePath;
   String jobPath;
   String startMode = "apply_current_position_as_work_zero";
+  String streamMode = "job";
   bool allowedWorkspaceCommands = false;
   float safeStartZ = 15.0f;
+  float travelFeedMmMin = kDefaultTravelFeed;
   size_t fileSize = 0;
   size_t currentByteOffset = 0;
   uint32_t sentLineCount = 0;
@@ -141,9 +150,46 @@ struct PositionTelemetry {
   float z = 0;
 };
 
+struct MotionTelemetryEvent {
+  uint32_t sequence = 0;
+  uint32_t sentAtMs = 0;
+  String command;
+};
+
+enum class MachineDiscoveryState { Idle, WaitingM115 };
+
+struct MachineProfile {
+  bool available = false;
+  bool refreshing = false;
+  String firmwareName;
+  String machineType;
+  String sourceCodeUrl;
+  float fullXMin = 0.0f;
+  float fullXMax = kMachineXMaxMm;
+  float fullYMin = 0.0f;
+  float fullYMax = kMachineYMaxMm;
+  float fullZMin = 0.0f;
+  float fullZMax = kMachineZMaxMm;
+  float workXMin = 0.0f;
+  float workXMax = kMachineXMaxMm;
+  float workYMin = 0.0f;
+  float workYMax = kMachineYMaxMm;
+  float workZMin = 0.0f;
+  float workZMax = kMachineZMaxMm;
+  bool capEmergencyParser = false;
+  bool capArcs = false;
+  bool capAutoreportPos = false;
+  bool capEeprom = false;
+  bool capSdCard = false;
+  bool capMotionModes = false;
+  uint32_t refreshedAtMs = 0;
+  String lastError;
+};
+
 WebServer server(80);
 WebSocketsServer telemetrySocket(kTelemetryWebSocketPort);
 Preferences wifiPrefs;
+Preferences machinePrefs;
 String activeWifiMode = "ap";
 String activeWifiSsid = kSetupApSsid;
 bool jobRunning = false; // TODO: Replace with real Marlin job state tracking.
@@ -175,14 +221,28 @@ String lastCriticalMarlinMessage;
 uint32_t nextMarlinLogId = 1;
 uint32_t telemetryLastLogId = 0;
 bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 bool telemetryJobDirty = true;
 bool telemetryJogDirty = true;
 bool telemetryPositionDirty = false;
 uint32_t telemetryRevision = 0;
 uint32_t telemetryLastBroadcastMs = 0;
+uint32_t telemetryLastJobProgressMs = 0;
+MotionTelemetryEvent motionTelemetry[kMotionTelemetrySize];
+size_t motionTelemetryCount = 0;
+uint32_t motionTelemetryDropped = 0;
+uint8_t marlinAutoreportSeconds = 0;
+String marlinAsyncLine;
+String streamMotionMode = "G0";
 PositionTelemetry marlinPosition;
+MachineProfile machineProfile;
+MachineDiscoveryState machineDiscoveryState = MachineDiscoveryState::Idle;
+String machineDiscoveryResponse;
+uint32_t machineDiscoveryStartedAtMs = 0;
+bool machineDiscoveryPending = true;
 
 String readJobJsonSnippet(const String &jobPath);
+bool jobFileContainsText(const String &jobPath, const String &needle);
 bool jobJsonAllowsWorkspaceCommands(const String &jobPath);
 String extractWorkspaceCommand(const String &line);
 bool handleWorkspaceCommand(const String &line);
@@ -190,6 +250,9 @@ bool runJobStartPreamble();
 bool responseContainsToken(const String &response, const char *token);
 void resetFeedOverrideAfterJobIfNeeded();
 void updatePositionFromMarlinResponse(const String &response);
+void drainMarlinInput();
+bool sendMarlinControlCommand(const String &cmd, String &response);
+void sendJsonError(int status, const String &message);
 
 String marlinMessageLevel(String text) {
   text.toLowerCase();
@@ -534,6 +597,49 @@ void touchJobStatus() {
   telemetryJobDirty = true;
 }
 
+void touchJobProgress() {
+  const uint32_t now = millis();
+  jobStatus.updatedAtMs = now;
+  if (now - telemetryLastJobProgressMs >= kJobProgressBroadcastMs) {
+    telemetryJobDirty = true;
+    telemetryLastJobProgressMs = now;
+  }
+}
+
+bool streamLineIsMotion(const String &line) {
+  bool hasAxis = false;
+  int start = 0;
+  while (start < line.length()) {
+    while (start < line.length() && line[start] == ' ') ++start;
+    int end = line.indexOf(' ', start);
+    if (end < 0) end = line.length();
+    String token = line.substring(start, end);
+    token.toUpperCase();
+    if (token == "G0" || token == "G00") streamMotionMode = "G0";
+    else if (token == "G1" || token == "G01") streamMotionMode = "G1";
+    else if (token == "G2" || token == "G02") streamMotionMode = "G2";
+    else if (token == "G3" || token == "G03") streamMotionMode = "G3";
+    if (token.length() > 1 && (token[0] == 'X' || token[0] == 'Y' || token[0] == 'Z')) hasAxis = true;
+    start = end + 1;
+  }
+  return hasAxis && (streamMotionMode == "G0" || streamMotionMode == "G1" ||
+                     streamMotionMode == "G2" || streamMotionMode == "G3");
+}
+
+void queueMotionTelemetry(const String &command, uint32_t sequence) {
+  if (!streamLineIsMotion(command)) return;
+  size_t index = motionTelemetryCount;
+  if (motionTelemetryCount >= kMotionTelemetrySize) {
+    index = kMotionTelemetrySize - 1;
+    ++motionTelemetryDropped;
+  } else {
+    ++motionTelemetryCount;
+  }
+  motionTelemetry[index].sequence = sequence;
+  motionTelemetry[index].sentAtMs = millis();
+  motionTelemetry[index].command = command;
+}
+
 void logJobEvent(const String &event) {
   if (!sdMounted) {
     return;
@@ -565,8 +671,12 @@ String jobStatusJson() {
   json += jsonEscape(jobStatus.jobPath);
   json += "\",\"startMode\":\"";
   json += jsonEscape(jobStatus.startMode);
+  json += "\",\"streamMode\":\"";
+  json += jsonEscape(jobStatus.streamMode);
   json += "\",\"safeStartZ\":";
   json += String(jobStatus.safeStartZ, 3);
+  json += ",\"travelFeedMmMin\":";
+  json += String(jobStatus.travelFeedMmMin, 0);
   json += ",\"allowedWorkspaceCommands\":";
   json += jobStatus.allowedWorkspaceCommands ? "true" : "false";
   json += ",\"fileSize\":";
@@ -725,9 +835,11 @@ void sendTelemetrySnapshot(uint8_t client) {
 
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
+    telemetryClientConnected[client] = true;
     telemetryLogSubscribed[client] = false;
     sendTelemetrySnapshot(client);
   } else if (type == WStype_DISCONNECTED) {
+    telemetryClientConnected[client] = false;
     telemetryLogSubscribed[client] = false;
   } else if (type == WStype_TEXT) {
     String message;
@@ -782,6 +894,23 @@ void broadcastPendingLogEntries() {
   }
 }
 
+void broadcastPendingMotionEvents() {
+  if (motionTelemetryCount == 0) return;
+  String data = "{\"events\":[";
+  for (size_t i = 0; i < motionTelemetryCount; ++i) {
+    if (i > 0) data += ',';
+    const MotionTelemetryEvent &event = motionTelemetry[i];
+    data += "{\"sequence\":" + String(event.sequence);
+    data += ",\"sentAtMs\":" + String(event.sentAtMs);
+    data += ",\"command\":\"" + jsonEscape(event.command) + "\"}";
+  }
+  data += "],\"dropped\":" + String(motionTelemetryDropped);
+  data += ",\"feedOverridePercent\":" + String(jobStatus.feedOverridePercent) + "}";
+  telemetrySocket.broadcastTXT(telemetryMessage("delta", "motion", data));
+  motionTelemetryCount = 0;
+  motionTelemetryDropped = 0;
+}
+
 void processTelemetrySocket() {
   telemetrySocket.loop();
   const uint32_t now = millis();
@@ -806,6 +935,7 @@ void processTelemetrySocket() {
     telemetrySocket.broadcastTXT(payload);
     telemetryPositionDirty = false;
   }
+  broadcastPendingMotionEvents();
   broadcastPendingLogEntries();
   telemetryLastBroadcastMs = now;
 }
@@ -827,8 +957,7 @@ bool initializeSdCard() {
 }
 
 void logSdUpdate(const String &message) {
-  Serial.println(message);
-
+  // UART0 is reserved exclusively for Marlin commands and responses.
   SD_MMC.mkdir("/logs");
   File logFile = SD_MMC.open(kSdUpdateLogPath, FILE_APPEND);
   if (!logFile) {
@@ -854,7 +983,6 @@ void markSdUpdateFailed(const String &message) {
 
 bool checkForSdRescueUpdate() {
   if (!initializeSdCard()) {
-    Serial.println("SD rescue update: SD card not available");
     return false;
   }
 
@@ -1014,6 +1142,181 @@ String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
 
 String readMarlinResponse(bool priority = false) {
   return readMarlinResponseFor(kMarlinTimeoutMs, priority);
+}
+
+bool telemetryHasClient() {
+  for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
+    if (telemetryClientConnected[client]) return true;
+  }
+  return false;
+}
+
+String responseField(const String &response, const char *field, const char *nextField = nullptr) {
+  const String key = String(field) + ":";
+  const int start = response.indexOf(key);
+  if (start < 0) return "";
+  int end = nextField ? response.indexOf(String(" ") + nextField + ":", start + key.length()) : -1;
+  if (end < 0) end = response.indexOf('\n', start + key.length());
+  if (end < 0) end = response.length();
+  String value = response.substring(start + key.length(), end);
+  value.trim();
+  return value;
+}
+
+bool responseCapability(const String &response, const char *name) {
+  return response.indexOf(String("Cap:") + name + ":1") >= 0;
+}
+
+void saveMachineProfile() {
+  machinePrefs.begin(kMachinePrefsNamespace, false);
+  machinePrefs.putBool("available", machineProfile.available);
+  machinePrefs.putString("fw", machineProfile.firmwareName);
+  machinePrefs.putString("type", machineProfile.machineType);
+  machinePrefs.putString("url", machineProfile.sourceCodeUrl);
+  machinePrefs.putFloat("fx0", machineProfile.fullXMin);
+  machinePrefs.putFloat("fx1", machineProfile.fullXMax);
+  machinePrefs.putFloat("fy0", machineProfile.fullYMin);
+  machinePrefs.putFloat("fy1", machineProfile.fullYMax);
+  machinePrefs.putFloat("fz0", machineProfile.fullZMin);
+  machinePrefs.putFloat("fz1", machineProfile.fullZMax);
+  machinePrefs.putFloat("wx0", machineProfile.workXMin);
+  machinePrefs.putFloat("wx1", machineProfile.workXMax);
+  machinePrefs.putFloat("wy0", machineProfile.workYMin);
+  machinePrefs.putFloat("wy1", machineProfile.workYMax);
+  machinePrefs.putFloat("wz0", machineProfile.workZMin);
+  machinePrefs.putFloat("wz1", machineProfile.workZMax);
+  machinePrefs.putUChar("caps", (machineProfile.capEmergencyParser ? 1 : 0) |
+                                    (machineProfile.capArcs ? 2 : 0) |
+                                    (machineProfile.capAutoreportPos ? 4 : 0) |
+                                    (machineProfile.capEeprom ? 8 : 0) |
+                                    (machineProfile.capSdCard ? 16 : 0) |
+                                    (machineProfile.capMotionModes ? 32 : 0));
+  machinePrefs.end();
+}
+
+void loadMachineProfile() {
+  machinePrefs.begin(kMachinePrefsNamespace, true);
+  machineProfile.available = machinePrefs.getBool("available", false);
+  machineProfile.firmwareName = machinePrefs.getString("fw", "");
+  machineProfile.machineType = machinePrefs.getString("type", "");
+  machineProfile.sourceCodeUrl = machinePrefs.getString("url", "");
+  machineProfile.fullXMin = machinePrefs.getFloat("fx0", 0.0f);
+  machineProfile.fullXMax = machinePrefs.getFloat("fx1", kMachineXMaxMm);
+  machineProfile.fullYMin = machinePrefs.getFloat("fy0", 0.0f);
+  machineProfile.fullYMax = machinePrefs.getFloat("fy1", kMachineYMaxMm);
+  machineProfile.fullZMin = machinePrefs.getFloat("fz0", 0.0f);
+  machineProfile.fullZMax = machinePrefs.getFloat("fz1", kMachineZMaxMm);
+  machineProfile.workXMin = machinePrefs.getFloat("wx0", machineProfile.fullXMin);
+  machineProfile.workXMax = machinePrefs.getFloat("wx1", machineProfile.fullXMax);
+  machineProfile.workYMin = machinePrefs.getFloat("wy0", machineProfile.fullYMin);
+  machineProfile.workYMax = machinePrefs.getFloat("wy1", machineProfile.fullYMax);
+  machineProfile.workZMin = machinePrefs.getFloat("wz0", machineProfile.fullZMin);
+  machineProfile.workZMax = machinePrefs.getFloat("wz1", machineProfile.fullZMax);
+  const uint8_t caps = machinePrefs.getUChar("caps", 0);
+  machinePrefs.end();
+  machineProfile.capEmergencyParser = caps & 1;
+  machineProfile.capArcs = caps & 2;
+  machineProfile.capAutoreportPos = caps & 4;
+  machineProfile.capEeprom = caps & 8;
+  machineProfile.capSdCard = caps & 16;
+  machineProfile.capMotionModes = caps & 32;
+}
+
+bool parseMachineProfile(const String &response) {
+  machineProfile.firmwareName = responseField(response, "FIRMWARE_NAME", "SOURCE_CODE_URL");
+  machineProfile.sourceCodeUrl = responseField(response, "SOURCE_CODE_URL", "PROTOCOL_VERSION");
+  machineProfile.machineType = responseField(response, "MACHINE_TYPE", "EXTRUDER_COUNT");
+  machineProfile.capEmergencyParser = responseCapability(response, "EMERGENCY_PARSER");
+  machineProfile.capArcs = responseCapability(response, "ARCS");
+  machineProfile.capAutoreportPos = responseCapability(response, "AUTOREPORT_POS");
+  machineProfile.capEeprom = responseCapability(response, "EEPROM");
+  machineProfile.capSdCard = responseCapability(response, "SDCARD");
+  machineProfile.capMotionModes = responseCapability(response, "MOTION_MODES");
+
+  const int areaStart = response.indexOf("area:{full:");
+  int parsed = 0;
+  if (areaStart >= 0) {
+    parsed = sscanf(response.c_str() + areaStart,
+                    "area:{full:{min:{x:%f,y:%f,z:%f},max:{x:%f,y:%f,z:%f}},work:{min:{x:%f,y:%f,z:%f},max:{x:%f,y:%f,z:%f}}}",
+                    &machineProfile.fullXMin, &machineProfile.fullYMin, &machineProfile.fullZMin,
+                    &machineProfile.fullXMax, &machineProfile.fullYMax, &machineProfile.fullZMax,
+                    &machineProfile.workXMin, &machineProfile.workYMin, &machineProfile.workZMin,
+                    &machineProfile.workXMax, &machineProfile.workYMax, &machineProfile.workZMax);
+  }
+  const bool saneArea = parsed == 12 && machineProfile.fullXMax > machineProfile.fullXMin &&
+                        machineProfile.fullYMax > machineProfile.fullYMin &&
+                        machineProfile.fullZMax > machineProfile.fullZMin &&
+                        machineProfile.fullXMax <= 10000.0f && machineProfile.fullYMax <= 10000.0f &&
+                        machineProfile.fullZMax <= 1000.0f;
+  machineProfile.available = machineProfile.firmwareName.length() > 0 && saneArea;
+  machineProfile.refreshedAtMs = millis();
+  machineProfile.lastError = machineProfile.available ? "" : "M115 did not contain a usable area.full profile";
+  if (machineProfile.available) saveMachineProfile();
+  return machineProfile.available;
+}
+
+String machineProfileJson() {
+  String json = "{\"available\":";
+  json += machineProfile.available ? "true" : "false";
+  json += ",\"refreshing\":";
+  json += (machineDiscoveryState != MachineDiscoveryState::Idle || machineDiscoveryPending) ? "true" : "false";
+  json += ",\"firmwareName\":\"" + jsonEscape(machineProfile.firmwareName) + "\"";
+  json += ",\"machineType\":\"" + jsonEscape(machineProfile.machineType) + "\"";
+  json += ",\"sourceCodeUrl\":\"" + jsonEscape(machineProfile.sourceCodeUrl) + "\"";
+  json += ",\"full\":{\"xMin\":" + String(machineProfile.fullXMin, 3) + ",\"xMax\":" + String(machineProfile.fullXMax, 3);
+  json += ",\"yMin\":" + String(machineProfile.fullYMin, 3) + ",\"yMax\":" + String(machineProfile.fullYMax, 3);
+  json += ",\"zMin\":" + String(machineProfile.fullZMin, 3) + ",\"zMax\":" + String(machineProfile.fullZMax, 3) + "}";
+  json += ",\"work\":{\"xMin\":" + String(machineProfile.workXMin, 3) + ",\"xMax\":" + String(machineProfile.workXMax, 3);
+  json += ",\"yMin\":" + String(machineProfile.workYMin, 3) + ",\"yMax\":" + String(machineProfile.workYMax, 3);
+  json += ",\"zMin\":" + String(machineProfile.workZMin, 3) + ",\"zMax\":" + String(machineProfile.workZMax, 3) + "}";
+  json += ",\"capabilities\":{\"emergencyParser\":" + String(machineProfile.capEmergencyParser ? "true" : "false");
+  json += ",\"arcs\":" + String(machineProfile.capArcs ? "true" : "false");
+  json += ",\"autoreportPosition\":" + String(machineProfile.capAutoreportPos ? "true" : "false");
+  json += ",\"eeprom\":" + String(machineProfile.capEeprom ? "true" : "false");
+  json += ",\"sdCard\":" + String(machineProfile.capSdCard ? "true" : "false");
+  json += ",\"motionModes\":" + String(machineProfile.capMotionModes ? "true" : "false") + "}";
+  json += ",\"refreshedAtMs\":" + String(machineProfile.refreshedAtMs);
+  json += ",\"lastError\":\"" + jsonEscape(machineProfile.lastError) + "\"}";
+  return json;
+}
+
+bool machineDiscoveryTransportBusy() {
+  return otaActive || jobIsActive() || jobWaitingForOk || priorityCommandCount > 0 || jogIsActive();
+}
+
+float machineXMin() { return machineProfile.available ? machineProfile.fullXMin : 0.0f; }
+float machineXMax() { return machineProfile.available ? machineProfile.fullXMax : kMachineXMaxMm; }
+float machineYMin() { return machineProfile.available ? machineProfile.fullYMin : 0.0f; }
+float machineYMax() { return machineProfile.available ? machineProfile.fullYMax : kMachineYMaxMm; }
+float machineZMin() { return machineProfile.available ? machineProfile.fullZMin : -30.0f; }
+float machineZMax() { return machineProfile.available ? machineProfile.fullZMax : kMachineZMaxMm; }
+
+void processMachineDiscovery() {
+  if (machineDiscoveryState == MachineDiscoveryState::Idle) {
+    if (!machineDiscoveryPending || millis() < 5000 || machineDiscoveryTransportBusy()) return;
+    machineDiscoveryPending = false;
+    machineDiscoveryResponse = "";
+    machineDiscoveryStartedAtMs = millis();
+    machineProfile.refreshing = true;
+    machineProfile.lastError = "";
+    drainMarlinInput();
+    addMarlinLog("tx", false, "M115");
+    Serial.print("M115\n");
+    machineDiscoveryState = MachineDiscoveryState::WaitingM115;
+    return;
+  }
+
+  while (Serial.available() > 0) machineDiscoveryResponse += static_cast<char>(Serial.read());
+  if (marlinResponseIsTerminal(machineDiscoveryResponse)) {
+    addMarlinLog("rx", false, machineDiscoveryResponse);
+    parseMachineProfile(machineDiscoveryResponse);
+    machineProfile.refreshing = false;
+    machineDiscoveryState = MachineDiscoveryState::Idle;
+  } else if (millis() - machineDiscoveryStartedAtMs > 12000) {
+    machineProfile.lastError = "M115 discovery timed out";
+    machineProfile.refreshing = false;
+    machineDiscoveryState = MachineDiscoveryState::Idle;
+  }
 }
 
 void drainMarlinInput() {
@@ -1297,6 +1600,41 @@ void updatePositionFromMarlinResponse(const String &response) {
   }
 }
 
+bool applyMarlinAutoreportInterval(uint8_t seconds) {
+  if (!machineProfile.capAutoreportPos) return false;
+  String response;
+  if (!sendMarlinControlCommand("M154 S" + String(seconds), response)) return false;
+  marlinAutoreportSeconds = seconds;
+  return true;
+}
+
+uint8_t desiredMarlinAutoreportInterval() {
+  if (!machineProfile.capAutoreportPos || !telemetryHasClient()) return 0;
+  return (jobIsActive() || jogIsActive()) ? 1 : 2;
+}
+
+void processMarlinAutoreportControl() {
+  const uint8_t desired = desiredMarlinAutoreportInterval();
+  if (desired == marlinAutoreportSeconds) return;
+  if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0 || jogIsActive() ||
+      machineDiscoveryState != MachineDiscoveryState::Idle || otaActive) return;
+  applyMarlinAutoreportInterval(desired);
+}
+
+void processIdleMarlinAutoreport() {
+  if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0 || jogIsActive() ||
+      machineDiscoveryState != MachineDiscoveryState::Idle) return;
+  while (Serial.available() > 0) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\n') {
+      updatePositionFromMarlinResponse(marlinAsyncLine);
+      marlinAsyncLine = "";
+    } else if (c != '\r' && marlinAsyncLine.length() < 256) {
+      marlinAsyncLine += c;
+    }
+  }
+}
+
 bool captureJogOriginalZ() {
   sendJogCommand("M400");
   const String response = sendJogCommandForResponse("M114", 300);
@@ -1545,6 +1883,265 @@ String cleanGcodeLine(String line) {
   return line;
 }
 
+bool testMotionWordAllowed(const String &word, const String &motionCode) {
+  if (word.length() < 2) {
+    return false;
+  }
+  const char letter = word[0];
+  if (letter == 'G') {
+    return word == motionCode;
+  }
+  bool digitSeen = false;
+  bool decimalSeen = false;
+  for (int i = 1; i < word.length(); ++i) {
+    const char c = word[i];
+    if (c >= '0' && c <= '9') {
+      digitSeen = true;
+      continue;
+    }
+    if ((c == '+' || c == '-') && i == 1) {
+      continue;
+    }
+    if (c == '.' && !decimalSeen) {
+      decimalSeen = true;
+      continue;
+    }
+    return false;
+  }
+  if (!digitSeen) {
+    return false;
+  }
+  if (letter == 'X' || letter == 'Y' || letter == 'Z' || letter == 'F') {
+    return true;
+  }
+  return (motionCode == "G2" || motionCode == "G3") &&
+         (letter == 'I' || letter == 'J' || letter == 'R');
+}
+
+bool extractGcodeWordValue(const String &line, char wanted, float &value) {
+  String upper = line;
+  upper.toUpperCase();
+  for (int i = 0; i < upper.length(); ++i) {
+    if (upper[i] != wanted) {
+      continue;
+    }
+    int end = i + 1;
+    while (end < upper.length() && upper[end] != ' ') {
+      ++end;
+    }
+    const String number = upper.substring(i + 1, end);
+    if (number.length() == 0) {
+      return false;
+    }
+    value = number.toFloat();
+    return true;
+  }
+  return false;
+}
+
+bool validateTestMotionCommand(const String &line, const String &mode, float safeZ, String &error) {
+  String upper = line;
+  upper.toUpperCase();
+  upper.trim();
+  if (upper == "M5" || upper == "M400" || upper == "G21" || upper == "G90" || upper == "G54") {
+    return true;
+  }
+
+  const int separator = upper.indexOf(' ');
+  const String code = separator >= 0 ? upper.substring(0, separator) : upper;
+  if (code != "G0" && code != "G1" && code != "G2" && code != "G3") {
+    error = "test motion contains forbidden or unsupported command: " + code;
+    return false;
+  }
+
+  int start = 0;
+  while (start < upper.length()) {
+    while (start < upper.length() && upper[start] == ' ') {
+      ++start;
+    }
+    if (start >= upper.length()) {
+      break;
+    }
+    int end = upper.indexOf(' ', start);
+    if (end < 0) {
+      end = upper.length();
+    }
+    if (!testMotionWordAllowed(upper.substring(start, end), code)) {
+      error = "test motion contains unsupported word";
+      return false;
+    }
+    start = end + 1;
+  }
+
+  if (mode == "aircut") {
+    float z = 0.0f;
+    if (extractGcodeWordValue(upper, 'Z', z) && fabsf(z - safeZ) > 0.01f) {
+      error = "aircut Z command differs from configured Safe Z";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool validateTestMotionFile(const String &path, const String &mode, float safeZ,
+                            uint32_t &commandCount, String &error) {
+  File file = SD_MMC.open(path, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    error = "could not open test motion file";
+    return false;
+  }
+  if (file.size() == 0 || file.size() > kMaxTestMotionFileSize) {
+    file.close();
+    error = "test motion file size is invalid";
+    return false;
+  }
+
+  commandCount = 0;
+  String raw;
+  String firstCommand;
+  String lastCommand;
+  bool hasMotion = false;
+  while (file.available()) {
+    const char c = static_cast<char>(file.read());
+    if (c != '\n') {
+      raw += c;
+      if (raw.length() > kMaxGcodeLineLength) {
+        file.close();
+        error = "test motion line is too long";
+        return false;
+      }
+      continue;
+    }
+
+    const String line = cleanGcodeLine(raw);
+    raw = "";
+    if (line.length() == 0) continue;
+    if (!validateTestMotionCommand(line, mode, safeZ, error)) {
+      file.close();
+      return false;
+    }
+    if (firstCommand.length() == 0) firstCommand = line;
+    lastCommand = line;
+    hasMotion = hasMotion || line.startsWith("G0 ") || line.startsWith("G1 ") ||
+                line.startsWith("G2 ") || line.startsWith("G3 ");
+    commandCount += 1;
+    if (commandCount > kMaxTestMotionCommands) {
+      file.close();
+      error = "test motion command limit exceeded";
+      return false;
+    }
+  }
+  if (raw.length() > 0) {
+    const String line = cleanGcodeLine(raw);
+    if (line.length() > 0) {
+      if (!validateTestMotionCommand(line, mode, safeZ, error)) {
+        file.close();
+        return false;
+      }
+      if (firstCommand.length() == 0) firstCommand = line;
+      lastCommand = line;
+      hasMotion = hasMotion || line.startsWith("G0 ") || line.startsWith("G1 ") ||
+                  line.startsWith("G2 ") || line.startsWith("G3 ");
+      commandCount += 1;
+    }
+  }
+  file.close();
+
+  if (commandCount == 0 || commandCount > kMaxTestMotionCommands || firstCommand != "M5" ||
+      lastCommand != "M400" || !hasMotion) {
+    error = "test motion file must start with M5, contain motion, and end with M400";
+    return false;
+  }
+  return true;
+}
+
+bool validateProductionResumeCommand(const String &line, String &error) {
+  if (!validateTestMotionCommand(line, "production-resume", 0.0f, error)) {
+    error.replace("test motion", "Production Resume");
+    return false;
+  }
+
+  float value = 0.0f;
+  if (extractGcodeWordValue(line, 'X', value) && (value < machineXMin() || value > machineXMax())) {
+    error = "Production Resume X is outside configured limits";
+    return false;
+  }
+  if (extractGcodeWordValue(line, 'Y', value) && (value < machineYMin() || value > machineYMax())) {
+    error = "Production Resume Y is outside configured limits";
+    return false;
+  }
+  if (extractGcodeWordValue(line, 'Z', value) && (value < machineZMin() || value > machineZMax())) {
+    error = "Production Resume Z is outside configured limits";
+    return false;
+  }
+  return true;
+}
+
+bool validateProductionResumeFile(const String &path, uint32_t &commandCount, String &error) {
+  File file = SD_MMC.open(path, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    error = "could not open Production Resume file";
+    return false;
+  }
+  if (file.size() == 0 || file.size() > kMaxTestMotionFileSize) {
+    file.close();
+    error = "Production Resume file size is invalid";
+    return false;
+  }
+
+  commandCount = 0;
+  String raw;
+  String first[3];
+  String lastCommand;
+  bool hasCuttingMove = false;
+  auto validateLine = [&](const String &line) {
+    if (line.length() == 0) return true;
+    if (!validateProductionResumeCommand(line, error)) return false;
+    if (commandCount < 3) first[commandCount] = line;
+    lastCommand = line;
+    hasCuttingMove = hasCuttingMove || line.startsWith("G1 ") || line.startsWith("G2 ") || line.startsWith("G3 ");
+    commandCount += 1;
+    if (commandCount > kMaxTestMotionCommands) {
+      error = "Production Resume command limit exceeded";
+      return false;
+    }
+    return true;
+  };
+
+  while (file.available()) {
+    const char c = static_cast<char>(file.read());
+    if (c != '\n') {
+      raw += c;
+      if (raw.length() > kMaxGcodeLineLength) {
+        file.close();
+        error = "Production Resume line is too long";
+        return false;
+      }
+      continue;
+    }
+    const String line = cleanGcodeLine(raw);
+    raw = "";
+    if (!validateLine(line)) {
+      file.close();
+      return false;
+    }
+  }
+  if (!validateLine(cleanGcodeLine(raw))) {
+    file.close();
+    return false;
+  }
+  file.close();
+
+  if (commandCount < 5 || first[0] != "G21" || first[1] != "G90" || first[2] != "G54" ||
+      lastCommand != "M400" || !hasCuttingMove) {
+    error = "Production Resume must start G21/G90/G54, contain cutting motion, and end M400";
+    return false;
+  }
+  return true;
+}
+
 void setJobError(const String &message) {
   if (jobFile) {
     jobFile.close();
@@ -1683,9 +2280,10 @@ void processJobRunner() {
     jobStatus.acknowledgedLineCount += 1;
     jobStatus.lastResponse = jobResponseBuffer;
     addMarlinLog("rx", false, jobResponseBuffer);
+    updatePositionFromMarlinResponse(jobResponseBuffer);
     jobResponseBuffer = "";
     jobWaitingForOk = false;
-    touchJobStatus();
+    touchJobProgress();
   }
 
   if (!jobFile) {
@@ -1709,6 +2307,16 @@ void processJobRunner() {
   if (!handleWorkspaceCommand(line)) {
     return;
   }
+  if (jobStatus.streamMode != "job") {
+    String validationError;
+    const bool valid = jobStatus.streamMode == "production-resume"
+                           ? validateProductionResumeCommand(line, validationError)
+                           : validateTestMotionCommand(line, jobStatus.streamMode, jobStatus.safeStartZ, validationError);
+    if (!valid) {
+      setJobError(validationError);
+      return;
+    }
+  }
 
   jobStatus.lastCommand = line;
   jobResponseBuffer = "";
@@ -1717,8 +2325,9 @@ void processJobRunner() {
   Serial.print('\n');
   jobStatus.sentLineCount += 1;
   jobStatus.currentLineNumber += 1;
+  queueMotionTelemetry(line, jobStatus.currentLineNumber);
   jobWaitingForOk = true;
-  touchJobStatus();
+  touchJobProgress();
 }
 
 String htmlPage(const String &title, const String &body) {
@@ -1802,6 +2411,105 @@ void handleHealth() {
   json += "}";
 
   server.send(200, "application/json", json);
+}
+
+void handleMachineInfo() {
+  server.send(200, "application/json", machineProfileJson());
+}
+
+void handleMachineRefresh() {
+  if (machineDiscoveryState != MachineDiscoveryState::Idle) {
+    server.send(202, "application/json", machineProfileJson());
+    return;
+  }
+  if (machineDiscoveryTransportBusy()) {
+    sendJsonError(409, "machine discovery requires idle Marlin transport");
+    return;
+  }
+  machineDiscoveryPending = true;
+  machineProfile.refreshing = true;
+  server.send(202, "application/json", "{\"ok\":true,\"message\":\"M115 discovery queued\"}");
+}
+
+bool machineConfigurationBusy() {
+  return machineDiscoveryState != MachineDiscoveryState::Idle || machineDiscoveryTransportBusy();
+}
+
+bool validatedMachineValue(float value, float minimum, float maximum) {
+  return isfinite(value) && value >= minimum && value <= maximum;
+}
+
+void handleMachineApply() {
+  if (machineConfigurationBusy()) {
+    sendJsonError(409, "machine configuration requires idle Marlin transport");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+  const String body = server.arg("plain");
+  String group = extractJsonString(body, "group");
+  group.toUpperCase();
+  String command;
+  if (group == "M92" || group == "M203" || group == "M201") {
+    const float x = extractJsonFloat(body, "x", NAN);
+    const float y = extractJsonFloat(body, "y", NAN);
+    const float z = extractJsonFloat(body, "z", NAN);
+    const float minimum = group == "M201" ? 1.0f : 0.01f;
+    const float maximum = group == "M92" ? 100000.0f : (group == "M203" ? 2000.0f : 100000.0f);
+    if (!validatedMachineValue(x, minimum, maximum) || !validatedMachineValue(y, minimum, maximum) ||
+        !validatedMachineValue(z, minimum, maximum)) {
+      sendJsonError(400, group + " X/Y/Z values are missing or outside allowed range");
+      return;
+    }
+    command = group + " X" + String(x, 4) + " Y" + String(y, 4) + " Z" + String(z, 4);
+  } else if (group == "M204") {
+    const float p = extractJsonFloat(body, "p", NAN);
+    const float r = extractJsonFloat(body, "r", NAN);
+    const float t = extractJsonFloat(body, "t", NAN);
+    if (!validatedMachineValue(p, 1.0f, 100000.0f) || !validatedMachineValue(r, 1.0f, 100000.0f) ||
+        !validatedMachineValue(t, 1.0f, 100000.0f)) {
+      sendJsonError(400, "M204 P/R/T values are missing or outside allowed range");
+      return;
+    }
+    command = "M204 P" + String(p, 2) + " R" + String(r, 2) + " T" + String(t, 2);
+  } else {
+    sendJsonError(400, "editable group must be M92, M203, M201, or M204");
+    return;
+  }
+
+  drainMarlinInput();
+  addMarlinLog("tx", false, command);
+  Serial.print(command);
+  Serial.print('\n');
+  const String response = readMarlinResponseFor(3000);
+  String upper = response;
+  upper.toUpperCase();
+  if (upper.indexOf("OK") < 0 || upper.indexOf("ERROR") >= 0 || upper.indexOf("ALARM") >= 0) {
+    sendJsonError(502, "Marlin rejected " + command + ": " + response);
+    return;
+  }
+  String json = "{\"ok\":true,\"command\":\"" + jsonEscape(command) + "\",\"response\":\"" + jsonEscape(response) + "\"}";
+  server.send(200, "application/json", json);
+}
+
+void handleMachineSave() {
+  if (machineConfigurationBusy()) {
+    sendJsonError(409, "M500 requires idle Marlin transport");
+    return;
+  }
+  drainMarlinInput();
+  addMarlinLog("tx", false, "M500");
+  Serial.print("M500\n");
+  const String response = readMarlinResponseFor(5000);
+  String upper = response;
+  upper.toUpperCase();
+  if (upper.indexOf("OK") < 0 || upper.indexOf("ERROR") >= 0 || upper.indexOf("ALARM") >= 0) {
+    sendJsonError(502, "M500 failed: " + response);
+    return;
+  }
+  server.send(200, "application/json", "{\"ok\":true,\"command\":\"M500\",\"message\":\"Changes saved to Marlin EEPROM\"}");
 }
 
 void handleMarlinLog() {
@@ -1923,6 +2631,11 @@ bool serveSpiiffsFile(const String &path) {
   }
 
   sendCacheHeadersFor(path);
+  String fileName = path.substring(path.lastIndexOf('/') + 1);
+  fileName.replace("\"", "_");
+  fileName.replace("\r", "_");
+  fileName.replace("\n", "_");
+  server.sendHeader("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
   server.streamFile(file, contentTypeForPath(path));
   file.close();
   return true;
@@ -2233,6 +2946,12 @@ void handleCommand() {
   String upper = cmd;
   upper.toUpperCase();
   upper.trim();
+  if (machineDiscoveryState != MachineDiscoveryState::Idle && upper == "M5") {
+    addMarlinLog("tx", true, "M5");
+    Serial.print("M5\n");
+    server.send(200, "application/json", "{\"ok\":true,\"response\":\"M5 sent during machine discovery.\"}");
+    return;
+  }
   if ((jobStatus.state == JobRunnerState::Running || jobStatus.state == JobRunnerState::Pausing ||
        jobStatus.state == JobRunnerState::Paused || jobStatus.state == JobRunnerState::Resuming ||
        jobStatus.state == JobRunnerState::Stopping || jobStatus.state == JobRunnerState::Error) &&
@@ -2254,13 +2973,19 @@ void handleCommand() {
     return;
   }
 
+  if (machineDiscoveryState != MachineDiscoveryState::Idle) {
+    sendJsonError(409, "Marlin transport is busy discovering machine information");
+    return;
+  }
+
   drainMarlinInput();
 
   addMarlinLog("tx", false, cmd);
   Serial.print(cmd);
   Serial.print('\n');
 
-  const String response = readMarlinResponse();
+  const String response = readMarlinResponseFor(upper == "M115" ? 12000 : (upper == "M503" ? 5000 : kMarlinTimeoutMs));
+  if (upper == "M115") parseMachineProfile(response);
   String json = "{\"ok\":true,\"response\":\"";
   json += jsonEscape(response);
   json += "\"}";
@@ -2268,25 +2993,7 @@ void handleCommand() {
 }
 
 bool jobJsonIsArmed(const String &jobPath) {
-  File file = SD_MMC.open(jobPath, FILE_READ);
-  if (!file || file.isDirectory()) {
-    if (file) {
-      file.close();
-    }
-    return false;
-  }
-
-  String body;
-  while (file.available()) {
-    body += static_cast<char>(file.read());
-    if (body.length() > 8192) {
-      break;
-    }
-  }
-  file.close();
-
-  // TODO: Replace this minimal check with robust JSON parsing if job metadata grows.
-  return body.indexOf("\"state\":\"ARMED\"") >= 0 || body.indexOf("\"state\": \"ARMED\"") >= 0;
+  return jobFileContainsText(jobPath, "\"arm\":{\"state\":\"ARMED\"");
 }
 
 String readJobJsonSnippet(const String &jobPath) {
@@ -2309,10 +3016,33 @@ String readJobJsonSnippet(const String &jobPath) {
   return body;
 }
 
+bool jobFileContainsText(const String &jobPath, const String &needle) {
+  if (needle.length() == 0) return false;
+  File file = SD_MMC.open(jobPath, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    return false;
+  }
+  String window;
+  window.reserve(needle.length() + 256);
+  while (file.available()) {
+    for (int i = 0; i < 256 && file.available(); ++i) {
+      const char c = static_cast<char>(file.read());
+      if (c != ' ' && c != '\n' && c != '\r' && c != '\t') window += c;
+    }
+    if (window.indexOf(needle) >= 0) {
+      file.close();
+      return true;
+    }
+    const size_t keep = min(static_cast<size_t>(window.length()), static_cast<size_t>(needle.length()));
+    window = window.substring(window.length() - keep);
+  }
+  file.close();
+  return window.indexOf(needle) >= 0;
+}
+
 bool jobJsonAllowsWorkspaceCommands(const String &jobPath) {
-  const String body = readJobJsonSnippet(jobPath);
-  return body.indexOf("\"allowedWorkspaceCommands\":true") >= 0 ||
-         body.indexOf("\"allowedWorkspaceCommands\": true") >= 0;
+  return jobFileContainsText(jobPath, "\"allowedWorkspaceCommands\":true");
 }
 
 String compactJsonForStringChecks(String body) {
@@ -2324,18 +3054,33 @@ String compactJsonForStringChecks(String body) {
 }
 
 bool jobJsonAllowsActiveGeneratedRun(const String &jobPath, const String &gcodePath) {
-  const String compact = compactJsonForStringChecks(readJobJsonSnippet(jobPath));
-  if (compact.length() == 0) {
-    return false;
-  }
-  const String activePathNeedle = String("\"path\":\"") + gcodePath + "\"";
+  const String activeRunNeedle = String("\"activeRun\":{\"mode\":\"generated\",\"path\":\"") +
+                                 gcodePath + "\"";
 
   // TODO: Replace this minimal provenance check with robust JSON parsing.
-  return compact.indexOf("\"activeRun\"") >= 0 &&
-         compact.indexOf("\"mode\":\"generated\"") >= 0 &&
-         compact.indexOf(activePathNeedle) >= 0 &&
-         compact.indexOf("\"generatedValidation\"") >= 0 &&
-         compact.indexOf("\"status\":\"valid\"") >= 0;
+  return jobFileContainsText(jobPath, activeRunNeedle) &&
+         jobFileContainsText(jobPath, "\"generatedValidation\":{\"status\":\"valid\"");
+}
+
+bool jobJsonAllowsProductionResume(const String &jobPath, const String &activeRunPath,
+                                   const String &activeRunMode, const String &eventId,
+                                   const String &interruptedRunId, const String &activeRunFingerprint) {
+  if (eventId.length() == 0 || interruptedRunId.length() == 0 ||
+      activeRunPath.length() == 0 || (activeRunMode != "source" && activeRunMode != "generated")) {
+    return false;
+  }
+
+  // TODO: Replace these whole-file token checks with a streaming JSON parser.
+  const String pathNeedle = String("\"activeRunPath\":\"") + activeRunPath + "\"";
+  const String modeNeedle = String("\"activeRunMode\":\"") + activeRunMode + "\"";
+  const String eventNeedle = String("\"eventId\":\"") + eventId + "\"";
+  const String runNeedle = String("\"interruptedRunId\":\"") + interruptedRunId + "\"";
+  const String fingerprintNeedle = String("\"activeRunFingerprint\":\"") + activeRunFingerprint + "\"";
+  return jobFileContainsText(jobPath, "\"productionResumeAuthorization\":{") &&
+         jobFileContainsText(jobPath, "\"authorized\":true") &&
+         jobFileContainsText(jobPath, eventNeedle) && jobFileContainsText(jobPath, runNeedle) &&
+         jobFileContainsText(jobPath, pathNeedle) && jobFileContainsText(jobPath, modeNeedle) &&
+         (activeRunFingerprint.length() == 0 || jobFileContainsText(jobPath, fingerprintNeedle));
 }
 
 int jobJsonFeedStartPercent(const String &jobPath) {
@@ -2426,11 +3171,160 @@ bool runJobStartPreamble() {
 
   sendMarlinSafetyCommand(("G0 Z" + String(jobStatus.safeStartZ, 3) + " F" + String(kJobStartZFeed, 0)).c_str());
   sendMarlinSafetyCommand("M400");
+  sendMarlinSafetyCommand(("G0 F" + String(jobStatus.travelFeedMmMin, 0)).c_str());
+  if (machineProfile.capAutoreportPos && telemetryHasClient()) applyMarlinAutoreportInterval(1);
 
   return true;
 }
 
 void handleJobStatus() {
+  server.send(200, "application/json", jobStatusJson());
+}
+
+void handleTestMotionStart() {
+  if (!sdMounted) {
+    sendJsonError(503, "SD card is not mounted");
+    return;
+  }
+  if (jobIsActive()) {
+    sendJsonError(409, "another job or motion stream is already active");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  const String path = normalizeSdPath(extractJsonString(body, "path"));
+  const String mode = extractJsonString(body, "mode");
+  const float safeZ = extractJsonFloat(body, "safeZ", 15.0f);
+  if (!isPathUnderRoot(path, "/jobs/generated")) {
+    sendJsonError(400, "test motion path must be under /jobs/generated");
+    return;
+  }
+  if (mode != "aircut" && mode != "toolless") {
+    sendJsonError(400, "test motion mode must be aircut or toolless");
+    return;
+  }
+  if (!isfinite(safeZ) || safeZ <= 0.0f || safeZ > kMachineZMaxMm) {
+    sendJsonError(400, "Safe Z is outside configured machine limits");
+    return;
+  }
+
+  uint32_t commandCount = 0;
+  String validationError;
+  if (!validateTestMotionFile(path, mode, safeZ, commandCount, validationError)) {
+    sendJsonError(400, validationError);
+    return;
+  }
+
+  jobStatus = JobRunnerStatus();
+  streamMotionMode = "G0";
+  motionTelemetryCount = 0;
+  motionTelemetryDropped = 0;
+  clearPriorityCommands();
+  jobStatus.state = JobRunnerState::Preparing;
+  jobStatus.gcodePath = path;
+  jobStatus.startMode = "validated_test_motion";
+  jobStatus.streamMode = mode;
+  jobStatus.safeStartZ = safeZ;
+  jobStatus.resetFeedOverrideAfterJob = false;
+  jobStatus.startedAtMs = millis();
+  touchJobStatus();
+
+  File sizeFile = SD_MMC.open(path, FILE_READ);
+  jobStatus.fileSize = sizeFile ? sizeFile.size() : 0;
+  if (sizeFile) sizeFile.close();
+  if (!openJobFileAtOffset()) {
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
+
+  logJobEvent("test motion start: " + mode + " " + path + " commands=" + String(commandCount));
+  jobRunning = true;
+  jobStatus.state = JobRunnerState::Running;
+  touchJobStatus();
+  server.send(200, "application/json", jobStatusJson());
+}
+
+void handleProductionResumeStart() {
+  if (!sdMounted) {
+    sendJsonError(503, "SD card is not mounted");
+    return;
+  }
+  if (jobIsActive()) {
+    sendJsonError(409, "another job or motion stream is already active");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  const String path = normalizeSdPath(extractJsonString(body, "path"));
+  const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  const String activeRunPath = normalizeSdPath(extractJsonString(body, "activeRunPath"));
+  const String activeRunMode = extractJsonString(body, "activeRunMode");
+  const String activeRunFingerprint = extractJsonString(body, "activeRunFingerprint");
+  const String eventId = extractJsonString(body, "eventId");
+  const String interruptedRunId = extractJsonString(body, "interruptedRunId");
+
+  if (!isPathUnderRoot(path, "/jobs/generated") || !path.endsWith(".production-resume.gc")) {
+    sendJsonError(400, "Production Resume path must be a generated .production-resume.gc file");
+    return;
+  }
+  if (!isPathUnderRoot(jobPath, "/jobs") || !SD_MMC.exists(jobPath)) {
+    sendJsonError(404, "job JSON not found");
+    return;
+  }
+  if (!jobJsonAllowsProductionResume(jobPath, activeRunPath, activeRunMode, eventId,
+                                     interruptedRunId, activeRunFingerprint)) {
+    sendJsonError(409, "Production Resume metadata no longer matches the prepared recovery");
+    return;
+  }
+  if (activeRunMode == "generated" && !jobJsonAllowsActiveGeneratedRun(jobPath, activeRunPath)) {
+    sendJsonError(409, "generated active run is no longer valid");
+    return;
+  }
+
+  uint32_t commandCount = 0;
+  String validationError;
+  if (!validateProductionResumeFile(path, commandCount, validationError)) {
+    sendJsonError(400, validationError);
+    return;
+  }
+
+  jobStatus = JobRunnerStatus();
+  streamMotionMode = "G0";
+  motionTelemetryCount = 0;
+  motionTelemetryDropped = 0;
+  clearPriorityCommands();
+  jobStatus.state = JobRunnerState::Preparing;
+  jobStatus.gcodePath = path;
+  jobStatus.jobPath = jobPath;
+  jobStatus.startMode = "prepared_production_resume";
+  jobStatus.streamMode = "production-resume";
+  jobStatus.allowedWorkspaceCommands = false;
+  jobStatus.feedOverridePercent = jobJsonFeedStartPercent(jobPath);
+  jobStatus.resetFeedOverrideAfterJob = jobJsonResetFeedAfterJob(jobPath);
+  jobStatus.startedAtMs = millis();
+  touchJobStatus();
+
+  File sizeFile = SD_MMC.open(path, FILE_READ);
+  jobStatus.fileSize = sizeFile ? sizeFile.size() : 0;
+  if (sizeFile) sizeFile.close();
+  if (!openJobFileAtOffset()) {
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
+
+  sendFeedOverrideImmediate(jobStatus.feedOverridePercent);
+  logJobEvent("Production Resume stream start: " + path + " commands=" + String(commandCount));
+  jobRunning = true;
+  jobStatus.state = JobRunnerState::Running;
+  touchJobStatus();
   server.send(200, "application/json", jobStatusJson());
 }
 
@@ -2494,6 +3388,8 @@ void handleJobStart() {
     return;
   }
   const float safeStartZ = clampFloat(extractJsonFloat(body, "safeStartZ", 15.0f), 0.0f, 200.0f);
+  const float travelFeedMmMin = clampFloat(
+      extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   const bool sourceRunPath = isPathUnderRoot(gcodePath, "/gcode");
   const bool generatedRunPath = isPathUnderRoot(gcodePath, "/jobs/generated");
   if (!sourceRunPath && !generatedRunPath) {
@@ -2528,12 +3424,16 @@ void handleJobStart() {
   }
 
   jobStatus = JobRunnerStatus();
+  streamMotionMode = "G0";
+  motionTelemetryCount = 0;
+  motionTelemetryDropped = 0;
   clearPriorityCommands();
   jobStatus.state = JobRunnerState::Preparing;
   jobStatus.gcodePath = gcodePath;
   jobStatus.jobPath = jobPath;
   jobStatus.startMode = startMode;
   jobStatus.safeStartZ = safeStartZ;
+  jobStatus.travelFeedMmMin = travelFeedMmMin;
   jobStatus.allowedWorkspaceCommands = jobJsonAllowsWorkspaceCommands(jobPath);
   jobStatus.feedOverridePercent = jobJsonFeedStartPercent(jobPath);
   jobStatus.resetFeedOverrideAfterJob = jobJsonResetFeedAfterJob(jobPath);
@@ -2744,6 +3644,8 @@ void handleGoToWorkZero() {
   }
   const bool safeMove = extractJsonBool(body, "safeMove", true);
   const float safeZ = extractJsonFloat(body, "safeZ", 70.0f);
+  const float travelFeedMmMin = clampFloat(
+      extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   if (safeMove && (safeZ <= 0.0f || safeZ > 200.0f)) {
     sendJsonError(400, "safeZ must be greater than 0 and no more than 200 mm");
     return;
@@ -2771,7 +3673,7 @@ void handleGoToWorkZero() {
   if (axes == "x" || axes == "xy") move += " X0";
   if (axes == "y" || axes == "xy") move += " Y0";
   move += " F";
-  move += String(kGotoWorkZeroXyFeed, 0);
+  move += String(travelFeedMmMin, 0);
   if (!sendChecked(move) || !sendChecked("G90")) {
     return;
   }
@@ -2787,9 +3689,71 @@ void handleGoToWorkZero() {
   server.send(200, "application/json", json);
 }
 
+void handleRestoreWorkZero() {
+  if (otaActive) {
+    sendJsonError(409, "OTA update in progress");
+    return;
+  }
+  if (jobIsActive() || jogIsActive()) {
+    sendJsonError(409, "work-zero restore rejected while motion is active");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  const float machineX = extractJsonFloat(body, "machineX", NAN);
+  const float machineY = extractJsonFloat(body, "machineY", NAN);
+  const float safeMachineZ = extractJsonFloat(body, "safeMachineZ", kMachineZMaxMm);
+  const float travelFeedMmMin = clampFloat(
+      extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
+  if (!isfinite(machineX) || !isfinite(machineY) || machineX < machineXMin() || machineX > machineXMax() ||
+      machineY < machineYMin() || machineY > machineYMax()) {
+    sendJsonError(400, "saved work-zero XY is outside configured machine limits");
+    return;
+  }
+  if (!isfinite(safeMachineZ) || safeMachineZ <= machineZMin() || safeMachineZ > machineZMax()) {
+    sendJsonError(400, "Safe machine Z is outside configured limits");
+    return;
+  }
+
+  String response;
+  auto sendChecked = [&](const String &cmd) {
+    if (sendMarlinControlCommand(cmd, response)) return true;
+    sendJsonError(502, "Marlin rejected or did not acknowledge: " + cmd);
+    return false;
+  };
+
+  if (!sendChecked("M5") || !sendChecked("G21") || !sendChecked("G90") ||
+      !sendChecked("M400") ||
+      !sendChecked("G53 G0 Z" + String(safeMachineZ, 3) + " F" + String(kGotoWorkZeroZFeed, 0)) ||
+      !sendChecked("M400") ||
+      !sendChecked("G53 G0 X" + String(machineX, 3) + " Y" + String(machineY, 3) +
+                   " F" + String(travelFeedMmMin, 0)) ||
+      !sendChecked("M400") || !sendChecked("G54") || !sendChecked("G92 X0 Y0") ||
+      !sendChecked("M114")) {
+    return;
+  }
+
+  logJobEvent("restored saved XY work zero at machine X" + String(machineX, 3) +
+              " Y" + String(machineY, 3));
+  String json = "{\"ok\":true,\"machineX\":";
+  json += String(machineX, 3);
+  json += ",\"machineY\":";
+  json += String(machineY, 3);
+  json += ",\"safeMachineZ\":";
+  json += String(safeMachineZ, 3);
+  json += ",\"response\":\"";
+  json += jsonEscape(response);
+  json += "\",\"message\":\"Saved XY work zero restored. Z zero was not changed.\"}";
+  server.send(200, "application/json", json);
+}
+
 void handleUpdatePage() {
   String body;
-  body += "<header class=\"topbar\"><h1>Firmware Update</h1>";
+  body += "<header class=\"panel maintenance-header\"><h1>Firmware Update</h1>";
   body += "<p>Current firmware: ";
   body += firmwareVersion;
   body += " (";
@@ -2811,7 +3775,7 @@ void handleUpdatePage() {
 
 void handleWifiPage() {
   String body;
-  body += "<header class=\"topbar\"><h1>WiFi Settings</h1>";
+  body += "<header class=\"panel maintenance-header\"><h1>WiFi Settings</h1>";
   body += "<p>Mode: ";
   body += activeWifiMode;
   body += " | IP: ";
@@ -3054,6 +4018,10 @@ void startHttpServer() {
   server.on("/files.js", HTTP_GET, handleFilesJs);
   server.on("/style.css", HTTP_GET, handleStyleCss);
   server.on("/api/health", HTTP_GET, handleHealth);
+  server.on("/api/machine/info", HTTP_GET, handleMachineInfo);
+  server.on("/api/machine/refresh", HTTP_POST, handleMachineRefresh);
+  server.on("/api/machine/apply", HTTP_POST, handleMachineApply);
+  server.on("/api/machine/save", HTTP_POST, handleMachineSave);
   server.on("/api/marlin/log", HTTP_GET, handleMarlinLog);
   server.on("/api/cmd", HTTP_POST, handleCommand);
   server.on("/api/ui/status", HTTP_GET, handleUiStatus);
@@ -3066,6 +4034,8 @@ void startHttpServer() {
   server.on("/api/rename", HTTP_POST, handleRename);
   server.on("/api/job/start", HTTP_POST, handleJobStart);
   server.on("/api/job/status", HTTP_GET, handleJobStatus);
+  server.on("/api/test-motion/start", HTTP_POST, handleTestMotionStart);
+  server.on("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
   server.on("/api/job/pause", HTTP_POST, handleJobPause);
   server.on("/api/job/resume", HTTP_POST, handleJobResume);
   server.on("/api/job/stop", HTTP_POST, handleJobStop);
@@ -3075,6 +4045,7 @@ void startHttpServer() {
   server.on("/api/jog/stop", HTTP_POST, handleJogStop);
   server.on("/api/jog/status", HTTP_GET, handleJogStatus);
   server.on("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
+  server.on("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero);
   server.on("/update", HTTP_GET, handleUpdatePage);
   server.on("/api/update", HTTP_POST, handleUpdateComplete, handleUpdateUpload);
   server.on("/wifi", HTTP_GET, handleWifiPage);
@@ -3089,6 +4060,7 @@ void startHttpServer() {
 
 void setup() {
   Serial.begin(kMarlinBaudrate, SERIAL_8N1, kMarlinRxPin, kMarlinTxPin);
+  loadMachineProfile();
 
   if (checkForSdRescueUpdate() && performSdRescueUpdate()) {
     delay(1000);
@@ -3103,9 +4075,12 @@ void setup() {
 void loop() {
   server.handleClient();
   processTelemetrySocket();
+  processMachineDiscovery();
   processJobRunner();
   processJogRunner();
   processJogZRestore();
+  processMarlinAutoreportControl();
+  processIdleMarlinAutoreport();
 
   if (rebootAtMs > 0 && millis() >= rebootAtMs) {
     ESP.restart();

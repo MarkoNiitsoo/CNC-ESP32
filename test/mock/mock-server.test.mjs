@@ -32,7 +32,9 @@ describe('mock HTTP API', () => {
     form.append('path', '/gcode');
     form.append('file', new Blob(['G21\nG90\n']), 'upload.gc');
     expect(await fetch(`${base}/api/upload`, { method: 'POST', body: form }).then((res) => res.json())).toMatchObject({ ok: true, path: '/gcode/upload.gc' });
-    expect(await fetch(`${base}/api/download?path=%2Fgcode%2Fupload.gc`).then((res) => res.text())).toContain('G90');
+    const download = await fetch(`${base}/api/download?path=%2Fgcode%2Fupload.gc`);
+    expect(download.headers.get('content-disposition')).toBe('attachment; filename="upload.gc"');
+    expect(await download.text()).toContain('G90');
     const renamed = await fetch(`${base}/api/rename`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: '/gcode/upload.gc', to: '/gcode/renamed.gc' }) });
     expect(renamed.ok).toBe(true);
   });
@@ -61,6 +63,31 @@ describe('mock HTTP API', () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(status).toMatchObject({ state: 'COMPLETED', gcodePath, progressPercent: 100 });
+  });
+
+  it('uploads and streams validated native-arc Aircut through one start request', async () => {
+    const { base, env } = await start();
+    const motionPath = '/jobs/generated/http.aircut.gc';
+    const program = 'M5\nG21\nG90\nG54\nG0 Z15 F400\nG2 X10 Y0 I5 J0 F600\nM400\n';
+    const form = new FormData();
+    form.append('path', '/jobs/generated');
+    form.append('file', new Blob([program]), 'http.aircut.gc');
+    const upload = await fetch(`${base}/api/upload?overwrite=true`, { method: 'POST', body: form });
+    expect(await upload.json()).toMatchObject({ ok: true, path: motionPath });
+
+    const response = await fetch(`${base}/api/test-motion/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: motionPath, mode: 'aircut', safeZ: 15 }),
+    });
+    expect(response.ok).toBe(true);
+    let status;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      status = await fetch(`${base}/api/job/status`).then((res) => res.json());
+      if (status.state === 'COMPLETED') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(status).toMatchObject({ state: 'COMPLETED', streamMode: 'aircut', gcodePath: motionPath });
+    expect(env.marlin.log.some((entry) => entry.text.startsWith('G2 '))).toBe(true);
   });
 
   it('supports bounded work-zero moves and mock jog without hardware', async () => {
@@ -92,6 +119,21 @@ describe('mock HTTP API', () => {
     expect(env.marlin.spindleOff).toBe(true);
   });
 
+  it('restores saved machine XY at Safe Z and leaves Z zero unchanged', async () => {
+    const { base, env } = await start();
+    env.marlin.machine.zMax = 70;
+    env.marlin.execute('G0 X25 Y30 Z10');
+    env.marlin.execute('G92 X0 Y0 Z0');
+    const response = await fetch(`${base}/api/work-zero/restore`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ machineX: 100, machineY: 500, safeMachineZ: 70, travelFeedMmMin: 3000 }),
+    });
+    expect(response.ok).toBe(true);
+    expect(env.marlin.machinePosition).toEqual({ x: 100, y: 500, z: 70 });
+    expect(env.marlin.position).toEqual({ x: 0, y: 0, z: 60 });
+    expect(env.marlin.log.map((entry) => entry.text).join('\n')).not.toContain('G92 Z0');
+  });
+
   it('clamps Safe Jog to machine Z max in native coordinates after G92', async () => {
     const { base, env } = await start();
     env.marlin.machine.zMax = 70;
@@ -108,6 +150,65 @@ describe('mock HTTP API', () => {
     expect(status).toMatchObject({ state: 'JOGGING', safeLiftZ: 70, safeLiftWorkZ: 30, zLiftedForJog: true });
     expect(env.marlin.machinePosition.z).toBe(70);
     await fetch(`${base}/api/jog/stop`, { method: 'POST' });
+  });
+
+  it('serves machine info, applies M203, and saves with explicit M500', async () => {
+    const { base, env } = await start();
+    const info = await fetch(`${base}/api/machine/info`).then((res) => res.json());
+    expect(info).toMatchObject({ available: true, machineType: 'DEV-MOCK', full: { xMax: 1625, yMax: 5800 } });
+    const applied = await fetch(`${base}/api/machine/apply`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group: 'M203', x: 120, y: 80, z: 6 }),
+    });
+    expect(await applied.json()).toMatchObject({ ok: true, command: 'M203 X120 Y80 Z6' });
+    expect(env.marlin.maxFeedrates).toEqual({ x: 120, y: 80, z: 6 });
+    const saved = await fetch(`${base}/api/machine/save`, { method: 'POST' });
+    expect(await saved.json()).toMatchObject({ ok: true, command: 'M500' });
+    expect(env.marlin.eepromSaves).toBe(1);
+  });
+
+  it('streams prepared Production Resume Phase 2 in the mock firmware runner', async () => {
+    const { base, env } = await start();
+    const jobPath = '/jobs/recovery.job.json';
+    const activeRunPath = '/gcode/recovery.gc';
+    const streamPath = '/jobs/generated/recovery.gc.production-resume.gc';
+    const eventId = 'production-resume-1';
+    const runId = 'run-interrupted-1';
+    const fingerprint = 'fp-recovery';
+    await env.sd.writeText(activeRunPath, 'G21\nG90\nG1 X10 Y10 F600\n');
+    await env.sd.writeText(streamPath, 'G21\nG90\nG54\nG0 Z5 F400\nG1 Z-2 F300\nG2 X10 Y10 I5 J0 F600\nM400\n');
+    await env.sd.writeText(jobPath, JSON.stringify({
+      activeRun: { mode: 'source', path: activeRunPath, sourceFingerprint: fingerprint },
+      feedOverride: { startPercent: 100, resetTo100AfterJob: true },
+      productionResumeAuthorization: {
+        authorized: true, eventId, interruptedRunId: runId, activeRunPath,
+        activeRunMode: 'source', activeRunFingerprint: fingerprint, streamPath,
+      },
+      recoveryHistory: [{
+        id: eventId, type: 'production-resume', state: 'started', runId,
+        activeRunPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
+        phase1CompletedAt: '2026-07-03T10:01:00.000Z',
+        manualRouterConfirmedAt: '2026-07-03T10:02:00.000Z', streamPath,
+      }],
+    }));
+
+    const response = await fetch(`${base}/api/recovery/production/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: streamPath, jobPath, activeRunPath, activeRunMode: 'source',
+        activeRunFingerprint: fingerprint, eventId, interruptedRunId: runId,
+      }),
+    });
+    expect(response.ok).toBe(true);
+    let status;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      status = await fetch(`${base}/api/job/status`).then((res) => res.json());
+      if (status.state === 'COMPLETED') break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(status).toMatchObject({ state: 'COMPLETED', streamMode: 'production-resume', gcodePath: streamPath });
+    expect(env.marlin.log.some((entry) => entry.text.startsWith('G2 '))).toBe(true);
+    expect(env.marlin.log.map((entry) => entry.text).join('\n')).not.toMatch(/\b(G28|G53|G92|M3|M4)\b/);
   });
 
   it('rejects traversal and exposes unknown APIs as explicit mock TODOs', async () => {

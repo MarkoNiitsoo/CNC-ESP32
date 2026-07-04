@@ -138,7 +138,10 @@ export async function createMockServer(options = {}) {
       if (req.method === 'GET' && pathname === '/api/download') {
         const espPath = url.searchParams.get('path') || '';
         const body = await env.sd.read(espPath);
-        return send(res, 200, body, CONTENT_TYPES[path.extname(espPath).toLowerCase()] || 'application/octet-stream');
+        const fileName = path.basename(espPath).replace(/["\r\n]/g, '_');
+        return send(res, 200, body, CONTENT_TYPES[path.extname(espPath).toLowerCase()] || 'application/octet-stream', {
+          'Content-Disposition': `attachment; filename="${fileName}"`,
+        });
       }
       if (req.method === 'POST' && pathname === '/api/upload') {
         const body = await readBody(req);
@@ -179,6 +182,8 @@ export async function createMockServer(options = {}) {
       }
       if (req.method === 'GET' && pathname === '/api/job/status') return json(res, 200, env.runner.snapshot());
       if (req.method === 'POST' && pathname === '/api/job/start') return json(res, 200, await env.runner.start(await readJson(req)));
+      if (req.method === 'POST' && pathname === '/api/test-motion/start') return json(res, 200, await env.runner.startTestMotion(await readJson(req)));
+      if (req.method === 'POST' && pathname === '/api/recovery/production/start') return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
       if (req.method === 'POST' && pathname === '/api/job/pause') return json(res, 200, env.runner.pause());
       if (req.method === 'POST' && pathname === '/api/job/resume') return json(res, 200, env.runner.resume());
       if (req.method === 'POST' && pathname === '/api/job/stop') return json(res, 200, env.runner.stop());
@@ -206,6 +211,60 @@ export async function createMockServer(options = {}) {
           ok: true, axes, safeMove, safeZ,
           message: 'Work-zero move accepted. Z will remain at safe height after XY movement.',
         });
+      }
+      if (req.method === 'GET' && pathname === '/api/machine/info') {
+        const m = env.marlin.machine;
+        return json(res, 200, {
+          available: true, refreshing: false, firmwareName: 'MockMarlin 2.1.1', machineType: 'DEV-MOCK', sourceCodeUrl: 'local',
+          full: { xMin: m.xMin, xMax: m.xMax, yMin: m.yMin, yMax: m.yMax, zMin: m.zMin, zMax: m.zMax },
+          work: { xMin: m.xMin, xMax: m.xMax, yMin: m.yMin, yMax: m.yMax, zMin: m.zMin, zMax: m.zMax },
+          capabilities: { emergencyParser: true, arcs: true, autoreportPosition: true, eeprom: true, sdCard: true, motionModes: true },
+          refreshedAtMs: Date.now() - env.startedAt, lastError: '',
+        });
+      }
+      if (req.method === 'POST' && pathname === '/api/machine/refresh') {
+        env.marlin.execute('M115');
+        return json(res, 202, { ok: true, message: 'M115 discovery queued' });
+      }
+      if (req.method === 'POST' && pathname === '/api/machine/apply') {
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'machine configuration requires idle Marlin transport' });
+        const body = await readJson(req);
+        const group = String(body.group || '').toUpperCase();
+        const fields = group === 'M204' ? ['p', 'r', 't'] : ['x', 'y', 'z'];
+        if (!['M92', 'M203', 'M201', 'M204'].includes(group) || fields.some((field) => !Number.isFinite(Number(body[field])))) {
+          throw new Error('editable group or values are invalid');
+        }
+        const command = `${group} ${fields.map((field) => `${field.toUpperCase()}${Number(body[field])}`).join(' ')}`;
+        const result = env.marlin.execute(command);
+        return json(res, result.ok ? 200 : 400, { ...result, command });
+      }
+      if (req.method === 'POST' && pathname === '/api/machine/save') {
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'M500 requires idle Marlin transport' });
+        const result = env.marlin.execute('M500');
+        return json(res, result.ok ? 200 : 400, { ...result, command: 'M500', message: 'Changes saved to Marlin EEPROM' });
+      }
+      if (req.method === 'POST' && pathname === '/api/work-zero/restore') {
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'work-zero restore rejected while motion is active' });
+        const body = await readJson(req);
+        const machineX = Number(body.machineX);
+        const machineY = Number(body.machineY);
+        const safeMachineZ = Number(body.safeMachineZ ?? 70);
+        const travelFeed = Number(body.travelFeedMmMin ?? 3000);
+        if (!Number.isFinite(machineX) || !Number.isFinite(machineY) || machineX < 0 || machineX > 1625 || machineY < 0 || machineY > 5800) {
+          throw new Error('saved work-zero XY is outside configured machine limits');
+        }
+        if (!Number.isFinite(safeMachineZ) || safeMachineZ <= 0 || safeMachineZ > 70) throw new Error('Safe machine Z is outside configured limits');
+        const commands = [
+          'M5', 'G21', 'G90', 'M400', `G53 G0 Z${safeMachineZ.toFixed(3)} F400`, 'M400',
+          `G53 G0 X${machineX.toFixed(3)} Y${machineY.toFixed(3)} F${travelFeed.toFixed(0)}`,
+          'M400', 'G54', 'G92 X0 Y0', 'M114',
+        ];
+        let last;
+        for (const command of commands) {
+          last = env.marlin.execute(command, { priority: true, allowMachineCoordinates: true });
+          if (!last.ok) return json(res, 502, last);
+        }
+        return json(res, 200, { ok: true, machineX, machineY, safeMachineZ, response: last.response, message: 'Saved XY work zero restored. Z zero was not changed.' });
       }
       if (req.method === 'GET' && pathname === '/api/jog/status') {
         const age = env.jog.lastUpdateAt ? Date.now() - env.jog.lastUpdateAt : 0;
