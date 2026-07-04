@@ -263,6 +263,7 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
   const sourceScale = { value: 1 };
   const position = { x: 0, y: 0, z: 0 };
   let motion = null;
+  let commandNumber = 0;
 
   model.source = {
     lineCount: lines.length,
@@ -274,6 +275,7 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
     const lineNumber = index + 1;
     const cleaned = stripGCodeComments(rawLine).toUpperCase();
     if (!cleaned) return;
+    commandNumber += 1;
 
     const words = parseWords(cleaned);
     const byLetter = wordsObject(words);
@@ -369,6 +371,7 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
       to: { ...next },
       feed: type === 'rapid' ? null : model.feed.lastFeed,
       lineNumber,
+      commandNumber,
       source: rawLine,
       engaged,
       arc,

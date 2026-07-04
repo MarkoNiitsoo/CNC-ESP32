@@ -65,6 +65,53 @@ export function commandedPositionAtLine(segments = [], lineNumber = 0) {
   return position;
 }
 
+export function segmentAtCommand(segments = [], commandNumber = 0) {
+  const command = Number(commandNumber);
+  if (!Number.isFinite(command) || command <= 0) return null;
+  return segments.find((segment) => Number(segment?.commandNumber) === command) || null;
+}
+
+export function commandedPositionAtCommand(segments = [], commandNumber = 0) {
+  const command = Number(commandNumber);
+  if (!Number.isFinite(command) || command <= 0) return null;
+  let position = null;
+  for (const segment of segments) {
+    const segmentCommand = Number(segment?.commandNumber);
+    if (!Number.isFinite(segmentCommand)) continue;
+    if (segmentCommand > command) break;
+    if (segment?.to && Number.isFinite(segment.to.x) && Number.isFinite(segment.to.y)) {
+      position = { x: segment.to.x, y: segment.to.y, z: Number.isFinite(segment.to.z) ? segment.to.z : null };
+    }
+  }
+  return position;
+}
+
+export function interpolateMotionSegment(segment, progress = 0) {
+  if (!segment?.from || !segment?.to) return null;
+  const t = Math.max(0, Math.min(1, Number(progress) || 0));
+  let x = segment.from.x + (segment.to.x - segment.from.x) * t;
+  let y = segment.from.y + (segment.to.y - segment.from.y) * t;
+  if (segment.type === 'arc' && segment.arc?.center && Number.isFinite(segment.arc.sweepRadians)) {
+    const startAngle = Math.atan2(segment.from.y - segment.arc.center.y, segment.from.x - segment.arc.center.x);
+    const radius = Math.hypot(segment.from.x - segment.arc.center.x, segment.from.y - segment.arc.center.y);
+    const angle = startAngle + segment.arc.sweepRadians * t;
+    x = segment.arc.center.x + Math.cos(angle) * radius;
+    y = segment.arc.center.y + Math.sin(angle) * radius;
+  }
+  const fromZ = Number(segment.from.z);
+  const toZ = Number(segment.to.z);
+  return { x, y, z: Number.isFinite(fromZ) && Number.isFinite(toZ) ? fromZ + (toZ - fromZ) * t : null };
+}
+
+export function motionDurationMs(segment, options = {}) {
+  const rapidFeedMmMin = Number(options.rapidFeedMmMin) || 3000;
+  const override = Math.max(0.1, Number(options.feedOverridePercent || 100) / 100);
+  const feed = segment?.type === 'rapid' ? rapidFeedMmMin : Number(segment?.feed) || rapidFeedMmMin;
+  const distance = Number(segment?.length) || 0;
+  if (distance <= 0 || feed <= 0) return 40;
+  return Math.max(40, Math.min(30000, distance / (feed * override) * 60000));
+}
+
 export function workZeroTablePosition(job = {}) {
   const activeId = job.activeWorkZeroId;
   const activeZero = Array.isArray(job.zeroHistory)

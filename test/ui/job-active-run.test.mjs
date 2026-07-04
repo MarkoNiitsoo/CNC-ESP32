@@ -72,6 +72,7 @@ describe('active run selection', () => {
     expect(job.activeRun).toMatchObject({ mode: 'source', path: '/gcode/test.gc' });
     expect(defaultActiveRun('/gcode/a.gc').mode).toBe('source');
     expect(desiredRunModeForPlacement({ rotationDeg: 0 })).toBe('source');
+    expect(desiredRunModeForPlacement({ rotationDeg: 0, autoShiftToWorkZero: true })).toBe('generated');
     expect(desiredRunModeForPlacement({ rotationDeg: 17.5 })).toBe('generated');
   });
 

@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  appendMotionOnlyRecoveryEvent,
   appendWorkZeroHistory,
   appendZZeroHistory,
   ensureHistory,
   finishLatestRun,
   markActiveZero,
   markActiveZZero,
+  recordWorkZeroRestore,
   runStateLabel,
   startRunHistory,
   updateRunHistoryFromStatus,
@@ -68,6 +70,18 @@ describe('job history metadata', () => {
     expect(job.activeWorkZeroId).toBe(first.id);
     expect(job.activeZZeroId).toBe(zFirst.id);
     expect(job.zeroHistory).toHaveLength(historyLength);
+  });
+
+  it('records a saved work-zero restore without replacing its identity', () => {
+    const job = ensureHistory({});
+    const zero = appendWorkZeroHistory(job, { before: capture('before'), after: capture('after') });
+    job.activeWorkZeroId = null;
+    const restored = recordWorkZeroRestore(job, zero.id, {
+      machinePosition: { x: 100, y: 500, z: 70 }, stepsPerMm: { x: 100, y: 100, z: 400 }, safeMachineZ: 70,
+    });
+    expect(restored.id).toBe(zero.id);
+    expect(job.activeWorkZeroId).toBe(zero.id);
+    expect(restored.restores).toHaveLength(1);
   });
 
   it('starts and completes run history linked to active zero ids', () => {
@@ -177,5 +191,38 @@ describe('job history metadata', () => {
     run.state = 'interrupted';
     job.activeWorkZeroId = null;
     expect(zeroStatus(job, zero)).toBe('Used by stopped/interrupted run');
+  });
+
+  it('records motion-only recovery without changing the interrupted run state', () => {
+    const job = {
+      runHistory: [{ id: 'run-1', state: 'interrupted' }],
+    };
+    const event = appendMotionOnlyRecoveryEvent(job, {
+      runId: 'run-1',
+      activeRunPath: '/gcode/test.gc',
+      activeRunFingerprint: 'size:1:fnv1a:abcd',
+      resumeLineNumber: 12,
+      resumePoint: { x: 20, y: 30, z: 15 },
+      safeZ: 15,
+      executedAt: '2026-06-30T20:00:00.000Z',
+      activeRunMode: 'source',
+      result: 'completed',
+      commandsSent: ['M5', 'G21', 'G90', 'G54', 'G0 Z15', 'G0 X20 Y30', 'M400'],
+    });
+
+    expect(event).toMatchObject({
+      type: 'motion-only-recovery-move', motionOnly: true, runId: 'run-1',
+      activeRunMode: 'source', resumeLineNumber: 12,
+      resumePoint: { x: 20, y: 30, z: 15 }, result: 'completed',
+    });
+    expect(job.runHistory[0].state).toBe('interrupted');
+    expect(job).not.toHaveProperty('resume.state');
+
+    const blocked = appendMotionOnlyRecoveryEvent(job, {
+      runId: 'run-1', activeRunPath: '/gcode/test.gc', activeRunMode: 'source',
+      safeZ: 15, result: 'blocked', reason: 'Position is not trusted.', commandsSent: [],
+    });
+    expect(blocked).toMatchObject({ result: 'blocked', reason: 'Position is not trusted.', commandsSent: [] });
+    expect(job.runHistory[0].state).toBe('interrupted');
   });
 });

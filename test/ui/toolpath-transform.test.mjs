@@ -8,6 +8,7 @@ import {
   generatedRunPathFor,
   mergePlacementIntoJob,
   normalizePlacement,
+  resolveAutoPlacement,
   transformFingerprint,
   transformSafety,
   transformToolpath,
@@ -60,30 +61,45 @@ describe('toolpath transform math', () => {
 });
 
 describe('toolpath origin normalization and bounds mode', () => {
-  it('normalizes negative offsets to X/Y zero', () => {
+  it('auto-fits an outside cut to work zero when it fits the machine', () => {
     const model = parseGCodeToToolpath(fixture('negative-x-offset.gc'));
-    const result = transformToolpath(model, { rotationDeg: 0, normalizeToOrigin: true });
+    const placement = resolveAutoPlacement(model, { rotationDeg: 0 }, {
+      xMin: 0, xMax: 1625, yMin: 0, yMax: 5800,
+    });
+    const result = transformToolpath(model, placement);
 
+    expect(placement.autoShiftToWorkZero).toBe(true);
     expect(result.selectedTransformedBounds.xMin).toBeCloseTo(0);
     expect(result.selectedTransformedBounds.yMin).toBeCloseTo(0);
   });
 
-  it('uses complete raw travel bounds by default so every generated move is fitted consistently', () => {
+  it('uses actual cut bounds by default so parking moves do not choose the work origin', () => {
     const model = parseGCodeToToolpath(fixture('parking-move-away-from-cut.gc'));
     const placement = defaultPlacement(model);
     const result = transformToolpath(model, placement);
 
-    expect(placement.placementBoundsMode).toBe('rawTravelBounds');
-    expect(result.selectedTransformedBounds.xMax).toBe(1000);
+    expect(placement.placementBoundsMode).toBe('cutBounds');
+    expect(result.selectedTransformedBounds.xMax).toBeLessThan(1000);
     expect(result.generatedRunBounds.xMax).toBe(1000);
   });
 
-  it('uses raw travel bounds when requested', () => {
-    const model = parseGCodeToToolpath(fixture('parking-move-away-from-cut.gc'));
-    const result = transformToolpath(model, { placementBoundsMode: 'rawTravelBounds', originAnchor: 'rawBoundsLowerLeft' });
+  it('keeps an in-bounds unrotated source at its original coordinates', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 X100 Y200\nG1 Z-1\nG1 X110 Y210\n');
+    const placement = resolveAutoPlacement(model, {}, { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800 });
+    const result = transformToolpath(model, placement);
 
-    expect(result.selectedTransformedBounds.xMax).toBe(1000);
-    expect(result.selectedTransformedBounds.yMax).toBe(1000);
+    expect(placement.autoShiftToWorkZero).toBe(false);
+    expect(result.selectedTransformedBounds).toMatchObject({ xMin: 100, xMax: 110, yMin: 200, yMax: 210 });
+  });
+
+  it('does not auto-fit a cut that is larger than the machine', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 X-10 Y0\nG1 Z-1\nG1 X2000 Y10\n');
+    const placement = resolveAutoPlacement(model, {}, { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800 });
+    const result = transformToolpath(model, placement);
+
+    expect(placement.autoShiftToWorkZero).toBe(false);
+    expect(result.selectedTransformedBounds.xMin).toBe(-10);
+    expect(result.selectedTransformedBounds.xMax).toBe(2000);
   });
 });
 

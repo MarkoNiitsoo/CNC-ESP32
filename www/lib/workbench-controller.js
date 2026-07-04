@@ -1,7 +1,7 @@
 import { createWorkbenchState, reduceWorkbenchState, zoomPanForGesture } from './workbench-ui.js';
 
 const LEFT_TABS = new Set(['preview', 'setup', 'dry-run']);
-const RIGHT_TABS = new Set(['preflight', 'arm', 'run']);
+const RIGHT_TABS = new Set(['preflight', 'recovery', 'arm', 'run']);
 
 function byId(id) {
   return document.getElementById(id);
@@ -49,6 +49,7 @@ export function installWorkbench(options = {}) {
   appendExisting(byId('readiness-drawer-content'), [
     '.readiness-panel',
     '.preflight-panel',
+    '.recovery-panel',
     '.arm-panel',
     '.run-panel',
   ]);

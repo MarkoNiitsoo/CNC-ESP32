@@ -97,7 +97,7 @@ export function getActiveRun(job = {}) {
 }
 
 export function isDefaultPlacement(placement = {}) {
-  return Math.abs(Number(placement.rotationDeg || 0)) < 0.0001;
+  return Math.abs(Number(placement.rotationDeg || 0)) < 0.0001 && !placement.autoShiftToWorkZero;
 }
 
 export function desiredRunModeForPlacement(placement = {}) {

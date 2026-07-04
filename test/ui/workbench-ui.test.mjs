@@ -6,10 +6,14 @@ import {
   activeRunBadge,
   buildWorkbenchStatus,
   commandedPositionAtLine,
+  commandedPositionAtCommand,
   createCanvasProjection,
   createWorkbenchState,
   layoutModeForWidth,
+  interpolateMotionSegment,
+  motionDurationMs,
   reduceWorkbenchState,
+  segmentAtCommand,
   translateBounds,
   translatePosition,
   workCoordinateAtMachine,
@@ -18,6 +22,9 @@ import {
 } from '../../www/lib/workbench-ui.js';
 
 const controllerSource = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
+const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
+const previewStyles = await readFile(new URL('../../www/preview.css', import.meta.url), 'utf8');
+const globalStyles = await readFile(new URL('../../www/style.css', import.meta.url), 'utf8');
 
 const sourceJob = {
   gcodePath: '/gcode/test.gc',
@@ -33,6 +40,13 @@ const generatedJob = {
 };
 
 describe('canvas workbench responsive state', () => {
+  it('keeps one edge Tools entry point and translucent blue actions', () => {
+    expect(previewHtml).not.toContain('id="open-tools-drawer"');
+    expect(previewHtml).toContain('id="left-edge-handle"');
+    expect(globalStyles).toMatch(/button:not\(\.danger-button\):not\(\.warning-button\)[\s\S]*color-mix\(in srgb, var\(--cnc-accent\) 68%, transparent\)/);
+    expect(previewStyles).toMatch(/\.drawer-tabs button\.active[\s\S]*color-mix\(in srgb, var\(--cnc-accent\) 68%, transparent\)/);
+  });
+
   it('chooses readable 1/2/5 grid intervals as canvas scale changes', () => {
     expect(adaptiveGridStep(0.1, 80)).toBe(1000);
     expect(adaptiveGridStep(1, 80)).toBe(100);
@@ -211,6 +225,18 @@ describe('canvas workbench active run and readiness', () => {
 });
 
 describe('canvas workbench control policy', () => {
+  it('maps compact motion events by command number and interpolates lines and arcs locally', () => {
+    const line = { commandNumber: 4, type: 'cut', from: { x: 0, y: 0, z: 0 }, to: { x: 10, y: 0, z: -2 }, length: 10, feed: 600 };
+    const arc = { commandNumber: 5, type: 'arc', from: { x: 10, y: 0, z: -2 }, to: { x: 0, y: 10, z: -2 }, length: Math.PI * 5, feed: 600, arc: { center: { x: 0, y: 0 }, sweepRadians: Math.PI / 2 } };
+    expect(segmentAtCommand([line, arc], 4)).toBe(line);
+    expect(commandedPositionAtCommand([line, arc], 4)).toEqual({ x: 10, y: 0, z: -2 });
+    expect(interpolateMotionSegment(line, 0.5)).toEqual({ x: 5, y: 0, z: -1 });
+    const middleArc = interpolateMotionSegment(arc, 0.5);
+    expect(middleArc.x).toBeCloseTo(Math.SQRT1_2 * 10);
+    expect(middleArc.y).toBeCloseTo(Math.SQRT1_2 * 10);
+    expect(motionDurationMs(line, { feedOverridePercent: 100 })).toBe(1000);
+  });
+
   it('keeps Start Cut deliberate while Pause, Stop, and M5 remain direct', () => {
     expect(actionPolicy('start_cut')).toMatchObject({ mode: 'hold', holdMs: 1000 });
     expect(actionPolicy('pause').mode).toBe('direct');

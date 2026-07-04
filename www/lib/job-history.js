@@ -49,9 +49,123 @@ function normalizeRunState(state) {
 export function ensureHistory(job = {}) {
   if (!Array.isArray(job.zeroHistory)) job.zeroHistory = [];
   if (!Array.isArray(job.runHistory)) job.runHistory = [];
+  if (!Array.isArray(job.recoveryHistory)) job.recoveryHistory = [];
   if (!Object.prototype.hasOwnProperty.call(job, 'activeWorkZeroId')) job.activeWorkZeroId = null;
   if (!Object.prototype.hasOwnProperty.call(job, 'activeZZeroId')) job.activeZZeroId = null;
   return job;
+}
+
+export function appendMotionOnlyRecoveryEvent(job, options = {}) {
+  ensureHistory(job);
+  const executedAt = options.executedAt || isoNow();
+  const event = {
+    id: options.id || makeId('recovery', executedAt),
+    type: 'motion-only-recovery-move',
+    motionOnly: true,
+    runId: options.runId || '',
+    activeRunPath: options.activeRunPath || '',
+    activeRunMode: options.activeRunMode || '',
+    activeRunFingerprint: options.activeRunFingerprint || '',
+    resumeLineNumber: Number(options.resumeLineNumber) || null,
+    resumePoint: cloneCapture({ position: options.resumePoint }).position,
+    safeZ: Number(options.safeZ),
+    executedAt,
+    result: options.result === 'complete' ? 'completed' : (options.result || 'unknown'),
+    commandsSent: Array.isArray(options.commandsSent) ? [...options.commandsSent] : [],
+    reason: options.reason || options.error || '',
+  };
+  job.recoveryHistory.push(event);
+  return event;
+}
+
+export function appendToollessResumeEvent(job, options = {}) {
+  ensureHistory(job);
+  const startedAt = options.startedAt || isoNow();
+  const event = {
+    id: options.id || makeId('toolless', startedAt),
+    type: 'toolless-resume-test',
+    productionResume: false,
+    runId: options.runId || '',
+    activeRunPath: options.activeRunPath || '',
+    activeRunMode: options.activeRunMode || '',
+    activeRunFingerprint: options.activeRunFingerprint || '',
+    startLineNumber: Number(options.startLineNumber) || null,
+    resumePoint: cloneCapture({ position: options.resumePoint }).position,
+    safeZ: Number(options.safeZ),
+    minZ: Number(options.minZ),
+    startedAt,
+    endedAt: null,
+    state: options.state || 'started',
+    commandsCount: Number(options.commandsCount) || 0,
+    commandsSent: Number(options.commandsSent) || 0,
+    reason: options.reason || '',
+  };
+  job.recoveryHistory.push(event);
+  return event;
+}
+
+export function finishToollessResumeEvent(event, options = {}) {
+  if (!event || event.type !== 'toolless-resume-test') return null;
+  event.state = options.state || event.state || 'error';
+  event.endedAt = options.endedAt || isoNow();
+  event.commandsSent = Number(options.commandsSent ?? event.commandsSent) || 0;
+  event.reason = options.reason || event.reason || '';
+  return event;
+}
+
+export function appendProductionResumeEvent(job, options = {}) {
+  ensureHistory(job);
+  const startedAt = options.startedAt || isoNow();
+  const event = {
+    id: options.id || makeId('production-resume', startedAt),
+    type: 'production-resume',
+    runId: options.runId || '',
+    activeRunPath: options.activeRunPath || '',
+    activeRunMode: options.activeRunMode || '',
+    activeRunFingerprint: options.activeRunFingerprint || '',
+    startLineNumber: Number(options.startLineNumber) || null,
+    resumePoint: cloneCapture({ position: options.resumePoint }).position,
+    safeZ: Number(options.safeZ),
+    minZ: Number(options.minZ),
+    startedAt,
+    endedAt: null,
+    state: options.state || 'started',
+    commandsCount: Number(options.commandsCount) || 0,
+    commandsSent: Number(options.commandsSent) || 0,
+    checklist: { ...(options.checklist || {}) },
+    zZeroChanged: options.zZeroChanged === true,
+    previousZZeroId: options.previousZZeroId || null,
+    currentZZeroId: options.currentZZeroId || null,
+    zZeroChangeAcknowledged: options.zZeroChangeAcknowledged === true,
+    phase1CompletedAt: null,
+    manualRouterConfirmedAt: null,
+    streamPath: '',
+    reason: options.reason || '',
+  };
+  job.recoveryHistory.push(event);
+  return event;
+}
+
+export function markProductionResumePrepared(event, preparedAt = isoNow()) {
+  if (!event || event.type !== 'production-resume') return null;
+  event.phase1CompletedAt = preparedAt;
+  return event;
+}
+
+export function markProductionResumeRouterConfirmed(event, options = {}) {
+  if (!event || event.type !== 'production-resume') return null;
+  event.manualRouterConfirmedAt = options.confirmedAt || isoNow();
+  event.streamPath = options.streamPath || event.streamPath || '';
+  return event;
+}
+
+export function finishProductionResumeEvent(event, options = {}) {
+  if (!event || event.type !== 'production-resume') return null;
+  event.state = options.state || event.state || 'error';
+  event.endedAt = options.endedAt || isoNow();
+  event.commandsSent = Number(options.commandsSent ?? event.commandsSent) || 0;
+  event.reason = options.reason || event.reason || '';
+  return event;
 }
 
 export function createZeroHistoryEntry(options = {}) {
@@ -73,8 +187,26 @@ export function createZeroHistoryEntry(options = {}) {
     positionAfter: after.position,
     countsBefore: before.counts,
     countsAfter: after.counts,
+    machineReference: options.machineReference ? structuredClone(options.machineReference) : null,
+    restores: Array.isArray(options.restores) ? structuredClone(options.restores) : [],
     usedByRuns: Array.isArray(options.usedByRuns) ? [...options.usedByRuns] : [],
   };
+}
+
+export function recordWorkZeroRestore(job, zeroId, details = {}) {
+  ensureHistory(job);
+  const entry = job.zeroHistory.find((zero) => zero.id === zeroId && zero.type === 'workZero');
+  if (!entry) return null;
+  if (!Array.isArray(entry.restores)) entry.restores = [];
+  entry.restores.push({
+    restoredAt: details.restoredAt || isoNow(),
+    machinePosition: details.machinePosition ? { ...details.machinePosition } : null,
+    stepsPerMm: details.stepsPerMm ? { ...details.stepsPerMm } : null,
+    safeMachineZ: Number(details.safeMachineZ),
+    result: details.result || 'completed',
+  });
+  job.activeWorkZeroId = entry.id;
+  return entry;
 }
 
 export function appendWorkZeroHistory(job, options = {}) {

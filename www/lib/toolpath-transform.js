@@ -98,9 +98,10 @@ function calculateBounds(segments) {
 export function defaultPlacement(model = {}) {
   return {
     rotationDeg: 0,
-    originAnchor: 'rawBoundsLowerLeft',
-    placementBoundsMode: 'rawTravelBounds',
+    originAnchor: 'cutBoundsLowerLeft',
+    placementBoundsMode: 'cutBounds',
     normalizeToOrigin: true,
+    autoShiftToWorkZero: false,
     generatedAt: null,
     generatedRunPath: null,
     generatedRunBounds: null,
@@ -115,9 +116,25 @@ export function normalizePlacement(model, placement = {}) {
     ...placement,
   };
   next.rotationDeg = Number(next.rotationDeg || 0);
-  next.originAnchor = 'rawBoundsLowerLeft';
-  next.placementBoundsMode = 'rawTravelBounds';
+  next.originAnchor = 'cutBoundsLowerLeft';
+  next.placementBoundsMode = 'cutBounds';
   next.normalizeToOrigin = true;
+  next.autoShiftToWorkZero = Boolean(next.autoShiftToWorkZero);
+  return next;
+}
+
+export function resolveAutoPlacement(model, placement = {}, machine = {}) {
+  const next = normalizePlacement(model, placement);
+  const probe = transformToolpath(model, { ...next, autoShiftToWorkZero: false });
+  const bounds = probe.selectedTransformedBounds;
+  const machineValid = hasBounds(machine);
+  const fits = machineValid && hasBounds(bounds) &&
+    bounds.xMax - bounds.xMin <= machine.xMax - machine.xMin &&
+    bounds.yMax - bounds.yMin <= machine.yMax - machine.yMin;
+  const outside = machineValid && hasBounds(bounds) &&
+    (bounds.xMin < machine.xMin || bounds.xMax > machine.xMax ||
+     bounds.yMin < machine.yMin || bounds.yMax > machine.yMax);
+  next.autoShiftToWorkZero = Math.abs(next.rotationDeg) < 0.0001 && fits && outside;
   return next;
 }
 
@@ -128,6 +145,7 @@ export function transformFingerprint(placement, sourceFingerprint = '') {
     originAnchor: placement.originAnchor,
     placementBoundsMode: placement.placementBoundsMode,
     normalizeToOrigin: Boolean(placement.normalizeToOrigin),
+    autoShiftToWorkZero: Boolean(placement.autoShiftToWorkZero),
   };
   return `placement:${JSON.stringify(stable)}`;
 }
@@ -177,7 +195,10 @@ export function transformToolpath(model, placement = {}) {
   const rotatedSelected = rotated.filter((segment) => selectedOriginal.has(segment.sourceSegment));
   const selectedRotatedBounds = calculateBounds(rotatedSelected.length ? rotatedSelected : rotated);
   const shiftAnchor = anchorPoint(selectedRotatedBounds, resolved.originAnchor);
-  const shift = resolved.normalizeToOrigin ? { x: -shiftAnchor.x, y: -shiftAnchor.y } : { x: 0, y: 0 };
+  const needsTransform = Math.abs(resolved.rotationDeg) >= 0.0001 || resolved.autoShiftToWorkZero;
+  const shift = resolved.normalizeToOrigin && needsTransform
+    ? { x: -shiftAnchor.x, y: -shiftAnchor.y }
+    : { x: 0, y: 0 };
   const segments = rotated.map((segment) => ({
     ...segment,
     from: { ...segment.from, x: segment.from.x + shift.x, y: segment.from.y + shift.y },

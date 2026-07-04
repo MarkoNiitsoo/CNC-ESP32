@@ -17,7 +17,7 @@
 }
 
 .preview-tabs button.active {
-  background: #245f8f;
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
   color: #ffffff;
 }
 
@@ -334,6 +334,100 @@
 .arm-ready {
   background: #153d2c;
   color: #b9f7ce;
+}
+
+.recovery-panel {
+  border-color: rgba(98, 176, 255, 0.46);
+}
+
+.recovery-overlay-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.toolless-resume-panel {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 2px solid rgba(255, 95, 105, 0.55);
+}
+
+.toolless-resume-panel h3 {
+  margin: 0 0 8px;
+  color: #ffb1b7;
+}
+
+.toolless-resume-panel .machine-danger {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.production-resume-panel {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid rgba(255, 95, 105, 0.62);
+  background: rgba(70, 12, 18, 0.28);
+}
+
+.production-resume-panel h3 {
+  margin: 0 0 8px;
+}
+
+.production-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #9d2630;
+  color: #fff;
+  font-size: 0.68rem;
+}
+
+.production-checklist {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+  padding: 9px;
+  border-color: rgba(255, 177, 183, 0.34);
+}
+
+.production-checklist label,
+.production-manual-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.82rem;
+}
+
+#production-z-change-checks {
+  display: grid;
+  gap: 7px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 196, 89, 0.45);
+}
+
+#production-z-change-checks[hidden] {
+  display: none;
+}
+
+.production-hold {
+  width: 100%;
+  margin-top: 10px;
+  background: linear-gradient(90deg, #a52e38 var(--hold-progress, 0%), #4c1d22 var(--hold-progress, 0%));
+  color: #fff;
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.recovery-overlay-toggle input {
+  width: auto;
+}
+
+#move-to-resume-point:not(:disabled) {
+  border-color: #62b0ff;
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
 }
 
 .arm-armed {
@@ -662,7 +756,7 @@ body.workbench-page {
 }
 
 .drawer-tabs button.active {
-  background: color-mix(in srgb, var(--cnc-accent) 78%, transparent);
+  background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
   color: #fff;
 }
 
