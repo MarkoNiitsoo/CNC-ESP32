@@ -1216,3 +1216,25 @@ No firmware upload is required.
 - Flash `.pio-build/esp32cam/firmware.bin` (`0.5.9-json-status`). No additional UI file changed for
   this JSON-only correction; the preceding live-animation UI uploads are still required.
 - Verification: 24 test files / 221 tests; PlatformIO 15.8% RAM and 52.0% flash.
+
+## 2026-07-05 - WebSocket execution isolation
+
+- Flash `.pio-build/esp32cam/firmware.bin` (`0.6.0-stream-isolation`).
+- Upload `/www/telemetry.js`, `/www/preview.js`, `/www/lib/preview-data-adapter.js`, and
+  `/www/lib/workbench-controller.js`.
+- WebSocket remains the primary UI transport, but all network delivery now runs in a separate
+  FreeRTOS task behind a bounded zero-wait queue. Browser sleep/WiFi loss may drop UI frames but must
+  not delay Marlin streaming.
+- Layers now persist in browser localStorage.
+- First hardware test: router off, short job, then lock the phone or disable phone WiFi for at least
+  30 seconds. The machine must continue without 15-20 second gaps; reopening the UI must restore a
+  current snapshot.
+- Verification: 24 test files / 223 tests; PlatformIO 15.8% RAM and 52.0% flash.
+
+## 2026-07-05 - Documentation refresh handoff
+
+- `README.md` now describes the current workbench, generated active-run validation, machine/work
+  coordinate ownership, guarded workflow, SD streaming, and isolated WebSocket telemetry.
+- The README gallery uses the July 5 screenshots in `screenshots/`; all June 19 screenshots were
+  removed because they represented an obsolete UI.
+- No firmware or SD `/www` upload is required for this documentation-only change.

@@ -1,5 +1,23 @@
 # Progress
 
+## 2026-07-05 - WebSocket task isolation and persistent Layers
+
+- Live Marlin log showed the prior job did eventually complete, but a sleeping phone produced
+  repeated 15-20 second gaps between commands. Synchronous WebSocket delivery shared the execution
+  loop and could delay the next SD/UART line until TCP timeout.
+- Added a bounded 12-item FreeRTOS telemetry queue. Execution uses `xQueueSend(..., 0)` and never
+  calls WebSocket send/loop functions.
+- Added a dedicated low-priority core-0 task that owns the WebSocket server, delta delivery, client
+  subscriptions, and reconnect snapshots.
+- Queue saturation drops UI deltas; latest job/jog/position state is cached for reconnect.
+- Browser keeps WebSocket as the primary job/motion channel and activates HTTP polling after socket
+  disconnect. Critical HTTP responses update shared telemetry state immediately.
+- Layers are stored under `lowrider.workbench.layers.v1` in localStorage; unknown/non-boolean keys
+  are ignored and storage failure leaves page-local behavior intact.
+- Firmware version: `0.6.0-stream-isolation`.
+- Verification: 24 test files / 223 tests passed; PlatformIO build succeeded at 15.8% RAM and 52.0%
+  flash.
+
 ## 2026-07-05 - Job status JSON / false OFFLINE fix
 
 - Live diagnostics confirmed the device and WebSocket port were reachable, but `/api/job/status`
@@ -1212,3 +1230,11 @@
 - If the cut is outside the work area but its width and height fit, the UI automatically creates a generated run with the cut lower-left at work zero.
 - Oversize cuts remain outside and blocked; parking/lead-in travel does not choose the origin but remains visible to generated-run safety validation.
 - Added focused transform and active-run tests for automatic placement and source/generated selection.
+
+## 2026-07-05 - README and screenshot refresh
+
+- Replaced the obsolete June UI gallery with eight representative July workbench screenshots.
+- Updated the project overview, feature list, architecture, workflow, and FreeCAD/work-zero text to
+  match the current SD-hosted workbench and firmware-owned streaming design.
+- Documented that normal Start uses the saved active work zero and does not issue a new `G92`.
+- Removed 24 obsolete June screenshots; firmware, PlatformIO configuration, and `/www` were unchanged.

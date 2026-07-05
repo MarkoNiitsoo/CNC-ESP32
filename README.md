@@ -1,30 +1,34 @@
 # LowRider CNC ESP32 Pendant
 
-A mobile-first ESP32-CAM web pendant for Marlin-based CNC machines.
+A phone-first, offline CNC workbench and web pendant for Marlin-based machines.
 
 > Status: experimental DIY CNC controller companion. Use carefully and test without a cutting tool first.
 
-This project turns an AI-Thinker ESP32-CAM into a local CNC pendant for a LowRider CNC running Marlin on a BTT SKR Pro or similar controller. The ESP32-CAM hosts a local web app, serves the primary UI from the SD card under `/www`, and communicates with Marlin over UART serial.
+This project turns an AI-Thinker ESP32-CAM into a local CNC companion for a LowRider CNC running Marlin on a BTT SKR Pro or similar controller. It combines a touch-friendly workbench, SD file management, G-code preview and placement, guarded setup and dry-run tools, and a firmware-owned streaming job runner.
 
-Marlin remains the motion controller. The ESP32 provides the browser UI, SD file access, API endpoints, job metadata, and job streaming logic.
+Marlin remains the motion controller. The ESP32 owns serial communication, SD-streamed execution, priority controls, machine/work coordinate state, and browser-independent job progress. The primary UI is served from SD `/www`, so most interface updates do not require reflashing firmware.
 
 The current setup is built around a LowRider CNC, BTT SKR Pro, and Marlin, but parts of it may be adaptable to other Marlin CNC machines.
 
 ## Screenshots
 
-Representative phone screenshots from the current SD-hosted `/www` UI:
+Representative phone screenshots from the current SD-hosted workbench:
 
-| Dashboard | SD Files |
+| SD Files | Workbench Preview |
 |---|---|
-| <img src="screenshots/Screenshot_2026-06-19-13-09-36-130_com.android.chrome.jpg" alt="Dashboard with machine bar and workflow cards" width="260"> | <img src="screenshots/Screenshot_2026-06-19-13-09-59-158_com.android.chrome.jpg" alt="SD file manager with G-code files and Preview actions" width="260"> |
+| <img src="screenshots/Screenshot_2026-07-05-22-30-31-601_com.android.chrome.jpg" alt="SD file manager showing G-code files and job actions" width="260"> | <img src="screenshots/Screenshot_2026-07-05-22-31-09-329_com.android.chrome.jpg" alt="Full-screen G-code workbench with machine and work coordinates" width="260"> |
 
-| G-code Preview | Job Setup / Feed Override |
+| Placement | Machine Controls |
 |---|---|
-| <img src="screenshots/Screenshot_2026-06-19-13-10-07-043_com.android.chrome.jpg" alt="G-code preview canvas with toolpath" width="260"> | <img src="screenshots/Screenshot_2026-06-19-13-14-24-975_com.android.chrome.jpg" alt="Job setup feed override card" width="260"> |
+| <img src="screenshots/Screenshot_2026-07-05-22-33-56-669_com.android.chrome.jpg" alt="Placement tools over the persistent toolpath canvas" width="260"> | <img src="screenshots/Screenshot_2026-07-05-22-31-42-988_com.android.chrome.jpg" alt="Machine controls with homing, work-zero travel, and terminal" width="260"> |
 
-| Dry Run | Machine Controls |
+| Readiness and Arming | Guarded Start |
 |---|---|
-| <img src="screenshots/Screenshot_2026-06-19-13-15-27-146_com.android.chrome.jpg" alt="Dry run bounding box command preview" width="260"> | <img src="screenshots/Screenshot_2026-06-19-13-11-07-083_com.android.chrome.jpg" alt="Controls page with safe jog virtual joystick" width="260"> |
+| <img src="screenshots/Screenshot_2026-07-05-22-35-09-409_com.android.chrome.jpg" alt="Job arming checklist over the toolpath" width="260"> | <img src="screenshots/Screenshot_2026-07-05-22-36-12-825_com.android.chrome.jpg" alt="Ready-to-start checklist and hold-to-start control" width="260"> |
+
+| Dry Run | Work Zero and Live Position |
+|---|---|
+| <img src="screenshots/Screenshot_2026-07-05-22-34-33-656_com.android.chrome.jpg" alt="Bounding-box and aircut dry-run controls" width="260"> | <img src="screenshots/Screenshot_2026-07-05-22-36-51-474_com.android.chrome.jpg" alt="Toolpath canvas with work-zero marker and live tool position" width="260"> |
 
 ## Key Features
 
@@ -41,6 +45,7 @@ Representative phone screenshots from the current SD-hosted `/www` UI:
 - Shared automatic XY travel speed with optional Marlin M203 limit detection.
 - Cached Marlin hardware profile from M115, including 515DL full/work area and capabilities.
 - Guarded Settings editors for M92/M203/M201/M204 with separate explicit M500 EEPROM persistence.
+- Dedicated low-priority WebSocket telemetry that never blocks CNC streaming when a browser sleeps or disconnects.
 
 ### SD File Management
 
@@ -54,6 +59,8 @@ Representative phone screenshots from the current SD-hosted `/www` UI:
 ### G-code Preview
 
 - Browser-side 2D XY preview.
+- Persistent full-screen workbench with scalable machine grid, machine/work frames, work zero, and live tool position.
+- Toolpath placement, rotation, normalization, and validated generated run files.
 - Bounds calculation for X, Y, and Z.
 - Feedrate parsing with min/max/count and effective feed range.
 - Warning detection for units, coordinate mode, Z range, spindle commands, workspaces, and unsupported commands.
@@ -62,20 +69,22 @@ Representative phone screenshots from the current SD-hosted `/www` UI:
 ### Job Workflow
 
 - Job JSON sidecar files.
-- Work zero capture with `M400`, `M114`, and `G92 X0 Y0 Z0`.
+- Explicit work zero capture with `M400`, `M114`, and `G92 X0 Y0 Z0`, stored with machine-space identity.
 - Tool / Z zero capture with `G92 Z0`.
 - Preflight readiness checks.
 - Bounding box dry run.
 - Aircut toolpath dry run.
 - Arm job workflow.
 - Firmware-owned job start, monitor, pause, resume, and stop.
+- SD-streamed execution without loading the complete G-code file into ESP32 RAM.
+- Motion-only interruption recovery and guarded recovery planning; this is not automatic cutting resume.
 - Feed override saved in job JSON and adjustable while running.
 - FreeCAD-friendly `G54` handling.
 
 ### Safety / UI
 
 - Mobile dashboard and bottom navigation.
-- Global Machine Bar / Safety Drawer.
+- Persistent Machine Bar plus translucent Tools, Status, Job, and jog surfaces over the workbench.
 - Always-accessible Pause, Stop, and M5 controls in the UI.
 - Pause and Stop use priority firmware paths rather than normal file streaming.
 - Dangerous setup actions such as homing and coordinate zero changes use confirmations.
@@ -118,16 +127,17 @@ The core project rule is:
 
 > Firmware is infrastructure. UI is content.
 
-The ESP32 firmware owns hardware access, WiFi setup, the HTTP server, SD access, firmware update paths, Marlin serial I/O, job streaming, priority controls, and safe jog timing.
+The ESP32 firmware owns hardware access, WiFi setup, HTTP and WebSocket services, SD access, firmware update paths, Marlin serial I/O, machine/work coordinate state, job streaming, priority controls, and safe jog timing.
 
 The mobile app UI is content served from the SD card. The primary UI files live under `/www` on the ESP32 SD card and can be updated without flashing firmware.
 
 ```text
 Phone browser
-   -> HTTP
-ESP32-CAM web server
-   -> APIs / SD files
-ESP32 firmware
+   -> HTTP APIs and SD assets
+   -> event-driven WebSocket telemetry
+ESP32-CAM
+   -> isolated low-priority browser transport
+   -> firmware-owned SD job runner and priority controls
    -> UART serial
 Marlin controller
    -> stepper drivers
@@ -243,14 +253,16 @@ Open the shown local IP or `http://192.168.4.1` in a phone browser when using fa
 9. Run Preflight.
 10. Run a bounding box trace or aircut dry run.
 11. Arm the job.
-12. Start the job using the selected start mode.
+12. Hold the guarded Start control to begin with the saved active work zero.
 13. While running, use Pause, Stop, M5, status, and feed override as needed.
 
-### FreeCAD, G54, and G92
+### FreeCAD, G54, and Work Zero
 
 FreeCAD Path commonly outputs `G54`. This project treats `G54` as the normal default workspace.
 
-For the default start mode, the firmware applies:
+Work zero is set deliberately during setup and stored with its machine-space identity. Normal Start uses that already-active coordinate frame; it does not redefine zero with `G92` during the start sequence.
+
+The firmware prepares the job with commands equivalent to:
 
 ```text
 M5
@@ -260,11 +272,9 @@ G54
 M220 S<startPercent>
 M400
 M114
-G92 X0 Y0 Z0
-M114
 ```
 
-That means the user confirms the current physical tool position is the intended work X0/Y0/Z0, then the pendant applies `G92` inside `G54` before streaming file lines.
+Start is blocked if the saved work zero, homing epoch, active run path, or active run fingerprint no longer matches the reviewed job. This prevents an armed job from silently falling back to machine/home origin or to a different source file.
 
 Non-default workspaces such as `G55` and above are treated as advanced / multi-fixture use and are blocked unless the job JSON explicitly allows them.
 
@@ -328,6 +338,7 @@ This project is not a certified industrial safety system. It is a DIY controller
 
 - Software stop is not a physical emergency stop.
 - Browser, WiFi, firmware, serial communication, or the CNC controller can fail.
+- The firmware job runner must continue independently if the browser sleeps or disconnects; loss of UI visibility is still a reason to supervise the physical machine closely.
 - Keep a real physical emergency stop or power cut available.
 - M5 only turns off spindle/laser output if Marlin and the machine wiring support it.
 - Mechanical emergency stop behavior depends on your machine wiring and controller configuration.
