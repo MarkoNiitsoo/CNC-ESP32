@@ -6,10 +6,12 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.5.9-json-status";
+constexpr const char *firmwareVersion = "0.6.0-stream-isolation";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
@@ -173,6 +175,13 @@ struct MotionTelemetryEvent {
   String command;
 };
 
+enum class TelemetryChannel : uint8_t { Job, Jog, Position, Motion, Log };
+
+struct TelemetryPacket {
+  TelemetryChannel channel;
+  String data;
+};
+
 enum class MachineDiscoveryState { Idle, WaitingM115 };
 
 struct MachineProfile {
@@ -238,12 +247,17 @@ size_t marlinLogCount = 0;
 String lastCriticalMarlinMessage;
 uint32_t nextMarlinLogId = 1;
 uint32_t telemetryLastLogId = 0;
-bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
-bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+volatile bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 bool telemetryJobDirty = true;
 bool telemetryJogDirty = true;
 bool telemetryPositionDirty = false;
 uint32_t telemetryRevision = 0;
+QueueHandle_t telemetryQueue = nullptr;
+TaskHandle_t telemetryTaskHandle = nullptr;
+String telemetryCachedJob = "null";
+String telemetryCachedJog = "null";
+String telemetryCachedPosition = "null";
 uint32_t telemetryLastBroadcastMs = 0;
 uint32_t telemetryLastJobProgressMs = 0;
 MotionTelemetryEvent motionTelemetry[kMotionTelemetrySize];
@@ -273,6 +287,7 @@ String machineFrameJson();
 void drainMarlinInput();
 bool sendMarlinControlCommand(const String &cmd, String &response);
 void sendJsonError(int status, const String &message);
+bool enqueueTelemetry(TelemetryChannel channel, const String &data);
 
 String marlinMessageLevel(String text) {
   text.toLowerCase();
@@ -850,27 +865,23 @@ String telemetryMessage(const char *type, const char *channel, const String &dat
   return json;
 }
 
-void sendTelemetrySnapshot(uint8_t client) {
+String telemetrySnapshotData() {
   String data = "{\"job\":";
-  data += jobStatusJson();
+  data += telemetryCachedJob;
   data += ",\"jog\":";
-  data += jogStatusJson();
+  data += telemetryCachedJog;
   data += ",\"position\":";
-  if (marlinPosition.valid) {
-    data += machineFrameJson();
-  } else {
-    data += "null";
-  }
+  data += telemetryCachedPosition;
   data += "}";
-  String payload = telemetryMessage("snapshot", nullptr, data);
-  telemetrySocket.sendTXT(client, payload);
+  return data;
 }
 
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
   if (type == WStype_CONNECTED) {
     telemetryClientConnected[client] = true;
     telemetryLogSubscribed[client] = false;
-    sendTelemetrySnapshot(client);
+    String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
+    telemetrySocket.sendTXT(client, snapshot);
   } else if (type == WStype_DISCONNECTED) {
     telemetryClientConnected[client] = false;
     telemetryLogSubscribed[client] = false;
@@ -919,10 +930,7 @@ void broadcastPendingLogEntries() {
     data += ",\"lastCritical\":";
     data += lastCriticalMarlinMessage.length() > 0 ? "\"" + jsonEscape(lastCriticalMarlinMessage) + "\"" : "null";
     data += "}";
-    String message = telemetryMessage("delta", "log", data);
-    for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
-      if (telemetryLogSubscribed[client]) telemetrySocket.sendTXT(client, message);
-    }
+    if (!enqueueTelemetry(TelemetryChannel::Log, data)) return;
     telemetryLastLogId = entry.id;
   }
 }
@@ -939,34 +947,76 @@ void broadcastPendingMotionEvents() {
   }
   data += "],\"dropped\":" + String(motionTelemetryDropped);
   data += ",\"feedOverridePercent\":" + String(jobStatus.feedOverridePercent) + "}";
-  String payload = telemetryMessage("delta", "motion", data);
-  telemetrySocket.broadcastTXT(payload);
+  enqueueTelemetry(TelemetryChannel::Motion, data);
   motionTelemetryCount = 0;
   motionTelemetryDropped = 0;
 }
 
+const char *telemetryChannelName(TelemetryChannel channel) {
+  switch (channel) {
+  case TelemetryChannel::Job: return "job";
+  case TelemetryChannel::Jog: return "jog";
+  case TelemetryChannel::Position: return "position";
+  case TelemetryChannel::Motion: return "motion";
+  case TelemetryChannel::Log: return "log";
+  }
+  return "unknown";
+}
+
+bool enqueueTelemetry(TelemetryChannel channel, const String &data) {
+  if (telemetryQueue == nullptr) return false;
+  TelemetryPacket *packet = new TelemetryPacket{channel, data};
+  if (packet == nullptr) return false;
+  if (xQueueSend(telemetryQueue, &packet, 0) != pdTRUE) {
+    delete packet;
+    return false;
+  }
+  return true;
+}
+
+void processTelemetryPacket(TelemetryPacket *packet) {
+  if (packet == nullptr) return;
+  if (packet->channel == TelemetryChannel::Job) telemetryCachedJob = packet->data;
+  if (packet->channel == TelemetryChannel::Jog) telemetryCachedJog = packet->data;
+  if (packet->channel == TelemetryChannel::Position) telemetryCachedPosition = packet->data;
+
+  String message = telemetryMessage("delta", telemetryChannelName(packet->channel), packet->data);
+  if (packet->channel == TelemetryChannel::Log) {
+    for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
+      if (telemetryLogSubscribed[client]) telemetrySocket.sendTXT(client, message);
+    }
+  } else {
+    telemetrySocket.broadcastTXT(message);
+  }
+  delete packet;
+}
+
+void telemetryNetworkTask(void *) {
+  for (;;) {
+    telemetrySocket.loop();
+    TelemetryPacket *packet = nullptr;
+    if (xQueueReceive(telemetryQueue, &packet, pdMS_TO_TICKS(5)) == pdTRUE) {
+      processTelemetryPacket(packet);
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
+}
+
 void processTelemetrySocket() {
-  telemetrySocket.loop();
   const uint32_t now = millis();
   if (now - telemetryLastBroadcastMs < kTelemetryMinBroadcastMs) {
     return;
   }
 
   if (telemetryJobDirty) {
-    String payload = telemetryMessage("delta", "job", jobStatusJson());
-    telemetrySocket.broadcastTXT(payload);
-    telemetryJobDirty = false;
+    telemetryJobDirty = !enqueueTelemetry(TelemetryChannel::Job, jobStatusJson());
   }
   if (telemetryJogDirty) {
-    String payload = telemetryMessage("delta", "jog", jogStatusJson());
-    telemetrySocket.broadcastTXT(payload);
-    telemetryJogDirty = false;
+    telemetryJogDirty = !enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson());
   }
   if (telemetryPositionDirty && marlinPosition.valid) {
-    String data = machineFrameJson();
-    String payload = telemetryMessage("delta", "position", data);
-    telemetrySocket.broadcastTXT(payload);
-    telemetryPositionDirty = false;
+    telemetryPositionDirty = !enqueueTelemetry(TelemetryChannel::Position, machineFrameJson());
   }
   broadcastPendingMotionEvents();
   broadcastPendingLogEntries();
@@ -4329,8 +4379,16 @@ void startHttpServer() {
   server.on("/api/wifi/forget", HTTP_POST, handleWifiForget);
   server.onNotFound(handleNotFound);
   server.begin();
+  telemetryQueue = xQueueCreate(12, sizeof(TelemetryPacket *));
   telemetrySocket.begin();
   telemetrySocket.onEvent(handleTelemetrySocket);
+  if (telemetryQueue != nullptr) {
+    enqueueTelemetry(TelemetryChannel::Job, jobStatusJson());
+    enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson());
+    enqueueTelemetry(TelemetryChannel::Position, marlinPosition.valid ? machineFrameJson() : "null");
+    xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 8192, nullptr, 1,
+                            &telemetryTaskHandle, 0);
+  }
 }
 } // namespace
 

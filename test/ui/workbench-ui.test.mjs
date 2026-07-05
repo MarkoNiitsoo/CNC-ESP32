@@ -20,6 +20,11 @@ import {
   workZeroTablePosition,
   zoomPanForGesture,
 } from '../../www/lib/workbench-ui.js';
+import {
+  LAYER_STORAGE_KEY,
+  loadLayerPreferences,
+  saveLayerPreferences,
+} from '../../www/lib/workbench-controller.js';
 
 const controllerSource = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
 const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
@@ -235,6 +240,20 @@ describe('canvas workbench control policy', () => {
     expect(middleArc.x).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(middleArc.y).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(motionDurationMs(line, { feedOverridePercent: 100 })).toBe(1000);
+  });
+
+  it('persists only known boolean layer preferences', () => {
+    const values = new Map([[LAYER_STORAGE_KEY, JSON.stringify({ travel: false, path: true, injected: false })]]);
+    const storage = {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, value),
+    };
+    const defaults = createWorkbenchState(390).layers;
+    const loaded = loadLayerPreferences(storage, defaults);
+    expect(loaded).toMatchObject({ travel: false, path: true });
+    expect(loaded).not.toHaveProperty('injected');
+    saveLayerPreferences(storage, { ...loaded, zero: false });
+    expect(JSON.parse(values.get(LAYER_STORAGE_KEY)).zero).toBe(false);
   });
 
   it('prefers the saved machine-space work-zero reference for canvas placement', () => {

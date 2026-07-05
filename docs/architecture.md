@@ -88,6 +88,12 @@ or job runner functionality.
     the authoritative machine frame.
   - If WebSocket telemetry is unavailable, sparse job-status polling deduplicates by command number
     and starts the same animation; this is delayed but smooth rather than a point-to-point jump.
+  - The CNC runner never calls WebSocket send functions. It places serialized deltas into a bounded
+    FreeRTOS queue with zero wait time.
+  - A dedicated low-priority task pinned to core 0 owns `telemetrySocket.loop()` and every socket
+    send. If a sleeping browser leaves TCP blocked, only this task and disposable UI deltas wait.
+  - Queue saturation drops telemetry rather than applying backpressure to SD/UART streaming. The
+    task caches latest job/jog/position state and sends a fresh snapshot after reconnect.
   - During a long streamed G2/G3 command, complete M154 position lines are parsed as they arrive;
     firmware does not wait for the motion command's final `ok` before publishing position changes.
 - Safe analog jog:

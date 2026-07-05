@@ -2,6 +2,26 @@ import { createWorkbenchState, reduceWorkbenchState, zoomPanForGesture } from '.
 
 const LEFT_TABS = new Set(['preview', 'setup', 'dry-run']);
 const RIGHT_TABS = new Set(['preflight', 'recovery', 'arm', 'run']);
+export const LAYER_STORAGE_KEY = 'lowrider.workbench.layers.v1';
+
+export function loadLayerPreferences(storage, defaults) {
+  try {
+    const saved = JSON.parse(storage?.getItem(LAYER_STORAGE_KEY) || '{}');
+    return Object.fromEntries(Object.entries(defaults).map(([key, value]) => [
+      key, typeof saved[key] === 'boolean' ? saved[key] : value,
+    ]));
+  } catch (_) {
+    return { ...defaults };
+  }
+}
+
+export function saveLayerPreferences(storage, layers) {
+  try {
+    storage?.setItem(LAYER_STORAGE_KEY, JSON.stringify(layers));
+  } catch (_) {
+    // Storage can be unavailable in private browsing; layers still work for this page load.
+  }
+}
 
 function byId(id) {
   return document.getElementById(id);
@@ -17,6 +37,7 @@ function appendExisting(target, selectors) {
 export function installWorkbench(options = {}) {
   const canvas = options.canvas;
   let state = createWorkbenchState(window.innerWidth);
+  state.layers = loadLayerPreferences(window.localStorage, state.layers);
   const view = { zoom: 1, panX: 0, panY: 0, fitMode: 'active' };
   const pointers = new Map();
   let dragStart = null;
@@ -68,11 +89,15 @@ export function installWorkbench(options = {}) {
     canvas?.classList.toggle('select-mode', state.interactionMode === 'select');
     const modeButton = byId('canvas-mode');
     if (modeButton) modeButton.textContent = state.interactionMode === 'pan' ? 'Pan' : 'Select';
+    document.querySelectorAll('[data-canvas-layer]').forEach((input) => {
+      input.checked = state.layers[input.dataset.canvasLayer] !== false;
+    });
     notify();
   }
 
   function dispatch(action) {
     state = reduceWorkbenchState(state, action);
+    if (action.type === 'toggle-layer') saveLayerPreferences(window.localStorage, state.layers);
     renderState();
   }
 

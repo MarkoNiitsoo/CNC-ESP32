@@ -100,8 +100,10 @@ describe('delta telemetry transport', () => {
   it('keeps WebSocket telemetry separate from HTTP controls', () => {
     expect(source).toContain('WebSocketsServer telemetrySocket(kTelemetryWebSocketPort)');
     expect(source).toContain('telemetrySocket.onEvent(handleTelemetrySocket)');
-    expect(source).toMatch(/telemetryMessage\("delta", "job", jobStatusJson\(\)\)[\s\S]*telemetrySocket\.broadcastTXT\(payload\)/);
-    expect(source).toMatch(/telemetryMessage\("delta", "jog", jogStatusJson\(\)\)[\s\S]*telemetrySocket\.broadcastTXT\(payload\)/);
+    expect(source).toContain('xQueueSend(telemetryQueue, &packet, 0)');
+    expect(source).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
+    expect(source).toContain('telemetryJobDirty = !enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())');
+    expect(source).toContain('telemetryJogDirty = !enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())');
     expect(source).toContain('constexpr uint32_t kTelemetryMinBroadcastMs = 100');
   });
 
@@ -115,7 +117,7 @@ describe('delta telemetry transport', () => {
     expect(source).toMatch(/addMarlinLog\("rx", priority, response\);[\s\S]*updatePositionFromMarlinResponse\(response\)/);
     expect(source).toContain('fabs(marlinPosition.x - x) > 0.0005f');
     expect(source).toContain('telemetryPositionDirty = true');
-    expect(source).toContain('telemetryMessage("delta", "position"');
+    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Position, machineFrameJson())');
   });
 
   it('streams only new log entries to clients that requested logs', () => {
@@ -130,7 +132,7 @@ describe('delta telemetry transport', () => {
   it('batches compact motion events and throttles full job progress telemetry', () => {
     expect(source).toContain('constexpr uint32_t kJobProgressBroadcastMs = 500');
     expect(source).toContain('void queueMotionTelemetry(const String &command, uint32_t sequence)');
-    expect(source).toContain('telemetryMessage("delta", "motion", data)');
+    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Motion, data)');
     expect(source).toContain('queueMotionTelemetry(line, jobStatus.currentLineNumber)');
     expect(source).toMatch(/void touchJobProgress\(\)[\s\S]*kJobProgressBroadcastMs/);
   });

@@ -49,6 +49,11 @@
     window.dispatchEvent(new CustomEvent(`cnc-telemetry-${name}`, { detail: data }));
   }
 
+  function accept(name, data) {
+    emit(name, data);
+    schedule(name);
+  }
+
   function isActive() {
     return ACTIVE_JOB_STATES.has(String(state.job?.state || ''));
   }
@@ -189,5 +194,5 @@
     });
   });
 
-  window.CncTelemetry = { request, setDemand, start, state, subscribe };
+  window.CncTelemetry = { accept, request, setDemand, start, state, subscribe };
 }());

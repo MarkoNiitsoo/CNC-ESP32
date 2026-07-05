@@ -5,6 +5,7 @@ const telemetry = await readFile(new URL('../../www/telemetry.js', import.meta.u
 const app = await readFile(new URL('../../www/app.js', import.meta.url), 'utf8');
 const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
 const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
 const htmlFiles = await Promise.all(['index.html', 'files.html', 'preview.html'].map((name) =>
   readFile(new URL(`../../www/${name}`, import.meta.url), 'utf8')));
 
@@ -50,5 +51,17 @@ describe('shared browser telemetry', () => {
     expect(preview).toContain("subscribe('motion', handleMotionTelemetry)");
     expect(preview).toContain('requestAnimationFrame(frame)');
     expect(preview).toContain('commandedPositionAtCommand');
+  });
+
+  it('keeps cutting independent from browser WebSocket delivery', () => {
+    const producer = firmware.slice(firmware.indexOf('void processTelemetrySocket()'), firmware.indexOf('bool initializeSdCard()'));
+    expect(producer).not.toContain('telemetrySocket.broadcastTXT');
+    expect(producer).not.toContain('telemetrySocket.sendTXT');
+    expect(producer).toContain('enqueueTelemetry');
+    expect(firmware).toContain('xQueueSend(telemetryQueue, &packet, 0)');
+    expect(firmware).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
+    expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
+    expect(telemetry).toContain("schedule('job')");
+    expect(telemetry).toContain('window.CncTelemetry = { accept, request');
   });
 });

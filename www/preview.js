@@ -1231,6 +1231,7 @@ async function postJobAction(url, body = null) {
   if (!res.ok) throw new Error(data.error || `${url} failed`);
   jobRunStatus = data;
   jobStatusHealthy = true;
+  window.CncTelemetry?.accept?.('job', data);
   renderRunPanel();
   updateJobRunPolling();
   return data;
@@ -1319,6 +1320,7 @@ async function postCriticalJobAction(url, body = null) {
   if (!res.ok) throw new Error(data.error || `${url} failed`);
   jobRunStatus = data;
   jobStatusHealthy = true;
+  window.CncTelemetry?.accept?.('job', data);
   renderRunPanel();
   updateJobRunPolling();
   return data;

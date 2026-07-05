@@ -413,6 +413,15 @@ Remaining UI TODOs:
 
 ## Manual Hardware Test Policy
 
+### Browser and network independence
+
+- Start a harmless router-off stream, then lock the phone or disable its WiFi for at least 30
+  seconds. Motion must continue and commands must not acquire TCP-timeout-sized gaps.
+- Restore the browser. WebSocket reconnect must receive a current snapshot; missing intermediate
+  animation frames are acceptable.
+- A full telemetry queue must drop UI updates. It must never pause, stop, or delay the next G-code
+  line after Marlin `ok`.
+
 Before testing real movement:
 
 1. Router/spindle off.
