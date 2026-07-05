@@ -9,7 +9,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.5.5-machine-profile";
+constexpr const char *firmwareVersion = "0.5.9-json-status";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";

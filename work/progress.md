@@ -1,5 +1,75 @@
 # Progress
 
+## 2026-07-05 - Job status JSON / false OFFLINE fix
+
+- Live diagnostics confirmed the device and WebSocket port were reachable, but `/api/job/status`
+  contained malformed JSON: `"machinePosition":null","uptimeMs"`.
+- Removed the extra quote and added a source-level regression check around the position/uptime
+  boundary in `jobStatusJson()`.
+- Firmware version is `0.5.9-json-status`.
+- Verification: 24 test files / 221 tests passed; PlatformIO build succeeded at 15.8% RAM and 52.0%
+  flash.
+
+## 2026-07-05 - Live cutting position restored
+
+- Confirmed the live SD UI already subscribed to motion telemetry, but the Preview adapter removed
+  `commandNumber` from parsed segments. Every motion event therefore failed segment lookup and no
+  predictive tool animation started.
+- Preserved `commandNumber` in `/www/lib/preview-data-adapter.js`.
+- Preserved segment `length` and `feed`; without them every animation was clamped to the 40 ms
+  minimum and appeared as a point-to-point jump.
+- Restored `M154 S1` as an acknowledged asynchronous Start-preamble command when a telemetry client
+  is connected, then made active-job autoreport independent of WebSocket availability.
+- Stream processing now parses complete M154 position lines immediately, including while Marlin is
+  still processing a long G2/G3 command and before its final `ok`.
+- HTTP job-status fallback now carries work/machine position and synthesizes the same deduplicated
+  motion animation event when the phone's WebSocket is unavailable.
+- Firmware version is `0.5.8-live-position`.
+- Verification: 24 test files / 220 tests passed; PlatformIO build succeeded at 15.8% RAM and 52.0%
+  flash.
+
+## 2026-07-05 - Async Start transport fix
+
+- Inspected the live pendant at `192.168.8.147`: firmware, active generated run, arm fingerprint,
+  homing epoch, and work-zero machine reference were valid.
+- The prior Aircut had ended in `ERROR` after an `M5` priority timeout; normal Start then reported
+  `Failed to fetch` because its full Marlin preamble ran synchronously inside the HTTP handler.
+- Normal Start now returns `PREPARING` immediately and executes its ten-command preamble through
+  the acknowledged priority queue.
+- File streaming begins only after the whole preamble succeeds. Preamble error/timeout closes the
+  file and sets `ERROR`.
+- Browser critical actions now reconcile a lost HTTP reply against `/api/job/status` before
+  declaring failure.
+- Verification complete: 24 test files / 218 tests passed; PlatformIO build succeeded at 15.8%
+  RAM and 52.0% flash.
+
+## 2026-07-05 - Coordinate frame firmware ownership
+
+- Added firmware-owned machine frame state with separate machine, work, and work-zero-machine coordinates.
+- Added `GET /api/machine/frame`, `POST /api/machine/home`, and `POST /api/work-zero/set`.
+- Full homing now creates a new homing epoch and a deterministic temporary baseline frame.
+- Job Start no longer sends `G92`; it rejects missing or mismatched homing/work-zero frame identity.
+- Position telemetry remains backward-compatible at top-level X/Y/Z and now includes both coordinate frames.
+- UI wiring, mock parity, compile verification, and device tests remain.
+
+## 2026-07-05 - Unified homing and work-zero UI
+
+- Machine Bar homing now calls firmware `/api/machine/home`; it no longer sends browser-owned `G28` sequences.
+- Machine Bar and Preview work-zero actions now share `/api/work-zero/set`.
+- Preview saves the returned machine-space zero and homing epoch immediately into job JSON/history.
+- Arm/Preflight require the saved zero to match the live firmware frame.
+- Start requests include work-zero ID, homing epoch, and machine-space XYZ; the visible start-mode selector was removed.
+- Status bar now distinguishes machine (`M`) and work (`W`) coordinates.
+
+## 2026-07-05 - Coordinate frame refactor verified
+
+- Added firmware-owned Z-zero transaction so tool changes cannot desynchronize the machine frame.
+- Canvas anchors job geometry and WORK ZERO to saved machine-space coordinates; the tool marker uses
+  machine coordinates while predicted job/jog motion remains work-relative.
+- DEV MOCK covers Home All -> move to X100/Y500 -> Set Work Zero -> Start and verifies Start sends no G92.
+- Verification: 24 Vitest files / 217 tests; PlatformIO build succeeds at 15.8% RAM and 51.9% flash.
+- Firmware version is `0.5.6-coordinate-frame`.
+
 ## 2026-06-11
 
 - Created and read `AGENTS.md`.

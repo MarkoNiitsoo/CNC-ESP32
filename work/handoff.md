@@ -1,5 +1,26 @@
 # Handoff
 
+## 2026-07-05 - Coordinate frame refactor in progress
+
+- Firmware is now the intended owner of homing and work-zero frame transitions.
+- New frame schema separates `machine`, `work`, and `workZeroMachine`; `homingEpoch` identifies the current trusted Home All session.
+- Normal `/api/job/start` accepts only `use_active_work_zero` and never reapplies `G92`.
+- Do not flash this intermediate state yet: Machine Bar, Preview, DEV MOCK, tests, and docs still need the matching contract.
+- Machine Bar and Preview are now wired to the new contract, but DEV MOCK/test updates and firmware compilation are still pending.
+
+## 2026-07-05 - Coordinate frame refactor ready for no-cutter device test
+
+- Firmware: `.pio-build/esp32cam/firmware.bin` (`0.5.6-coordinate-frame`).
+- SD UI upload: `/www/preview.html`, `/www/preview.js`, `/www/machine-bar.js`, and
+  `/www/lib/workbench-ui.js`.
+- Also upload matching documentation only to the repository; docs are not device UI assets.
+- First device test: router off/no cutter, Home All, jog near machine X100/Y500 with Z clearance,
+  Set Work Zero, reload Preview, run Bounding Box, Arm, then Start.
+- Confirm M and W coordinates differ correctly, geometry/WORK ZERO appear at machine X100/Y500,
+  and Marlin log contains no G92 after Start is requested.
+- Old job JSON without machine-space zero + homing epoch will intentionally fail Preflight/Start;
+  Home All and Set Work Zero once to migrate it safely.
+
 ## Current State
 
 The repository now has the required agent instructions, documentation, work tracking files, and
@@ -1149,3 +1170,49 @@ No firmware upload is required.
 - Rotated jobs continue to normalize their cut lower-left to work zero and use a generated run.
 - Full generated travel bounds are still checked and may warn/block independently of the cut anchor.
 - Upload to SD `/www`: `preview.js`, `lib/toolpath-transform.js`, and `lib/job-active-run.js`.
+
+## 2026-07-05 - Authoritative machine/work coordinate frames
+
+- Firmware `0.5.6-coordinate-frame` now owns the machine frame, homing epoch, and saved work-zero machine reference.
+- Normal Start Job accepts only `use_active_work_zero`; it verifies the armed zero identity and never sends `G92`.
+- Home All establishes the machine frame. Setting work zero uses the dedicated firmware endpoint and saves its machine-space reference into the job JSON.
+- Old job JSON without a matching machine reference and homing epoch is intentionally blocked. Home All, set work zero, save, and arm again.
+- Firmware artifact: `.pio-build/esp32cam/firmware.bin`.
+- Upload to SD `/www`: `preview.html`, `preview.js`, `machine-bar.js`, `lib/workbench-ui.js`, and `lib/job-history.js`.
+- First hardware test must use router/spindle off and no cutter: Home All, jog to a visible X/Y offset, set work zero, run Bounding Box, arm, and start. The job must remain at that work zero and Start must not issue another `G92`.
+- Verification: 24 test files / 217 tests; PlatformIO build succeeded at 15.8% RAM and 51.9% flash.
+
+## 2026-07-05 - Async Start transport
+
+- Live diagnosis found valid job/arm/zero metadata but `Failed to fetch` during normal Start;
+  device WiFi was weak (`-82 dBm`) and the HTTP handler synchronously waited through the complete
+  Marlin preamble.
+- Firmware `0.5.7-async-start` returns `PREPARING` immediately, then transitions to `RUNNING` only
+  after every queued preamble command is acknowledged.
+- Upload firmware and `/www/preview.js`. Existing job and generated G-code files do not need
+  regeneration for this fix.
+- Verified artifact: `.pio-build/esp32cam/firmware.bin`; 24 test files / 218 tests passed;
+  PlatformIO used 15.8% RAM and 52.0% flash.
+- First device retest must use router/spindle off: clear the prior failed test-motion state with
+  Stop if needed, start the armed job, and verify the UI transitions `PREPARING` to `RUNNING`
+  without `Failed to fetch`.
+
+## 2026-07-05 - Live cutting position
+
+- Firmware artifact: `.pio-build/esp32cam/firmware.bin` (`0.5.8-live-position`).
+- Upload SD UI files: `/www/preview.js` and `/www/lib/preview-data-adapter.js`.
+- `telemetry.js` and `machine-bar.js` on the live device already matched the repository and do not
+  need another upload for this fix.
+- First test should use router/spindle off: start a short arc job and verify the canvas marker moves
+  continuously at the parsed segment feed while the top bar receives approximately one
+  authoritative Marlin position update per second. Repeat once with WebSocket unavailable to verify
+  HTTP status fallback also animates instead of jumping.
+- Verification: 24 test files / 220 tests; PlatformIO 15.8% RAM and 52.0% flash.
+
+## 2026-07-05 - False OFFLINE regression
+
+- Firmware `0.5.8-live-position` emitted malformed `/api/job/status` JSON due to one extra quote
+  between `machinePosition` and `uptimeMs`; UI consequently stayed OFFLINE.
+- Flash `.pio-build/esp32cam/firmware.bin` (`0.5.9-json-status`). No additional UI file changed for
+  this JSON-only correction; the preceding live-animation UI uploads are still required.
+- Verification: 24 test files / 221 tests; PlatformIO 15.8% RAM and 52.0% flash.
