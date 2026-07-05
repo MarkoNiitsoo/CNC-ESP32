@@ -11,6 +11,12 @@ import {
 const fixture = (name) => readFileSync(join('test', 'fixtures', name), 'utf8');
 
 describe('preview data adapter', () => {
+  it('preserves command numbers used by live motion telemetry', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 X10 Y20\nG1 Z-1 F600\nG1 X30 Y40\n');
+    const preview = adaptToolpathForPreview(model);
+    expect(preview.segments.map((segment) => segment.commandNumber)).toEqual([3, 4, 5]);
+    expect(preview.segments[2]).toMatchObject({ feed: 600, length: Math.sqrt(800) });
+  });
   it('converts ToolpathModel into legacy preview data with all bound types', () => {
     const model = parseGCodeToToolpath(fixture('simple-square.gc'));
     const adapted = adaptToolpathForPreview(model);
