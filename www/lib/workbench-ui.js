@@ -117,7 +117,8 @@ export function workZeroTablePosition(job = {}) {
   const activeZero = Array.isArray(job.zeroHistory)
     ? job.zeroHistory.find((entry) => entry?.id === activeId && entry?.type === 'workZero')
     : null;
-  const position = activeZero?.positionBefore || job.workZero?.beforeG92?.position;
+  const position = activeZero?.machineReference?.position || job.workZero?.machineReference?.position ||
+    activeZero?.positionBefore || job.workZero?.beforeG92?.position;
   if (!Number.isFinite(Number(position?.x)) || !Number.isFinite(Number(position?.y))) return null;
   return {
     x: Number(position.x),

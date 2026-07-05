@@ -78,7 +78,9 @@ export class MockMarlin {
     if (/\bG28\b/.test(upper)) {
       if (!this.allowHoming) return this.error('Unexpected G28 homing command in mock mode');
       for (const axis of ['x', 'y', 'z']) {
-        if (upper === 'G28' || Object.hasOwn(args, axis.toUpperCase())) this.machinePosition[axis] = this.machine[`${axis}Min`];
+        if (upper === 'G28' || Object.hasOwn(args, axis.toUpperCase())) {
+          this.machinePosition[axis] = axis === 'z' ? this.machine.zMax : this.machine[`${axis}Min`];
+        }
       }
       return this.response('Homing simulated\nok');
     }

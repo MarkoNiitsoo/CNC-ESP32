@@ -45,6 +45,14 @@ describe('mock HTTP API', () => {
     const jobPath = '/jobs/api-job.job.json';
     const fingerprint = 'api-test';
     await env.sd.writeText(gcodePath, 'G21\nG90\nG0 Z15\nG1 X10 Y10\n');
+    await fetch(`${base}/api/machine/home`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }),
+    });
+    env.marlin.execute('G0 X100 Y500 Z-20');
+    const zeroFrame = await fetch(`${base}/api/work-zero/set`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    }).then((res) => res.json());
+    const startLogIndex = env.marlin.log.length;
     await env.sd.writeText(jobPath, JSON.stringify({
       gcodePath, sourceGcodePath: gcodePath, placement: { rotationDeg: 0 },
       activeRun: { mode: 'source', path: gcodePath, sourceFingerprint: fingerprint },
@@ -53,7 +61,13 @@ describe('mock HTTP API', () => {
     }));
     const startResponse = await fetch(`${base}/api/job/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint }),
+      body: JSON.stringify({
+        gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
+        startMode: 'use_active_work_zero', workZeroId: 'zero-api', homingEpoch: zeroFrame.frame.homingEpoch,
+        workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
+        workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
+        workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
+      }),
     });
     expect(startResponse.ok).toBe(true);
     let status;
@@ -63,6 +77,8 @@ describe('mock HTTP API', () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(status).toMatchObject({ state: 'COMPLETED', gcodePath, progressPercent: 100 });
+    expect(env.marlin.g92Offset).toMatchObject({ x: 100, y: 500, z: 100 });
+    expect(env.marlin.log.slice(startLogIndex).map((entry) => entry.text).join('\n')).not.toMatch(/\bG92\b/);
   });
 
   it('uploads and streams validated native-arc Aircut through one start request', async () => {

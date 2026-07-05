@@ -154,6 +154,7 @@ let suppressPlacementChange = false;
 let workbenchUiModule = null;
 let workbenchController = null;
 let liveToolPosition = null;
+let currentMachineFrame = null;
 let animatedToolPosition = null;
 let motionAnimationFrame = null;
 let activeMotionAnimation = null;
@@ -584,6 +585,9 @@ function canvasToolPosition() {
     const commanded = workbenchUiModule?.commandedPositionAtCommand(parsed?.segments || [], jobRunStatus?.currentLineNumber);
     if (commanded) return { ...commanded, source: 'CMD' };
   }
+  if (currentMachineFrame?.machine && Number.isFinite(currentMachineFrame.machine.x)) {
+    return { ...currentMachineFrame.machine, source: 'MACHINE', isMachine: true };
+  }
   if (liveToolPosition) return liveToolPosition;
   if (Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
     return { ...statusPosition, source: 'STATUS' };
@@ -596,6 +600,7 @@ function canvasWorkZeroPosition() {
 }
 
 function canvasTablePosition(position) {
+  if (position?.isMachine) return position;
   return workbenchUiModule?.translatePosition(position, canvasWorkZeroPosition()) || position;
 }
 
@@ -718,7 +723,7 @@ function newJobState() {
       feed: null,
       estimate: null,
     },
-    startMode: 'apply_current_position_as_work_zero',
+    startMode: 'use_active_work_zero',
     safeStartZ: Number(safeZInput?.value) || 15,
     startChecklist: defaultRunChecklistState(),
     allowedWorkspaceCommands: false,
@@ -824,6 +829,26 @@ function hasRawCapture(capture) {
   return Boolean(capture && capture.rawM114);
 }
 
+function activeWorkZeroReference() {
+  const active = (jobState?.zeroHistory || []).find((entry) => (
+    entry?.type === 'workZero' && entry.id === jobState?.activeWorkZeroId
+  ));
+  return {
+    id: active?.id || jobState?.activeWorkZeroId || null,
+    position: active?.machineReference?.position || jobState?.workZero?.machineReference?.position || null,
+    homingEpoch: Number(active?.frame?.homingEpoch ?? jobState?.workZero?.frame?.homingEpoch),
+  };
+}
+
+function workZeroMatchesMachineFrame() {
+  const saved = activeWorkZeroReference();
+  const live = currentMachineFrame;
+  if (!saved.id || !saved.position || !Number.isFinite(saved.homingEpoch) || !live?.workZeroMachine) return false;
+  return saved.homingEpoch === Number(live.homingEpoch) && ['x', 'y', 'z'].every((axis) => (
+    Math.abs(Number(saved.position[axis]) - Number(live.workZeroMachine[axis])) <= 0.05
+  ));
+}
+
 function addCheck(checks, id, level, message) {
   checks.push({ id, level, message });
 }
@@ -873,8 +898,10 @@ function computePreflight() {
   else addCheck(checks, 'spindle', 'pass', 'No spindle/laser enable command detected');
 
   const workZero = jobState?.workZero;
-  if (hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92)) {
-    addCheck(checks, 'workZero', 'pass', 'Work zero has before/after G92 captures');
+  if (hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92) && workZeroMatchesMachineFrame()) {
+    addCheck(checks, 'workZero', 'pass', 'Saved work zero matches the active homed machine frame');
+  } else if (hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92)) {
+    addCheck(checks, 'workZero', 'fail', 'Saved work zero is not active in the current homing session');
   } else if (hasRawCapture(workZero?.beforeG92)) {
     addCheck(checks, 'workZero', 'warning', 'Current position was captured, but G92 work zero has not been set');
   } else {
@@ -1092,7 +1119,7 @@ function renderRunPanel() {
         <dt>Starting</dt><dd>${html(currentRunMode() === 'generated' ? `generated file: ${currentRunPath()}` : `source file: ${currentRunPath()}`)}</dd>
         <dt>Run file</dt><dd>${html(currentRunPath())}</dd>
         <dt>Run mode</dt><dd>${html(currentRunLabel())}</dd>
-        <dt>Start mode</dt><dd>${(startModeSelect?.value || jobState?.startMode || 'apply_current_position_as_work_zero').replace(/_/g, ' ')}</dd>
+        <dt>Start mode</dt><dd>use saved active work zero</dd>
         <dt>Safe start Z</dt><dd>${Number(jobState?.safeStartZ ?? runSafeStartZInput?.value ?? 15).toFixed(1)} mm</dd>
         <dt>Workspace commands</dt><dd>${jobState?.allowedWorkspaceCommands ? 'G55+ allowed by job JSON' : 'Only G54 allowed by default'}</dd>
         <dt>Progress</dt><dd>${jobRunStatus ? Number(jobRunStatus.progressPercent || 0).toFixed(1) : '0.0'}%</dd>
@@ -1257,7 +1284,26 @@ async function postCriticalJobAction(url, body = null) {
     options.headers = { 'Content-Type': 'application/json' };
     options.body = JSON.stringify(body);
   }
-  const res = await fetch(url, options);
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (networkError) {
+    if (url.includes('/api/job/')) {
+      try {
+        const statusRes = await fetch('/api/job/status', { cache: 'no-store' });
+        const status = await readJsonOrThrow(statusRes);
+        const expectedPath = url.includes('/api/job/start') ? currentRunPath() : null;
+        const acceptedStates = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING', 'STOPPED']);
+        if (statusRes.ok && acceptedStates.has(status.state) && (!expectedPath || status.gcodePath === expectedPath)) {
+          appendRunLog(`Network reply was lost; reconciled ${url} from firmware status ${status.state}.`);
+          return applyJobRunStatus(status);
+        }
+      } catch (_) {
+        // Preserve the original network error; controls remain available through the safety bar.
+      }
+    }
+    throw new Error(`ESP32 did not return a response for ${url}: ${networkError.message}`);
+  }
   const text = await res.text();
   let data = null;
   try {
@@ -1327,6 +1373,7 @@ async function startJobRun() {
   if (warnings.length) appendRunLog(`Starting after deliberate hold with ${warnings.length} reviewed warning(s).`);
 
   const job = ensureJobState();
+  const zeroReference = activeWorkZeroReference();
   const history = await jobHistoryPromise;
   const run = history.startRunHistory(job, jobRunStatus || {});
   try {
@@ -1336,6 +1383,11 @@ async function startJobRun() {
       gcodePath: runPath,
       jobPath: jobPathFor(filePath),
       startMode: job.startMode,
+      workZeroId: zeroReference.id,
+      homingEpoch: zeroReference.homingEpoch,
+      workZeroMachineX: Number(zeroReference.position?.x),
+      workZeroMachineY: Number(zeroReference.position?.y),
+      workZeroMachineZ: Number(zeroReference.position?.z),
       safeStartZ: job.safeStartZ,
       travelFeedMmMin: automaticTravelFeed(),
       activeRunMode: runMode,
@@ -1422,7 +1474,7 @@ function ensureJobState() {
   jobState.sourceGcodePath = jobState.sourceGcodePath || filePath;
   jobState.jobPath = jobPathFor(filePath);
   ensureActiveRunShape(jobState);
-  if (!jobState.startMode) jobState.startMode = 'apply_current_position_as_work_zero';
+  jobState.startMode = 'use_active_work_zero';
   if (jobState.safeStartZ === undefined || jobState.safeStartZ === null) jobState.safeStartZ = Number(safeZInput?.value) || 15;
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
@@ -2756,7 +2808,7 @@ function renderJobPanel() {
       <dt>Generated status</dt><dd>${html(jobState?.generatedValidation?.status || 'unknown')}</dd>
       <dt>Job JSON</dt><dd>${path}</dd>
       <dt>Job file</dt><dd>${jobExists ? 'Exists' : 'No job file yet'}</dd>
-      <dt>Start mode</dt><dd>${jobState?.startMode || 'apply_current_position_as_work_zero'}</dd>
+      <dt>Start mode</dt><dd>use saved active work zero</dd>
       <dt>Workspace override</dt><dd>${jobState?.allowedWorkspaceCommands ? 'Non-default workspaces allowed' : 'Only G54 allowed by default'}</dd>
       <dt>Bounds</dt><dd>${hasBounds(b) ? `X ${b.xMin.toFixed(2)} .. ${b.xMax.toFixed(2)}, Y ${b.yMin.toFixed(2)} .. ${b.yMax.toFixed(2)}, Z ${b.zMin.toFixed(2)} .. ${b.zMax.toFixed(2)}` : '-'}</dd>
       <dt>Warnings</dt><dd>${preview.warnings.length}</dd>
@@ -2974,7 +3026,7 @@ async function loadJob() {
   if (runSafeStartZInput) {
     runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
   }
-  if (!jobState.startMode) jobState.startMode = 'apply_current_position_as_work_zero';
+  jobState.startMode = 'use_active_work_zero';
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
   jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
@@ -3461,24 +3513,42 @@ async function captureToolPosition() {
   renderToolZeroPanel();
 }
 
-async function setZZeroWithCapture() {
+async function setZZeroWithCapture(transaction = null) {
   if (!(await canChangeZZero())) return;
-  if (!confirm('This will set only the current Z position as work Z0. X/Y work zero will not be changed.')) return;
+  if (!transaction && !confirm('This will set only the current Z position as work Z0. X/Y work zero will not be changed.')) return;
 
   const toolZero = ensureToolZeroState();
-  await sendCmd('M400');
-  const before = await sendCmd('M114').then(parseM114);
-  await sendCmd('G92 Z0');
-  const after = await sendCmd('M114').then(parseM114);
+  let data = transaction;
+  if (!data) {
+    const res = await fetch('/api/work-zero/set-z', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    data = await readJsonOrThrow(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Z Zero failed');
+  }
+  const before = parseM114(data.before || '');
+  const after = parseM114(data.after || '');
+  currentMachineFrame = data.frame || currentMachineFrame;
   toolZero.method = 'G92 Z0';
   toolZero.capturedAt = nowIso();
   toolZero.beforeG92Z = before;
   toolZero.afterG92Z = after;
+  const machineZ = Number(data.frame?.workZeroMachine?.z);
+  if (Number.isFinite(machineZ) && jobState?.workZero?.machineReference?.position) {
+    jobState.workZero.machineReference.position.z = machineZ;
+    jobState.workZero.frame = { homingEpoch: Number(data.frame.homingEpoch), revision: Number(data.frame.revision) };
+    const activeZero = (jobState.zeroHistory || []).find((entry) => entry.id === jobState.activeWorkZeroId);
+    if (activeZero?.machineReference?.position) {
+      activeZero.machineReference.position.z = machineZ;
+      activeZero.frame = { ...jobState.workZero.frame };
+    }
+  }
   const history = await jobHistoryPromise;
   history.appendZZeroHistory(ensureJobState(), {
     before,
     after,
     capturedAt: toolZero.capturedAt,
+    frame: { homingEpoch: Number(data.frame?.homingEpoch), revision: Number(data.frame?.revision) },
   });
   markArmStaleForZZero();
   setToolZeroResult(`Z zero set. After G92 Z0: ${formatCapture(after)}`);
@@ -3486,6 +3556,7 @@ async function setZZeroWithCapture() {
   renderHistoryPanels();
   renderArmPanel();
   refreshRecoveryPlan();
+  await saveJobQuietly();
 }
 
 async function saveToolZeroToJob() {
@@ -3494,12 +3565,20 @@ async function saveToolZeroToJob() {
   setToolZeroResult(`Saved Tool/Z Zero to ${jobPathFor(filePath)}`);
 }
 
-async function setWorkZeroWithCapture() {
-  if (!confirm('This will make the current tool position the work zero for this job. Continue?')) return;
+async function setWorkZeroWithCapture(transaction = null) {
+  if (!transaction && !confirm('This will make the current tool position the work zero for this job. Continue?')) return;
   const job = ensureJobState();
-  const before = await captureM114();
-  await sendCmd('G92 X0 Y0 Z0');
-  const after = await captureM114();
+  let data = transaction;
+  if (!data) {
+    const res = await fetch('/api/work-zero/set', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    data = await readJsonOrThrow(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Work Zero failed');
+  }
+  const before = parseM114(data.before || '');
+  const after = parseM114(data.after || '');
+  currentMachineFrame = data.frame || currentMachineFrame;
   const zeroConfirmed = ['x', 'y', 'z'].every((axis) => (
     Number.isFinite(Number(after.position?.[axis])) && Math.abs(Number(after.position[axis])) <= 0.02
   ));
@@ -3507,18 +3586,18 @@ async function setWorkZeroWithCapture() {
     throw new Error(`Marlin did not confirm work zero after G92. Reported: ${formatCapture(after)}`);
   }
 
-  let machineReference = null;
-  try {
-    const motion = await motionSettingsPromise;
-    const m503 = await sendCmd('M503');
-    machineReference = motion.buildMachineReference(before, m503, nowIso());
-  } catch (err) {
-    setJobResult(`Work zero was set, but machine reference could not be captured: ${err.message}`, true);
-  }
+  const machinePosition = data.frame?.workZeroMachine;
+  const machineReference = machinePosition ? {
+    source: 'firmware machine frame', capturedAt: nowIso(), position: { ...machinePosition },
+  } : null;
   job.workZero.capturedAt = nowIso();
   job.workZero.beforeG92 = before;
   job.workZero.afterG92 = after;
   job.workZero.machineReference = machineReference;
+  job.workZero.frame = {
+    homingEpoch: Number(data.frame?.homingEpoch),
+    revision: Number(data.frame?.revision),
+  };
   job.startMode = 'use_active_work_zero';
   if (startModeSelect) startModeSelect.value = job.startMode;
   const history = await jobHistoryPromise;
@@ -3527,7 +3606,9 @@ async function setWorkZeroWithCapture() {
     after,
     capturedAt: job.workZero.capturedAt,
     machineReference,
+    frame: job.workZero.frame,
   });
+  await saveJobQuietly();
   setJobResult(`Work zero set and preserved for Start Job. After G92: ${formatCapture(after)}`);
   renderJobPanel();
   renderToolZeroPanel();
@@ -4501,6 +4582,12 @@ async function generateRunFile(options = {}) {
 async function loadPreview() {
   await motionSettingsPromise;
   await loadMachineLimits();
+  try {
+    const frameRes = await fetch('/api/machine/frame');
+    if (frameRes.ok) currentMachineFrame = await frameRes.json();
+  } catch (err) {
+    currentMachineFrame = null;
+  }
   if (!filePath) {
     redirectToFiles();
     return;
@@ -4535,7 +4622,7 @@ async function loadPreview() {
     if (runSafeStartZInput) {
       runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
     }
-    if (!jobState.startMode) jobState.startMode = 'apply_current_position_as_work_zero';
+    jobState.startMode = 'use_active_work_zero';
     if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
     if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
     jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
@@ -4778,8 +4865,25 @@ addEventListener('cnc-skin-change', draw);
 addEventListener('cnc-position-update', (event) => {
   const position = event.detail || {};
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+  if (position.frame) currentMachineFrame = position.frame;
   liveToolPosition = { ...position };
   draw();
+});
+addEventListener('cnc-machine-frame', (event) => {
+  currentMachineFrame = event.detail || currentMachineFrame;
+  renderPreflight();
+  renderArmPanel();
+  draw();
+});
+addEventListener('cnc-work-zero-set', (event) => {
+  if (!event.detail?.frame || !jobState) return;
+  currentMachineFrame = event.detail.frame;
+  setWorkZeroWithCapture(event.detail).catch((err) => setJobResult(err.message, true));
+});
+addEventListener('cnc-z-zero-set', (event) => {
+  if (!event.detail?.frame || !jobState) return;
+  currentMachineFrame = event.detail.frame;
+  setZZeroWithCapture(event.detail).catch((err) => setToolZeroResult(err.message, true));
 });
 addEventListener('cnc-position-trust', (event) => {
   if (event.detail?.trusted) setPositionTrust(true, event.detail.source || 'homing', event.detail.fullHoming === true);
@@ -4838,6 +4942,12 @@ jobReadinessPromise.then(renderReadiness).catch((err) => {
 loadPreview().catch(() => redirectToFiles(filePath));
 window.CncTelemetry?.subscribe('job', (data) => {
   applyJobRunStatus(data).catch((err) => appendRunLog(`Status update failed: ${err.message}`));
+  if (String(data?.state || '').toUpperCase() === 'RUNNING' && data?.lastCommand) {
+    handleMotionTelemetry({
+      events: [{ sequence: data.currentLineNumber, command: data.lastCommand }],
+      feedOverridePercent: data.feedOverridePercent,
+    });
+  }
   if (String(data?.state || '').toUpperCase() === 'PREPARING') {
     lastMotionSequence = 0;
     stopMotionAnimation();

@@ -3,6 +3,7 @@
     job: { state: 'UNKNOWN' },
     health: null,
     position: { x: null, y: null, z: null },
+    frame: { machine: null, work: null, workZeroMachine: null, homingEpoch: 0, trusted: false },
     drawerOpen: false,
     jogDockOpen: false,
     jogSettingsOpen: false,
@@ -51,9 +52,29 @@
   }
 
   function publishPosition(source) {
+    const zero = STATE.frame?.workZeroMachine;
+    if (zero && [STATE.position.x, STATE.position.y, STATE.position.z].every(Number.isFinite)) {
+      STATE.frame.work = { ...STATE.position };
+      STATE.frame.machine = {
+        x: zero.x + STATE.position.x,
+        y: zero.y + STATE.position.y,
+        z: zero.z + STATE.position.z,
+      };
+    }
     window.dispatchEvent(new CustomEvent('cnc-position-update', {
-      detail: { ...STATE.position, source, updatedAt: Date.now() },
+      detail: { ...STATE.position, frame: STATE.frame, source, updatedAt: Date.now() },
     }));
+  }
+
+  function applyFrame(frame, source = 'FRAME') {
+    if (!frame) return false;
+    const work = frame.work || frame;
+    if (![work?.x, work?.y, work?.z].every(Number.isFinite)) return false;
+    STATE.frame = { ...STATE.frame, ...frame, work };
+    STATE.position = { x: work.x, y: work.y, z: work.z };
+    publishPosition(source);
+    window.dispatchEvent(new CustomEvent('cnc-machine-frame', { detail: STATE.frame }));
+    return true;
   }
 
   function parseM114(text) {
@@ -145,9 +166,8 @@
     const trimmed = String(cmd || '').trim();
     if (!trimmed) return;
     const upper = trimmed.toUpperCase();
-    if ((upper === 'G92 Z0' || upper === 'G92 X0 Y0 Z0') && !confirm(`${upper} changes the active work zero. Continue?`)) {
-      return;
-    }
+    if (upper === 'G92 X0 Y0 Z0') return setWorkZero();
+    if (upper === 'G92 Z0') return setZZero();
     await sendCmd(trimmed);
   }
 
@@ -489,16 +509,20 @@
     if (!canSetup()) return;
     if (!confirmUnknown('setting work zero')) return;
     if (!confirm('This will set the current tool position as work X0/Y0/Z0.')) return;
-    await sendSequence(['M400', 'M114', 'G92 X0 Y0 Z0', 'M114']);
-    setMessage('Work zero set');
+    const data = await apiPost('/api/work-zero/set', {});
+    applyFrame(data.frame, 'WORK_ZERO');
+    window.dispatchEvent(new CustomEvent('cnc-work-zero-set', { detail: data }));
+    setMessage('Work zero set and frame synchronized');
   }
 
   async function setZZero() {
     if (!canSetZ()) return;
     if (!confirmUnknown('setting Z zero')) return;
     if (!confirm('This will set only current Z as work Z0. X/Y will not change.')) return;
-    await sendSequence(['M400', 'M114', 'G92 Z0', 'M114']);
-    setMessage('Z zero set');
+    const data = await apiPost('/api/work-zero/set-z', {});
+    applyFrame(data.frame, 'Z_ZERO');
+    window.dispatchEvent(new CustomEvent('cnc-z-zero-set', { detail: data }));
+    setMessage('Z zero set and frame synchronized');
   }
 
   async function captureAndSetWorkZero() {
@@ -513,10 +537,11 @@
     if (!canSetup()) return;
     if (!confirmUnknown('homing')) return;
     if (!confirm(message)) return;
-    await sendCmd(cmd);
-    await refreshPosition();
+    const axes = cmd === 'G28' ? 'all' : cmd.replace('G28', '').trim().toLowerCase().replace(/\s+/g, '');
+    const frame = await apiPost('/api/machine/home', { axes });
+    applyFrame(frame, 'HOME');
     window.dispatchEvent(new CustomEvent('cnc-position-trust', {
-      detail: { trusted: true, fullHoming, source: fullHoming ? 'home-all' : 'partial-homing' },
+      detail: { trusted: frame.trusted === true, fullHoming, homingEpoch: frame.homingEpoch, source: fullHoming ? 'home-all' : 'partial-homing' },
     }));
   }
 
@@ -602,7 +627,10 @@
     const liveMarlinEl = el('mb-live-marlin');
     const jogStatusEl = el('mb-jog-status');
     const jogSettingsToggleEl = el('mb-jog-settings-toggle');
-    const xyzText = `X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`;
+    const machine = STATE.frame?.machine;
+    const xyzText = machine
+      ? `M X ${fmtAxis(machine.x)} Y ${fmtAxis(machine.y)} Z ${fmtAxis(machine.z)} | W X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`
+      : `W X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`;
     const feed = feedPercent();
     const entries = STATE.marlinLog?.entries || [];
     const lastEntry = entries.length ? entries[entries.length - 1] : null;
@@ -978,9 +1006,7 @@
       render();
     });
     window.CncTelemetry?.subscribe('position', (data) => {
-      if (![data?.x, data?.y, data?.z].every(Number.isFinite)) return;
-      STATE.position = { x: data.x, y: data.y, z: data.z };
-      publishPosition('MARLIN');
+      if (!applyFrame(data, 'MARLIN')) return;
       render();
     });
     window.addEventListener('blur', () => stopJog().catch(() => {}));

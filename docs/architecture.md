@@ -83,6 +83,13 @@ or job runner functionality.
     seconds while idle, and disabled when no client remains.
   - Position reports are change-filtered. Predictive animation is deliberately not corrected by
     reported-position error in this phase.
+  - Preview preserves each parsed segment's streamed command number. Motion deltas animate the
+    commanded segment immediately using its retained length and feed, while `M154 S1` reports update
+    the authoritative machine frame.
+  - If WebSocket telemetry is unavailable, sparse job-status polling deduplicates by command number
+    and starts the same animation; this is delayed but smooth rather than a point-to-point jump.
+  - During a long streamed G2/G3 command, complete M154 position lines are parsed as they arrive;
+    firmware does not wait for the motion command's final `ok` before publishing position changes.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, short relative movement ticks, and
@@ -114,7 +121,23 @@ or job runner functionality.
   - Parses 515DL `area.full` / `area.work`, identity, and selected capabilities.
   - Uses `area.full` for Preview and guarded restore/resume bounds; falls back to compiled defaults.
   - Settings reads `M503` and `M211` on demand. Editable M92/M203/M201/M204 changes apply to
-    Marlin RAM only; `M500` persistence is always a separate explicit action.
+  Marlin RAM only; `M500` persistence is always a separate explicit action.
+- Coordinate-frame ownership:
+  - Firmware owns homing and XYZ work-zero transitions.
+  - `machine` coordinates remain tied to the physical Home All session; `work` coordinates are the
+    active G54/G92 coordinates; `workZeroMachine` maps G-code origin onto the physical table.
+  - Full homing creates a new `homingEpoch`. Saved job zeros from another epoch are not silently
+    reused.
+  - Normal Start Job never sends G92. It verifies the armed work-zero ID, epoch, and machine-space
+    origin before streaming.
+  - Position telemetry publishes changed frame state only; browser motion prediction updates both
+    work and machine display while periodic Marlin reports remain authoritative.
+- Asynchronous job start:
+  - `POST /api/job/start` validates and opens the armed run, queues the Marlin start preamble, and
+    returns `PREPARING` immediately.
+  - The main loop advances the preamble one acknowledged command at a time. It changes to `RUNNING`
+    only after the entire preamble succeeds, so no file line is streamed during `PREPARING`.
+  - A Marlin error or timeout closes the run file and changes the job to `ERROR`.
 
 ## Explicitly Out Of Scope
 

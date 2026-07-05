@@ -188,6 +188,7 @@ export function createZeroHistoryEntry(options = {}) {
     countsBefore: before.counts,
     countsAfter: after.counts,
     machineReference: options.machineReference ? structuredClone(options.machineReference) : null,
+    frame: options.frame ? structuredClone(options.frame) : null,
     restores: Array.isArray(options.restores) ? structuredClone(options.restores) : [],
     usedByRuns: Array.isArray(options.usedByRuns) ? [...options.usedByRuns] : [],
   };

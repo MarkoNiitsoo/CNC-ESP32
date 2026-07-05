@@ -25,8 +25,9 @@ restarted and the machine does not descend to cutting depth.
 - Safe Z and the resume target fit configured X/Y/Z limits.
 - No job or pause state is currently active.
 
-Position trust is session-only browser metadata. Successful homing in the shared Machine Bar marks
-it trusted. The operator may also confirm homing explicitly in the Recovery panel. Firmware reboot,
+Position trust is anchored by firmware `homingEpoch` and homed-axis state. Successful Home All
+creates the trusted frame consumed by Machine Bar and Preview. Operator confirmation remains an
+additional recovery gate, not the source of machine coordinates. Firmware reboot,
 firmware identity change, Cancel/Start Over, or the explicit untrust action clears it.
 
 ## Candidate Policy

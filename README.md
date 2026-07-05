@@ -277,7 +277,7 @@ Each G-code file can have a sidecar job file under `/jobs`, for example:
 /jobs/example.gc.job.json
 ```
 
-Job JSON stores preview metadata, work zero captures, dry-run status, arming information, start mode, workspace behavior, and feed override settings.
+Job JSON stores preview metadata, machine-space work-zero identity, dry-run status, arming information, workspace behavior, and feed override settings.
 
 Example:
 
@@ -286,7 +286,7 @@ Example:
   "schemaVersion": 2,
   "gcodePath": "/gcode/example.gc",
   "jobPath": "/jobs/example.gc.job.json",
-  "startMode": "apply_current_position_as_work_zero",
+  "startMode": "use_active_work_zero",
   "allowedWorkspaceCommands": false,
   "preview": {
     "bounds": {

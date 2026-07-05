@@ -1,5 +1,9 @@
 # Mobile Job Flow
 
+Machine position and work position remain distinct. Home All establishes the machine frame. Set
+Work Zero stores where G-code X0/Y0/Z0 lies on that physical frame. Preview, Bounding Box, Arm, and
+Run use the same saved origin; Run never redefines it.
+
 ## Browser telemetry budget
 
 `/www/telemetry.js` is the single per-page owner of read-only HTTP telemetry. Machine Bar and page

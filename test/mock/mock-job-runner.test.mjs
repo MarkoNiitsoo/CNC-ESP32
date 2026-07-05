@@ -30,8 +30,13 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
   const jobPath = '/jobs/job.job.json';
   await sd.writeText(jobPath, JSON.stringify(job));
   const marlin = new MockMarlin();
-  const runner = new MockJobRunner({ sd, marlin, lineDelayMs: delay });
-  return { sd, marlin, runner, job, jobPath, gcodePath, request: { gcodePath, jobPath, activeRunMode: mode, activeRunFingerprint: fingerprint } };
+  const frame = { trusted: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
+  const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: delay });
+  return { sd, marlin, runner, job, jobPath, gcodePath, request: {
+    gcodePath, jobPath, activeRunMode: mode, activeRunFingerprint: fingerprint,
+    startMode: 'use_active_work_zero', workZeroId: 'zero-test', homingEpoch: 1,
+    workZeroMachineX: 0, workZeroMachineY: 0, workZeroMachineZ: 0,
+  } };
 }
 
 async function waitForState(runner, states, timeout = 1000) {

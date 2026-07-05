@@ -1,5 +1,12 @@
 # Job Metadata
 
+## Coordinate frame identity
+
+Work-zero records store `machineReference.position` and `frame.homingEpoch`. Arming binds the run
+to `activeWorkZeroId`; Start sends that identity and machine-space XYZ to firmware for verification.
+`beforeG92.position` remains for audit/backward compatibility but is not the canvas table anchor
+when a machine reference exists. Normal Start never creates or replaces a zero.
+
 ## Purpose
 
 `job.json` is the job memory. It stores the relationship between the original file, generated run

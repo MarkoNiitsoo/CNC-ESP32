@@ -4,20 +4,23 @@ import { describe, expect, it } from 'vitest';
 const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
 const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
 const styles = await readFile(new URL('../../www/style.css', import.meta.url), 'utf8');
+const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 
 describe('compact machine drawer', () => {
   it('prevents mobile long-press selection on interactive buttons', () => {
     expect(styles).toMatch(/button,[\s\S]*?\[role="button"\][\s\S]*?user-select:\s*none;[\s\S]*?-webkit-user-select:\s*none;[\s\S]*?-webkit-touch-callout:\s*none;/);
   });
 
-  it('sets and verifies Preview work zero before optional machine-reference discovery', async () => {
+  it('sets Preview work zero through the firmware-owned frame transaction', async () => {
     const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
-    const start = preview.indexOf('async function setWorkZeroWithCapture()');
+    const start = preview.indexOf('async function setWorkZeroWithCapture(');
     const end = preview.indexOf('function downloadJobJson()', start);
     const action = preview.slice(start, end);
-    expect(action.indexOf("await sendCmd('G92 X0 Y0 Z0')")).toBeLessThan(action.indexOf("await sendCmd('M503')"));
-    expect(action).toContain('Marlin did not confirm work zero after G92');
-    expect(action).toMatch(/G92 X0 Y0 Z0'[\s\S]*const after = await captureM114\(\)/);
+    expect(action).toContain("fetch('/api/work-zero/set'");
+    expect(action).not.toContain("sendCmd('G92 X0 Y0 Z0')");
+    expect(action).toContain('data.frame?.workZeroMachine');
+    expect(action).toContain('homingEpoch');
     expect(action).toContain("job.startMode = 'use_active_work_zero'");
     expect(action).toContain('startModeSelect.value = job.startMode');
   });
@@ -96,8 +99,8 @@ describe('compact machine drawer', () => {
     expect(machineBar).not.toContain('refreshJobStatus().then(() => pollPosition())');
     expect(machineBar).toContain("button('mb-m114', refreshPosition)");
     expect(machineBar).toContain("subscribe('position'");
-    expect(machineBar).toContain("publishPosition('MARLIN')");
-    expect(machineBar).toMatch(/async function home[\s\S]*await sendCmd\(cmd\);[\s\S]*await refreshPosition\(\)/);
+    expect(machineBar).toContain("applyFrame(data, 'MARLIN')");
+    expect(machineBar).toMatch(/async function home[\s\S]*apiPost\('\/api\/machine\/home'/);
   });
 });
 
@@ -119,6 +122,54 @@ describe('firmware-backed Go To Work Zero', () => {
     expect(handler).toContain('extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed)');
     expect(handler).toContain('String(travelFeedMmMin, 0)');
     expect(machineBar).toContain('travelFeedMmMin: Math.round(travelSpeedMmS * 60)');
+  });
+});
+
+describe('firmware-owned coordinate frames', () => {
+  it('owns homing and work-zero transitions in dedicated endpoints', () => {
+    expect(firmware).toContain('server.on("/api/machine/frame", HTTP_GET, handleMachineFrame)');
+    expect(firmware).toContain('server.on("/api/machine/home", HTTP_POST, handleMachineHome)');
+    expect(firmware).toContain('server.on("/api/work-zero/set", HTTP_POST, handleSetWorkZero)');
+    expect(machineBar).toContain("apiPost('/api/machine/home'");
+    expect(machineBar).toContain("apiPost('/api/work-zero/set'");
+  });
+
+  it('never reapplies G92 from the normal Start Job preamble', () => {
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    expect(preamble).not.toMatch(/G92/);
+    expect(firmware).toContain('Start Job never applies G92');
+    expect(preview).toContain("startMode: 'use_active_work_zero'");
+    expect(previewHtml).not.toContain('value="apply_current_position_as_work_zero"');
+  });
+
+  it('runs Start Job preamble asynchronously before streaming file lines', () => {
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    expect(preamble).toContain('appendPriorityCommand(command)');
+    expect(firmware).toContain('jobStatus.state == JobRunnerState::Preparing');
+    expect(firmware).toContain('start preamble complete: ');
+    expect(preview).toContain('Network reply was lost; reconciled');
+  });
+
+  it('enables position autoreport and parses reports while a streamed command is active', () => {
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    const runner = firmware.slice(firmware.indexOf('void processJobRunner() {'), firmware.indexOf('String htmlPage'));
+    expect(preamble).toContain('appendPriorityCommand("M154 S1")');
+    expect(runner).toContain('updatePositionFromMarlinResponse(marlinAsyncLine)');
+    expect(firmware).toContain('machinePosition');
+    expect(preview).toContain('sequence: data.currentLineNumber');
+  });
+
+  it('keeps position fields valid inside job status JSON', () => {
+    const statusJson = firmware.slice(firmware.indexOf('String jobStatusJson()'), firmware.indexOf('String jobStatusJsonWithMessage'));
+    expect(statusJson).toContain('json += ",\\\"machinePosition\\\":"');
+    expect(statusJson).toContain('json += ",\\\"uptimeMs\\\":"');
+    expect(statusJson).not.toContain('json += "\\\",\\\"uptimeMs\\\":"');
+  });
+
+  it('shows separate machine/work coordinates and predicts both from jog commands', () => {
+    expect(machineBar).toContain('`M X ${fmtAxis(machine.x)}');
+    expect(machineBar).toContain('STATE.frame.work = { ...STATE.position }');
+    expect(machineBar).toContain('x: zero.x + STATE.position.x');
   });
 });
 

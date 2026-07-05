@@ -176,7 +176,7 @@ describe('motion-only recovery UI safety contract', () => {
     expect(previewSource).toContain("const positionTrustKey = 'lowrider.positionTrust'");
     expect(previewSource).toContain('sessionStorage.setItem(positionTrustKey');
     expect(previewSource).toMatch(/uptime < positionTrust\.bootUptimeMs[\s\S]*setPositionTrust\(false, 'firmware-reboot'\)/);
-    expect(machineBarSource).toContain("detail: { trusted: true, fullHoming, source:");
+    expect(machineBarSource).toContain("detail: { trusted: frame.trusted === true, fullHoming, homingEpoch: frame.homingEpoch");
     expect(machineBarSource).toMatch(/home\('G28',[\s\S]*true\)/);
   });
 

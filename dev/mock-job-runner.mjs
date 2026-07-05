@@ -11,9 +11,10 @@ function sleep(ms) {
 }
 
 export class MockJobRunner {
-  constructor({ sd, marlin, lineDelayMs = 20 } = {}) {
+  constructor({ sd, marlin, frame, lineDelayMs = 20 } = {}) {
     this.sd = sd;
     this.marlin = marlin;
+    this.frame = frame;
     this.lineDelayMs = Math.max(0, Number(lineDelayMs) || 0);
     this.runToken = 0;
     this.status = this.emptyStatus();
@@ -75,9 +76,12 @@ export class MockJobRunner {
 
     const text = await this.sd.readText(active.path);
     const bytes = Buffer.byteLength(text);
-    const startMode = request.startMode || job.startMode || 'apply_current_position_as_work_zero';
-    if (!['apply_current_position_as_work_zero', 'use_active_work_zero'].includes(startMode)) {
-      throw new Error('invalid startMode');
+    const startMode = request.startMode || job.startMode || 'use_active_work_zero';
+    if (startMode !== 'use_active_work_zero') throw new Error('Start Job never applies G92');
+    const zero = this.frame?.workZeroMachine;
+    if (!this.frame?.trusted || !zero || Number(request.homingEpoch) !== Number(this.frame.homingEpoch) ||
+        !request.workZeroId || ['x', 'y', 'z'].some((axis) => Math.abs(Number(request[`workZeroMachine${axis.toUpperCase()}`]) - Number(zero[axis])) > 0.05)) {
+      throw new Error('active work zero does not match the homed machine frame');
     }
     const safeStartZ = Number.isFinite(Number(request.safeStartZ)) ? Number(request.safeStartZ) : Number(job.safeStartZ || 15);
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
@@ -88,7 +92,6 @@ export class MockJobRunner {
     };
 
     const preamble = ['M5', 'G21', 'G90', 'G54', `M220 S${feed}`, 'M400', 'M114'];
-    if (startMode === 'apply_current_position_as_work_zero') preamble.push('G92 X0 Y0 Z0', 'M114');
     preamble.push(`G0 Z${safeStartZ.toFixed(3)} F400`, 'M400');
     for (const command of preamble) {
       const result = this.runCommand(command);

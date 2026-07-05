@@ -348,11 +348,8 @@
           <div id="feed-live-result" class="job-result"></div>
         </section>
         <div class="dry-run-inputs">
-          <label for="start-mode">Start mode</label>
-          <select id="start-mode">
-            <option value="apply_current_position_as_work_zero" selected>Apply current position as work zero</option>
-            <option value="use_active_work_zero">Use active work zero</option>
-          </select>
+          <input id="start-mode" type="hidden" value="use_active_work_zero">
+          <p>Start uses the saved active work zero. Starting a job never changes zero.</p>
           <label for="run-safe-start-z">Safe start Z (mm)</label>
           <input id="run-safe-start-z" type="number" inputmode="decimal" min="0" max="200" step="0.1" value="15">
         </div>

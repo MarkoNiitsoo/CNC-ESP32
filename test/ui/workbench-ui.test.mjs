@@ -237,6 +237,20 @@ describe('canvas workbench control policy', () => {
     expect(motionDurationMs(line, { feedOverridePercent: 100 })).toBe(1000);
   });
 
+  it('prefers the saved machine-space work-zero reference for canvas placement', () => {
+    const job = {
+      activeWorkZeroId: 'zero-machine',
+      zeroHistory: [{
+        id: 'zero-machine', type: 'workZero',
+        positionBefore: { x: 0, y: 0, z: 0 },
+        machineReference: { position: { x: 100, y: 500, z: 42 } },
+      }],
+    };
+    expect(workZeroTablePosition(job)).toEqual({ x: 100, y: 500, z: 42 });
+    expect(translatePosition({ x: 10, y: 20, z: -2 }, workZeroTablePosition(job)))
+      .toMatchObject({ x: 110, y: 520, z: -2 });
+  });
+
   it('keeps Start Cut deliberate while Pause, Stop, and M5 remain direct', () => {
     expect(actionPolicy('start_cut')).toMatchObject({ mode: 'hold', holdMs: 1000 });
     expect(actionPolicy('pause').mode).toBe('direct');

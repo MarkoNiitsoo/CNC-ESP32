@@ -1,5 +1,18 @@
 # Safety Testing
 
+## Coordinate-frame regression test
+
+First hardware test must use router/spindle off and preferably no cutter:
+
+1. Home All and verify status shows machine and work coordinates separately.
+2. Jog to approximately machine X100/Y500 and leave enough Z clearance for Safe Z.
+3. Set Work Zero. Work must report about X0/Y0/Z0 while machine remains near X100/Y500.
+4. Reload Preview. WORK ZERO and job geometry must appear at the saved machine position.
+5. Run Bounding Box and verify it follows that placement and restores captured X/Y/Z.
+6. Arm and Start. The Marlin Start preamble must contain no G92.
+7. Confirm file X0/Y0 remains at the saved physical work zero and does not move to Home.
+8. Home All again. The old job must block until saved zero is restored or a new zero is set.
+
 ## Streaming and large-file separation
 
 1. Verify normal job execution reads through `File`/`readNextCleanJobLine` and never builds a RAM

@@ -85,6 +85,12 @@ function safeUploadName(filename) {
   return name;
 }
 
+function syncMockFrame(env) {
+  env.frame.machine = { ...env.marlin.machinePosition };
+  env.frame.work = { ...env.marlin.position };
+  env.frame.revision += 1;
+}
+
 async function staticFile(wwwRoot, pathname) {
   const route = pathname === '/' ? '/index.html' : pathname === '/files' ? '/files.html' : pathname;
   const decoded = decodeURIComponent(route);
@@ -103,13 +109,17 @@ export async function createMockEnvironment(options = {}) {
   const sd = new MockSD(options.mockRoot || path.join(projectRoot, 'dev', 'mock-sd'));
   await sd.seedSamples();
   const marlin = new MockMarlin(config);
-  const runner = new MockJobRunner({ sd, marlin, lineDelayMs: config.lineDelayMs });
+  const frame = {
+    machine: null, work: { ...marlin.position }, workZeroMachine: null,
+    homedAxes: { x: false, y: false, z: false }, homingEpoch: 0, revision: 0, trusted: false,
+  };
+  const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: config.lineDelayMs });
   const jog = {
     state: 'IDLE', safeJog: true, zLiftedForJog: false, safeLiftZ: 70,
     restoreZAfterJog: true, xyFeedMax: 3000, zFeedMax: 400, lastCommand: '', lastError: '',
     lastUpdateAt: 0,
   };
-  return { projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, jog, startedAt: Date.now() };
+  return { projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, startedAt: Date.now() };
 }
 
 export async function createMockServer(options = {}) {
@@ -178,6 +188,7 @@ export async function createMockServer(options = {}) {
           return json(res, 409, { ok: false, error: 'job is running; manual command rejected' });
         }
         const result = env.marlin.execute(command, { priority: upper === 'M5' });
+        if (result.ok && env.frame.trusted) syncMockFrame(env);
         return json(res, result.ok ? 200 : 400, result);
       }
       if (req.method === 'GET' && pathname === '/api/job/status') return json(res, 200, env.runner.snapshot());
@@ -211,6 +222,55 @@ export async function createMockServer(options = {}) {
           ok: true, axes, safeMove, safeZ,
           message: 'Work-zero move accepted. Z will remain at safe height after XY movement.',
         });
+      }
+      if (req.method === 'GET' && pathname === '/api/machine/frame') return json(res, 200, env.frame);
+      if (req.method === 'POST' && pathname === '/api/machine/home') {
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'homing requires idle Marlin transport' });
+        const axes = String((await readJson(req)).axes || 'all').toLowerCase();
+        if (!['x', 'y', 'z', 'xy', 'all'].includes(axes)) throw new Error('axes must be x, y, z, xy, or all');
+        env.marlin.allowHoming = true;
+        const suffix = axes === 'all' ? '' : ` ${axes.toUpperCase().split('').join(' ')}`;
+        const result = env.marlin.execute(`G28${suffix}`);
+        env.marlin.allowHoming = false;
+        if (!result.ok) return json(res, 502, result);
+        if (axes === 'all') {
+          env.marlin.execute('G54');
+          env.marlin.execute('G92 X0 Y0 Z0');
+          env.frame.homedAxes = { x: true, y: true, z: true };
+          env.frame.homingEpoch += 1;
+          env.frame.trusted = true;
+          env.frame.workZeroMachine = { ...env.marlin.machinePosition };
+        } else {
+          for (const axis of axes) env.frame.homedAxes[axis] = true;
+          env.frame.trusted = false;
+          env.frame.workZeroMachine = null;
+        }
+        env.frame.machine = { ...env.marlin.machinePosition };
+        env.frame.work = { ...env.marlin.position };
+        env.frame.revision += 1;
+        return json(res, 200, env.frame);
+      }
+      if (req.method === 'POST' && pathname === '/api/work-zero/set') {
+        if (!env.frame.trusted || env.runner.isActive()) return json(res, 409, { ok: false, error: 'Home All is required before setting a job work zero' });
+        const before = env.marlin.execute('M114').response;
+        env.marlin.execute('G92 X0 Y0 Z0');
+        const after = env.marlin.execute('M114').response;
+        env.frame.machine = { ...env.marlin.machinePosition };
+        env.frame.work = { ...env.marlin.position };
+        env.frame.workZeroMachine = { ...env.marlin.machinePosition };
+        env.frame.revision += 1;
+        return json(res, 200, { ok: true, before, after, frame: env.frame });
+      }
+      if (req.method === 'POST' && pathname === '/api/work-zero/set-z') {
+        if (!env.frame.trusted || !env.frame.workZeroMachine || env.runner.isActive()) {
+          return json(res, 409, { ok: false, error: 'Home All and an active work frame are required before setting Z zero' });
+        }
+        const before = env.marlin.execute('M114').response;
+        env.marlin.execute('G92 Z0');
+        const after = env.marlin.execute('M114').response;
+        syncMockFrame(env);
+        env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        return json(res, 200, { ok: true, before, after, frame: env.frame });
       }
       if (req.method === 'GET' && pathname === '/api/machine/info') {
         const m = env.marlin.machine;
@@ -264,6 +324,7 @@ export async function createMockServer(options = {}) {
           last = env.marlin.execute(command, { priority: true, allowMachineCoordinates: true });
           if (!last.ok) return json(res, 502, last);
         }
+        syncMockFrame(env);
         return json(res, 200, { ok: true, machineX, machineY, safeMachineZ, response: last.response, message: 'Saved XY work zero restored. Z zero was not changed.' });
       }
       if (req.method === 'GET' && pathname === '/api/jog/status') {

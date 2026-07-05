@@ -227,7 +227,12 @@ Request body:
   "gcodePath": "/gcode/test.gcode",
   "jobPath": "/jobs/test.gcode.job.json",
   "activeRunMode": "source",
-  "startMode": "apply_current_position_as_work_zero",
+  "startMode": "use_active_work_zero",
+  "workZeroId": "zero-...",
+  "homingEpoch": 3,
+  "workZeroMachineX": 100,
+  "workZeroMachineY": 500,
+  "workZeroMachineZ": 42,
   "safeStartZ": 15
 }
 ```
@@ -238,27 +243,42 @@ may use `/jobs/generated/...` only when `activeRunMode` is `"generated"` and the
 contains the same path as a validated active run. The browser sets generated active-run intent when
 the operator changes visible placement; there is no separate generated-file confirmation step in the
 normal workflow. The MVP verifies `ARMED` and generated active-run
-provenance with minimal string checks; robust JSON parsing is a TODO. The default `startMode` is
-`apply_current_position_as_work_zero`.
+provenance with minimal string checks; robust JSON parsing is a TODO. The only normal start mode is
+`use_active_work_zero`.
 
 ARMED, workspace permission, and generated active-run validation tokens are scanned across the
 complete SD file with a bounded rolling buffer. Their location is not limited to the first 8/16 KB
 of job history.
 
-Before streaming, the firmware sends this preamble:
+Before streaming, firmware verifies the requested work-zero ID, homing epoch, and machine-space
+origin against its active frame. It then sends:
 
-- `apply_current_position_as_work_zero`:
-  `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`, `G92 X0 Y0 Z0`, `M114`,
-  `G0 Z<safeStartZ> F400`, `M400`, `G0 F<travelFeedMmMin>`
-- `use_active_work_zero`:
-  `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`,
-  `G0 Z<safeStartZ> F400`, `M400`, `G0 F<travelFeedMmMin>`
+`M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`,
+`G0 Z<safeStartZ> F400`, `M400`, `G0 F<travelFeedMmMin>`
+
+Normal Start Job never sends `G92`. A mismatch returns HTTP 409 and requires Set Work Zero or an
+explicit saved-zero restore before re-arming.
+
+An accepted request returns status with `state: "PREPARING"`. Firmware executes the preamble
+asynchronously and publishes the later `RUNNING` or `ERROR` transition through normal job-status
+telemetry. An accepted HTTP response does not mean file streaming has already begun.
 
 `startPercent` is read from job JSON `feedOverride.startPercent` and defaults to `100`.
 
-After Preview's **Capture + Set Work Zero** succeeds and Marlin confirms X/Y/Z zero, the UI changes
-the job to `use_active_work_zero`. This prevents a later dry run, jog, or positioning move from
-being mistaken for a new work zero when Start Job is pressed.
+Preview and Machine Bar both use firmware-owned `POST /api/work-zero/set`. The response contains
+before/after M114 text and the active machine frame; Preview saves its machine-space origin and
+homing epoch immediately.
+
+### Coordinate frame API
+
+- `GET /api/machine/frame` returns `machine`, `work`, `workZeroMachine`, homed axes,
+  `homingEpoch`, revision, and trust state.
+- `POST /api/machine/home` accepts `{ "axes": "x|y|z|xy|all" }`. Home All establishes a new
+  trusted epoch and deterministic temporary baseline at physical home.
+- `POST /api/work-zero/set` requires trusted Home All, performs the complete M400/M114/G92/M114
+  transaction, and returns the synchronized frame.
+- `POST /api/work-zero/set-z` performs the corresponding Z-only transaction and updates the same
+  machine-space frame without changing X/Y origin.
 
 Bounding Box Trace captures the current X/Y/Z before motion. After tracing at Safe Z, it returns
 to the captured X/Y while still high, restores the captured Z, and finishes with `M400`. A failed
