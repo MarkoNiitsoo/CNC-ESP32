@@ -10,6 +10,7 @@ const machineBarSource = await readFile(new URL('../../www/machine-bar.js', impo
 const controllerSource = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
 const model = parseGCodeToToolpath(source);
 const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: 0, zMax: 70 };
+const workZeroMachine = { x: 0, y: 0, z: 35 };
 
 function jobFor(state = 'interrupted', overrides = {}) {
   return {
@@ -29,7 +30,7 @@ function jobFor(state = 'interrupted', overrides = {}) {
 }
 
 function plan(job = jobFor(), options = {}) {
-  return planMotionOnlyRecovery({ job, toolpathModel: model, safeZ: 15, limits, positionTrusted: true, ...options });
+  return planMotionOnlyRecovery({ job, toolpathModel: model, safeZ: 15, limits, workZeroMachine, positionTrusted: true, workZeroFrameMatches: true, ...options });
 }
 
 describe('motion-only recovery planner', () => {
@@ -146,7 +147,7 @@ describe('motion-only recovery planner', () => {
 
 describe('motion-only recovery commands', () => {
   it('lifts before XY and contains no cutting, homing, machine-coordinate, or zero commands', () => {
-    const result = buildMotionOnlyRecoveryCommands(plan(), { positionTrusted: true, limits });
+    const result = buildMotionOnlyRecoveryCommands(plan(), { positionTrusted: true, limits, workZeroMachine });
     expect(result.ok).toBe(true);
     expect(result.commands[0]).toBe('M5');
     expect(result.commands).toEqual(expect.arrayContaining(['G21', 'G90', 'G54', 'G0 Z15 F400', 'G0 X0 Y0 F3000', 'M400']));
@@ -156,8 +157,12 @@ describe('motion-only recovery commands', () => {
   });
 
   it('does not generate commands for untrusted or out-of-bounds motion', () => {
-    expect(buildMotionOnlyRecoveryCommands(plan(), { positionTrusted: false, limits }).ok).toBe(false);
-    expect(buildMotionOnlyRecoveryCommands(plan(), { positionTrusted: true, limits: { ...limits, xMin: 1 } }).ok).toBe(false);
+    expect(buildMotionOnlyRecoveryCommands(plan(), { positionTrusted: false, limits, workZeroMachine }).ok).toBe(false);
+    expect(buildMotionOnlyRecoveryCommands(plan(), { positionTrusted: true, limits: { ...limits, xMin: 1 }, workZeroMachine }).ok).toBe(false);
+  });
+
+  it('blocks motion until the saved zero is restored into the current Home All session', () => {
+    expect(plan(jobFor(), { workZeroFrameMatches: false }).blockingReasons.map((x) => x.id)).toContain('workZeroFrame');
   });
 });
 

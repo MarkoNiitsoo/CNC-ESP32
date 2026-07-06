@@ -105,6 +105,14 @@ describe('compact machine drawer', () => {
 });
 
 describe('firmware-backed Go To Work Zero', () => {
+  it('anchors machine coordinates to Home All counts instead of the previous G92 frame', () => {
+    expect(firmware).toContain('parseM114Counts');
+    expect(firmware).toContain('parseM92Steps');
+    expect(firmware).toContain('machineFrame.absoluteFromHome = true');
+    expect(firmware).toMatch(/countX - machineFrame\.homeCountX/);
+    expect(firmware).toContain('homingSessionId');
+    expect(preview).toContain('homingSessionId: zeroReference.homingSessionId');
+  });
   const handler = firmware.slice(
     firmware.indexOf('void handleGoToWorkZero()'),
     firmware.indexOf('void handleRestoreWorkZero()')

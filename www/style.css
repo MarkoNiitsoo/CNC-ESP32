@@ -324,6 +324,36 @@ button.machine-danger-dark {
   gap: 10px;
 }
 
+.device-settings-panel,
+.device-settings-form {
+  gap: 10px;
+}
+
+.device-settings-form,
+.device-settings-form label {
+  display: grid;
+}
+
+.device-settings-form label {
+  gap: 5px;
+}
+
+.device-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-url-preview {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.device-url-preview a {
+  color: var(--cnc-accent-soft);
+  font-weight: 800;
+}
+
 .machine-config-group {
   display: grid;
   grid-template-columns: minmax(150px, 1.5fr) repeat(3, minmax(72px, 0.7fr)) auto;

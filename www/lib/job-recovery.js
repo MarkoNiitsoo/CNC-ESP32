@@ -33,11 +33,21 @@ function interruptionLine(run = {}) {
   return null;
 }
 
-function insideLimits(position, limits) {
-  if (!finitePosition(position) || !limits) return false;
-  return position.x >= limits.xMin && position.x <= limits.xMax &&
-    position.y >= limits.yMin && position.y <= limits.yMax &&
-    position.z >= limits.zMin && position.z <= limits.zMax;
+function machinePositionForWork(position, workZeroMachine) {
+  if (!finitePosition(position) || !finitePosition(workZeroMachine)) return null;
+  return {
+    x: Number(workZeroMachine.x) + Number(position.x),
+    y: Number(workZeroMachine.y) + Number(position.y),
+    z: Number(workZeroMachine.z) + Number(position.z),
+  };
+}
+
+function insideLimits(position, limits, workZeroMachine) {
+  const machine = machinePositionForWork(position, workZeroMachine);
+  if (!machine || !limits) return false;
+  return machine.x >= limits.xMin && machine.x <= limits.xMax &&
+    machine.y >= limits.yMin && machine.y <= limits.yMax &&
+    machine.z >= limits.zMin && machine.z <= limits.zMax;
 }
 
 function addBlock(blockingReasons, id, message) {
@@ -66,7 +76,9 @@ export function planMotionOnlyRecovery(options = {}) {
   const model = options.toolpathModel;
   const safeZ = Number(options.safeZ ?? 15);
   const limits = options.limits || null;
+  const workZeroMachine = options.workZeroMachine || null;
   const positionTrusted = options.positionTrusted === true;
+  const workZeroFrameMatches = options.workZeroFrameMatches === true;
   const machineState = String(options.machineState || '').toUpperCase();
   const activeRun = getActiveRun(job);
   const activeFingerprint = options.activeRunFingerprint || getActiveRunFingerprint(job);
@@ -110,10 +122,12 @@ export function planMotionOnlyRecovery(options = {}) {
     });
   }
   if (!positionTrusted) addBlock(blockingReasons, 'positionUntrusted', 'Machine position is not trusted. Home and explicitly confirm position trust.');
+  if (!workZeroFrameMatches) addBlock(blockingReasons, 'workZeroFrame', 'Saved work zero is not restored in the current Home All session.');
   if (ACTIVE_MACHINE_STATES.has(machineState)) addBlock(blockingReasons, 'machineBusy', `Recovery motion is blocked while job state is ${machineState}.`);
   if (!limits || !['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'].every((key) => Number.isFinite(Number(limits[key])))) {
     addBlock(blockingReasons, 'limitsMissing', 'Machine limits are missing.');
   }
+  if (!finitePosition(workZeroMachine)) addBlock(blockingReasons, 'workZeroMachine', 'Saved Home-relative work zero is missing.');
   if (!Number.isFinite(safeZ) || safeZ <= 0) addBlock(blockingReasons, 'safeZ', 'Safe Z must be a positive number.');
   if (limits && Number.isFinite(safeZ) && (safeZ < Number(limits.zMin) || safeZ > Number(limits.zMax))) {
     addBlock(blockingReasons, 'safeZLimits', `Safe Z ${safeZ} is outside configured Z limits ${limits.zMin}..${limits.zMax}.`);
@@ -161,7 +175,7 @@ export function planMotionOnlyRecovery(options = {}) {
     }
   }
   if (!candidate) addBlock(blockingReasons, 'safePoint', 'No previous safe-Z resume point was found before the interruption.');
-  if (candidate && limits && !insideLimits(candidate.position, limits)) {
+  if (candidate && limits && !insideLimits(candidate.position, limits, workZeroMachine)) {
     addBlock(blockingReasons, 'limits', 'Proposed resume point is outside configured machine limits.');
   }
 
@@ -211,13 +225,14 @@ export function planMotionOnlyRecovery(options = {}) {
 export function buildMotionOnlyRecoveryCommands(plan, options = {}) {
   const blockingReasons = [...(plan?.blockingReasons || [])];
   const limits = options.limits || null;
+  const workZeroMachine = options.workZeroMachine || null;
   const target = plan?.resumeCandidate?.position;
   const safeZ = Number(plan?.resumeCandidate?.safeZ);
   const travelFeed = Number(options.travelFeedMmMin ?? 3000);
   const zFeed = Number(options.zFeedMmMin ?? 400);
   if (options.positionTrusted !== true) addBlock(blockingReasons, 'positionUntrusted', 'Machine position is not trusted.');
   if (plan?.status !== 'available') addBlock(blockingReasons, 'plan', plan?.reason || 'Recovery plan is not available.');
-  if (!insideLimits(target, limits)) addBlock(blockingReasons, 'limits', 'Resume target is outside configured machine limits.');
+  if (!insideLimits(target, limits, workZeroMachine)) addBlock(blockingReasons, 'limits', 'Resume target is outside configured machine limits.');
   if (!Number.isFinite(safeZ) || safeZ <= 0 || Number(target?.z) !== safeZ) {
     addBlock(blockingReasons, 'safeZ', 'Recovery target must remain at Safe Z.');
   }
@@ -239,10 +254,8 @@ export function buildMotionOnlyRecoveryCommands(plan, options = {}) {
   return { ok: true, commands, blockingReasons: [], motionOnly: true };
 }
 
-function toolpathPointInsideLimits(point, limits) {
-  return finitePosition(point) && point.x >= limits.xMin && point.x <= limits.xMax &&
-    point.y >= limits.yMin && point.y <= limits.yMax &&
-    point.z >= limits.zMin && point.z <= limits.zMax;
+function toolpathPointInsideLimits(point, limits, workZeroMachine) {
+  return insideLimits(point, limits, workZeroMachine);
 }
 
 function segmentTargetCommands(segment, travelFeed) {
@@ -320,6 +333,7 @@ export function buildToollessResumeCommands(plan, options = {}) {
 
 export function buildToollessResumePlan(recoveryPlan, toolpathModel, options = {}) {
   const limits = options.limits || null;
+  const workZeroMachine = options.workZeroMachine || null;
   const blockingReasons = [...(recoveryPlan?.blockingReasons || [])];
   const candidate = recoveryPlan?.resumeCandidate || null;
   const travelFeed = Number(options.travelFeedMmMin ?? 3000);
@@ -344,11 +358,11 @@ export function buildToollessResumePlan(recoveryPlan, toolpathModel, options = {
   const pathPoints = remainingSegments.flatMap((segment) => [segment.from, segment.to, ...(segment.arc?.points || [])]);
   if (candidate?.sourcePosition) pathPoints.push(candidate.sourcePosition);
   if (limits) {
-    const outside = pathPoints.find((point) => !toolpathPointInsideLimits(point, limits));
+    const outside = pathPoints.find((point) => !toolpathPointInsideLimits(point, limits, workZeroMachine));
     if (outside) {
       addBlock(blockingReasons, 'pathLimits', `Remaining path exceeds limits at X${outside.x} Y${outside.y} Z${outside.z}.`);
     }
-    if (candidate?.position && !toolpathPointInsideLimits(candidate.position, limits)) {
+    if (candidate?.position && !toolpathPointInsideLimits(candidate.position, limits, workZeroMachine)) {
       addBlock(blockingReasons, 'resumeLimits', 'Safe resume position is outside configured limits.');
     }
   }

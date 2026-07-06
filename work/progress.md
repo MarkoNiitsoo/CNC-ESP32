@@ -146,7 +146,7 @@
   - stores credentials in Preferences/NVS namespace `wifi`
   - uses keys `ssid` and `pass`
   - tries saved STA credentials for up to 15 seconds on boot
-  - falls back to `LowRider-CNC-Setup` AP with password `12345678`
+  - falls back to `G-code-CNC-Setup` AP with password `12345678`
 - Added WiFi health fields: `wifiMode`, `ipAddress`, `ssid`, and STA `rssi`.
 - Added `/wifi`, `POST /api/wifi/save`, and `POST /api/wifi/forget`.
 - Added a `WiFi Settings` link to the main maintenance panel.
@@ -204,7 +204,7 @@
   - generates XY-only safe-Z movement commands from parsed preview segments
   - preserves feedrate on generated `G1` aircut moves when available
   - excludes spindle start, original Z cutting depths, job streaming commands, `G92`, and homing
-  - validates safe Z, work zero, LowRider X/Y bounds, large command counts, and Preflight failures before sending
+  - validates safe Z, work zero, G-code CNC X/Y bounds, large command counts, and Preflight failures before sending
   - sends aircut commands one at a time through existing `/api/cmd` with progress logging
   - stores last aircut status, timestamp, and command count in job JSON dry-run metadata
 - Verified updated SD UI JavaScript syntax with `node --check`; no firmware build or upload is required for this UI-only change.
@@ -219,7 +219,7 @@
 - Verified updated SD UI JavaScript syntax with `node --check`; no firmware build or upload is required for this UI-only change.
 - Added SD-hosted Dry Run panel without firmware changes:
   - generates safe-Z bounding-box trace commands from preview bounds
-  - validates work zero, safe Z, and LowRider X/Y limits before enabling send
+  - validates work zero, safe Z, and G-code CNC X/Y limits before enabling send
   - sends generated commands one at a time through existing `/api/cmd`
   - logs commands and responses in the browser
   - adds Copy Commands and Stop spindle/laser `M5`
@@ -654,7 +654,7 @@
 - Verified `npm.cmd test` passes with 7 test files and 57 tests.
 - Clarified generated placement bounds warnings without firmware changes:
   - Placement panel now distinguishes selected placement bounds from full generated run bounds
-  - a fitted detail no longer shows the misleading `Generated bounds exceed configured LowRider work area`
+  - a fitted detail no longer shows the misleading `Generated bounds exceed configured G-code CNC work area`
     message just because full generated output contains a small negative travel/lead-in move
   - full-run travel or lead-in outside placement bounds is still shown as a clearance warning
   - generated run validation receives the visible placement bounds and stores the same clearer warning
@@ -1238,3 +1238,153 @@
   match the current SD-hosted workbench and firmware-owned streaming design.
 - Documented that normal Start uses the saved active work zero and does not issue a new `G92`.
 - Removed 24 obsolete June screenshots; firmware, PlatformIO configuration, and `/www` were unchanged.
+
+## 2026-07-06 - Device identity loading
+
+- Added default `cnc` / `ESP32 CNC` identity and uppercase six-hex MAC suffix device ID.
+- Added bounded parsing of `/esp32-cnc/config.json` with `/config.json` fallback.
+- Added lowercase DNS-label sanitization, `.local` suffix removal, and MAC-derived safe fallback.
+- Valid SD identity is persisted to Preferences namespace `device`; missing/invalid SD config falls
+  back to NVS and then firmware defaults.
+
+## 2026-07-06 - Local discovery and device API
+
+- Applied the selected bare hostname to STA/AP network setup and started mDNS after WiFi.
+- Advertises `_http._tcp` and `_esp32cnc._tcp` on port 80 with friendly name/device ID TXT data.
+- Added `GET /api/device` with device ID, hostname, friendly name, `.local` URL, IP, active mode,
+  mDNS state, and non-sensitive config source.
+
+## 2026-07-06 - Discovery documentation and regression coverage
+
+- Added `docs/device-config.md` with exact SD JSON, sanitization, startup priority, NVS persistence,
+  discovery behavior, and IP fallback guidance.
+- Updated README, architecture, and protocol docs for `cnc.local` and `GET /api/device`.
+- Added focused firmware-source regression tests for defaults, SD/NVS priority, bounded strict
+  parsing, hostname normalization, mDNS services, and the public-only API response.
+
+## 2026-07-06 - Device discovery verification
+
+- Full test suite passes: 25 test files / 228 tests.
+- PlatformIO `esp32cam` build passes with ESPmDNS linked: 16.4% RAM and 53.7% flash.
+- Firmware artifact is `.pio-build/esp32cam/firmware.bin` (`0.6.1-device-config`).
+
+## 2026-07-06 - BLE discovery configuration and advertisement
+
+- Extended SD config with optional `bluetooth.enabled` and `bluetooth.advertiseName` booleans;
+  missing Bluetooth config defaults both to true and valid values persist to NVS.
+- Added compile-time `ESP32CNC_ENABLE_BLE`, free-heap guard, and low-frequency non-connectable BLE
+  name advertising started only after WiFi, mDNS, HTTP, and WebSocket infrastructure.
+- STA names prefer `CNC <hostname>.local`; AP fallback prefers `CNC 192.168.4.1`; long hostnames
+  fall back through `CNC <hostname>` to `CNC-<deviceId>`.
+
+## 2026-07-06 - BLE discovery docs and regression coverage
+
+- Updated firmware version to `0.6.2-ble-discovery` and documented BLE as an identification-only
+  helper in README, architecture, protocol, and device configuration guidance.
+- Extended `/api/device` documentation with configured, started, and selected-name BLE state.
+- Added regression assertions for config defaults/NVS persistence, 26-byte naming priority,
+  non-connectable low-memory-guarded advertising, and web-stack-before-BLE startup order.
+
+## 2026-07-06 - BLE footprint correction
+
+- Rejected the first Bluedroid build at 92.3% flash as too costly for an optional discovery label.
+- Switched to NimBLE-Arduino 2.5.x with checked initialization/config/start return values while
+  preserving non-connectable, low-frequency, WiFi-first behavior.
+
+## 2026-07-06 - BLE discovery verification
+
+- Full suite passes: 25 test files / 230 tests.
+- NimBLE PlatformIO build passes at 19.4% RAM and 66.6% flash, reducing the rejected Bluedroid
+  flash footprint by 25.7 percentage points.
+- Firmware artifact is `.pio-build/esp32cam/firmware.bin` (`0.6.2-ble-discovery`).
+
+## 2026-07-06 - Device identity update and safe restart APIs
+
+- Added idle-only `PATCH /api/device` with server-side hostname sanitization and a pending URL/BLE
+  name response; active and paused job states return HTTP 409.
+- Identity updates always persist to NVS and attempt a recoverable temp/backup/rename update of
+  `/esp32-cnc/config.json`; SD failure returns a warning without losing the NVS save.
+- Added `POST /api/system/restart`, blocked by active job, pending Marlin response, jog, OTA, or
+  priority controls. Firmware version is now `0.6.3-device-settings`.
+
+## 2026-07-06 - Machine Identity settings UI
+
+- Added a phone-friendly Machine Identity panel showing friendly name, clickable local address,
+  device ID, current IP, and BLE name.
+- Added bare-hostname/friendly-name editing with live sanitized `.local` URL preview, idle-state
+  locking, NVS/SD warning display, and restart-to-apply action.
+- Added shared browser helpers for hostname preview normalization and active-job state locking.
+
+## 2026-07-06 - Device Settings mock, tests, and docs
+
+- Added local mock support for GET/PATCH device identity, SD config persistence, and guarded restart.
+- Added UI helper tests, firmware contract assertions, mock integration coverage, and paused-state
+  rejection checks.
+- Documented Settings behavior, PATCH/restart APIs, NVS-first persistence, SD warning semantics,
+  and restart-only application of mDNS/BLE names.
+
+## 2026-07-06 - Device Settings final verification
+
+- JavaScript syntax checks pass for the Settings UI, shared identity helper, and mock server.
+- Full suite passes: 26 test files / 237 tests, including idle save/restart, SD persistence, and
+  active/paused-state rejection.
+- PlatformIO build passes at 19.4% RAM and 66.8% flash. Firmware artifact is
+  `.pio-build/esp32cam/firmware.bin` (`0.6.3-device-settings`).
+
+## 2026-07-06 - Marlin stream stall diagnosis and ACK guard
+
+- Diagnosed first-start failure as the shared 1500 ms priority timeout expiring during Safe-Z or
+  `M400`; a second start worked because the first attempt had already completed the Z lift.
+- Priority preamble and file streaming now use a 5 second ACK inactivity guard extended only by
+  Marlin `busy:` liveness. Missing acknowledgements enter a descriptive ERROR without resending a
+  possibly executed motion command.
+- Liveness inspects only newly received UART bytes, so an older `busy:` cannot be kept alive by
+  unrelated M154 position reports.
+- The normal SD stream remains firmware-owned and independent of browser/WebSocket availability.
+
+## 2026-07-06 - Compact telemetry animation gap recovery
+
+- Diagnosed straight-line jumps as compact firmware batches dropping intermediate fast commands
+  once their fixed event batch filled; native arcs arrived slowly enough to remain smooth.
+- The browser now reconstructs every preview segment between received command numbers without any
+  additional ESP32, UART, HTTP, or WebSocket traffic.
+- Increased only the browser-side animation backlog ceiling so planner bursts do not immediately
+  discard visible line motion.
+- Bumped firmware identity to `0.6.4-stream-ack-guard` so the transport fix is visible in Health.
+
+## 2026-07-06 - Stream and animation verification
+
+- JavaScript syntax checks pass; focused transport/workbench suite passes 40 tests.
+- Full regression passes: 26 test files / 239 tests.
+- PlatformIO builds `0.6.4-stream-ack-guard` successfully at 19.4% RAM and 66.9% flash.
+- Live read-only diagnostics confirmed the device was healthy and idle on `cnc.local`; its current
+  firmware was still `0.6.3-device-settings`, so hardware validation requires the new binary.
+
+## 2026-07-06 - Home-relative work-zero audit
+
+- Read recent job JSON directly from the device. Historical machine references were reconstructed
+  through the previous G92 origin; values happened to match saved counts but any stale frame could
+  contaminate every later zero.
+- Home All now captures M114 step counts plus M503/M92 scale and gives the frame a unique
+  `homingSessionId`. Machine position is derived directly from physical home counts.
+- Setting work zero now requires this absolute Home All frame. Start requires the exact session ID,
+  preventing an ESP reboot's reused epoch value from accepting an old active frame.
+
+## 2026-07-06 - Recovery physical-bounds correction
+
+- Diagnosed false out-of-bounds recovery: work coordinates, including valid negative cutting Z,
+  were compared directly with physical machine limits.
+- Motion-only, Toolless, and Production Resume now translate work points through the interrupted
+  run's saved Home-relative work zero before checking X/Y/Z limits.
+- Explicit saved-zero restore now updates the firmware frame and stamps the restored zero with the
+  current homing session; Z remains intentionally untouched until the operator sets it.
+- Recovery motion is blocked until that saved zero actually matches the live Home All session;
+  merely selecting an old zero ID cannot authorize movement in the baseline home work frame.
+- Firmware version is `0.6.5-home-frame-recovery`.
+
+## 2026-07-06 - Home-frame recovery verification
+
+- JavaScript syntax checks pass and focused recovery/frame tests pass 70/70.
+- Full regression passes: 26 test files / 241 tests.
+- PlatformIO builds `0.6.5-home-frame-recovery` at 19.4% RAM and 67.1% flash.
+- DEV MOCK now exposes the same absolute-home/session fields as hardware for browser workflow tests.

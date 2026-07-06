@@ -38,9 +38,9 @@ export function computePreflight({ parsed, job = {}, jobExists = false, now = ()
   const b = parsed.bounds;
   if (b.xMin >= MACHINE_LIMITS.xMin && b.xMax <= MACHINE_LIMITS.xMax &&
       b.yMin >= MACHINE_LIMITS.yMin && b.yMax <= MACHINE_LIMITS.yMax) {
-    addCheck(checks, 'machineBounds', 'pass', 'Fits default LowRider work area');
+    addCheck(checks, 'machineBounds', 'pass', 'Fits default G-code CNC work area');
   } else {
-    addCheck(checks, 'machineBounds', 'fail', 'Toolpath exceeds default LowRider work area');
+    addCheck(checks, 'machineBounds', 'fail', 'Toolpath exceeds default G-code CNC work area');
   }
 
   if (parsed.analysis.hasZ) {

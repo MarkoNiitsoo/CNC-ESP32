@@ -1,5 +1,5 @@
 {
-  "name": "lowrider-cnc-pendant",
+  "name": "g-code-cnc-pendant",
   "private": true,
   "type": "module",
   "scripts": {

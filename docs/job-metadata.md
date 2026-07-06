@@ -7,6 +7,15 @@ to `activeWorkZeroId`; Start sends that identity and machine-space XYZ to firmwa
 `beforeG92.position` remains for audit/backward compatibility but is not the canvas table anchor
 when a machine reference exists. Normal Start never creates or replaces a zero.
 
+New records also store `frame.homingSessionId`. Their machine reference is derived from Home All
+step counts and M92 steps/mm, so it remains a physical table coordinate even after later G92
+changes. Legacy records without a session ID are not treated as active after a new homing session;
+they may be explicitly restored after Home All when their saved counts are valid.
+
+Recovery path coordinates remain G54/work coordinates. Physical bounds checks first translate
+them through the interrupted run's saved machine-space work zero. A negative cutting Z is therefore
+valid when its resulting physical machine Z remains inside the discovered machine range.
+
 ## Purpose
 
 `job.json` is the job memory. It stores the relationship between the original file, generated run

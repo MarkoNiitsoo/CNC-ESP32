@@ -5,7 +5,7 @@
 This firmware turns an AI-Thinker ESP32-CAM into an offline CNC web pendant for Marlin.
 
 The ESP32-CAM connects to saved WiFi credentials when available. If it cannot connect within
-15 seconds, it starts a setup access point named `LowRider-CNC-Setup` at `192.168.4.1`. It serves
+15 seconds, it starts a setup access point named `G-code-CNC-Setup` at `192.168.4.1`. It serves
 a small web UI and forwards one command at a time to Marlin over UART0.
 
 ## Architecture rule
@@ -33,6 +33,11 @@ or job runner functionality.
 
 - WiFi station mode with setup AP fallback.
 - WiFi credential storage in Preferences/NVS namespace `wifi`.
+- Device identity from `/esp32-cnc/config.json`, with `/config.json`, NVS namespace `device`, and
+  `cnc` / `ESP32 CNC` defaults as ordered fallbacks.
+- mDNS discovery at `http://<hostname>.local`, advertising HTTP and `_esp32cnc._tcp` on port 80.
+- Optional low-frequency, non-connectable BLE naming started after the web stack; WiFi reliability
+  and CNC control take priority over BLE discovery.
 - HTTP server for static assets and JSON API routes.
 - Static browser UI:
   - `index.html`
@@ -138,6 +143,13 @@ or job runner functionality.
     origin before streaming.
   - Position telemetry publishes changed frame state only; browser motion prediction updates both
     work and machine display while periodic Marlin reports remain authoritative.
+  - Home All records Marlin `Count X/Y/Z` and current `M92` steps/mm. Machine coordinates are then
+    derived directly from those immutable home counts, never by adding the latest work coordinate
+    to a previous G92 zero.
+  - Every Home All receives a boot-unique `homingSessionId`; an epoch number reused after ESP
+    restart cannot make an old zero appear active accidentally.
+  - Recovery bounds convert every file/work point to physical machine space with
+    `machine = savedWorkZeroMachine + work` before checking discovered limits.
 - Asynchronous job start:
   - `POST /api/job/start` validates and opens the armed run, queues the Marlin start preamble, and
     returns `PREPARING` immediately.

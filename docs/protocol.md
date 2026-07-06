@@ -49,6 +49,64 @@ not measured or corrected in this phase. Homing still performs one deliberate M1
 
 ## Browser API
 
+### `GET /api/device`
+
+Returns the public device identity selected from SD, NVS, or firmware defaults. No WiFi password
+or sensitive configuration is included.
+
+```json
+{
+  "deviceId": "F7C76A",
+  "hostname": "cnc",
+  "friendlyName": "ESP32 CNC",
+  "localUrl": "http://cnc.local",
+  "ip": "192.168.1.42",
+  "mode": "sta",
+  "mdnsEnabled": true,
+  "bluetooth": {
+    "enabled": true,
+    "advertiseName": true,
+    "started": true,
+    "name": "CNC cnc.local"
+  },
+  "configSource": "defaults"
+}
+```
+
+Bluetooth is a discovery label only. `started:false` does not indicate a WiFi or web-server fault.
+
+### `PATCH /api/device`
+
+Updates the bare hostname and friendly display name. The firmware rejects the request while a job
+is preparing, running, pausing, paused, resuming, or stopping. NVS is always written first; an SD
+write failure is returned as a warning and does not undo the NVS save.
+
+```json
+{
+  "hostname": "g-code-cnc",
+  "friendlyName": "G-code CNC 3"
+}
+```
+
+```json
+{
+  "ok": true,
+  "requiresRestart": true,
+  "sdConfigWritten": true,
+  "device": {
+    "hostname": "g-code-cnc",
+    "friendlyName": "G-code CNC 3",
+    "localUrl": "http://g-code-cnc.local",
+    "bleName": "CNC g-code-cnc.local"
+  }
+}
+```
+
+### `POST /api/system/restart`
+
+Schedules restart after approximately one second. Returns HTTP 409 while a job, jog, OTA, pending
+Marlin response, or priority control is active.
+
 ### `GET /api/health`
 
 Returns basic firmware state.
@@ -57,7 +115,7 @@ Example response:
 
 ```json
 {
-  "firmware": "LowRider CNC Pendant",
+  "firmware": "G-code CNC Pendant",
   "firmwareVersion": "0.2.0-webota",
   "buildDate": "Jun 12 2026",
   "buildTime": "10:30:00",
@@ -132,7 +190,7 @@ then reboots after about 1 second.
 ### `POST /api/wifi/forget`
 
 Removes saved WiFi credentials from Preferences/NVS, then reboots after about 1 second. On the next
-boot the pendant starts the `LowRider-CNC-Setup` AP if no credentials are saved.
+boot the pendant starts the `G-code-CNC-Setup` AP if no credentials are saved.
 
 ## SD Rescue Update
 

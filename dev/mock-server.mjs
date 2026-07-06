@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MockJobRunner } from './mock-job-runner.mjs';
 import { MockMarlin } from './mock-marlin.mjs';
 import { MockSD } from './mock-sd.mjs';
+import { deviceIdentityLocked, localUrlForHostname, sanitizeHostnameInput } from '../www/lib/device-settings.js';
 
 const DEV_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_ROOT = path.resolve(DEV_DIR, '..');
@@ -29,7 +30,7 @@ function json(res, status, value) {
 
 function errorStatus(message) {
   if (/not found|ENOENT/i.test(message)) return 404;
-  if (/exists|active|armed|stale|changed|paused|running|generated/i.test(message)) return 409;
+  if (/exists|active|armed|stale|changed|paused|running|generated|only when.*idle/i.test(message)) return 409;
   if (/unsafe|outside|invalid|must|percent|missing/i.test(message)) return 400;
   return 500;
 }
@@ -111,7 +112,8 @@ export async function createMockEnvironment(options = {}) {
   const marlin = new MockMarlin(config);
   const frame = {
     machine: null, work: { ...marlin.position }, workZeroMachine: null,
-    homedAxes: { x: false, y: false, z: false }, homingEpoch: 0, revision: 0, trusted: false,
+    homedAxes: { x: false, y: false, z: false }, homingEpoch: 0, homingSessionId: '',
+    absoluteFromHome: false, homeReference: null, revision: 0, trusted: false,
   };
   const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: config.lineDelayMs });
   const jog = {
@@ -119,7 +121,13 @@ export async function createMockEnvironment(options = {}) {
     restoreZAfterJog: true, xyFeedMax: 3000, zFeedMax: 400, lastCommand: '', lastError: '',
     lastUpdateAt: 0,
   };
-  return { projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, startedAt: Date.now() };
+  const device = {
+    deviceId: 'DEVM01', hostname: 'cnc', friendlyName: 'ESP32 CNC Dev Mock', ip: '127.0.0.1',
+    mode: 'mock', mdnsEnabled: true,
+    bluetooth: { enabled: true, advertiseName: true, started: true, name: 'CNC cnc.local' },
+    configSource: 'mock',
+  };
+  return { projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device, startedAt: Date.now() };
 }
 
 export async function createMockServer(options = {}) {
@@ -137,6 +145,30 @@ export async function createMockServer(options = {}) {
           sdMounted: true, sdCardType: 'MOCK_FS', sdTotalBytes: 0, sdUsedBytes: 0, sdFreeBytes: 0,
           mockMode: true, modeLabel: 'DEV MOCK - NO REAL MACHINE',
         });
+      }
+      if (req.method === 'GET' && pathname === '/api/device') {
+        return json(res, 200, { ...env.device, localUrl: localUrlForHostname(env.device.hostname) });
+      }
+      if (req.method === 'PATCH' && pathname === '/api/device') {
+        if (deviceIdentityLocked(env.runner.status.state)) throw new Error('Device address can be changed only when the machine is idle.');
+        const body = await readJson(req);
+        const hostname = sanitizeHostnameInput(body.hostname);
+        const friendlyName = String(body.friendlyName || '').trim();
+        if (!friendlyName) throw new Error('friendlyName is required');
+        env.device.hostname = hostname;
+        env.device.friendlyName = friendlyName;
+        env.device.bluetooth.name = `CNC ${hostname}.local`;
+        await env.sd.writeText('/esp32-cnc/config.json', JSON.stringify({
+          device: { hostname, friendlyName }, bluetooth: { enabled: true, advertiseName: true },
+        }, null, 2), { overwrite: true });
+        return json(res, 200, {
+          ok: true, requiresRestart: true, sdConfigWritten: true,
+          device: { hostname, friendlyName, localUrl: localUrlForHostname(hostname), bleName: env.device.bluetooth.name },
+        });
+      }
+      if (req.method === 'POST' && pathname === '/api/system/restart') {
+        if (deviceIdentityLocked(env.runner.status.state)) throw new Error('Restart is allowed only when the machine is idle.');
+        return json(res, 202, { ok: true, restarting: true, mockMode: true });
       }
       if (req.method === 'GET' && pathname === '/api/ui/status') {
         return json(res, 200, { sdUiAvailable: true, indexFromSd: false, wwwPath: '/www', mockMode: true });
@@ -238,11 +270,20 @@ export async function createMockServer(options = {}) {
           env.marlin.execute('G92 X0 Y0 Z0');
           env.frame.homedAxes = { x: true, y: true, z: true };
           env.frame.homingEpoch += 1;
+          env.frame.homingSessionId = `mock-home-${env.frame.homingEpoch}-${Date.now()}`;
+          env.frame.absoluteFromHome = true;
+          env.frame.homeReference = {
+            counts: Object.fromEntries(['x', 'y', 'z'].map((axis) => [axis, Math.round(env.marlin.machinePosition[axis] * env.marlin.stepsPerMm[axis])])),
+            stepsPerMm: { ...env.marlin.stepsPerMm },
+          };
           env.frame.trusted = true;
           env.frame.workZeroMachine = { ...env.marlin.machinePosition };
         } else {
           for (const axis of axes) env.frame.homedAxes[axis] = true;
           env.frame.trusted = false;
+          env.frame.absoluteFromHome = false;
+          env.frame.homingSessionId = '';
+          env.frame.homeReference = null;
           env.frame.workZeroMachine = null;
         }
         env.frame.machine = { ...env.marlin.machinePosition };

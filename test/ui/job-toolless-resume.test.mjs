@@ -14,7 +14,8 @@ const previewSource = await readFile(new URL('../../www/preview.js', import.meta
 const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
 const model = parseGCodeToToolpath(source);
-const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: -30, zMax: 70 };
+const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: 0, zMax: 70 };
+const workZeroMachine = { x: 0, y: 0, z: 35 };
 
 function jobFor(overrides = {}) {
   return {
@@ -32,11 +33,11 @@ function jobFor(overrides = {}) {
 
 function plans(job = jobFor(), toolpathModel = model, optionOverrides = {}) {
   const recovery = planMotionOnlyRecovery({
-    job, toolpathModel, safeZ: 15, limits: { ...limits, zMin: 0 }, positionTrusted: true,
+    job, toolpathModel, safeZ: 15, limits, workZeroMachine, positionTrusted: true, workZeroFrameMatches: true,
     ...optionOverrides,
   });
   const toolless = buildToollessResumePlan(recovery, toolpathModel, {
-    limits, travelFeedMmMin: 3000, zFeedMmMin: 400,
+    limits, workZeroMachine, travelFeedMmMin: 3000, zFeedMmMin: 400,
   });
   return { recovery, toolless };
 }

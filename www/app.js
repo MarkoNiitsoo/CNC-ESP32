@@ -24,6 +24,15 @@ const machineConfigForms = [...document.querySelectorAll('[data-machine-group]')
 const softwareEndstopStatus = document.querySelector('#software-endstop-status');
 const saveMarlinEepromButton = document.querySelector('#save-marlin-eeprom');
 const machineConfigResult = document.querySelector('#machine-config-result');
+const deviceInfoSummary = document.querySelector('#device-info-summary');
+const deviceIdBadge = document.querySelector('#device-id-badge');
+const deviceSettingsForm = document.querySelector('#device-settings-form');
+const deviceFriendlyNameInput = document.querySelector('#device-friendly-name');
+const deviceHostnameInput = document.querySelector('#device-hostname');
+const deviceUrlPreview = document.querySelector('#device-url-preview');
+const deviceSettingsResult = document.querySelector('#device-settings-result');
+const saveDeviceSettingsButton = document.querySelector('#save-device-settings');
+const restartDeviceButton = document.querySelector('#restart-device');
 
 const currentJobKey = 'lowrider.currentJob';
 let currentJob = readCurrentJob();
@@ -34,6 +43,8 @@ let pendingUploadPreview = null;
 let motionSettingsModule = null;
 let machineConfigModule = null;
 let machineSettingsLoaded = false;
+let deviceInfo = null;
+let deviceRestartRequired = false;
 const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
   motionSettingsModule = module;
   return module;
@@ -42,6 +53,7 @@ const machineConfigPromise = import('/lib/machine-config.js').then((module) => {
   machineConfigModule = module;
   return module;
 });
+const deviceSettingsPromise = import('/lib/device-settings.js');
 
 const toolpathModulePromise = import('/lib/toolpath-model.js').catch((err) => {
   console.warn('ToolpathModel unavailable', err);
@@ -149,6 +161,118 @@ async function readJson(res) {
     return text ? JSON.parse(text) : {};
   } catch (err) {
     throw new Error(`Invalid JSON: ${err.message}`);
+  }
+}
+
+function setDeviceSettingsResult(message, warning = false) {
+  if (!deviceSettingsResult) return;
+  deviceSettingsResult.textContent = message;
+  deviceSettingsResult.classList.toggle('warning', warning);
+}
+
+async function updateDeviceUrlPreview() {
+  if (!deviceUrlPreview) return;
+  const module = await deviceSettingsPromise;
+  const url = module.localUrlForHostname(deviceHostnameInput?.value || deviceInfo?.hostname || 'cnc');
+  deviceUrlPreview.href = url;
+  deviceUrlPreview.textContent = url;
+}
+
+async function updateDeviceSettingsLock() {
+  const module = await deviceSettingsPromise;
+  const locked = module.deviceIdentityLocked(jobStatus?.state);
+  if (deviceHostnameInput) deviceHostnameInput.disabled = locked;
+  if (deviceFriendlyNameInput) deviceFriendlyNameInput.disabled = locked;
+  if (saveDeviceSettingsButton) saveDeviceSettingsButton.disabled = locked;
+  if (restartDeviceButton) restartDeviceButton.disabled = locked;
+  if (locked) {
+    if (deviceSettingsResult) deviceSettingsResult.dataset.locked = 'true';
+    setDeviceSettingsResult('Device address can be changed only when the machine is idle.', true);
+  } else if (deviceSettingsResult?.dataset.locked === 'true') {
+    delete deviceSettingsResult.dataset.locked;
+    setDeviceSettingsResult(deviceRestartRequired
+      ? 'Saved. Restart is required to apply the new address.'
+      : 'Machine is idle. Identity can be changed safely.');
+  }
+}
+
+function renderDeviceInfo(info) {
+  deviceInfo = info;
+  if (deviceIdBadge) deviceIdBadge.textContent = `Device ${info?.deviceId || '-'}`;
+  if (deviceInfoSummary) {
+    const localUrl = info?.localUrl || '-';
+    deviceInfoSummary.innerHTML = `
+      <dl>
+        <dt>Friendly name</dt><dd>${html(info?.friendlyName || '-')}</dd>
+        <dt>Local address</dt><dd><a href="${html(localUrl)}">${html(localUrl)}</a></dd>
+        <dt>Device ID</dt><dd>${html(info?.deviceId || '-')}</dd>
+        <dt>Current IP</dt><dd>${html(info?.ip || '-')}</dd>
+        <dt>BLE name</dt><dd>${html(info?.bluetooth?.name || 'disabled')}</dd>
+      </dl>`;
+  }
+  if (deviceFriendlyNameInput) deviceFriendlyNameInput.value = info?.friendlyName || '';
+  if (deviceHostnameInput) deviceHostnameInput.value = info?.hostname || 'cnc';
+  updateDeviceUrlPreview();
+  updateDeviceSettingsLock();
+}
+
+async function loadDeviceSettings() {
+  const res = await fetch('/api/device');
+  const data = await readJson(res);
+  if (!res.ok) throw new Error(data.error || 'Device identity could not be loaded');
+  renderDeviceInfo(data);
+  return data;
+}
+
+async function saveDeviceSettings(event) {
+  event.preventDefault();
+  const module = await deviceSettingsPromise;
+  const hostname = module.sanitizeHostnameInput(deviceHostnameInput?.value || '');
+  const friendlyName = String(deviceFriendlyNameInput?.value || '').trim();
+  if (!friendlyName) {
+    setDeviceSettingsResult('Friendly name is required.', true);
+    return;
+  }
+
+  saveDeviceSettingsButton.disabled = true;
+  try {
+    const res = await fetch('/api/device', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname, friendlyName }),
+    });
+    const data = await readJson(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'Device identity save failed');
+    if (deviceHostnameInput) deviceHostnameInput.value = data.device.hostname;
+    if (deviceFriendlyNameInput) deviceFriendlyNameInput.value = data.device.friendlyName;
+    await updateDeviceUrlPreview();
+    deviceRestartRequired = data.requiresRestart === true;
+    if (restartDeviceButton) restartDeviceButton.hidden = !deviceRestartRequired;
+    const warning = data.warning ? ` ${data.warning}` : '';
+    if (deviceSettingsResult) {
+      const url = data.device.localUrl;
+      deviceSettingsResult.innerHTML = deviceRestartRequired
+        ? `New address will be available after restart: <a href="${html(url)}">${html(url)}</a>.${html(warning)}`
+        : `Machine identity saved.${html(warning)}`;
+      deviceSettingsResult.classList.toggle('warning', Boolean(data.warning));
+    }
+  } catch (err) {
+    setDeviceSettingsResult(err.message, true);
+  } finally {
+    await updateDeviceSettingsLock();
+  }
+}
+
+async function restartDevice() {
+  restartDeviceButton.disabled = true;
+  try {
+    const res = await fetch('/api/system/restart', { method: 'POST' });
+    const data = await readJson(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'Restart failed');
+    setDeviceSettingsResult('Restarting. Reopen the pendant at the new local address.');
+  } catch (err) {
+    setDeviceSettingsResult(err.message, true);
+    await updateDeviceSettingsLock();
   }
 }
 
@@ -273,6 +397,7 @@ async function refreshMachineConfiguration() {
 
 async function loadMachineSettings() {
   await Promise.all([motionSettingsPromise, machineConfigPromise]);
+  await loadDeviceSettings();
   const info = await loadMachineInfo();
   if (info.refreshing) await loadMachineInfo();
   await refreshMachineConfiguration();
@@ -339,6 +464,7 @@ async function refreshHealth() {
 
 function applyJobStatus(data) {
   jobStatus = data;
+  updateDeviceSettingsLock();
   if (!currentJob && jobStatus.gcodePath) {
     saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: jobStatus.jobPath || jobPathFor(jobStatus.gcodePath) });
   }
@@ -947,6 +1073,9 @@ saveMarlinEepromButton?.addEventListener('click', async () => {
     saveMarlinEepromButton.disabled = false;
   }
 });
+deviceHostnameInput?.addEventListener('input', updateDeviceUrlPreview);
+deviceSettingsForm?.addEventListener('submit', saveDeviceSettings);
+restartDeviceButton?.addEventListener('click', restartDevice);
 document.addEventListener('click', (event) => {
   const apiTarget = event.target.closest('[data-primary-api]');
   if (apiTarget) {

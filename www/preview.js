@@ -837,14 +837,17 @@ function activeWorkZeroReference() {
     id: active?.id || jobState?.activeWorkZeroId || null,
     position: active?.machineReference?.position || jobState?.workZero?.machineReference?.position || null,
     homingEpoch: Number(active?.frame?.homingEpoch ?? jobState?.workZero?.frame?.homingEpoch),
+    homingSessionId: active?.frame?.homingSessionId || jobState?.workZero?.frame?.homingSessionId || '',
   };
 }
 
 function workZeroMatchesMachineFrame() {
   const saved = activeWorkZeroReference();
   const live = currentMachineFrame;
-  if (!saved.id || !saved.position || !Number.isFinite(saved.homingEpoch) || !live?.workZeroMachine) return false;
-  return saved.homingEpoch === Number(live.homingEpoch) && ['x', 'y', 'z'].every((axis) => (
+  if (!saved.id || !saved.position || !Number.isFinite(saved.homingEpoch) || !saved.homingSessionId ||
+      !live?.workZeroMachine || live.absoluteFromHome !== true) return false;
+  return saved.homingEpoch === Number(live.homingEpoch) &&
+    saved.homingSessionId === String(live.homingSessionId || '') && ['x', 'y', 'z'].every((axis) => (
     Math.abs(Number(saved.position[axis]) - Number(live.workZeroMachine[axis])) <= 0.05
   ));
 }
@@ -862,7 +865,7 @@ function computePreflight() {
 
   const b = parsed.bounds;
   if (b.xMin >= MACHINE.xMin && b.xMax <= MACHINE.xMax && b.yMin >= MACHINE.yMin && b.yMax <= MACHINE.yMax) {
-    addCheck(checks, 'machineBounds', 'pass', 'Fits default LowRider work area');
+    addCheck(checks, 'machineBounds', 'pass', 'Fits default G-code CNC work area');
   } else {
     addCheck(checks, 'machineBounds', 'fail', 'Toolpath exceeds discovered machine work area');
   }
@@ -1387,6 +1390,7 @@ async function startJobRun() {
       startMode: job.startMode,
       workZeroId: zeroReference.id,
       homingEpoch: zeroReference.homingEpoch,
+      homingSessionId: zeroReference.homingSessionId,
       workZeroMachineX: Number(zeroReference.position?.x),
       workZeroMachineY: Number(zeroReference.position?.y),
       workZeroMachineZ: Number(zeroReference.position?.z),
@@ -1642,12 +1646,16 @@ function handleMotionTelemetry(data = {}) {
   for (const event of data.events || []) {
     const sequence = Number(event.sequence);
     if (!Number.isFinite(sequence) || sequence <= lastMotionSequence) continue;
+    const previousSequence = lastMotionSequence;
     lastMotionSequence = sequence;
-    const segment = workbenchUiModule.segmentAtCommand(parsed.segments || [], sequence);
-    if (!segment) continue;
-    motionAnimationQueue.push({ segment, feedOverridePercent: Number(data.feedOverridePercent) || 100 });
+    const segments = workbenchUiModule.segmentsBetweenCommands(
+      parsed.segments || [], previousSequence, sequence,
+    );
+    for (const segment of segments) {
+      motionAnimationQueue.push({ segment, feedOverridePercent: Number(data.feedOverridePercent) || 100 });
+    }
   }
-  if (motionAnimationQueue.length > 120) motionAnimationQueue.splice(0, motionAnimationQueue.length - 120);
+  if (motionAnimationQueue.length > 600) motionAnimationQueue.splice(0, motionAnimationQueue.length - 600);
   playNextMotionAnimation();
 }
 
@@ -1756,6 +1764,13 @@ function productionSignature(plan = recoveryPlan) {
   ].join('|');
 }
 
+function recoveryWorkZeroMachine() {
+  const runs = Array.isArray(jobState?.runHistory) ? jobState.runHistory : [];
+  const zeroId = runs[runs.length - 1]?.zeroId || jobState?.activeWorkZeroId;
+  const zero = (jobState?.zeroHistory || []).find((entry) => entry?.type === 'workZero' && entry.id === zeroId);
+  return zero?.machineReference?.position || null;
+}
+
 function resetProductionWorkflow() {
   if (productionHistoryEvent?.state === 'started') {
     productionHistoryEvent.state = 'stopped';
@@ -1800,11 +1815,14 @@ function refreshRecoveryPlan() {
     activeRunFingerprint: gcodeFingerprint,
     safeZ: recoverySafeZ(),
     limits: RECOVERY_LIMITS,
+    workZeroMachine: recoveryWorkZeroMachine(),
     positionTrusted: positionTrust.trusted,
+    workZeroFrameMatches: workZeroMatchesMachineFrame(),
     machineState: jobRunStatus?.state,
   });
   toollessResumePlan = jobRecoveryModule.buildToollessResumePlan(recoveryPlan, toolpathModel, {
     limits: TOOLLESS_LIMITS,
+    workZeroMachine: recoveryWorkZeroMachine(),
     travelFeedMmMin: automaticTravelFeed(),
     zFeedMmMin: SAFETY_Z_FEED_MM_MIN,
   });
@@ -1815,6 +1833,7 @@ function refreshRecoveryPlan() {
   productionContextSignature = nextProductionSignature;
   productionResumePlan = jobRecoveryModule.buildProductionResumePlan(recoveryPlan, toolpathModel, {
     limits: TOOLLESS_LIMITS,
+    workZeroMachine: recoveryWorkZeroMachine(),
     travelFeedMmMin: automaticTravelFeed(),
     zFeedMmMin: SAFETY_Z_FEED_MM_MIN,
     checklist: productionChecklistState(),
@@ -1863,7 +1882,7 @@ async function resolveWorkZeroMachineReference(zero) {
   const position = motion.machinePositionFromCounts(counts, currentSteps);
   if (!position) throw new Error('Saved step counts are incomplete; machine XY cannot be reconstructed.');
   if (position.x < MACHINE.xMin || position.x > MACHINE.xMax || position.y < MACHINE.yMin || position.y > MACHINE.yMax) {
-    throw new Error('Saved machine XY is outside configured LowRider limits.');
+    throw new Error('Saved machine XY is outside configured G-code CNC limits.');
   }
   return { counts, stepsPerMm: currentSteps, position };
 }
@@ -1890,10 +1909,23 @@ async function restoreInterruptedWorkZero() {
   history.recordWorkZeroRestore(ensureJobState(), zero.id, {
     machinePosition: reference.position, stepsPerMm: reference.stepsPerMm, safeMachineZ, result: 'completed',
   });
-  zero.machineReference = zero.machineReference || {
-    source: 'M114 counts + M503 M92', capturedAt: zero.capturedAt,
+  zero.machineReference = {
+    source: 'Home-relative M114 counts + M503 M92', capturedAt: zero.capturedAt,
     counts: { ...reference.counts }, stepsPerMm: { ...reference.stepsPerMm }, position: { ...reference.position },
   };
+  currentMachineFrame = data.frame || currentMachineFrame;
+  if (Number.isFinite(Number(data.frame?.workZeroMachine?.z))) {
+    zero.machineReference.position.z = Number(data.frame.workZeroMachine.z);
+  }
+  zero.frame = {
+    homingEpoch: Number(data.frame?.homingEpoch),
+    homingSessionId: data.frame?.homingSessionId || '',
+    revision: Number(data.frame?.revision),
+  };
+  if (jobState?.activeWorkZeroId === zero.id) {
+    jobState.workZero.machineReference = structuredClone(zero.machineReference);
+    jobState.workZero.frame = { ...zero.frame };
+  }
   if (data.response) liveToolPosition = parseM114(data.response).position;
   await saveJobQuietly();
   appendRecoveryLog('Saved XY work zero restored. Review or re-touch Z zero before cutting.');
@@ -2071,6 +2103,7 @@ async function runMotionOnlyRecoveryMove() {
   const generated = jobRecoveryModule?.buildMotionOnlyRecoveryCommands(plan, {
     positionTrusted: positionTrust.trusted,
     limits: RECOVERY_LIMITS,
+    workZeroMachine: recoveryWorkZeroMachine(),
     travelFeedMmMin: automaticTravelFeed(),
     zFeedMmMin: SAFETY_Z_FEED_MM_MIN,
   });
@@ -3538,7 +3571,11 @@ async function setZZeroWithCapture(transaction = null) {
   const machineZ = Number(data.frame?.workZeroMachine?.z);
   if (Number.isFinite(machineZ) && jobState?.workZero?.machineReference?.position) {
     jobState.workZero.machineReference.position.z = machineZ;
-    jobState.workZero.frame = { homingEpoch: Number(data.frame.homingEpoch), revision: Number(data.frame.revision) };
+    jobState.workZero.frame = {
+      homingEpoch: Number(data.frame.homingEpoch),
+      homingSessionId: data.frame.homingSessionId || '',
+      revision: Number(data.frame.revision),
+    };
     const activeZero = (jobState.zeroHistory || []).find((entry) => entry.id === jobState.activeWorkZeroId);
     if (activeZero?.machineReference?.position) {
       activeZero.machineReference.position.z = machineZ;
@@ -3550,7 +3587,11 @@ async function setZZeroWithCapture(transaction = null) {
     before,
     after,
     capturedAt: toolZero.capturedAt,
-    frame: { homingEpoch: Number(data.frame?.homingEpoch), revision: Number(data.frame?.revision) },
+    frame: {
+      homingEpoch: Number(data.frame?.homingEpoch),
+      homingSessionId: data.frame?.homingSessionId || '',
+      revision: Number(data.frame?.revision),
+    },
   });
   markArmStaleForZZero();
   setToolZeroResult(`Z zero set. After G92 Z0: ${formatCapture(after)}`);
@@ -3590,7 +3631,9 @@ async function setWorkZeroWithCapture(transaction = null) {
 
   const machinePosition = data.frame?.workZeroMachine;
   const machineReference = machinePosition ? {
-    source: 'firmware machine frame', capturedAt: nowIso(), position: { ...machinePosition },
+    source: 'firmware absolute Home All frame', capturedAt: nowIso(), position: { ...machinePosition },
+    counts: { ...before.counts },
+    stepsPerMm: { ...(data.frame?.homeReference?.stepsPerMm || {}) },
   } : null;
   job.workZero.capturedAt = nowIso();
   job.workZero.beforeG92 = before;
@@ -3598,6 +3641,7 @@ async function setWorkZeroWithCapture(transaction = null) {
   job.workZero.machineReference = machineReference;
   job.workZero.frame = {
     homingEpoch: Number(data.frame?.homingEpoch),
+    homingSessionId: data.frame?.homingSessionId || '',
     revision: Number(data.frame?.revision),
   };
   job.startMode = 'use_active_work_zero';
@@ -4419,7 +4463,7 @@ async function renderPlacementPanel() {
   const messages = [];
   if (negative) messages.push('Generated placement still has negative X/Y. Use Normalize origin.');
   if (placementOutOfBounds) {
-    messages.push('Placement bounds exceed configured LowRider work area.');
+    messages.push('Placement bounds exceed configured G-code CNC work area.');
   } else if (fullRunOutOfBounds) {
     messages.push('Full generated file includes travel or lead-in moves outside the placement bounds. This can be OK only if your work zero leaves clearance; review before cutting.');
   }

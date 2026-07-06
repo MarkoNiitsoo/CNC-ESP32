@@ -1,5 +1,18 @@
 # Current Task
 
+## Home-relative coordinate frame and recovery bounds
+
+- Anchor machine coordinates to Home All M114 counts and M92 steps/mm.
+- Distinguish homing sessions across ESP restarts.
+- Validate recovery work paths in physical machine space through the saved work-zero transform.
+- Keep legacy zeros for audit and explicit restore, never silent activation.
+
+## Local device discovery and SD identity
+
+Use `cnc.local` without setup for a single machine. Load an optional hostname and friendly name
+from `/esp32-cnc/config.json` (or `/config.json`), persist valid SD identity to NVS, advertise HTTP
+and `_esp32cnc._tcp` through mDNS, and expose non-sensitive identity through `/api/device`.
+
 ## Guarded Production Resume foundation
 
 Add a separate two-phase cutting-resume workflow: guarded Safe-Z reposition, manual router
@@ -32,7 +45,7 @@ for Marlin on a BTT SKR Pro.
 
 ## MVP
 
-- Start WiFi AP named `LowRider-CNC`.
+- Start WiFi AP named `G-code-CNC`.
 - Start HTTP server at `192.168.4.1`.
 - Serve `index.html`, `app.js`, and `style.css`.
 - Provide terminal-style command UI with quick buttons.

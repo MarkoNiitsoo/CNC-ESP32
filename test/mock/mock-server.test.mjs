@@ -23,7 +23,7 @@ afterEach(async () => {
 describe('mock HTTP API', () => {
   it('serves UI, health, command, list, upload, download, and rename APIs', async () => {
     const { base } = await start();
-    expect(await fetch(`${base}/`).then((res) => res.text())).toContain('LowRider CNC');
+    expect(await fetch(`${base}/`).then((res) => res.text())).toContain('G-code CNC');
     expect(await fetch(`${base}/api/health`).then((res) => res.json())).toMatchObject({ mockMode: true, wifiMode: 'mock' });
     expect(await fetch(`${base}/api/cmd`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'M115' }) }).then((res) => res.json())).toMatchObject({ ok: true });
     expect((await fetch(`${base}/api/files?path=%2Fgcode`).then((res) => res.json())).items.length).toBeGreaterThan(3);
@@ -37,6 +37,27 @@ describe('mock HTTP API', () => {
     expect(await download.text()).toContain('G90');
     const renamed = await fetch(`${base}/api/rename`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: '/gcode/upload.gc', to: '/gcode/renamed.gc' }) });
     expect(renamed.ok).toBe(true);
+  });
+
+  it('supports the Machine Identity save and restart workflow', async () => {
+    const { base, env } = await start();
+    expect(await fetch(`${base}/api/device`).then((res) => res.json())).toMatchObject({ hostname: 'cnc', localUrl: 'http://cnc.local' });
+    const saved = await fetch(`${base}/api/device`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname: 'Low Rider 3', friendlyName: 'G-code CNC 3' }),
+    });
+    expect(await saved.json()).toMatchObject({
+      ok: true, requiresRestart: true, sdConfigWritten: true,
+      device: { hostname: 'low-rider-3', localUrl: 'http://low-rider-3.local', bleName: 'CNC low-rider-3.local' },
+    });
+    expect(JSON.parse(await env.sd.readText('/esp32-cnc/config.json'))).toMatchObject({ device: { hostname: 'low-rider-3' } });
+    expect((await fetch(`${base}/api/system/restart`, { method: 'POST' })).status).toBe(202);
+    env.runner.status.state = 'PAUSED';
+    expect((await fetch(`${base}/api/device`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname: 'blocked', friendlyName: 'Blocked' }),
+    })).status).toBe(409);
+    expect((await fetch(`${base}/api/system/restart`, { method: 'POST' })).status).toBe(409);
   });
 
   it('starts an armed job and reports completion through compatible status', async () => {

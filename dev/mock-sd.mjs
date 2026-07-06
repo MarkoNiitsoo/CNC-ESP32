@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-export const MOCK_ROOTS = ['/gcode', '/jobs', '/logs', '/firmware', '/www'];
+export const MOCK_ROOTS = ['/gcode', '/jobs', '/logs', '/firmware', '/www', '/esp32-cnc'];
 
 const SAMPLE_FILES = {
   '/gcode/safe-square.gc': `; Safe 100 mm square\nG21\nG90\nG17\nG54\nM5\nG0 Z15\nG0 X10 Y10\nG1 Z-2 F300\nG1 X110 Y10 F900\nG1 X110 Y110\nG1 X10 Y110\nG1 X10 Y10\nG0 Z15\nM5\n`,

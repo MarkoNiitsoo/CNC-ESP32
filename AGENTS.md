@@ -17,7 +17,7 @@ Offline CNC web pendant firmware for an AI-Thinker ESP32-CAM talking to Marlin o
 
 - ESP32 board: AI-Thinker ESP32-CAM.
 - WiFi mode: AP only.
-- AP SSID: `LowRider-CNC`.
+- AP SSID: `G-code-CNC`.
 - HTTP address: `192.168.4.1`.
 - Marlin UART: UART0 on ESP32, RX GPIO3, TX GPIO1.
 - Marlin baudrate: `250000`.

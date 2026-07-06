@@ -174,7 +174,7 @@ export function parseGcode(text) {
   if (analysis.hasZ && bounds.zMin < -30) warnings.push(`Z minimum ${bounds.zMin.toFixed(2)} mm is below -30 mm.`);
   if (bounds.xMin < MACHINE_LIMITS.xMin || bounds.xMax > MACHINE_LIMITS.xMax ||
       bounds.yMin < MACHINE_LIMITS.yMin || bounds.yMax > MACHINE_LIMITS.yMax) {
-    warnings.push('Toolpath exceeds default LowRider work area.');
+    warnings.push('Toolpath exceeds default G-code CNC work area.');
   }
 
   unsupported.forEach((count) => { analysis.unsupportedTotal += count; });

@@ -72,6 +72,6 @@ describe('shared automatic travel speed', () => {
     expect(preamble).toContain('"M400"');
     expect(preamble).toContain('"G0 F" + String(jobStatus.travelFeedMmMin');
     expect(preamble).toContain('appendPriorityCommand(command)');
-    expect(firmware).toContain('firmwareVersion = "0.6.0-stream-isolation"');
+    expect(firmware).toContain('firmwareVersion = "0.6.5-home-frame-recovery"');
   });
 });

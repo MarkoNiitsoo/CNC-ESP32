@@ -63,7 +63,7 @@ The WebOTA firmware and updated SPIFFS web UI were uploaded successfully to the 
 
 Saved WiFi station mode has been added. On boot the firmware reads Preferences/NVS namespace `wifi`
 keys `ssid` and `pass`, tries STA mode for up to 15 seconds, and falls back to setup AP
-`LowRider-CNC-Setup` with password `12345678`. The UI now links to `/wifi`, and `/api/health`
+`G-code-CNC-Setup` with password `12345678`. The UI now links to `/wifi`, and `/api/health`
 reports `wifiMode`, `ipAddress`, `ssid`, and STA `rssi`.
 
 Build verification passed for both firmware and SPIFFS image generation after the WiFi changes.
@@ -115,7 +115,7 @@ Syntax verification passed for the updated `www/preview.js` and `www/files.js` w
 Dry Run bounding-box trace has been added as SD-hosted UI only. No firmware, SPIFFS fallback UI, or
 API changes were made. Upload the updated `www/preview.html`, `www/preview.js`, and
 `www/preview.css` to SD `/www`. The preview page can generate a safe-Z bounding box trace, validate
-work zero and LowRider bounds before enabling send, send commands one at a time through `/api/cmd`,
+work zero and G-code CNC bounds before enabling send, send commands one at a time through `/api/cmd`,
 log responses, copy commands, send spindle/laser stop `M5`, and save dry-run metadata into the job
 JSON.
 
@@ -289,7 +289,7 @@ running, restore 100%, and confirm Pause/Stop/M5 still take priority over feed o
 
 - Do not initialize or use the camera.
 - Keep UART0 on GPIO3/GPIO1 at 250000 baud.
-- Use setup AP SSID `LowRider-CNC-Setup` when no saved WiFi can connect.
+- Use setup AP SSID `G-code-CNC-Setup` when no saved WiFi can connect.
 - Keep the MVP offline and simple.
 
 ## Repository History
@@ -635,11 +635,11 @@ required for this clarification.
 
 Behavior:
 
-- If the selected placement bounds exceed the configured LowRider work area, the UI still reports a
+- If the selected placement bounds exceed the configured G-code CNC work area, the UI still reports a
   work-area problem.
 - If the selected placement fits but the full generated file includes travel or lead-in moves
   outside that placement, the UI now shows a clearance warning instead of saying the generated
-  bounds exceed the LowRider work area.
+  bounds exceed the G-code CNC work area.
 - Generated run validation receives the visible placement bounds so saved job JSON warnings use the
   same clearer wording.
 - `G2/G3` arcs are still emitted as `G1` line segments in generated output and remain visible as a
@@ -1238,3 +1238,113 @@ No firmware upload is required.
 - The README gallery uses the July 5 screenshots in `screenshots/`; all June 19 screenshots were
   removed because they represented an obsolete UI.
 - No firmware or SD `/www` upload is required for this documentation-only change.
+
+## 2026-07-06 - Device identity loading handoff
+
+- Firmware now has the SD -> NVS -> defaults identity selection layer. The SD parser is bounded to
+  4096 bytes and accepts the documented minimal `device.hostname` / `device.friendlyName` object.
+- mDNS startup, `/api/device`, tests, and final documentation remain to be completed in this task.
+
+## 2026-07-06 - Local discovery handoff
+
+- mDNS and `/api/device` are now implemented. Default discovery URL is `http://cnc.local`; a
+  sanitized configured hostname produces the equivalent `http://<hostname>.local` URL.
+- HTTP and `_esp32cnc._tcp` services advertise on port 80. Verification and protocol/config docs
+  remain before hardware upload.
+
+## 2026-07-06 - Device discovery verification handoff
+
+- Device configuration and API behavior are documented in `docs/device-config.md` and
+  `docs/protocol.md`; README now leads users to `http://cnc.local` first.
+- Focused regression coverage is present in `test/firmware/device-discovery.test.mjs`.
+- Unit tests and PlatformIO build are the remaining acceptance checks.
+
+## 2026-07-06 - Device discovery ready for hardware test
+
+- Verification passed: 25 test files / 228 tests; PlatformIO uses 16.4% RAM and 53.7% flash.
+- Flash `.pio-build/esp32cam/firmware.bin`, then verify `http://cnc.local/api/device` with no SD
+  config. Next test a preferred SD config, malformed JSON fallback, and SD removal after NVS cache.
+- This feature requires firmware upload; no `/www` files changed.
+
+## 2026-07-06 - BLE discovery implementation handoff
+
+- BLE is an optional, non-connectable human-readable advertisement only; it is never a control
+  transport. Startup occurs last and is skipped when disabled, name advertising is disabled, or
+  free heap is below 70 KB.
+- `/api/device` now includes configured BLE state, selected name, and whether advertising started.
+- Documentation, regression assertions, full tests, and a new PlatformIO memory check remain.
+
+## 2026-07-06 - BLE discovery verification handoff
+
+- Documentation and focused regression assertions now cover the BLE configuration, name priority,
+  API state, compile-time disable path, and WiFi-first startup contract.
+- Full tests and PlatformIO build remain; watch RAM/flash growth because classic ESP32 BLE is
+  intentionally enabled only when memory permits.
+
+- The initial Bluedroid build reached 92.3% flash and was not accepted. Implementation now uses
+  NimBLE-Arduino; rerun tests and build to confirm the reduced final footprint.
+
+## 2026-07-06 - BLE discovery ready for hardware test
+
+- Verification passed: 25 test files / 230 tests; NimBLE build uses 19.4% RAM and 66.6% flash.
+- Flash `.pio-build/esp32cam/firmware.bin`, then check a phone BLE scanner for `CNC cnc.local` in
+  STA mode and `CNC 192.168.4.1` in setup AP mode. Confirm `/api/device` reports `started:true`.
+- Repeat once with `bluetooth.enabled:false`; WiFi, mDNS, and HTTP must remain unchanged.
+
+## 2026-07-06 - Device Settings API handoff
+
+- Firmware persistence and restart endpoints are implemented. PATCH saves NVS first, reports SD
+  write status separately, and never changes the live hostname before restart.
+- Both identity changes and restart are firmware-blocked during active/paused cutting. The SD UI,
+  API tests, documentation, and full verification remain.
+
+## 2026-07-06 - Machine Identity UI handoff
+
+- Settings now exposes the full device identity workflow and clearly distinguishes current address
+  from the address available after restart. Active/paused states disable editing and restart in UI,
+  with firmware checks remaining authoritative.
+- Upload requirements will include firmware plus `/www/index.html`, `/www/app.js`,
+  `/www/style.css`, and `/www/lib/device-settings.js` after verification.
+
+## 2026-07-06 - Device Settings verification handoff
+
+- Firmware, SD UI, mock server, tests, and docs now cover the complete identity workflow.
+- Verification is complete: JavaScript syntax checks, 26 test files / 237 tests, and PlatformIO
+  build all pass. Final footprint is 19.4% RAM and 66.8% flash.
+- Hardware acceptance remains: flash `0.6.3-device-settings`, change the identity while idle,
+  restart, then confirm mDNS, BLE name, NVS fallback, and `/esp32-cnc/config.json` on the device.
+
+## 2026-07-06 - Stream ACK guard handoff
+
+- Safe-Z/M400 preparation no longer shares the too-short 1500 ms request timeout.
+- Streaming never retries an unacknowledged motion automatically. Marlin `busy:` extends the ACK
+  deadline; silence becomes an explicit ERROR naming the uncertain command instead of an endless
+  stationary RUNNING state.
+
+## 2026-07-06 - Animation gap recovery handoff
+
+- Missing sequence numbers inside compact motion telemetry are expanded from the already parsed
+  active-run preview. This specifically addresses straight-line jumping without increasing device
+  communication load; arc interpolation remains unchanged.
+
+## 2026-07-06 - Stream/animation hardware handoff
+
+- Flash `.pio-build/esp32cam/firmware.bin` (`0.6.4-stream-ack-guard`) and upload the changed SD UI
+  files before testing.
+- First test with router/cutter off: start from Z below Safe Z, verify preparation survives the lift,
+  then run a straight-heavy file and confirm continuous browser animation.
+- If streaming enters ERROR, capture `/api/job/status` and `/api/marlin/log` before rebooting; the
+  new error names the unacknowledged command and deliberately does not replay it.
+
+## 2026-07-06 - Home-frame recovery handoff
+
+- Old zero history remains for audit, but entries without `homingSessionId` are legacy. After the
+  firmware update: Home All, explicitly restore the interrupted XY zero or set a new work zero,
+  then set/review Z zero and re-arm.
+- Recovery remains blocked between Home All and explicit zero restore, even when the interrupted
+  run and selected zero ID match. This prevents work-coordinate moves from using home as work zero.
+- Recovery bounds now operate in physical machine space. For example work Z -32 with a machine-Z
+  work origin at 35.7 is checked as machine Z 3.7, not rejected merely for being negative.
+- Hardware validation must confirm Count/M92-based machine coordinates after Home All, jog, G92,
+  another jog, and saved-zero restore before any cutter-on recovery test.
+- Verification passes: 26 test files / 241 tests; PlatformIO uses 19.4% RAM and 67.1% flash.

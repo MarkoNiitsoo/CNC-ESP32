@@ -19,7 +19,8 @@ const previewSource = await readFile(new URL('../../www/preview.js', import.meta
 const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
 const model = parseGCodeToToolpath(source);
-const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: -30, zMax: 70 };
+const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: 0, zMax: 70 };
+const workZeroMachine = { x: 0, y: 0, z: 35 };
 const checklist = {
   routerStateSafe: true, toolSecured: true, materialUnmoved: true,
   workZeroCorrect: true, fixturesClear: true, cuttingZUnderstood: true,
@@ -40,13 +41,13 @@ function jobFor(overrides = {}) {
 
 function production(job = jobFor(), options = {}) {
   const recovery = planMotionOnlyRecovery({
-    job, toolpathModel: model, safeZ: 15, limits: { ...limits, zMin: 0 }, positionTrusted: true,
+    job, toolpathModel: model, safeZ: 15, limits, workZeroMachine, positionTrusted: true, workZeroFrameMatches: true,
     ...(options.recovery || {}),
   });
   return {
     recovery,
     plan: buildProductionResumePlan(recovery, model, {
-      limits, travelFeedMmMin: 3000, zFeedMmMin: 400, checklist,
+      limits, workZeroMachine, travelFeedMmMin: 3000, zFeedMmMin: 400, checklist,
       ...(options.production || {}),
     }),
   };
@@ -81,7 +82,7 @@ describe('Guarded Production Resume planner', () => {
     const recovery = production(changedJob).recovery;
     expect(recovery.status).toBe('available');
     expect(recovery.zZeroChanged).toBe(true);
-    expect(buildToollessResumePlan(recovery, model, { limits }).status).toBe('available');
+    expect(buildToollessResumePlan(recovery, model, { limits, workZeroMachine }).status).toBe('available');
 
     const missingAck = production(changedJob).plan;
     expect(missingAck.status).toBe('blocked');
@@ -95,7 +96,7 @@ describe('Guarded Production Resume planner', () => {
   });
 
   it('enforces XY/Z limits and reports minimum Z', () => {
-    expect(production(jobFor(), { production: { limits: { ...limits, zMin: -1 } } }).plan.blockingReasons.map((item) => item.id)).toContain('pathLimits');
+    expect(production(jobFor(), { production: { limits: { ...limits, zMin: 34 } } }).plan.blockingReasons.map((item) => item.id)).toContain('pathLimits');
     expect(production(jobFor(), { production: { limits: { ...limits, xMax: 5 } } }).plan.blockingReasons.map((item) => item.id)).toContain('pathLimits');
     expect(production(jobFor(), { production: { limits: null } }).plan.blockingReasons.map((item) => item.id)).toContain('limitsMissing');
   });

@@ -14,6 +14,7 @@ import {
   motionDurationMs,
   reduceWorkbenchState,
   segmentAtCommand,
+  segmentsBetweenCommands,
   translateBounds,
   translatePosition,
   workCoordinateAtMachine,
@@ -240,6 +241,12 @@ describe('canvas workbench control policy', () => {
     expect(middleArc.x).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(middleArc.y).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(motionDurationMs(line, { feedOverridePercent: 100 })).toBe(1000);
+  });
+
+  it('reconstructs omitted compact telemetry events from preview command numbers', () => {
+    const segments = [2, 4, 5, 8].map((commandNumber) => ({ commandNumber }));
+    expect(segmentsBetweenCommands(segments, 2, 8)).toEqual([segments[1], segments[2], segments[3]]);
+    expect(segmentsBetweenCommands(segments, 8, 8)).toEqual([]);
   });
 
   it('persists only known boolean layer preferences', () => {

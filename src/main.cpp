@@ -1,4 +1,12 @@
 #include <Arduino.h>
+#ifndef ESP32CNC_ENABLE_BLE
+#define ESP32CNC_ENABLE_BLE 1
+#endif
+
+#if ESP32CNC_ENABLE_BLE
+#include <NimBLEDevice.h>
+#endif
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <SD_MMC.h>
 #include <SPIFFS.h>
@@ -10,25 +18,38 @@
 #include <freertos/task.h>
 
 namespace {
-constexpr const char *kFirmwareName = "LowRider CNC Pendant";
-constexpr const char *firmwareVersion = "0.6.0-stream-isolation";
+constexpr const char *kFirmwareName = "G-code CNC Pendant";
+constexpr const char *firmwareVersion = "0.6.5-home-frame-recovery";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
-constexpr const char *kSetupApSsid = "LowRider-CNC-Setup";
+constexpr const char *kSetupApSsid = "G-code-CNC-Setup";
 constexpr const char *kSetupApPassword = "12345678";
 constexpr const char *kWifiPrefsNamespace = "wifi";
 constexpr const char *kWifiPrefsSsidKey = "ssid";
 constexpr const char *kWifiPrefsPassKey = "pass";
 constexpr const char *kMachinePrefsNamespace = "machine";
+constexpr const char *kDevicePrefsNamespace = "device";
+constexpr const char *kDevicePrefsHostnameKey = "hostname";
+constexpr const char *kDevicePrefsFriendlyNameKey = "friendlyName";
+constexpr const char *kDevicePrefsBleEnabledKey = "bleEnabled";
+constexpr const char *kDevicePrefsBleNameKey = "bleName";
+constexpr const char *kDefaultDeviceHostname = "cnc";
+constexpr const char *kDefaultDeviceFriendlyName = "ESP32 CNC";
+constexpr const char *kPrimaryDeviceConfigPath = "/esp32-cnc/config.json";
+constexpr const char *kFallbackDeviceConfigPath = "/config.json";
+constexpr size_t kMaxDeviceConfigBytes = 4096;
+constexpr size_t kMaxBleAdvertisementNameBytes = 26;
 constexpr const char *kSdUpdateBinPath = "/firmware/update.bin";
 constexpr const char *kSdInstallMarkerPath = "/firmware/INSTALL.NOW";
 constexpr const char *kSdDoneBinPath = "/firmware/update.done.bin";
 constexpr const char *kSdFailedMarkerPath = "/firmware/INSTALL.FAILED";
 constexpr const char *kSdUpdateLogPath = "/logs/update.log";
 constexpr const char *kSdJobLogPath = "/logs/job.log";
-constexpr const char *kSdRoots[] = {"/gcode", "/www", "/firmware", "/jobs", "/logs"};
+constexpr const char *kSdRoots[] = {"/gcode", "/www", "/firmware", "/jobs", "/logs",
+                                    "/esp32-cnc"};
 constexpr uint32_t kMarlinBaudrate = 250000;
 constexpr uint32_t kMarlinTimeoutMs = 1500;
+constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000;
 constexpr uint16_t kTelemetryWebSocketPort = 81;
 constexpr uint32_t kTelemetryMinBroadcastMs = 100;
 constexpr uint32_t kJobProgressBroadcastMs = 500;
@@ -154,6 +175,7 @@ struct PositionTelemetry {
 
 struct MachineFrameState {
   bool machineValid = false;
+  bool absoluteFromHome = false;
   bool workZeroValid = false;
   bool homedX = false;
   bool homedY = false;
@@ -164,6 +186,16 @@ struct MachineFrameState {
   float workZeroMachineX = 0;
   float workZeroMachineY = 0;
   float workZeroMachineZ = 0;
+  float stepsX = 0;
+  float stepsY = 0;
+  float stepsZ = 0;
+  int32_t homeCountX = 0;
+  int32_t homeCountY = 0;
+  int32_t homeCountZ = 0;
+  int32_t countX = 0;
+  int32_t countY = 0;
+  int32_t countZ = 0;
+  String homingSessionId;
   uint32_t homingEpoch = 0;
   uint32_t revision = 0;
   uint32_t updatedAtMs = 0;
@@ -212,10 +244,24 @@ struct MachineProfile {
   String lastError;
 };
 
+struct DeviceIdentity {
+  String deviceId;
+  String hostname = kDefaultDeviceHostname;
+  String friendlyName = kDefaultDeviceFriendlyName;
+  String source = "defaults";
+  bool mdnsEnabled = false;
+  bool bluetoothEnabled = true;
+  bool bluetoothAdvertiseName = true;
+  bool bluetoothStarted = false;
+  String bluetoothName;
+};
+
 WebServer server(80);
 WebSocketsServer telemetrySocket(kTelemetryWebSocketPort);
 Preferences wifiPrefs;
 Preferences machinePrefs;
+Preferences devicePrefs;
+DeviceIdentity deviceIdentity;
 String activeWifiMode = "ap";
 String activeWifiSsid = kSetupApSsid;
 bool jobRunning = false; // TODO: Replace with real Marlin job state tracking.
@@ -234,6 +280,8 @@ File jobFile;
 JobRunnerStatus jobStatus;
 bool jobWaitingForOk = false;
 String jobResponseBuffer;
+uint32_t jobCommandStartedAtMs = 0;
+uint32_t jobCommandLivenessAtMs = 0;
 JogStatus jogStatus;
 constexpr uint8_t kMaxPriorityCommands = 12;
 String priorityCommands[kMaxPriorityCommands];
@@ -241,6 +289,7 @@ uint8_t priorityCommandCount = 0;
 uint8_t priorityCommandIndex = 0;
 String priorityResponseBuffer;
 uint32_t priorityCommandStartedAtMs = 0;
+uint32_t priorityCommandLivenessAtMs = 0;
 MarlinLogEntry marlinLog[kMarlinLogSize];
 size_t marlinLogNext = 0;
 size_t marlinLogCount = 0;
@@ -547,6 +596,370 @@ bool extractJsonBool(const String &body, const char *field, bool fallback) {
     return false;
   }
   return fallback;
+}
+
+void skipJsonWhitespace(const String &json, size_t &index) {
+  while (index < json.length()) {
+    const char c = json[index];
+    if (c != ' ' && c != '\t' && c != '\r' && c != '\n') break;
+    ++index;
+  }
+}
+
+bool consumeJsonCharacter(const String &json, size_t &index, char expected) {
+  skipJsonWhitespace(json, index);
+  if (index >= json.length() || json[index] != expected) return false;
+  ++index;
+  return true;
+}
+
+bool parseJsonStringValue(const String &json, size_t &index, String &value) {
+  skipJsonWhitespace(json, index);
+  if (index >= json.length() || json[index] != '"') return false;
+  ++index;
+  value = "";
+
+  bool escaped = false;
+  while (index < json.length()) {
+    const char c = json[index++];
+    if (escaped) {
+      switch (c) {
+      case 'n': value += '\n'; break;
+      case 'r': value += '\r'; break;
+      case 't': value += '\t'; break;
+      case '"':
+      case '\\':
+      case '/': value += c; break;
+      default: return false;
+      }
+      escaped = false;
+    } else if (c == '\\') {
+      escaped = true;
+    } else if (c == '"') {
+      return true;
+    } else if (static_cast<uint8_t>(c) < 0x20) {
+      return false;
+    } else {
+      value += c;
+    }
+  }
+
+  return false;
+}
+
+bool parseJsonBoolValue(const String &json, size_t &index, bool &value) {
+  skipJsonWhitespace(json, index);
+  if (json.startsWith("true", index)) {
+    index += 4;
+    value = true;
+    return true;
+  }
+  if (json.startsWith("false", index)) {
+    index += 5;
+    value = false;
+    return true;
+  }
+  return false;
+}
+
+bool parseDeviceConfigObject(const String &json, size_t &index, String &hostname,
+                             String &friendlyName) {
+  if (!consumeJsonCharacter(json, index, '{')) return false;
+  bool hostnameFound = false;
+  bool friendlyNameFound = false;
+  while (true) {
+    skipJsonWhitespace(json, index);
+    if (index < json.length() && json[index] == '}') {
+      ++index;
+      break;
+    }
+
+    String key;
+    String value;
+    if (!parseJsonStringValue(json, index, key) || !consumeJsonCharacter(json, index, ':') ||
+        !parseJsonStringValue(json, index, value)) {
+      return false;
+    }
+    if (key == "hostname") {
+      hostname = value;
+      hostnameFound = true;
+    } else if (key == "friendlyName") {
+      friendlyName = value;
+      friendlyNameFound = true;
+    } else {
+      return false;
+    }
+
+    skipJsonWhitespace(json, index);
+    if (index < json.length() && json[index] == ',') {
+      ++index;
+      continue;
+    }
+    if (index < json.length() && json[index] == '}') {
+      ++index;
+      return hostnameFound && friendlyNameFound;
+    }
+    return false;
+  }
+  return hostnameFound && friendlyNameFound;
+}
+
+bool parseBluetoothConfigObject(const String &json, size_t &index, bool &enabled,
+                                bool &advertiseName) {
+  if (!consumeJsonCharacter(json, index, '{')) return false;
+  bool enabledFound = false;
+  bool advertiseNameFound = false;
+  while (true) {
+    skipJsonWhitespace(json, index);
+    if (index < json.length() && json[index] == '}') {
+      ++index;
+      return enabledFound && advertiseNameFound;
+    }
+
+    String key;
+    bool value = false;
+    if (!parseJsonStringValue(json, index, key) || !consumeJsonCharacter(json, index, ':') ||
+        !parseJsonBoolValue(json, index, value)) {
+      return false;
+    }
+    if (key == "enabled") {
+      enabled = value;
+      enabledFound = true;
+    } else if (key == "advertiseName") {
+      advertiseName = value;
+      advertiseNameFound = true;
+    } else {
+      return false;
+    }
+
+    skipJsonWhitespace(json, index);
+    if (index < json.length() && json[index] == ',') {
+      ++index;
+      continue;
+    }
+    if (index < json.length() && json[index] == '}') {
+      ++index;
+      return enabledFound && advertiseNameFound;
+    }
+    return false;
+  }
+}
+
+bool parseDeviceConfigJson(const String &json, String &hostname, String &friendlyName,
+                           bool &bluetoothEnabled, bool &bluetoothAdvertiseName) {
+  size_t index = 0;
+  if (!consumeJsonCharacter(json, index, '{')) return false;
+
+  bool deviceFound = false;
+  bool bluetoothFound = false;
+  while (true) {
+    skipJsonWhitespace(json, index);
+    if (index < json.length() && json[index] == '}') {
+      ++index;
+      break;
+    }
+
+    String key;
+    if (!parseJsonStringValue(json, index, key) || !consumeJsonCharacter(json, index, ':')) {
+      return false;
+    }
+    if (key == "device" && !deviceFound) {
+      if (!parseDeviceConfigObject(json, index, hostname, friendlyName)) return false;
+      deviceFound = true;
+    } else if (key == "bluetooth" && !bluetoothFound) {
+      if (!parseBluetoothConfigObject(json, index, bluetoothEnabled, bluetoothAdvertiseName)) {
+        return false;
+      }
+      bluetoothFound = true;
+    } else {
+      return false;
+    }
+
+    skipJsonWhitespace(json, index);
+    if (index < json.length() && json[index] == ',') {
+      ++index;
+      continue;
+    }
+    if (index < json.length() && json[index] == '}') {
+      ++index;
+      break;
+    }
+    return false;
+  }
+
+  skipJsonWhitespace(json, index);
+  hostname.trim();
+  friendlyName.trim();
+  return index == json.length() && deviceFound && hostname.length() > 0 &&
+         friendlyName.length() > 0;
+}
+
+String deviceIdFromMac() {
+  char suffix[7];
+  const uint64_t mac = ESP.getEfuseMac();
+  snprintf(suffix, sizeof(suffix), "%06llX", mac & 0xFFFFFFULL);
+  return String(suffix);
+}
+
+String safeDeviceHostnameFallback(const String &deviceId) {
+  String fallback = "esp32-cnc-" + deviceId;
+  fallback.toLowerCase();
+  return fallback;
+}
+
+String sanitizeDeviceHostname(String hostname, const String &deviceId) {
+  hostname.trim();
+  hostname.toLowerCase();
+  if (hostname.endsWith(".local")) {
+    hostname.remove(hostname.length() - 6);
+    hostname.trim();
+  }
+
+  String sanitized;
+  sanitized.reserve(min(static_cast<size_t>(63), hostname.length()));
+  bool previousWasHyphen = false;
+  for (size_t i = 0; i < hostname.length() && sanitized.length() < 63; ++i) {
+    const char c = hostname[i];
+    const bool alphaNumeric = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    if (alphaNumeric) {
+      sanitized += c;
+      previousWasHyphen = false;
+    } else if (!previousWasHyphen && sanitized.length() > 0) {
+      sanitized += '-';
+      previousWasHyphen = true;
+    }
+  }
+
+  while (sanitized.endsWith("-")) sanitized.remove(sanitized.length() - 1);
+  return sanitized.length() > 0 ? sanitized : safeDeviceHostnameFallback(deviceId);
+}
+
+bool readDeviceConfigFile(const String &path, String &hostname, String &friendlyName,
+                          bool &bluetoothEnabled, bool &bluetoothAdvertiseName) {
+  File file = SD_MMC.open(path, FILE_READ);
+  if (!file || file.isDirectory() || file.size() == 0 || file.size() > kMaxDeviceConfigBytes) {
+    if (file) file.close();
+    return false;
+  }
+
+  String json;
+  json.reserve(file.size());
+  while (file.available()) json += static_cast<char>(file.read());
+  file.close();
+  return parseDeviceConfigJson(json, hostname, friendlyName, bluetoothEnabled,
+                               bluetoothAdvertiseName);
+}
+
+void saveDeviceIdentityToNvs() {
+  devicePrefs.begin(kDevicePrefsNamespace, false);
+  devicePrefs.putString(kDevicePrefsHostnameKey, deviceIdentity.hostname);
+  devicePrefs.putString(kDevicePrefsFriendlyNameKey, deviceIdentity.friendlyName);
+  devicePrefs.putBool(kDevicePrefsBleEnabledKey, deviceIdentity.bluetoothEnabled);
+  devicePrefs.putBool(kDevicePrefsBleNameKey, deviceIdentity.bluetoothAdvertiseName);
+  devicePrefs.end();
+}
+
+void saveDeviceIdentityToNvs(const String &hostname, const String &friendlyName) {
+  devicePrefs.begin(kDevicePrefsNamespace, false);
+  devicePrefs.putString(kDevicePrefsHostnameKey, hostname);
+  devicePrefs.putString(kDevicePrefsFriendlyNameKey, friendlyName);
+  devicePrefs.putBool(kDevicePrefsBleEnabledKey, deviceIdentity.bluetoothEnabled);
+  devicePrefs.putBool(kDevicePrefsBleNameKey, deviceIdentity.bluetoothAdvertiseName);
+  devicePrefs.end();
+}
+
+bool writeDeviceConfigToSd(const String &hostname, const String &friendlyName, String &error) {
+  if (!sdMounted) {
+    error = "SD card is not mounted; identity was saved to NVS only.";
+    return false;
+  }
+
+  SD_MMC.mkdir("/esp32-cnc");
+  const String tempPath = "/esp32-cnc/config.tmp";
+  SD_MMC.remove(tempPath);
+
+  String json = "{\n  \"device\": {\n    \"hostname\": \"" + jsonEscape(hostname);
+  json += "\",\n    \"friendlyName\": \"" + jsonEscape(friendlyName);
+  json += "\"\n  },\n  \"bluetooth\": {\n    \"enabled\": ";
+  json += deviceIdentity.bluetoothEnabled ? "true" : "false";
+  json += ",\n    \"advertiseName\": ";
+  json += deviceIdentity.bluetoothAdvertiseName ? "true" : "false";
+  json += "\n  }\n}\n";
+
+  File file = SD_MMC.open(tempPath, FILE_WRITE);
+  if (!file) {
+    error = "SD config is not writable; identity was saved to NVS only.";
+    return false;
+  }
+  const size_t written = file.print(json);
+  file.flush();
+  file.close();
+  if (written != json.length()) {
+    SD_MMC.remove(tempPath);
+    error = "SD config write was incomplete; identity was saved to NVS only.";
+    return false;
+  }
+
+  const String backupPath = "/esp32-cnc/config.bak";
+  SD_MMC.remove(backupPath);
+  const bool hadExistingConfig = SD_MMC.exists(kPrimaryDeviceConfigPath);
+  if (hadExistingConfig && !SD_MMC.rename(kPrimaryDeviceConfigPath, backupPath)) {
+    SD_MMC.remove(tempPath);
+    error = "Existing SD config could not be preserved; identity was saved to NVS only.";
+    return false;
+  }
+  if (!SD_MMC.rename(tempPath, kPrimaryDeviceConfigPath)) {
+    SD_MMC.remove(tempPath);
+    if (hadExistingConfig) SD_MMC.rename(backupPath, kPrimaryDeviceConfigPath);
+    error = "SD config could not be installed; identity was saved to NVS only.";
+    return false;
+  }
+  SD_MMC.remove(backupPath);
+  return true;
+}
+
+void loadDeviceIdentity() {
+  deviceIdentity = DeviceIdentity{};
+  deviceIdentity.deviceId = deviceIdFromMac();
+
+  String configPath;
+  if (sdMounted && SD_MMC.exists(kPrimaryDeviceConfigPath)) {
+    configPath = kPrimaryDeviceConfigPath;
+  } else if (sdMounted && SD_MMC.exists(kFallbackDeviceConfigPath)) {
+    configPath = kFallbackDeviceConfigPath;
+  }
+
+  String hostname;
+  String friendlyName;
+  bool bluetoothEnabled = true;
+  bool bluetoothAdvertiseName = true;
+  if (configPath.length() > 0 &&
+      readDeviceConfigFile(configPath, hostname, friendlyName, bluetoothEnabled,
+                           bluetoothAdvertiseName)) {
+    deviceIdentity.hostname = sanitizeDeviceHostname(hostname, deviceIdentity.deviceId);
+    deviceIdentity.friendlyName = friendlyName;
+    deviceIdentity.bluetoothEnabled = bluetoothEnabled;
+    deviceIdentity.bluetoothAdvertiseName = bluetoothAdvertiseName;
+    deviceIdentity.source = "sd";
+    saveDeviceIdentityToNvs();
+    return;
+  }
+
+  devicePrefs.begin(kDevicePrefsNamespace, true);
+  hostname = devicePrefs.getString(kDevicePrefsHostnameKey, "");
+  friendlyName = devicePrefs.getString(kDevicePrefsFriendlyNameKey, "");
+  bluetoothEnabled = devicePrefs.getBool(kDevicePrefsBleEnabledKey, true);
+  bluetoothAdvertiseName = devicePrefs.getBool(kDevicePrefsBleNameKey, true);
+  devicePrefs.end();
+  hostname.trim();
+  friendlyName.trim();
+  if (hostname.length() > 0 && friendlyName.length() > 0) {
+    deviceIdentity.hostname = sanitizeDeviceHostname(hostname, deviceIdentity.deviceId);
+    deviceIdentity.friendlyName = friendlyName;
+    deviceIdentity.bluetoothEnabled = bluetoothEnabled;
+    deviceIdentity.bluetoothAdvertiseName = bluetoothAdvertiseName;
+    deviceIdentity.source = "nvs";
+  }
 }
 
 float clampFloat(float value, float minValue, float maxValue) {
@@ -1469,6 +1882,7 @@ void clearPriorityCommands() {
   priorityCommandIndex = 0;
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = 0;
+  priorityCommandLivenessAtMs = 0;
   jobStatus.priorityCommandInProgress = false;
 }
 
@@ -1520,6 +1934,7 @@ void startNextPriorityCommand() {
   jobStatus.priorityCommandInProgress = true;
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = millis();
+  priorityCommandLivenessAtMs = priorityCommandStartedAtMs;
   logJobEvent("priority: " + cmd);
 }
 
@@ -1563,9 +1978,14 @@ void processPriorityCommands() {
     return;
   }
 
+  String receivedChunk;
   while (Serial.available() > 0) {
     const char c = static_cast<char>(Serial.read());
     priorityResponseBuffer += c;
+    receivedChunk += c;
+  }
+  if (responseContainsToken(receivedChunk, "busy:")) {
+    priorityCommandLivenessAtMs = millis();
   }
 
   if (!jobStatus.priorityCommandInProgress) {
@@ -1593,7 +2013,7 @@ void processPriorityCommands() {
   }
 
   if (!responseContainsToken(priorityResponseBuffer, "ok")) {
-    if (millis() - priorityCommandStartedAtMs > kMarlinTimeoutMs) {
+    if (millis() - priorityCommandLivenessAtMs > kMarlinCommandAckTimeoutMs) {
       jobStatus.lastPriorityResponse = priorityResponseBuffer;
       jobStatus.lastPriorityError = "Priority command timed out";
       addMarlinLog("rx", true, priorityResponseBuffer.length() > 0 ? priorityResponseBuffer : "timeout", "error");
@@ -1619,6 +2039,7 @@ void processPriorityCommands() {
   jobStatus.priorityCommandInProgress = false;
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = 0;
+  priorityCommandLivenessAtMs = 0;
 
   if (priorityCommandIndex >= priorityCommandCount) {
     finishPrioritySequence();
@@ -1682,6 +2103,76 @@ bool parseAxisFromM114(const String &response, char axis, float &value) {
   return true;
 }
 
+bool parseAxisAfter(const String &response, int offset, char axis, float &value) {
+  String key;
+  key += axis;
+  key += ":";
+  const int index = response.indexOf(key, offset);
+  if (index < 0) return false;
+  int start = index + key.length();
+  while (start < response.length() && response[start] == ' ') ++start;
+  String number;
+  while (start < response.length()) {
+    const char c = response[start];
+    if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.') {
+      number += c;
+      ++start;
+    } else {
+      break;
+    }
+  }
+  if (number.length() == 0) return false;
+  value = number.toFloat();
+  return true;
+}
+
+bool parseM114Counts(const String &response, int32_t &x, int32_t &y, int32_t &z) {
+  const int countOffset = response.lastIndexOf("Count X:");
+  if (countOffset < 0) return false;
+  float parsedX = 0;
+  float parsedY = 0;
+  float parsedZ = 0;
+  if (!parseAxisAfter(response, countOffset + 6, 'X', parsedX) ||
+      !parseAxisAfter(response, countOffset + 6, 'Y', parsedY) ||
+      !parseAxisAfter(response, countOffset + 6, 'Z', parsedZ)) return false;
+  x = static_cast<int32_t>(lroundf(parsedX));
+  y = static_cast<int32_t>(lroundf(parsedY));
+  z = static_cast<int32_t>(lroundf(parsedZ));
+  return true;
+}
+
+bool parseWordAfter(const String &response, int offset, char letter, float &value) {
+  int index = offset;
+  while (index < response.length()) {
+    index = response.indexOf(letter, index);
+    if (index < 0) return false;
+    if (index == 0 || response[index - 1] == ' ' || response[index - 1] == '\t') break;
+    ++index;
+  }
+  int start = index + 1;
+  String number;
+  while (start < response.length()) {
+    const char c = response[start];
+    if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.') {
+      number += c;
+      ++start;
+    } else {
+      break;
+    }
+  }
+  if (number.length() == 0) return false;
+  value = number.toFloat();
+  return true;
+}
+
+bool parseM92Steps(const String &response, float &x, float &y, float &z) {
+  const int m92Offset = response.indexOf("M92");
+  if (m92Offset < 0) return false;
+  return parseWordAfter(response, m92Offset, 'X', x) &&
+         parseWordAfter(response, m92Offset, 'Y', y) &&
+         parseWordAfter(response, m92Offset, 'Z', z) && x > 0 && y > 0 && z > 0;
+}
+
 void updatePositionFromMarlinResponse(const String &response) {
   float x = 0;
   float y = 0;
@@ -1690,13 +2181,32 @@ void updatePositionFromMarlinResponse(const String &response) {
       !parseAxisFromM114(response, 'Z', z)) {
     return;
   }
-  if (!marlinPosition.valid || fabs(marlinPosition.x - x) > 0.0005f ||
-      fabs(marlinPosition.y - y) > 0.0005f || fabs(marlinPosition.z - z) > 0.0005f) {
+  const bool workChanged = !marlinPosition.valid || fabs(marlinPosition.x - x) > 0.0005f ||
+      fabs(marlinPosition.y - y) > 0.0005f || fabs(marlinPosition.z - z) > 0.0005f;
+  int32_t countX = 0;
+  int32_t countY = 0;
+  int32_t countZ = 0;
+  const bool countsAvailable = machineFrame.absoluteFromHome &&
+      parseM114Counts(response, countX, countY, countZ);
+  const bool countsChanged = countsAvailable && (!machineFrame.machineValid || countX != machineFrame.countX ||
+      countY != machineFrame.countY || countZ != machineFrame.countZ);
+  if (workChanged || countsChanged) {
     marlinPosition.valid = true;
     marlinPosition.x = x;
     marlinPosition.y = y;
     marlinPosition.z = z;
-    if (machineFrame.workZeroValid) {
+    if (countsAvailable) {
+      machineFrame.countX = countX;
+      machineFrame.countY = countY;
+      machineFrame.countZ = countZ;
+      machineFrame.machineValid = true;
+      machineFrame.machineX = machineProfile.fullXMin +
+          static_cast<float>(countX - machineFrame.homeCountX) / machineFrame.stepsX;
+      machineFrame.machineY = machineProfile.fullYMin +
+          static_cast<float>(countY - machineFrame.homeCountY) / machineFrame.stepsY;
+      machineFrame.machineZ = machineProfile.fullZMax +
+          static_cast<float>(countZ - machineFrame.homeCountZ) / machineFrame.stepsZ;
+    } else if (machineFrame.workZeroValid) {
       machineFrame.machineValid = true;
       machineFrame.machineX = machineFrame.workZeroMachineX + x;
       machineFrame.machineY = machineFrame.workZeroMachineY + y;
@@ -1733,9 +2243,20 @@ String machineFrameJson() {
           ",\"y\":" + String(machineFrame.homedY ? "true" : "false") +
           ",\"z\":" + String(machineFrame.homedZ ? "true" : "false") + "}";
   json += ",\"homingEpoch\":" + String(machineFrame.homingEpoch);
+  json += ",\"homingSessionId\":\"" + jsonEscape(machineFrame.homingSessionId) + "\"";
+  json += ",\"absoluteFromHome\":" + String(machineFrame.absoluteFromHome ? "true" : "false");
+  if (machineFrame.absoluteFromHome) {
+    json += ",\"homeReference\":{\"counts\":{\"x\":" + String(machineFrame.homeCountX) +
+            ",\"y\":" + String(machineFrame.homeCountY) + ",\"z\":" + String(machineFrame.homeCountZ) + "}";
+    json += ",\"stepsPerMm\":{\"x\":" + String(machineFrame.stepsX, 6) +
+            ",\"y\":" + String(machineFrame.stepsY, 6) + ",\"z\":" + String(machineFrame.stepsZ, 6) + "}}";
+  } else {
+    json += ",\"homeReference\":null";
+  }
   json += ",\"revision\":" + String(machineFrame.revision);
   json += ",\"updatedAtMs\":" + String(machineFrame.updatedAtMs);
-  json += ",\"trusted\":" + String(machineFrame.machineValid && machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ ? "true" : "false");
+  json += ",\"trusted\":" + String(machineFrame.machineValid && machineFrame.absoluteFromHome &&
+      machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ ? "true" : "false");
   json += "}";
   return json;
 }
@@ -2289,6 +2810,8 @@ void setJobError(const String &message) {
   resetFeedOverrideAfterJobIfNeeded();
   clearPriorityCommands();
   jobWaitingForOk = false;
+  jobCommandStartedAtMs = 0;
+  jobCommandLivenessAtMs = 0;
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
@@ -2364,6 +2887,8 @@ void completeJob() {
   resetFeedOverrideAfterJobIfNeeded();
   clearPriorityCommands();
   jobWaitingForOk = false;
+  jobCommandStartedAtMs = 0;
+  jobCommandLivenessAtMs = 0;
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
@@ -2396,15 +2921,20 @@ void processJobRunner() {
     return;
   }
 
+  String receivedChunk;
   while (Serial.available() > 0) {
     const char c = static_cast<char>(Serial.read());
     jobResponseBuffer += c;
+    receivedChunk += c;
     if (c == '\n') {
       updatePositionFromMarlinResponse(marlinAsyncLine);
       marlinAsyncLine = "";
     } else if (c != '\r' && marlinAsyncLine.length() < 256) {
       marlinAsyncLine += c;
     }
+  }
+  if (responseContainsToken(receivedChunk, "busy:")) {
+    jobCommandLivenessAtMs = millis();
   }
 
   if (jobWaitingForOk) {
@@ -2421,6 +2951,11 @@ void processJobRunner() {
       return;
     }
     if (!responseContainsToken(jobResponseBuffer, "ok")) {
+      if (millis() - jobCommandLivenessAtMs > kMarlinCommandAckTimeoutMs) {
+        jobStatus.lastResponse = jobResponseBuffer;
+        addMarlinLog("rx", false, jobResponseBuffer.length() > 0 ? jobResponseBuffer : "timeout", "error");
+        setJobError("Marlin acknowledgement timed out; command was not resent: " + jobStatus.lastCommand);
+      }
       return;
     }
 
@@ -2430,6 +2965,8 @@ void processJobRunner() {
     updatePositionFromMarlinResponse(jobResponseBuffer);
     jobResponseBuffer = "";
     jobWaitingForOk = false;
+    jobCommandStartedAtMs = 0;
+    jobCommandLivenessAtMs = 0;
     touchJobProgress();
   }
 
@@ -2474,6 +3011,8 @@ void processJobRunner() {
   jobStatus.currentLineNumber += 1;
   queueMotionTelemetry(line, jobStatus.currentLineNumber);
   jobWaitingForOk = true;
+  jobCommandStartedAtMs = millis();
+  jobCommandLivenessAtMs = jobCommandStartedAtMs;
   touchJobProgress();
 }
 
@@ -2504,6 +3043,127 @@ String currentIpAddress() {
   }
 
   return WiFi.softAPIP().toString();
+}
+
+String selectedBluetoothName() {
+  if (activeWifiMode == "ap") {
+    const String apName = "CNC " + currentIpAddress();
+    if (apName.length() <= kMaxBleAdvertisementNameBytes) return apName;
+  }
+
+  const String localName = "CNC " + deviceIdentity.hostname + ".local";
+  if (localName.length() <= kMaxBleAdvertisementNameBytes) return localName;
+
+  const String shortHostname = "CNC " + deviceIdentity.hostname;
+  if (shortHostname.length() <= kMaxBleAdvertisementNameBytes) return shortHostname;
+
+  return "CNC-" + deviceIdentity.deviceId;
+}
+
+String pendingBluetoothName(const String &hostname) {
+  const String localName = "CNC " + hostname + ".local";
+  if (localName.length() <= kMaxBleAdvertisementNameBytes) return localName;
+  const String shortHostname = "CNC " + hostname;
+  return shortHostname.length() <= kMaxBleAdvertisementNameBytes
+             ? shortHostname
+             : "CNC-" + deviceIdentity.deviceId;
+}
+
+void startBluetoothAdvertisement() {
+  deviceIdentity.bluetoothName = selectedBluetoothName();
+#if ESP32CNC_ENABLE_BLE
+  if (!deviceIdentity.bluetoothEnabled || !deviceIdentity.bluetoothAdvertiseName) return;
+
+  // WiFi and the CNC control path take priority over this optional discovery label.
+  if (ESP.getFreeHeap() < 70000) return;
+
+  if (!NimBLEDevice::init(std::string(deviceIdentity.bluetoothName.c_str()))) return;
+  NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
+  if (advertising == nullptr ||
+      !advertising->setName(std::string(deviceIdentity.bluetoothName.c_str())) ||
+      !advertising->setConnectableMode(BLE_GAP_CONN_MODE_NON) ||
+      !advertising->setDiscoverableMode(BLE_GAP_DISC_MODE_GEN)) {
+    NimBLEDevice::deinit(true);
+    return;
+  }
+
+  advertising->enableScanResponse(false);
+  advertising->setMinInterval(0x640);
+  advertising->setMaxInterval(0x800);
+  deviceIdentity.bluetoothStarted = advertising->start();
+  if (!deviceIdentity.bluetoothStarted) NimBLEDevice::deinit(true);
+#else
+  deviceIdentity.bluetoothEnabled = false;
+  deviceIdentity.bluetoothAdvertiseName = false;
+#endif
+}
+
+String deviceInfoJson() {
+  String json = "{\"deviceId\":\"" + jsonEscape(deviceIdentity.deviceId);
+  json += "\",\"hostname\":\"" + jsonEscape(deviceIdentity.hostname);
+  json += "\",\"friendlyName\":\"" + jsonEscape(deviceIdentity.friendlyName);
+  json += "\",\"localUrl\":\"http://" + jsonEscape(deviceIdentity.hostname) + ".local";
+  json += "\",\"ip\":\"" + jsonEscape(currentIpAddress());
+  json += "\",\"mode\":\"" + jsonEscape(activeWifiMode);
+  json += "\",\"mdnsEnabled\":";
+  json += deviceIdentity.mdnsEnabled ? "true" : "false";
+  json += ",\"bluetooth\":{\"enabled\":";
+  json += deviceIdentity.bluetoothEnabled ? "true" : "false";
+  json += ",\"advertiseName\":";
+  json += deviceIdentity.bluetoothAdvertiseName ? "true" : "false";
+  json += ",\"started\":";
+  json += deviceIdentity.bluetoothStarted ? "true" : "false";
+  json += ",\"name\":\"" + jsonEscape(deviceIdentity.bluetoothName) + "\"}";
+  json += ",\"configSource\":\"" + jsonEscape(deviceIdentity.source) + "\"}";
+  return json;
+}
+
+void handleDeviceInfo() {
+  server.send(200, "application/json", deviceInfoJson());
+}
+
+void handleDeviceUpdate() {
+  if (jobIsActive()) {
+    sendJsonError(409, "Device address can be changed only when the machine is idle.");
+    return;
+  }
+
+  const String body = server.arg("plain");
+  String hostname = extractJsonString(body, "hostname");
+  String friendlyName = extractJsonString(body, "friendlyName");
+  hostname.trim();
+  friendlyName.trim();
+  if (hostname.length() == 0 || friendlyName.length() == 0 || friendlyName.length() > 64) {
+    sendJsonError(400, "hostname and friendlyName are required; friendlyName is limited to 64 characters");
+    return;
+  }
+
+  hostname = sanitizeDeviceHostname(hostname, deviceIdentity.deviceId);
+  const bool requiresRestart = hostname != deviceIdentity.hostname ||
+                               friendlyName != deviceIdentity.friendlyName;
+  saveDeviceIdentityToNvs(hostname, friendlyName);
+
+  String sdWarning;
+  const bool sdConfigWritten = writeDeviceConfigToSd(hostname, friendlyName, sdWarning);
+  String json = "{\"ok\":true,\"requiresRestart\":";
+  json += requiresRestart ? "true" : "false";
+  json += ",\"sdConfigWritten\":";
+  json += sdConfigWritten ? "true" : "false";
+  if (sdWarning.length() > 0) json += ",\"warning\":\"" + jsonEscape(sdWarning) + "\"";
+  json += ",\"device\":{\"hostname\":\"" + jsonEscape(hostname);
+  json += "\",\"friendlyName\":\"" + jsonEscape(friendlyName);
+  json += "\",\"localUrl\":\"http://" + jsonEscape(hostname) + ".local";
+  json += "\",\"bleName\":\"" + jsonEscape(pendingBluetoothName(hostname)) + "\"}}";
+  server.send(200, "application/json", json);
+}
+
+void handleSystemRestart() {
+  if (jobIsActive() || jobWaitingForOk || jogIsActive() || otaActive || priorityCommandCount > 0) {
+    sendJsonError(409, "Restart is allowed only when the machine is idle.");
+    return;
+  }
+  rebootAtMs = millis() + 1000;
+  server.send(202, "application/json", "{\"ok\":true,\"restarting\":true}");
 }
 
 void handleHealth() {
@@ -3537,17 +4197,20 @@ void handleJobStart() {
     return;
   }
   const int requestedHomingEpoch = extractJsonInt(body, "homingEpoch", -1);
+  const String requestedHomingSessionId = extractJsonString(body, "homingSessionId");
   const String requestedWorkZeroId = extractJsonString(body, "workZeroId");
   const float requestedZeroX = extractJsonFloat(body, "workZeroMachineX", NAN);
   const float requestedZeroY = extractJsonFloat(body, "workZeroMachineY", NAN);
   const float requestedZeroZ = extractJsonFloat(body, "workZeroMachineZ", NAN);
-  if (!machineFrame.machineValid || !machineFrame.workZeroValid || requestedWorkZeroId.length() == 0 || requestedHomingEpoch < 0 ||
+  if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
+      requestedWorkZeroId.length() == 0 || requestedHomingEpoch < 0 || requestedHomingSessionId.length() == 0 ||
       static_cast<uint32_t>(requestedHomingEpoch) != machineFrame.homingEpoch ||
+      requestedHomingSessionId != machineFrame.homingSessionId ||
       !isfinite(requestedZeroX) || !isfinite(requestedZeroY) || !isfinite(requestedZeroZ) ||
       fabs(requestedZeroX - machineFrame.workZeroMachineX) > 0.05f ||
       fabs(requestedZeroY - machineFrame.workZeroMachineY) > 0.05f ||
       fabs(requestedZeroZ - machineFrame.workZeroMachineZ) > 0.05f) {
-    sendJsonError(409, "active work zero does not match the homed machine frame; restore or set work zero again");
+    sendJsonError(409, "active work zero does not match this absolute Home All session; restore or set work zero again");
     return;
   }
   const float safeStartZ = clampFloat(extractJsonFloat(body, "safeStartZ", 15.0f), 0.0f, 200.0f);
@@ -3852,13 +4515,46 @@ void handleMachineHome() {
       sendJsonError(502, "Homing completed but the baseline work frame failed: " + response);
       return;
     }
+    int32_t homeCountX = 0;
+    int32_t homeCountY = 0;
+    int32_t homeCountZ = 0;
+    const bool countsValid = parseM114Counts(response, homeCountX, homeCountY, homeCountZ);
+    String configResponse;
+    float stepsX = 0;
+    float stepsY = 0;
+    float stepsZ = 0;
+    const bool stepsValid = runFrameCommand("M503", configResponse, 10000) &&
+                            parseM92Steps(configResponse, stepsX, stepsY, stepsZ);
+    if (!countsValid || !stepsValid) {
+      machineFrame.machineValid = false;
+      machineFrame.workZeroValid = false;
+      machineFrame.absoluteFromHome = false;
+      sendJsonError(502, "Homing completed but absolute machine coordinates could not be established from M114 Count and M503 M92");
+      return;
+    }
+    machineFrame.stepsX = stepsX;
+    machineFrame.stepsY = stepsY;
+    machineFrame.stepsZ = stepsZ;
+    machineFrame.homeCountX = homeCountX;
+    machineFrame.homeCountY = homeCountY;
+    machineFrame.homeCountZ = homeCountZ;
+    machineFrame.countX = homeCountX;
+    machineFrame.countY = homeCountY;
+    machineFrame.countZ = homeCountZ;
+    machineFrame.absoluteFromHome = true;
     machineFrame.workZeroValid = true;
     machineFrame.workZeroMachineX = machineFrame.machineX;
     machineFrame.workZeroMachineY = machineFrame.machineY;
     machineFrame.workZeroMachineZ = machineFrame.machineZ;
     ++machineFrame.homingEpoch;
+    char session[24];
+    snprintf(session, sizeof(session), "%08lX-%lu", static_cast<unsigned long>(esp_random()),
+             static_cast<unsigned long>(machineFrame.homingEpoch));
+    machineFrame.homingSessionId = session;
   } else {
     machineFrame.workZeroValid = false;
+    machineFrame.absoluteFromHome = false;
+    machineFrame.homingSessionId = "";
     runFrameCommand("M114", response);
   }
   machineFrame.updatedAtMs = millis();
@@ -3872,7 +4568,8 @@ void handleSetWorkZero() {
     sendJsonError(409, "setting work zero requires idle Marlin transport");
     return;
   }
-  if (!machineFrame.machineValid || !machineFrame.homedX || !machineFrame.homedY || !machineFrame.homedZ) {
+  if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.homedX ||
+      !machineFrame.homedY || !machineFrame.homedZ) {
     sendJsonError(409, "Home All is required before setting a job work zero");
     return;
   }
@@ -4059,6 +4756,13 @@ void handleRestoreWorkZero() {
     return;
   }
 
+  machineFrame.workZeroMachineX = machineX;
+  machineFrame.workZeroMachineY = machineY;
+  machineFrame.workZeroValid = true;
+  machineFrame.updatedAtMs = millis();
+  ++machineFrame.revision;
+  telemetryPositionDirty = true;
+
   logJobEvent("restored saved XY work zero at machine X" + String(machineX, 3) +
               " Y" + String(machineY, 3));
   String json = "{\"ok\":true,\"machineX\":";
@@ -4069,7 +4773,8 @@ void handleRestoreWorkZero() {
   json += String(safeMachineZ, 3);
   json += ",\"response\":\"";
   json += jsonEscape(response);
-  json += "\",\"message\":\"Saved XY work zero restored. Z zero was not changed.\"}";
+  json += "\",\"frame\":" + machineFrameJson();
+  json += ",\"message\":\"Saved XY work zero restored. Z zero was not changed.\"}";
   server.send(200, "application/json", json);
 }
 
@@ -4294,6 +4999,7 @@ void handleStyleCss() {
 
 void startWifiAp() {
   WiFi.mode(WIFI_AP);
+  WiFi.softAPsetHostname(deviceIdentity.hostname.c_str());
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                     IPAddress(255, 255, 255, 0));
   WiFi.softAP(kSetupApSsid, kSetupApPassword);
@@ -4320,6 +5026,7 @@ bool tryWifiSta(const String &ssid, const String &pass) {
 }
 
 void startWifi() {
+  WiFi.setHostname(deviceIdentity.hostname.c_str());
   wifiPrefs.begin(kWifiPrefsNamespace, true);
   const String ssid = wifiPrefs.getString(kWifiPrefsSsidKey, "");
   const String pass = wifiPrefs.getString(kWifiPrefsPassKey, "");
@@ -4332,6 +5039,17 @@ void startWifi() {
   startWifiAp();
 }
 
+void startMdns() {
+  deviceIdentity.mdnsEnabled = MDNS.begin(deviceIdentity.hostname.c_str());
+  if (!deviceIdentity.mdnsEnabled) return;
+
+  MDNS.addService("http", "tcp", 80);
+  MDNS.addService("esp32cnc", "tcp", 80);
+  MDNS.addServiceTxt("http", "tcp", "name", deviceIdentity.friendlyName);
+  MDNS.addServiceTxt("esp32cnc", "tcp", "id", deviceIdentity.deviceId);
+  MDNS.addServiceTxt("esp32cnc", "tcp", "name", deviceIdentity.friendlyName);
+}
+
 void startHttpServer() {
   server.on("/", HTTP_GET, handleIndex);
   server.on("/index.html", HTTP_GET, handleIndex);
@@ -4340,6 +5058,9 @@ void startHttpServer() {
   server.on("/files.js", HTTP_GET, handleFilesJs);
   server.on("/style.css", HTTP_GET, handleStyleCss);
   server.on("/api/health", HTTP_GET, handleHealth);
+  server.on("/api/device", HTTP_GET, handleDeviceInfo);
+  server.on("/api/device", HTTP_PATCH, handleDeviceUpdate);
+  server.on("/api/system/restart", HTTP_POST, handleSystemRestart);
   server.on("/api/machine/info", HTTP_GET, handleMachineInfo);
   server.on("/api/machine/refresh", HTTP_POST, handleMachineRefresh);
   server.on("/api/machine/apply", HTTP_POST, handleMachineApply);
@@ -4402,8 +5123,11 @@ void setup() {
   }
 
   SPIFFS.begin(true);
+  loadDeviceIdentity();
   startWifi();
+  startMdns();
   startHttpServer();
+  startBluetoothAdvertisement();
 }
 
 void loop() {

@@ -50,6 +50,15 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('Marlin transport is busy with safe jog');
   });
 
+  it('guards preamble and stream acknowledgements without replaying uncertain motion', () => {
+    expect(source).toContain('constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000');
+    expect(source).toContain('responseContainsToken(receivedChunk, "busy:")');
+    expect(source.match(/responseContainsToken\(receivedChunk, "busy:"\)/g)).toHaveLength(2);
+    expect(source).toContain('Marlin acknowledgement timed out; command was not resent: ');
+    const runner = source.slice(source.indexOf('void processJobRunner()'), source.indexOf('String htmlPage'));
+    expect(runner.match(/Serial\.print\(line\)/g)).toHaveLength(1);
+  });
+
   it('keeps M5 on the priority path before the busy transport rejection', () => {
     const m5 = source.indexOf('upper == "M5")');
     const busy = source.indexOf('Marlin transport is busy with the active job');

@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>LowRider CNC</title>
+    <title>G-code CNC</title>
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
     <main class="app shell-app">
       <header class="status-header">
         <div>
-          <p class="eyebrow">LowRider CNC</p>
+          <p class="eyebrow">G-code CNC</p>
           <h1 id="page-title">Files</h1>
           <p id="health">Connecting...</p>
         </div>
@@ -60,6 +60,28 @@
       </section>
 
       <section id="settings-view" class="view-section" data-view="settings">
+        <section class="panel device-settings-panel">
+          <div class="panel-title-row">
+            <div><h2>Machine Identity</h2><p class="form-hint">Name this pendant and choose its address on the local network.</p></div>
+            <span id="device-id-badge" class="status-chip">Device -</span>
+          </div>
+          <div id="device-info-summary" class="job-summary">Loading device identity...</div>
+          <form id="device-settings-form" class="device-settings-form">
+            <label for="device-friendly-name">Friendly name
+              <input id="device-friendly-name" name="friendlyName" type="text" maxlength="64" required autocomplete="off">
+            </label>
+            <label for="device-hostname">Hostname
+              <input id="device-hostname" name="hostname" type="text" maxlength="80" required autocomplete="off" autocapitalize="none" spellcheck="false">
+            </label>
+            <p class="form-hint">Enter only the name, without .local. Use this if you have multiple CNC devices. Example: g-code-cnc.local, laser.local, plotter.local</p>
+            <p class="device-url-preview">New local address: <a id="device-url-preview" href="http://cnc.local">http://cnc.local</a></p>
+            <div class="device-settings-actions">
+              <button id="save-device-settings" type="submit">Save Machine Identity</button>
+              <button id="restart-device" class="warning-button" type="button" hidden>Restart to Apply Address</button>
+            </div>
+          </form>
+          <p id="device-settings-result" class="form-hint">Device address can be changed only when the machine is idle.</p>
+        </section>
         <section class="panel hardware-info-panel">
           <div class="panel-title-row">
             <div><h2>Hardware Info</h2><p class="form-hint">Cached immediately, refreshed from Marlin M115 while idle.</p></div>

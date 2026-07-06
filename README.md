@@ -1,14 +1,14 @@
-# LowRider CNC ESP32 Pendant
+# G-code CNC ESP32 Pendant
 
 A phone-first, offline CNC workbench and web pendant for Marlin-based machines.
 
 > Status: experimental DIY CNC controller companion. Use carefully and test without a cutting tool first.
 
-This project turns an AI-Thinker ESP32-CAM into a local CNC companion for a LowRider CNC running Marlin on a BTT SKR Pro or similar controller. It combines a touch-friendly workbench, SD file management, G-code preview and placement, guarded setup and dry-run tools, and a firmware-owned streaming job runner.
+This project turns an AI-Thinker ESP32-CAM into a local CNC companion for a G-code CNC machine running Marlin on a BTT SKR Pro or similar controller. It combines a touch-friendly workbench, SD file management, G-code preview and placement, guarded setup and dry-run tools, and a firmware-owned streaming job runner.
 
 Marlin remains the motion controller. The ESP32 owns serial communication, SD-streamed execution, priority controls, machine/work coordinate state, and browser-independent job progress. The primary UI is served from SD `/www`, so most interface updates do not require reflashing firmware.
 
-The current setup is built around a LowRider CNC, BTT SKR Pro, and Marlin, but parts of it may be adaptable to other Marlin CNC machines.
+The current setup is built around a G-code CNC machine, BTT SKR Pro, and Marlin, but parts of it may be adaptable to other Marlin CNC machines.
 
 ## Screenshots
 
@@ -234,11 +234,17 @@ On boot, the ESP32 tries saved WiFi credentials. If it cannot connect within abo
 
 | Setting | Value |
 |---|---|
-| SSID | `LowRider-CNC-Setup` |
+| SSID | `G-code-CNC-Setup` |
 | Password | `12345678` |
 | Default AP address | `192.168.4.1` |
 
-Open the shown local IP or `http://192.168.4.1` in a phone browser when using fallback AP mode.
+Open `http://cnc.local` in a phone browser. If mDNS is unavailable, use the shown local IP or
+`http://192.168.4.1` while connected to the fallback setup AP. Multi-machine hostnames and friendly
+names can be configured through [`/esp32-cnc/config.json`](docs/device-config.md).
+The same identity can be edited from **Settings > Machine Identity** while the machine is idle.
+
+The device can also advertise a short BLE helper label such as `CNC cnc.local` or, in setup AP
+mode, `CNC 192.168.4.1`. BLE is identification only and is never used to control the CNC.
 
 ## Typical Workflow
 

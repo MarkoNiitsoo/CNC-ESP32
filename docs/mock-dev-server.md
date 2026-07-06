@@ -90,6 +90,7 @@ Samples are created only when missing, so uploaded files and job JSON persist ac
 The mock server implements the API contracts used by the current UI:
 
 - `GET /api/health`
+- `GET/PATCH /api/device` and `POST /api/system/restart`
 - `GET /api/ui/status`
 - `GET /api/sd/status`
 - `GET /api/files`

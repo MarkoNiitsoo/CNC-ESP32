@@ -71,6 +71,16 @@ export function segmentAtCommand(segments = [], commandNumber = 0) {
   return segments.find((segment) => Number(segment?.commandNumber) === command) || null;
 }
 
+export function segmentsBetweenCommands(segments = [], afterCommand = 0, throughCommand = 0) {
+  const after = Number(afterCommand);
+  const through = Number(throughCommand);
+  if (!Number.isFinite(after) || !Number.isFinite(through) || through <= after) return [];
+  return segments.filter((segment) => {
+    const command = Number(segment?.commandNumber);
+    return Number.isFinite(command) && command > after && command <= through;
+  });
+}
+
 export function commandedPositionAtCommand(segments = [], commandNumber = 0) {
   const command = Number(commandNumber);
   if (!Number.isFinite(command) || command <= 0) return null;
