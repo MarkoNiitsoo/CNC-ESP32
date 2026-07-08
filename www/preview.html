@@ -150,43 +150,17 @@
         <div id="warnings" class="warning-list"></div>
       </section>
 
-      <section class="panel job-panel preview-tab-panel" data-preview-tab="setup">
-        <h2>Job Setup</h2>
-        <div id="job-summary" class="job-summary"></div>
-        <div class="job-actions">
-          <button id="load-job" type="button">Load Job</button>
-          <button id="save-job" type="button">Save Job</button>
-          <button id="capture-position" type="button">Capture Current Position</button>
-          <button id="set-work-zero" type="button" data-icon="workZero">Set Work Zero G92 X0 Y0 Z0</button>
-          <button id="capture-set-zero" type="button">Capture + Set Work Zero</button>
-          <button id="download-job" type="button">Download Job JSON</button>
+      <section class="panel zero-origin-panel preview-tab-panel" data-preview-tab="setup">
+        <h2>Zero / Origin</h2>
+        <div id="zero-origin-summary" class="zero-origin-summary"></div>
+        <div class="zero-origin-actions">
+          <button id="set-work-zero" type="button" data-icon="workZero">Set Work Zero</button>
+          <button id="set-zero-x" type="button">Set Zero X</button>
+          <button id="set-zero-y" type="button">Set Zero Y</button>
+          <button id="set-z-zero" type="button" data-icon="zZero">Set Zero Z</button>
+          <button id="open-zero-history" type="button">History</button>
         </div>
-        <div id="job-result" class="job-result"></div>
-      </section>
-
-      <section class="panel tool-zero-panel preview-tab-panel" data-preview-tab="setup">
-        <h2>Tool / Z Zero</h2>
-        <p class="warning">This panel only sets Z zero. X/Y work zero will not be changed.</p>
-        <div id="tool-zero-summary" class="job-summary"></div>
-        <div class="job-actions">
-          <button id="tool-capture-position" type="button">Capture Current Position</button>
-          <button id="set-z-zero" type="button" data-icon="zZero">Set Z Zero G92 Z0</button>
-          <button id="capture-set-z-zero" type="button">Capture + Set Z Zero</button>
-          <button id="save-tool-zero" type="button">Save Tool/Z Zero to Job</button>
-        </div>
-        <div id="tool-zero-result" class="job-result"></div>
-      </section>
-
-      <section class="panel zero-history-panel preview-tab-panel" data-preview-tab="setup">
-        <h2>Zero History</h2>
-        <p class="warning">Selecting an older zero only changes job metadata. It does not move the CNC or send G92.</p>
-        <div id="zero-history-summary" class="job-summary"></div>
-      </section>
-
-      <section class="panel run-history-panel preview-tab-panel" data-preview-tab="setup">
-        <h2>Run History</h2>
-        <p class="warning">Stopped or interrupted runs remain unchanged. Recovery and guarded resume attempts are recorded as separate history events.</p>
-        <div id="run-history-summary" class="job-summary"></div>
+        <div id="job-result" class="job-result" role="status"></div>
       </section>
 
       <section class="panel feed-override-panel preview-tab-panel" data-preview-tab="setup">
@@ -205,6 +179,25 @@
           <button type="button" data-feed-start="150" class="caution">150%</button>
         </div>
       </section>
+
+      <dialog id="zero-history-dialog" class="zero-history-dialog">
+        <div class="history-dialog-head">
+          <div><p class="eyebrow">ACTIVE JOB</p><h2>Zero History</h2></div>
+          <button id="close-zero-history" type="button">Close</button>
+        </div>
+        <div id="zero-history-summary" class="job-summary zero-history-list"></div>
+        <details class="diagnostics-panel">
+          <summary>Advanced / Diagnostics</summary>
+          <div id="job-summary" class="job-summary"></div>
+          <div id="tool-zero-summary" class="job-summary"></div>
+          <div class="job-actions compact-actions">
+            <button id="load-job" type="button">Reload metadata</button>
+            <button id="save-job" type="button">Save metadata</button>
+            <button id="download-job" type="button">Download Job JSON</button>
+          </div>
+          <div id="run-history-summary" class="job-summary"></div>
+        </details>
+      </dialog>
 
       <section class="panel preflight-panel preview-tab-panel" data-preview-tab="preflight">
         <h2>Preflight</h2>

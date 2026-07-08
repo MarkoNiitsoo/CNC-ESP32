@@ -81,7 +81,7 @@ describe('preview data adapter', () => {
       arm: { state: 'ARMED' },
       feedOverride: { startPercent: 75 },
     };
-    const merged = mergePreviewIntoJob(original, model, '/jobs/thumbs/simple.svg');
+    const merged = mergePreviewIntoJob(original, model, '/jobs/thumbs/simple.gc.png');
 
     expect(merged.workZero).toBe(original.workZero);
     expect(merged.toolZero).toBe(original.toolZero);
@@ -89,7 +89,7 @@ describe('preview data adapter', () => {
     expect(merged.arm).toBe(original.arm);
     expect(merged.feedOverride).toBe(original.feedOverride);
     expect(merged.preview.bounds.rawTravelBounds.xMax).toBe(10);
-    expect(merged.thumbnailPath).toBe('/jobs/thumbs/simple.svg');
+    expect(merged.thumbnailPath).toBe('/jobs/thumbs/simple.gc.png');
   });
 
   it('preview adapter does not produce streamable movement files', () => {

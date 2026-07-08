@@ -1219,6 +1219,29 @@ pre {
   background: #07100c;
 }
 
+.upload-thumbnail-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.upload-thumbnail-preview[hidden] {
+  display: none;
+}
+
+.upload-thumbnail-preview canvas {
+  width: 128px;
+  height: 128px;
+  flex: 0 0 128px;
+  border: 1px solid var(--line);
+  background: #07100c;
+}
+
+.upload-thumbnail-preview .form-hint {
+  margin: 0;
+}
+
 .upload-preview {
   display: grid;
   gap: 10px;
@@ -1241,9 +1264,9 @@ pre {
   background: #07100c;
 }
 
-.upload-thumb svg {
-  width: 100%;
-  height: auto;
+.upload-thumb canvas {
+  width: 128px;
+  height: 128px;
   display: block;
 }
 

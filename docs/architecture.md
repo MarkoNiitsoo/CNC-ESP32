@@ -103,10 +103,12 @@ or job runner functionality.
     firmware does not wait for the motion command's final `ok` before publishing position changes.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
-  - ESP32 firmware owns the jog state machine, safe Z lift, short relative movement ticks, and
+  - ESP32 firmware owns the jog state machine, safe Z lift, 50 ms relative movement ticks, and
     500 ms deadman timeout.
   - Safe Jog mode captures current Z, sends `M5`, moves to an absolute safe Z target, and restores
     the captured Z after jogging stops if Z was not changed.
+  - Browser requests update only the desired velocity vector. Firmware keeps at most three short
+    movement ticks queued, tracks each Marlin acknowledgement, and restores `G90` on every stop.
   - The XY speed slider sets the maximum feedrate; joystick distance from center sets each tick's
     movement length and the firmware scales feedrate so partial stick movement remains smooth.
 - Shared automatic travel speed:

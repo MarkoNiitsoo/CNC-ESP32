@@ -1,0 +1,49 @@
+import { readFile } from 'node:fs/promises';
+import { describe, expect, it } from 'vitest';
+
+const html = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
+const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
+const controller = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
+
+describe('operator Zero / Origin workflow', () => {
+  it('keeps only operator zero actions visible in the Setup panel', () => {
+    const panel = html.slice(html.indexOf('zero-origin-panel'), html.indexOf('feed-override-panel'));
+    expect(panel).toContain('Zero / Origin');
+    expect(panel).toContain('Set Work Zero');
+    expect(panel).toContain('Set Zero X');
+    expect(panel).toContain('Set Zero Y');
+    expect(panel).toContain('Set Zero Z');
+    expect(panel).toContain('History');
+    expect(panel).not.toMatch(/Load Job|Save Job|Capture Current Position|G92|Job JSON|Raw M114/);
+    expect(controller).toContain("'.zero-origin-panel'");
+    expect(controller).not.toContain("'.tool-zero-panel'");
+  });
+
+  it('keeps diagnostics collapsed and history out of the inline Setup flow', () => {
+    expect(html).toContain('<dialog id="zero-history-dialog"');
+    expect(html).toContain('<details class="diagnostics-panel">');
+    expect(html).toContain('<summary>Advanced / Diagnostics</summary>');
+    expect(preview).toContain("zeroHistoryDialog.showModal()");
+    expect(preview).toContain('Last run: not used yet');
+    expect(preview).toContain('Legacy zero — machine position not recorded');
+  });
+
+  it('automatically saves verified XYZ/X/Y/Z zero transactions', () => {
+    expect(preview).toContain("setWorkZeroWithCapture(null, 'xyz')");
+    expect(preview).toContain("setWorkZeroWithCapture(null, 'x')");
+    expect(preview).toContain("setWorkZeroWithCapture(null, 'y')");
+    expect(preview).toContain("setZZeroWithCapture(null, { confirm: false })");
+    expect(preview).toMatch(/async function setWorkZeroWithCapture[\s\S]*await saveJobQuietly\(\)/);
+    expect(preview).toMatch(/async function setZZeroWithCapture[\s\S]*await saveJobQuietly\(\)/);
+  });
+
+  it('supports backward-compatible per-axis firmware zeroing', () => {
+    const handler = firmware.slice(firmware.indexOf('void handleSetWorkZero()'), firmware.indexOf('void handleSetZZero()'));
+    expect(handler).toContain('if (axes.length() == 0) axes = "xyz"');
+    expect(handler).toContain('axes must be x, y, or xyz');
+    expect(handler).toContain('zeroCommand += " X0"');
+    expect(handler).toContain('zeroCommand += " Y0"');
+    expect(handler).toContain('if (axes == "xyz") zeroCommand += " Z0"');
+  });
+});

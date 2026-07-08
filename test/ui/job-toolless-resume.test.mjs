@@ -120,7 +120,7 @@ describe('Toolless Resume Test history and UI', () => {
     expect(job.runHistory[0].state).toBe('interrupted');
   });
 
-  it('uses explicit no-cutter wording and keeps critical controls wired to cancellation', () => {
+  it('uses explicit no-cutter wording and only explicit critical controls cancel recovery', () => {
     expect(previewHtml).toContain('Toolless Resume Test');
     expect(previewHtml).toContain('No cutter/router installed. Spindle stays off. This follows the real Z path.');
     expect(previewHtml).toMatch(/id="toolless-resume-start"[^>]*>Toolless Resume From Point<\/button>/);
@@ -132,6 +132,11 @@ describe('Toolless Resume Test history and UI', () => {
     expect(previewSource).toContain("fetch('/api/jog/stop', { method: 'POST' })");
     expect(previewSource).toContain("fetch('/api/test-motion/start'");
     expect(previewSource).not.toMatch(/startToollessResumeTest[\s\S]{0,5000}for \(const command of plan\.commands\)/);
-    expect(previewSource).toMatch(/document\.hidden[\s\S]*cancelToollessResumeFromControl\('pause'\)/);
+    const visibilityHandler = previewSource.slice(
+      previewSource.indexOf("document.addEventListener('visibilitychange'"),
+      previewSource.indexOf("addEventListener('cnc-motion-settings-change'"),
+    );
+    expect(visibilityHandler).not.toContain('cancelToollessResumeFromControl');
+    expect(visibilityHandler).not.toContain('/api/job/stop');
   });
 });

@@ -102,6 +102,22 @@ describe('mock HTTP API', () => {
     expect(env.marlin.log.slice(startLogIndex).map((entry) => entry.text).join('\n')).not.toMatch(/\bG92\b/);
   });
 
+  it('sets a single work axis without changing the other work coordinates', async () => {
+    const { base, env } = await start();
+    await fetch(`${base}/api/machine/home`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }),
+    });
+    env.marlin.execute('G0 X100 Y500');
+    const result = await fetch(`${base}/api/work-zero/set`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'x' }),
+    }).then((res) => res.json());
+
+    expect(result).toMatchObject({ ok: true, axes: 'x' });
+    expect(env.marlin.position.x).toBe(0);
+    expect(env.marlin.position.y).toBe(500);
+    expect(result.frame.workZeroMachine.x).toBe(100);
+  });
+
   it('uploads and streams validated native-arc Aircut through one start request', async () => {
     const { base, env } = await start();
     const motionPath = '/jobs/generated/http.aircut.gc';

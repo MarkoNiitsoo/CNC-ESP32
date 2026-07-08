@@ -176,6 +176,7 @@ export function createZeroHistoryEntry(options = {}) {
     id: options.id || makeId('zero', capturedAt),
     type: options.type,
     method: options.method,
+    axes: options.axes || (options.type === 'zZero' ? 'z' : 'xyz'),
     capturedAt,
     workspace: options.workspace || 'G54',
     label: options.label || '',

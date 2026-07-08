@@ -281,10 +281,150 @@
   border-top: 1px solid #5f4b20;
 }
 
-.tool-zero-panel {
+.zero-origin-panel {
   border-top: 1px solid #334653;
   border-bottom: 1px solid #263640;
-  padding-block: 14px;
+}
+
+.zero-origin-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.zero-origin-label,
+.zero-origin-unknown,
+.history-position,
+.history-meta,
+.history-last-run {
+  margin: 0;
+}
+
+.zero-origin-label {
+  color: #aebdc8;
+  font-size: 0.85rem;
+}
+
+.zero-origin-unknown {
+  color: #ffd28a;
+  font-weight: 800;
+}
+
+.zero-origin-coordinates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.zero-origin-coordinates span {
+  min-width: 0;
+  border-left: 2px solid #48c978;
+  padding: 6px 8px;
+  color: #eef5f8;
+  font: 700 1rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.zero-origin-coordinates small {
+  display: block;
+  color: #48c978;
+  font: 700 0.7rem/1.2 system-ui, sans-serif;
+}
+
+.zero-origin-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.zero-origin-actions #set-work-zero {
+  grid-column: 1 / -1;
+}
+
+.zero-history-dialog {
+  width: min(680px, calc(100vw - 20px));
+  max-height: calc(100dvh - 20px);
+  margin: auto;
+  border: 1px solid #334653;
+  border-radius: 8px;
+  padding: 14px;
+  overflow: auto;
+  background: #0d1419;
+  color: #eef5f8;
+}
+
+.zero-history-dialog::backdrop {
+  background: rgb(0 0 0 / 72%);
+}
+
+.history-dialog-head {
+  position: sticky;
+  top: -14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -14px -14px 12px;
+  padding: 14px;
+  border-bottom: 1px solid #263640;
+  background: #0d1419;
+}
+
+.history-dialog-head h2,
+.history-dialog-head p {
+  margin: 0;
+}
+
+.zero-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-position {
+  color: #eef5f8;
+  font: 700 0.88rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.history-meta,
+.history-last-run {
+  color: #aebdc8;
+  font-size: 0.78rem;
+}
+
+.history-success { color: #8fe4ac; }
+.history-warning { color: #ffd28a; }
+.history-error { color: #ff9e9e; }
+
+.history-details summary,
+.diagnostics-panel summary {
+  cursor: pointer;
+  color: #aebdc8;
+  font-weight: 700;
+}
+
+.history-details pre {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diagnostics-panel {
+  margin-top: 14px;
+  border-top: 1px solid #263640;
+  padding-top: 12px;
+}
+
+@media (max-width: 520px) {
+  .zero-origin-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .zero-origin-actions #set-work-zero,
+  .zero-origin-actions #open-zero-history {
+    grid-column: 1 / -1;
+  }
 }
 
 .dry-run-inputs {

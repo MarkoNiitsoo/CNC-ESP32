@@ -26,8 +26,14 @@ const loadJobButton = document.querySelector('#load-job');
 const saveJobButton = document.querySelector('#save-job');
 const capturePositionButton = document.querySelector('#capture-position');
 const setWorkZeroButton = document.querySelector('#set-work-zero');
+const setZeroXButton = document.querySelector('#set-zero-x');
+const setZeroYButton = document.querySelector('#set-zero-y');
 const captureSetZeroButton = document.querySelector('#capture-set-zero');
 const downloadJobButton = document.querySelector('#download-job');
+const zeroOriginSummaryEl = document.querySelector('#zero-origin-summary');
+const zeroHistoryDialog = document.querySelector('#zero-history-dialog');
+const openZeroHistoryButton = document.querySelector('#open-zero-history');
+const closeZeroHistoryButton = document.querySelector('#close-zero-history');
 const preflightStateEl = document.querySelector('#preflight-state');
 const preflightActionEl = document.querySelector('#preflight-action');
 const preflightChecksEl = document.querySelector('#preflight-checks');
@@ -160,6 +166,7 @@ let motionAnimationFrame = null;
 let activeMotionAnimation = null;
 let lastMotionSequence = 0;
 const motionAnimationQueue = [];
+let recoveryMotionSegments = null;
 let redirectingToFiles = false;
 let recoveryPlan = null;
 let recoveryOverlayVisible = true;
@@ -234,6 +241,8 @@ function showPreviewTab(tabName) {
   previewTabPanels.forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.previewTab === activeTab);
   });
+  document.querySelector('#tools-drawer-content')?.scrollTo?.({ top: 0, behavior: 'auto' });
+  document.querySelector('#readiness-drawer-content')?.scrollTo?.({ top: 0, behavior: 'auto' });
 }
 
 function workbenchChipClass(level) {
@@ -1643,13 +1652,16 @@ function playNextMotionAnimation() {
 
 function handleMotionTelemetry(data = {}) {
   if (!workbenchUiModule || !parsed) return;
+  const streamSegments = jobRunStatus?.streamMode === 'production-resume' && recoveryMotionSegments
+    ? recoveryMotionSegments
+    : parsed.segments || [];
   for (const event of data.events || []) {
     const sequence = Number(event.sequence);
     if (!Number.isFinite(sequence) || sequence <= lastMotionSequence) continue;
     const previousSequence = lastMotionSequence;
     lastMotionSequence = sequence;
     const segments = workbenchUiModule.segmentsBetweenCommands(
-      parsed.segments || [], previousSequence, sequence,
+      streamSegments, previousSequence, sequence,
     );
     for (const segment of segments) {
       motionAnimationQueue.push({ segment, feedOverridePercent: Number(data.feedOverridePercent) || 100 });
@@ -2265,6 +2277,12 @@ async function syncProductionResumeFromStatus(status) {
 async function startProductionResumeStream(commands) {
   const path = testMotionPath('production-resume');
   const history = await jobHistoryPromise;
+  const { toolpath } = await toolpathModulesPromise;
+  recoveryMotionSegments = toolpath.parseGCodeToToolpath(`${commands.join('\n')}\n`, {
+    initialPosition: productionResumePlan?.resumePoint,
+  }).segments;
+  lastMotionSequence = 0;
+  stopMotionAnimation();
   history.markProductionResumeRouterConfirmed(productionHistoryEvent, { streamPath: path });
   ensureJobState().productionResumeAuthorization = {
     authorized: true,
@@ -2439,8 +2457,46 @@ function html(value) {
 
 function zeroTitle(zero) {
   if (!zero) return '-';
-  const type = zero.type === 'zZero' ? 'Z Zero' : 'Work Zero';
+  const type = zero.type === 'zZero' ? 'Z Zero' : zero.axes === 'x' ? 'X Zero' : zero.axes === 'y' ? 'Y Zero' : 'Work Zero';
   return `${type}${zero.label ? ` - ${zero.label}` : ''}`;
+}
+
+function localTimestamp(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString([], {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function lastRunForZero(zero) {
+  const ids = new Set(Array.isArray(zero?.usedByRuns) ? zero.usedByRuns : []);
+  return [...(jobState?.runHistory || [])]
+    .filter((run) => ids.has(run.id))
+    .sort((a, b) => new Date(b.endedAt || b.startedAt || 0) - new Date(a.endedAt || a.startedAt || 0))[0] || null;
+}
+
+function renderZeroOriginPanel() {
+  if (!zeroOriginSummaryEl) return;
+  const zero = activeZero('workZero');
+  const position = zero?.machineReference?.position || jobState?.workZero?.machineReference?.position;
+  const zeroSession = zero?.frame?.homingSessionId || jobState?.workZero?.frame?.homingSessionId || '';
+  const frameTrusted = currentMachineFrame?.trusted === true && currentMachineFrame?.absoluteFromHome === true;
+  const sameSession = Boolean(zeroSession && zeroSession === currentMachineFrame?.homingSessionId);
+  const trustworthy = frameTrusted && sameSession && ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(position?.[axis])));
+  zeroOriginSummaryEl.innerHTML = trustworthy ? `
+    <p class="zero-origin-label">Work zero from home</p>
+    <div class="zero-origin-coordinates">
+      <span><small>X</small>${fmtValue(position.x)}</span>
+      <span><small>Y</small>${fmtValue(position.y)}</span>
+      <span><small>Z</small>${fmtValue(position.z)}</span>
+    </div>
+    <p class="form-hint">${jobExists ? `Saved to this job${zero?.capturedAt ? ` · Last saved: ${localTimestamp(zero.capturedAt)}` : ''}` : 'Not saved yet'}</p>
+  ` : `
+    <p class="zero-origin-label">Work zero from home</p>
+    <p class="zero-origin-unknown">Unknown — Home machine first</p>
+    <p class="form-hint">${jobExists ? 'Saved metadata cannot be trusted in the current homing session.' : 'Not saved yet'}</p>
+  `;
 }
 
 function activeZero(type) {
@@ -2463,6 +2519,7 @@ async function saveJobQuietly() {
 function renderHistoryPanels() {
   renderZeroHistoryPanel();
   renderRunHistoryPanel();
+  renderZeroOriginPanel();
 }
 
 async function selectHistoryZero(id, type) {
@@ -2509,7 +2566,10 @@ function setJobResult(message, isError = false) {
 }
 
 function setToolZeroResult(message, isError = false) {
-  if (!toolZeroResultEl) return;
+  if (!toolZeroResultEl) {
+    setJobResult(message, isError);
+    return;
+  }
   toolZeroResultEl.textContent = message;
   toolZeroResultEl.className = isError ? 'job-result warning-item' : 'job-result';
 }
@@ -2880,7 +2940,7 @@ function renderZeroHistoryPanel() {
   zeroHistorySummaryEl.textContent = '';
   const entries = [...(jobState?.zeroHistory || [])].reverse();
   if (!entries.length) {
-    zeroHistorySummaryEl.textContent = 'No zero history yet. Setting Work Zero or Z Zero will create an audit entry.';
+    zeroHistorySummaryEl.textContent = 'No saved zeros for this job yet.';
     return;
   }
 
@@ -2889,48 +2949,44 @@ function renderZeroHistoryPanel() {
     article.className = 'history-entry';
     const active = (zero.type === 'workZero' && zero.id === jobState.activeWorkZeroId) ||
       (zero.type === 'zZero' && zero.id === jobState.activeZZeroId);
+    const position = zero.machineReference?.position;
+    const run = lastRunForZero(zero);
+    const runState = String(run?.state || '').toLowerCase();
+    const suspicious = runState === 'completed' && /timeout|error|alarm/i.test(run?.reason || '');
+    const runClass = runState === 'error' ? 'history-error' : runState === 'completed' ? 'history-success' : 'history-warning';
     article.innerHTML = `
       <div class="history-head">
         <strong>${html(zeroTitle(zero))}</strong>
-        <span class="status-badge ${active ? 'active-badge' : ''}">${html(zeroUsageStatus(zero))}</span>
+        ${active ? '<span class="status-badge active-badge">Active</span>' : ''}
       </div>
-      <dl>
-        <dt>Captured</dt><dd>${html(zero.capturedAt || '-')}</dd>
-        <dt>Method</dt><dd>${html(zero.method || '-')}</dd>
-        <dt>File</dt><dd>${html(zero.gcodePath || '-')}</dd>
-        <dt>After G92</dt><dd>X ${fmtValue(zero.positionAfter?.x)} Y ${fmtValue(zero.positionAfter?.y)} Z ${fmtValue(zero.positionAfter?.z)}</dd>
-        <dt>Saved machine XY</dt><dd>${zero.machineReference?.position ? `X ${fmtValue(zero.machineReference.position.x)} Y ${fmtValue(zero.machineReference.position.y)}` : 'Legacy counts (derived during restore)'}</dd>
-        <dt>Restored</dt><dd>${Array.isArray(zero.restores) ? zero.restores.length : 0} times</dd>
-        <dt>Used by runs</dt><dd>${Array.isArray(zero.usedByRuns) ? zero.usedByRuns.length : 0}</dd>
-      </dl>
-      <pre class="history-details" hidden>${html(JSON.stringify(zero, null, 2))}</pre>
+      <p class="history-position">${position
+        ? `X ${fmtValue(position.x)} · Y ${fmtValue(position.y)} · Z ${fmtValue(position.z)}`
+        : 'Legacy zero — machine position not recorded'}</p>
+      <p class="history-meta">Created: ${html(localTimestamp(zero.capturedAt))} · Used: ${(zero.usedByRuns || []).length}× · Restored: ${(zero.restores || []).length}×</p>
+      <p class="history-last-run ${run ? runClass : ''}">${run
+        ? `Last run: ${html(runState || 'unknown')}${suspicious ? ' ⚠' : ''} · ${html(localTimestamp(run.endedAt || run.startedAt))}`
+        : 'Last run: not used yet'}</p>
+      <details class="history-details">
+        <summary>Details</summary>
+        <dl>
+          <dt>Zero ID</dt><dd>${html(zero.id || '-')}</dd>
+          <dt>Method</dt><dd>${html(zero.method || '-')}</dd>
+          <dt>Raw before</dt><dd>${html(zero.rawM114Before || '-')}</dd>
+          <dt>Raw after</dt><dd>${html(zero.rawM114After || '-')}</dd>
+          <dt>Used by run IDs</dt><dd>${html((zero.usedByRuns || []).join(', ') || '-')}</dd>
+        </dl>
+        <pre>${html(JSON.stringify(zero, null, 2))}</pre>
+      </details>
     `;
-    const actions = document.createElement('div');
-    actions.className = 'job-actions compact-actions';
-    const details = document.createElement('button');
-    details.type = 'button';
-    details.textContent = 'View details';
-    details.addEventListener('click', () => {
-      const pre = article.querySelector('.history-details');
-      pre.hidden = !pre.hidden;
-    });
-    actions.append(details);
-
-    const select = document.createElement('button');
-    select.type = 'button';
-    select.textContent = zero.type === 'zZero' ? 'Mark active Z zero' : 'Mark active work zero';
-    select.disabled = active;
-    select.addEventListener('click', () => selectHistoryZero(zero.id, zero.type).catch((err) => setJobResult(err.message, true)));
-    actions.append(select);
-
-    const label = document.createElement('button');
-    label.type = 'button';
-    label.textContent = 'Rename';
-    label.addEventListener('click', () => labelHistoryZero(zero.id).catch((err) => setJobResult(err.message, true)));
-    actions.append(label);
-    article.append(actions);
     zeroHistorySummaryEl.append(article);
   });
+}
+
+function operatorZeroError(error) {
+  const message = String(error?.message || error || '');
+  if (/home all|required before setting|homing/i.test(message)) return 'Home machine first';
+  if (/verify|confirm|m114|capture|acknowledge/i.test(message)) return 'Could not verify zero';
+  return 'Could not set zero';
 }
 
 function renderRunHistoryPanel() {
@@ -3302,9 +3358,9 @@ async function syncPreviewMetadata() {
     }, toolpathModel, base.thumbnailPath || null);
     await uploadJobJson(merged);
     jobExists = true;
-    if (jobResultEl && !jobResultEl.textContent) setJobResult('Preview metadata saved to job JSON');
+    // Routine preview persistence stays silent; this status area is reserved for operator actions.
   } catch (err) {
-    if (jobResultEl) setJobResult(`Preview metadata was not saved: ${err.message}`, true);
+    appendRunLog(`Preview metadata was not saved: ${err.message}`);
   }
 }
 
@@ -3548,9 +3604,9 @@ async function captureToolPosition() {
   renderToolZeroPanel();
 }
 
-async function setZZeroWithCapture(transaction = null) {
+async function setZZeroWithCapture(transaction = null, options = {}) {
   if (!(await canChangeZZero())) return;
-  if (!transaction && !confirm('This will set only the current Z position as work Z0. X/Y work zero will not be changed.')) return;
+  if (!transaction && options.confirm === true && !confirm('This will set only the current Z position as work Z0. X/Y work zero will not be changed.')) return;
 
   const toolZero = ensureToolZeroState();
   let data = transaction;
@@ -3583,10 +3639,16 @@ async function setZZeroWithCapture(transaction = null) {
     }
   }
   const history = await jobHistoryPromise;
+  const zMachinePosition = data.frame?.workZeroMachine;
   history.appendZZeroHistory(ensureJobState(), {
     before,
     after,
     capturedAt: toolZero.capturedAt,
+    machineReference: zMachinePosition ? {
+      source: 'firmware absolute Home All frame', capturedAt: toolZero.capturedAt,
+      position: { ...zMachinePosition }, counts: { ...before.counts },
+      stepsPerMm: { ...(data.frame?.homeReference?.stepsPerMm || {}) },
+    } : null,
     frame: {
       homingEpoch: Number(data.frame?.homingEpoch),
       homingSessionId: data.frame?.homingSessionId || '',
@@ -3594,12 +3656,13 @@ async function setZZeroWithCapture(transaction = null) {
     },
   });
   markArmStaleForZZero();
-  setToolZeroResult(`Z zero set. After G92 Z0: ${formatCapture(after)}`);
+  setJobResult('Z zero saved');
   renderToolZeroPanel();
   renderHistoryPanels();
   renderArmPanel();
   refreshRecoveryPlan();
   await saveJobQuietly();
+  renderZeroOriginPanel();
 }
 
 async function saveToolZeroToJob() {
@@ -3608,13 +3671,13 @@ async function saveToolZeroToJob() {
   setToolZeroResult(`Saved Tool/Z Zero to ${jobPathFor(filePath)}`);
 }
 
-async function setWorkZeroWithCapture(transaction = null) {
-  if (!transaction && !confirm('This will make the current tool position the work zero for this job. Continue?')) return;
+async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
+  const selectedAxes = ['x', 'y'].includes(axes) ? axes : 'xyz';
   const job = ensureJobState();
   let data = transaction;
   if (!data) {
     const res = await fetch('/api/work-zero/set', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: selectedAxes }),
     });
     data = await readJsonOrThrow(res);
     if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Work Zero failed');
@@ -3622,11 +3685,12 @@ async function setWorkZeroWithCapture(transaction = null) {
   const before = parseM114(data.before || '');
   const after = parseM114(data.after || '');
   currentMachineFrame = data.frame || currentMachineFrame;
-  const zeroConfirmed = ['x', 'y', 'z'].every((axis) => (
+  const axesToVerify = selectedAxes === 'xyz' ? ['x', 'y', 'z'] : [selectedAxes];
+  const zeroConfirmed = axesToVerify.every((axis) => (
     Number.isFinite(Number(after.position?.[axis])) && Math.abs(Number(after.position[axis])) <= 0.02
   ));
   if (!zeroConfirmed) {
-    throw new Error(`Marlin did not confirm work zero after G92. Reported: ${formatCapture(after)}`);
+    throw new Error('Could not verify zero');
   }
 
   const machinePosition = data.frame?.workZeroMachine;
@@ -3653,9 +3717,12 @@ async function setWorkZeroWithCapture(transaction = null) {
     capturedAt: job.workZero.capturedAt,
     machineReference,
     frame: job.workZero.frame,
+    axes: selectedAxes,
+    method: selectedAxes === 'xyz' ? 'G92 X0 Y0 Z0' : `G92 ${selectedAxes.toUpperCase()}0`,
   });
+  if (job.arm?.state === 'ARMED') job.arm.state = 'STALE';
   await saveJobQuietly();
-  setJobResult(`Work zero set and preserved for Start Job. After G92: ${formatCapture(after)}`);
+  setJobResult(selectedAxes === 'x' ? 'X zero saved' : selectedAxes === 'y' ? 'Y zero saved' : 'Work zero saved');
   renderJobPanel();
   renderToolZeroPanel();
   renderHistoryPanels();
@@ -4788,13 +4855,21 @@ previewTransformButton?.addEventListener('click', () => updatePlacementPreview()
 generateRunFileButton?.addEventListener('click', () => generateRunFile({ overwrite: true }).catch((err) => appendPlacementResult(`Update run file failed: ${err.message}`)));
 useGeneratedRunButton?.addEventListener('click', () => generateRunFile({ overwrite: true }).catch((err) => appendPlacementResult(`Update run file failed: ${err.message}`)));
 useSourceRunButton?.addEventListener('click', () => selectSourceRunInUi().catch((err) => appendPlacementResult(`Use original failed: ${err.message}`)));
-loadJobButton.addEventListener('click', () => loadJob().catch((err) => setJobResult(err.message, true)));
-saveJobButton.addEventListener('click', () => saveJob().catch((err) => setJobResult(err.message, true)));
+loadJobButton?.addEventListener('click', () => loadJob().catch((err) => setJobResult(err.message, true)));
+saveJobButton?.addEventListener('click', () => saveJob().catch((err) => setJobResult(err.message, true)));
 saveJobPreflightButton.addEventListener('click', () => saveJobWithPreflight().catch((err) => setJobResult(err.message, true)));
-capturePositionButton.addEventListener('click', () => captureCurrentPosition().catch((err) => setJobResult(err.message, true)));
-setWorkZeroButton.addEventListener('click', () => setWorkZeroWithCapture().catch((err) => setJobResult(err.message, true)));
-captureSetZeroButton.addEventListener('click', () => setWorkZeroWithCapture().catch((err) => setJobResult(err.message, true)));
-downloadJobButton.addEventListener('click', downloadJobJson);
+capturePositionButton?.addEventListener('click', () => captureCurrentPosition().catch((err) => setJobResult(err.message, true)));
+setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz').catch((err) => setJobResult(operatorZeroError(err), true)));
+setZeroXButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'x').catch((err) => setJobResult(operatorZeroError(err), true)));
+setZeroYButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'y').catch((err) => setJobResult(operatorZeroError(err), true)));
+captureSetZeroButton?.addEventListener('click', () => setWorkZeroWithCapture().catch((err) => setJobResult(err.message, true)));
+downloadJobButton?.addEventListener('click', downloadJobJson);
+openZeroHistoryButton?.addEventListener('click', () => {
+  renderHistoryPanels();
+  if (zeroHistoryDialog?.showModal) zeroHistoryDialog.showModal();
+  else zeroHistoryDialog?.setAttribute('open', '');
+});
+closeZeroHistoryButton?.addEventListener('click', () => zeroHistoryDialog?.close?.());
 feedStartButtons.forEach((button) => {
   button.addEventListener('click', () => setFeedStartPercent(button.dataset.feedStart));
 });
@@ -4813,7 +4888,7 @@ saveArmedJobButton?.addEventListener('click', () => saveArmedJob().catch((err) =
 downloadArmedJobButton?.addEventListener('click', downloadJobJson);
 armChecklistInputs.forEach((input) => input.addEventListener('change', renderArmPanel));
 toolCapturePositionButton?.addEventListener('click', () => captureToolPosition().catch((err) => setToolZeroResult(err.message, true)));
-setZZeroButton?.addEventListener('click', () => setZZeroWithCapture().catch((err) => setToolZeroResult(err.message, true)));
+setZZeroButton?.addEventListener('click', () => setZZeroWithCapture(null, { confirm: false }).catch((err) => setJobResult(operatorZeroError(err), true)));
 captureSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture().catch((err) => setToolZeroResult(err.message, true)));
 saveToolZeroButton?.addEventListener('click', () => saveToolZeroToJob().catch((err) => setToolZeroResult(err.message, true)));
 workbenchUiPromise.then((ui) => {
@@ -4917,6 +4992,7 @@ addEventListener('cnc-position-update', (event) => {
 });
 addEventListener('cnc-machine-frame', (event) => {
   currentMachineFrame = event.detail || currentMachineFrame;
+  renderZeroOriginPanel();
   renderPreflight();
   renderArmPanel();
   draw();
@@ -4939,7 +5015,7 @@ addEventListener('cnc-critical-control', (event) => {
   cancelToollessResumeFromControl(event.detail?.type || 'stop');
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) cancelToollessResumeFromControl('pause');
+  // Firmware owns active streams. Hiding or sleeping the browser must never issue motion control.
 });
 addEventListener('cnc-motion-settings-change', (event) => {
   motionSettings = motionSettingsModule?.saveMotionSettings(event.detail || {}) || motionSettings;

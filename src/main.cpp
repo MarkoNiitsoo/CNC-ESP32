@@ -19,7 +19,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "G-code CNC Pendant";
-constexpr const char *firmwareVersion = "0.6.5-home-frame-recovery";
+constexpr const char *firmwareVersion = "0.6.7-zero-origin";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "G-code-CNC-Setup";
@@ -55,10 +55,12 @@ constexpr uint32_t kTelemetryMinBroadcastMs = 100;
 constexpr uint32_t kJobProgressBroadcastMs = 500;
 constexpr size_t kMotionTelemetrySize = 24;
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
-constexpr uint32_t kJogTickIntervalMs = 150;
+constexpr uint32_t kJogTickIntervalMs = 50;
 constexpr uint32_t kJogDeadmanMs = 500;
 constexpr uint32_t kJogRestoreDelayMs = 5000;
-constexpr float kJogMaxXyStepMm = 15.0f;
+constexpr uint8_t kJogPlannerLookahead = 3;
+constexpr float kJogVectorRampPerTick = 0.25f;
+constexpr float kJogMaxXyStepMm = 5.0f;
 constexpr float kJogMaxZStepMm = 0.5f;
 constexpr float kMachineXMaxMm = 1625.0f;
 constexpr float kMachineYMaxMm = 5800.0f;
@@ -147,12 +149,20 @@ struct JogStatus {
   float y = 0.0f;
   float z = 0.0f;
   float speed = 0.0f;
+  float appliedX = 0.0f;
+  float appliedY = 0.0f;
+  float appliedZ = 0.0f;
+  float appliedSpeed = 0.0f;
+  bool relativeModeActive = false;
+  uint8_t pendingMoveAcks = 0;
+  String responseLine;
   String lastCommand;
   String lastError;
   String lastM114;
   uint32_t startedAtMs = 0;
   uint32_t lastUpdateMs = 0;
   uint32_t lastTickMs = 0;
+  uint32_t lastMoveSentAtMs = 0;
   uint32_t zRestoreAtMs = 0;
   uint32_t restoreDelayMs = kJogRestoreDelayMs;
 };
@@ -1250,6 +1260,10 @@ String jogStatusJson() {
   json += String(jogStatus.xyFeedMax, 0);
   json += ",\"zFeedMax\":";
   json += String(jogStatus.zFeedMax, 0);
+  json += ",\"tickIntervalMs\":";
+  json += String(kJogTickIntervalMs);
+  json += ",\"pendingMoveAcks\":";
+  json += String(jogStatus.pendingMoveAcks);
   json += ",\"lastCommand\":\"";
   json += jsonEscape(jogStatus.lastCommand);
   json += "\",\"lastError\":\"";
@@ -2349,12 +2363,20 @@ void stopJogInternal(bool sendStopCommands) {
   jogStatus.y = 0;
   jogStatus.z = 0;
   jogStatus.speed = 0;
+  jogStatus.appliedX = 0;
+  jogStatus.appliedY = 0;
+  jogStatus.appliedZ = 0;
+  jogStatus.appliedSpeed = 0;
   if (sendStopCommands) {
     sendJogCommand("M410");
     sendJogCommand("M5");
   } else {
     sendJogCommand("M400");
   }
+  sendJogCommand("G90");
+  jogStatus.relativeModeActive = false;
+  jogStatus.pendingMoveAcks = 0;
+  jogStatus.responseLine = "";
   jogStatus.state = JogState::Idle;
   scheduleJogZRestore();
   telemetryJogDirty = true;
@@ -2405,12 +2427,56 @@ bool prepareSafeJogLift() {
   return true;
 }
 
+float approachJogValue(float current, float target) {
+  const float delta = target - current;
+  if (fabs(delta) <= kJogVectorRampPerTick) return target;
+  return current + (delta > 0 ? kJogVectorRampPerTick : -kJogVectorRampPerTick);
+}
+
+void processJogResponses() {
+  while (Serial.available() > 0) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\n') {
+      String line = jogStatus.responseLine;
+      jogStatus.responseLine = "";
+      line.trim();
+      if (line.length() == 0) continue;
+      updatePositionFromMarlinResponse(line);
+      String upper = line;
+      upper.toUpperCase();
+      if (upper == "OK" || upper.startsWith("OK ")) {
+        if (jogStatus.pendingMoveAcks > 0) --jogStatus.pendingMoveAcks;
+      } else if (upper.startsWith("ERROR:") || upper.startsWith("ALARM:") || upper == "!!") {
+        addMarlinLog("rx", true, line, "error");
+        setJogError("Marlin rejected jog movement: " + line);
+        sendJogCommand("G90");
+        jogStatus.relativeModeActive = false;
+        jogStatus.pendingMoveAcks = 0;
+        return;
+      }
+    } else if (c != '\r' && jogStatus.responseLine.length() < 256) {
+      jogStatus.responseLine += c;
+    }
+  }
+}
+
 void processJogRunner() {
   if (jogStatus.state != JogState::Jogging) {
     return;
   }
 
   const uint32_t now = millis();
+  processJogResponses();
+  if (jogStatus.state != JogState::Jogging) return;
+  if (jogStatus.pendingMoveAcks > 0 && now - jogStatus.lastMoveSentAtMs > 1000) {
+    sendJogCommand("M410");
+    sendJogCommand("M5");
+    sendJogCommand("G90");
+    jogStatus.relativeModeActive = false;
+    jogStatus.pendingMoveAcks = 0;
+    setJogError("Marlin jog acknowledgement timed out");
+    return;
+  }
   if (jogStatus.lastUpdateMs == 0 || now - jogStatus.lastUpdateMs > kJogDeadmanMs) {
     jogStatus.lastError = "jog heartbeat timeout; stopped jogging";
     stopJogInternal(false);
@@ -2421,10 +2487,16 @@ void processJogRunner() {
     return;
   }
 
-  const float x = clampFloat(jogStatus.x, -1.0f, 1.0f);
-  const float y = clampFloat(jogStatus.y, -1.0f, 1.0f);
-  const float z = clampFloat(jogStatus.z, -1.0f, 1.0f);
-  const float speed = clampFloat(jogStatus.speed, 0.0f, 1.0f);
+  if (jogStatus.pendingMoveAcks >= kJogPlannerLookahead) return;
+
+  jogStatus.appliedX = approachJogValue(jogStatus.appliedX, clampFloat(jogStatus.x, -1.0f, 1.0f));
+  jogStatus.appliedY = approachJogValue(jogStatus.appliedY, clampFloat(jogStatus.y, -1.0f, 1.0f));
+  jogStatus.appliedZ = approachJogValue(jogStatus.appliedZ, clampFloat(jogStatus.z, -1.0f, 1.0f));
+  jogStatus.appliedSpeed = approachJogValue(jogStatus.appliedSpeed, clampFloat(jogStatus.speed, 0.0f, 1.0f));
+  const float x = jogStatus.appliedX;
+  const float y = jogStatus.appliedY;
+  const float z = jogStatus.appliedZ;
+  const float speed = jogStatus.appliedSpeed;
   const float tickSeconds = kJogTickIntervalMs / 1000.0f;
   const float xyMaxStep = min(kJogMaxXyStepMm, (jogStatus.xyFeedMax / 60.0f) * (kJogTickIntervalMs / 1000.0f));
   const float xyScale = xyMaxStep;
@@ -2435,6 +2507,7 @@ void processJogRunner() {
   const float dz = z * zScale;
   const float xyDistance = sqrt(dx * dx + dy * dy);
   const float zDistance = fabs(dz);
+  jogStatus.lastTickMs = now;
   if (fabs(dx) < 0.01f && fabs(dy) < 0.01f && fabs(dz) < 0.005f) {
     return;
   }
@@ -2443,7 +2516,7 @@ void processJogRunner() {
     return;
   }
 
-  String cmd = "G91\nG0";
+  String cmd = "G0";
   if (fabs(dx) >= 0.01f) {
     cmd += " X";
     cmd += String(dx, 3);
@@ -2459,19 +2532,16 @@ void processJogRunner() {
     jogStatus.zRestoreScheduled = false;
   }
   const float feed = zDistance >= 0.005f && xyDistance < 0.01f
-                         ? clampFloat((zDistance / tickSeconds) * 60.0f, 20.0f, jogStatus.zFeedMax)
-                         : clampFloat((xyDistance / tickSeconds) * 60.0f, 60.0f, jogStatus.xyFeedMax);
+                         ? clampFloat((zDistance / tickSeconds) * 60.0f, 1.0f, jogStatus.zFeedMax)
+                         : clampFloat((xyDistance / tickSeconds) * 60.0f, 1.0f, jogStatus.xyFeedMax);
   cmd += " F";
   cmd += String(feed, 0);
-  cmd += "\nG90";
-
-  drainMarlinInput();
   addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  readMarlinResponseFor(60, true);
-  jogStatus.lastTickMs = now;
+  ++jogStatus.pendingMoveAcks;
+  jogStatus.lastMoveSentAtMs = now;
   telemetryJogDirty = true;
 }
 
@@ -4406,6 +4476,16 @@ void handleJogStart() {
     return;
   }
 
+  const String relativeResponse = sendJogCommandForResponse("G91", 300);
+  if (!responseContainsToken(relativeResponse, "ok") || responseContainsToken(relativeResponse, "Error:") ||
+      responseContainsToken(relativeResponse, "Unknown command")) {
+    sendJogCommand("G90");
+    setJogError("Marlin did not enter relative mode for jog");
+    sendJsonError(502, jogStatus.lastError);
+    return;
+  }
+  jogStatus.relativeModeActive = true;
+
   jogStatus.state = JogState::Jogging;
   telemetryJogDirty = true;
   server.send(200, "application/json", jogStatusJson());
@@ -4573,6 +4653,13 @@ void handleSetWorkZero() {
     sendJsonError(409, "Home All is required before setting a job work zero");
     return;
   }
+  String axes = server.hasArg("plain") ? extractJsonString(server.arg("plain"), "axes") : "";
+  axes.toLowerCase();
+  if (axes.length() == 0) axes = "xyz";
+  if (axes != "x" && axes != "y" && axes != "xyz") {
+    sendJsonError(400, "axes must be x, y, or xyz");
+    return;
+  }
   String before;
   String after;
   if (!runFrameCommand("M400", before, 120000) || !runFrameCommand("M114", before)) {
@@ -4582,26 +4669,31 @@ void handleSetWorkZero() {
   const float targetMachineX = machineFrame.machineX;
   const float targetMachineY = machineFrame.machineY;
   const float targetMachineZ = machineFrame.machineZ;
-  if (!runFrameCommand("G92 X0 Y0 Z0", after) || !runFrameCommand("M114", after)) {
+  String zeroCommand = "G92";
+  if (axes == "x" || axes == "xyz") zeroCommand += " X0";
+  if (axes == "y" || axes == "xyz") zeroCommand += " Y0";
+  if (axes == "xyz") zeroCommand += " Z0";
+  if (!runFrameCommand(zeroCommand, after) || !runFrameCommand("M114", after)) {
     sendJsonError(502, "Marlin work-zero transaction failed: " + after);
     return;
   }
   machineFrame.machineX = targetMachineX;
   machineFrame.machineY = targetMachineY;
   machineFrame.machineZ = targetMachineZ;
-  machineFrame.workZeroMachineX = targetMachineX;
-  machineFrame.workZeroMachineY = targetMachineY;
-  machineFrame.workZeroMachineZ = targetMachineZ;
+  if (axes == "x" || axes == "xyz") machineFrame.workZeroMachineX = targetMachineX;
+  if (axes == "y" || axes == "xyz") machineFrame.workZeroMachineY = targetMachineY;
+  if (axes == "xyz") machineFrame.workZeroMachineZ = targetMachineZ;
   machineFrame.workZeroValid = true;
   marlinPosition.valid = true;
-  marlinPosition.x = 0;
-  marlinPosition.y = 0;
-  marlinPosition.z = 0;
+  if (axes == "x" || axes == "xyz") marlinPosition.x = 0;
+  if (axes == "y" || axes == "xyz") marlinPosition.y = 0;
+  if (axes == "xyz") marlinPosition.z = 0;
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
   telemetryPositionDirty = true;
-  String json = "{\"ok\":true,\"before\":\"" + jsonEscape(before) + "\",\"after\":\"" +
-                jsonEscape(after) + "\",\"frame\":" + machineFrameJson() + "}";
+  String json = "{\"ok\":true,\"axes\":\"" + axes + "\",\"before\":\"" +
+                jsonEscape(before) + "\",\"after\":\"" + jsonEscape(after) +
+                "\",\"frame\":" + machineFrameJson() + "}";
   server.send(200, "application/json", json);
 }
 

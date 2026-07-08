@@ -337,8 +337,13 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
   next action.
 - Current Job also shows active work/Z zero timestamps from `zeroHistory`, the latest
   `runHistory` state, and a stopped/interrupted badge when the last run did not complete.
-- Preview / Job setup includes Zero History and Run History panels. Selecting a previous zero is
-  metadata-only: it does not move the CNC and does not send `G92`.
+- Preview Setup uses one compact Zero / Origin panel: saved Home-relative XYZ, Set Work Zero,
+  single-axis X/Y/Z zero actions, and History. Capture, save, raw M114, IDs, JSON, and full run
+  history are removed from the normal operator flow.
+- Zero History opens as a modal and summarizes machine-frame position, use/restore counts, and the
+  newest related run. Raw records remain collapsed under Details / Advanced Diagnostics.
+- Every verified zero operation automatically persists the active job metadata; no manual capture
+  or Save Job action is required.
 - Stopped/interrupted runs route to Review Recovery. The Recovery drawer separates Safe-Z
   reposition, Toolless Resume Test, and guarded Production Resume.
 - Logs are promoted to a bottom-nav view and use the existing `/api/marlin/log` endpoint when

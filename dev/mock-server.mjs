@@ -293,14 +293,18 @@ export async function createMockServer(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/set') {
         if (!env.frame.trusted || env.runner.isActive()) return json(res, 409, { ok: false, error: 'Home All is required before setting a job work zero' });
+        const body = await readJson(req);
+        const axes = ['x', 'y'].includes(String(body.axes || '').toLowerCase()) ? String(body.axes).toLowerCase() : 'xyz';
         const before = env.marlin.execute('M114').response;
-        env.marlin.execute('G92 X0 Y0 Z0');
+        env.marlin.execute(axes === 'x' ? 'G92 X0' : axes === 'y' ? 'G92 Y0' : 'G92 X0 Y0 Z0');
         const after = env.marlin.execute('M114').response;
-        env.frame.machine = { ...env.marlin.machinePosition };
-        env.frame.work = { ...env.marlin.position };
-        env.frame.workZeroMachine = { ...env.marlin.machinePosition };
+        syncMockFrame(env);
+        env.frame.workZeroMachine ||= { ...env.marlin.machinePosition };
+        if (axes === 'x' || axes === 'xyz') env.frame.workZeroMachine.x = env.marlin.machinePosition.x;
+        if (axes === 'y' || axes === 'xyz') env.frame.workZeroMachine.y = env.marlin.machinePosition.y;
+        if (axes === 'xyz') env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
         env.frame.revision += 1;
-        return json(res, 200, { ok: true, before, after, frame: env.frame });
+        return json(res, 200, { ok: true, axes, before, after, frame: env.frame });
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/set-z') {
         if (!env.frame.trusted || !env.frame.workZeroMachine || env.runner.isActive()) {

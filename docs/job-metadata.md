@@ -81,11 +81,14 @@ Upload-time preview metadata updates must preserve existing `workZero`, `toolZer
 
 ```json
 {
-  "thumbnailPath": "/jobs/thumbs/example.gc.svg"
+  "thumbnailPath": "/jobs/thumbs/example.gc.png"
 }
 ```
 
-The thumbnail is an SVG sidecar and is never embedded into the original G-code.
+The thumbnail is a browser-generated 128x128 PNG sidecar and is never embedded into the original
+G-code. It is rendered when the operator selects a G-code file and uploaded with the file's job
+metadata by the same Upload action. Fixed-size PNG output prevents thumbnail storage from growing
+with toolpath segment count.
 
 Full preview metadata updates follow the same rule: parsing `/preview.html?path=...` refreshes
 `preview.bounds`, `preview.warnings`, `preview.feed`, `preview.estimate`, line count, segment count,

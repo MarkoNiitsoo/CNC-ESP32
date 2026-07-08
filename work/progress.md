@@ -1388,3 +1388,75 @@
 - Full regression passes: 26 test files / 241 tests.
 - PlatformIO builds `0.6.5-home-frame-recovery` at 19.4% RAM and 67.1% flash.
 - DEV MOCK now exposes the same absolute-home/session fields as hardware for browser workflow tests.
+
+## 2026-07-07 - Compact upload thumbnail foundation
+
+- Added deterministic `/jobs/thumbs/<gcode-name>.png` naming and a metadata merge helper that
+  preserves existing job setup, zero, arm, run, and recovery fields.
+- Replaced the canvas thumbnail stub with direct proportional toolpath raster drawing; PNG creation
+  no longer requires constructing a potentially large SVG path string.
+
+## 2026-07-07 - Upload-time PNG thumbnail workflow
+
+- G-code selection on `/files` now parses locally and shows a 128x128 PNG preview before upload.
+- One Upload action writes the G-code, PNG under `/jobs/thumbs`, and merged job JSON containing
+  preview metadata plus `thumbnailPath`; existing job safety/history fields remain intact.
+- Non-G-code and non-`/gcode` uploads keep the existing single-file behavior.
+- Removed the obsolete SVG thumbnail generator; nested `/gcode/...` uploads also receive PNG
+  sidecars, and partial sidecar failure is reported without claiming the G-code upload failed.
+- Migrated the dashboard G-code launcher upload flow from embedded/generated SVG to the same
+  128x128 PNG sidecar contract used by the full file manager.
+
+## 2026-07-07 - PNG thumbnail regression coverage
+
+- Added tests for deterministic PNG paths, direct canvas rendering, both upload surfaces, and
+  preservation of work-zero/arm/run/recovery metadata during upload-time preview refresh.
+- Dashboard upload is disabled while the selected file is still being parsed/encoded, preventing
+  a fast submit from racing ahead of its PNG sidecar.
+
+## 2026-07-07 - PNG thumbnail verification
+
+- JavaScript syntax checks pass for both upload surfaces and shared modules.
+- Full regression passes: 27 test files / 244 tests.
+- Local mock file manager renders without console errors. Firmware was unchanged, so PlatformIO
+  was not rerun.
+
+## 2026-07-07 - PNG thumbnail display route fix
+
+- File lists now load `/jobs/thumbs/*.png` through `/api/download?path=...` instead of treating
+  SD job paths as public static URLs, which previously returned `{"ok":false,"error":"not found"}`.
+- Added regression coverage for both the dashboard and full file manager thumbnail URLs.
+- Full regression passes: 27 test files / 245 tests; JavaScript syntax and diff checks pass.
+
+## 2026-07-07 - Browser sleep and recovery animation fix
+
+- Removed the preview visibility handler that incorrectly sent `/api/job/stop` when a phone locked
+  or hid the browser during firmware-owned Toolless/Production Resume streaming.
+- Production Resume motion telemetry now uses a dedicated command model starting at the known
+  recovery point instead of matching restarted recovery sequence numbers against the full source.
+- Added regression coverage for browser-sleep stream ownership and recovery animation coordinates.
+- Full regression passes: 27 test files / 248 tests; JavaScript syntax and diff checks pass.
+
+## 2026-07-08 - Firmware-owned smooth jog cadence
+
+- Decoupled joystick movement cadence from browser HTTP timing: browser updates only the desired
+  vector while firmware emits one short `G0` movement every 50 ms.
+- Jog enters `G91` once, limits planner lookahead to three ticks, tracks Marlin ACKs without a
+  blocking per-tick read, and restores `G90` on release, deadman, and error paths.
+- Added vector ramping and an ACK timeout that issues `M410`, `M5`, and `G90` on transport failure.
+- Full regression passes: 27 test files / 250 tests. PlatformIO builds successfully at 19.4% RAM
+  and 67.2% flash.
+
+## 2026-07-08 - Operator Zero / Origin workflow
+
+- Replaced inline Job Setup, Tool/Z Zero, Zero History, and Run History panels with one compact
+  Zero / Origin panel showing trusted Home-relative XYZ and five operator actions.
+- Added automatic capture, verification, history creation, active-zero selection, and job JSON
+  persistence for Work, X, Y, and Z zero actions; normal controls no longer expose G92 or M114.
+- Moved compact zero history into a modal with run outcome/use/restore summaries; raw IDs, M114,
+  full records, manual metadata controls, and run history remain collapsed under diagnostics.
+- Extended the existing firmware work-zero endpoint with backward-compatible `x`, `y`, and `xyz`
+  axis selection. Z continues through the dedicated Z endpoint.
+- Mobile mock verification passes at 390x844: Zero opens at drawer top, History is a bounded modal,
+  and neither surface has horizontal overflow. Full regression passes 28 files / 255 tests.
+- PlatformIO builds firmware `0.6.7-zero-origin` at 19.4% RAM and 67.2% flash.

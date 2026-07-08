@@ -43,11 +43,15 @@
         <form id="upload-form">
           <label for="upload-file">Upload file</label>
           <input id="upload-file" name="file" type="file" required>
+          <div id="upload-thumbnail-preview" class="upload-thumbnail-preview" hidden>
+            <canvas id="upload-thumbnail-canvas" width="128" height="128" aria-label="Selected G-code thumbnail preview"></canvas>
+            <p id="upload-thumbnail-status" class="form-hint"></p>
+          </div>
           <label class="toggle-row">
             <input id="overwrite-upload" type="checkbox" checked>
             Overwrite existing file
           </label>
-          <button type="submit">Upload to Current Folder</button>
+          <button id="upload-submit" type="submit">Upload to Current Folder</button>
         </form>
         <p class="form-hint">Choose /www above to update SD-hosted UI files without removing the SD card.</p>
       </section>

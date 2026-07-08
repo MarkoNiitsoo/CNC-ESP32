@@ -64,4 +64,21 @@ describe('shared browser telemetry', () => {
     expect(telemetry).toContain("schedule('job')");
     expect(telemetry).toContain('window.CncTelemetry = { accept, request');
   });
+
+  it('never stops a firmware-owned recovery stream when the browser is hidden', () => {
+    const visibilityHandler = preview.slice(
+      preview.indexOf("document.addEventListener('visibilitychange'"),
+      preview.indexOf("addEventListener('cnc-motion-settings-change'"),
+    );
+    expect(visibilityHandler).not.toContain('cancelToollessResumeFromControl');
+    expect(visibilityHandler).not.toContain('/api/job/stop');
+    expect(visibilityHandler).toContain('must never issue motion control');
+  });
+
+  it('uses a recovery-specific command model for Production Resume animation', () => {
+    expect(preview).toContain('let recoveryMotionSegments = null');
+    expect(preview).toContain("jobRunStatus?.streamMode === 'production-resume'");
+    expect(preview).toContain('initialPosition: productionResumePlan?.resumePoint');
+    expect(preview).toContain('recoveryMotionSegments = toolpath.parseGCodeToToolpath');
+  });
 });

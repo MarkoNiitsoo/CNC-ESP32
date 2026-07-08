@@ -51,7 +51,8 @@ describe('job history metadata', () => {
     expect(job.arm.state).toBe('ARMED');
     expect(job.feedOverride.startPercent).toBe(75);
     expect(work).toMatchObject({ type: 'workZero', method: 'G92 X0 Y0 Z0', workspace: 'G54' });
-    expect(z).toMatchObject({ type: 'zZero', method: 'G92 Z0', workspace: 'G54' });
+    expect(work.axes).toBe('xyz');
+    expect(z).toMatchObject({ type: 'zZero', method: 'G92 Z0', workspace: 'G54', axes: 'z' });
     expect(job.activeWorkZeroId).toBe(work.id);
     expect(job.activeZZeroId).toBe(z.id);
   });

@@ -333,10 +333,14 @@ homing epoch immediately.
   `homingEpoch`, revision, and trust state.
 - `POST /api/machine/home` accepts `{ "axes": "x|y|z|xy|all" }`. Home All establishes a new
   trusted epoch and deterministic temporary baseline at physical home.
-- `POST /api/work-zero/set` requires trusted Home All, performs the complete M400/M114/G92/M114
-  transaction, and returns the synchronized frame.
+- `POST /api/work-zero/set` requires trusted Home All and accepts optional
+  `{ "axes": "x|y|xyz" }` (`xyz` is the backward-compatible default). It performs the complete
+  M400/M114/G92/M114 transaction for only those axes and returns the synchronized frame.
 - `POST /api/work-zero/set-z` performs the corresponding Z-only transaction and updates the same
-  machine-space frame without changing X/Y origin.
+machine-space frame without changing X/Y origin.
+
+The operator UI automatically stores every verified zero transaction in the active job JSON. Raw
+M114 responses and IDs remain diagnostic metadata and are not part of the normal Zero / Origin UI.
 
 Bounding Box Trace captures the current X/Y/Z before motion. After tracing at Safe Z, it returns
 to the captured X/Y while still high, restores the captured Z, and finishes with `M400`. A failed
@@ -580,14 +584,17 @@ Request body:
 Values are clamped to safe ranges. Firmware converts them into small relative `G91`/`G0`/`G90`
 movement ticks about every 150 ms. For X/Y, the joystick distance from center controls the movement
 step length and the firmware scales feedrate to that distance so partial joystick movement lasts
-roughly the full tick instead of making a quick short move followed by a pause. `xyFeedMax` from jog
+firmware independently emits 50 ms movement ticks, ramps toward the newest vector, and keeps no
+more than three acknowledged/planned ticks of lookahead. Each tick is one `G0` command in a jog
+session that enters `G91` once and restores `G90` on stop. This avoids making browser/HTTP timing
+part of the movement cadence. `xyFeedMax` from jog
 start controls the maximum feedrate. The SD UI maps the XY slider from 10 to 100 mm/s into
 `xyFeedMax` 600 to 6000 mm/min. If no update arrives for 500 ms, firmware stops sending jog
 movement, sends `M400`, and may schedule Z restore.
 
 ### `POST /api/jog/stop`
 
-Stops jogging and sends `M410` and `M5`. This is not a physical emergency stop.
+Stops jogging and sends `M410`, `M5`, and `G90`. This is not a physical emergency stop.
 
 ### `GET /api/jog/status`
 

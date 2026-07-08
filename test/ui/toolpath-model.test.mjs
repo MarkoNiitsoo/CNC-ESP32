@@ -7,7 +7,7 @@ import {
   getToolpathWarnings,
   mergePreviewMetadata,
   parseGCodeToToolpath,
-  renderToolpathThumbnailSvg,
+  renderToolpathToCanvas,
   stripGCodeComments,
 } from '../../www/lib/toolpath-model.js';
 
@@ -45,6 +45,18 @@ describe('ToolpathModel parser basics', () => {
     expect(model.bounds.rawTravelBounds.xMax).toBeCloseTo(25.4);
     expect(model.bounds.rawTravelBounds.yMax).toBeCloseTo(50.8);
     expect(getToolpathWarnings(model).join('\n')).toContain('G20 inch mode found');
+  });
+
+  it('starts a generated telemetry model from the known recovery position', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG1 X110 Y520 Z-2 F600\n', {
+      initialPosition: { x: 100, y: 500, z: 15 },
+    });
+
+    expect(model.segments[0]).toMatchObject({
+      from: { x: 100, y: 500, z: 15 },
+      to: { x: 110, y: 520, z: -2 },
+      commandNumber: 3,
+    });
   });
 });
 
@@ -138,22 +150,26 @@ describe('ToolpathModel feed stats and time estimates', () => {
 });
 
 describe('ToolpathModel thumbnails and metadata', () => {
-  it('generates SVG thumbnail data without modifying original G-code text', () => {
+  it('renders thumbnail geometry directly to canvas without modifying original G-code text', () => {
     const source = fixture('simple-square.gc');
     const model = parseGCodeToToolpath(source);
-    const svg = renderToolpathThumbnailSvg(model, { width: 120, height: 80 });
+    const calls = [];
+    const context = new Proxy({}, {
+      get: (target, key) => target[key] || ((...args) => calls.push([key, ...args])),
+      set: (target, key, value) => { target[key] = value; return true; },
+    });
+    const canvas = { width: 128, height: 128, getContext: () => context };
 
-    expect(svg).toContain('<svg');
-    expect(svg).toContain('<path');
+    expect(renderToolpathToCanvas(model, canvas, { width: 128, height: 128 })).toBe(true);
+    expect(calls.some(([name]) => name === 'lineTo')).toBe(true);
+    expect(calls.some(([name]) => name === 'stroke')).toBe(true);
     expect(model.source.originalText).toBe(source);
   });
 
-  it('handles empty input with a valid no-preview SVG', () => {
+  it('returns false for empty thumbnail input after painting the fixed background', () => {
     const model = parseGCodeToToolpath('');
-    const svg = renderToolpathThumbnailSvg(model);
-
-    expect(svg).toContain('<svg');
-    expect(svg).toContain('No preview');
+    const context = { clearRect() {}, fillRect() {} };
+    expect(renderToolpathToCanvas(model, { width: 128, height: 128, getContext: () => context })).toBe(false);
   });
 
   it('merges preview metadata without erasing workZero/toolZero/arm data', () => {
@@ -165,14 +181,14 @@ describe('ToolpathModel thumbnails and metadata', () => {
       arm: { state: 'ARMED' },
       preview: { oldField: true },
     };
-    const merged = mergePreviewMetadata(originalJob, metadata, '/jobs/thumbs/simple-square.svg');
+    const merged = mergePreviewMetadata(originalJob, metadata, '/jobs/thumbs/simple-square.gc.png');
 
     expect(merged.workZero).toBe(originalJob.workZero);
     expect(merged.toolZero).toBe(originalJob.toolZero);
     expect(merged.arm).toBe(originalJob.arm);
     expect(merged.preview.oldField).toBe(true);
     expect(merged.preview.bounds.cutBounds.xMax).toBe(10);
-    expect(merged.thumbnailPath).toBe('/jobs/thumbs/simple-square.svg');
+    expect(merged.thumbnailPath).toBe('/jobs/thumbs/simple-square.gc.png');
   });
 
   it('does not create machine movement commands or generated run files', () => {

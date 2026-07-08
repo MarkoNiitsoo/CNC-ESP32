@@ -45,7 +45,6 @@ It exports:
 
 - `parseGCodeToToolpath(sourceText, options)`
 - `calculateToolpathStats(model, options)`
-- `renderToolpathThumbnailSvg(model, options)`
 - `renderToolpathToCanvas(model, canvas, options)`
 - `estimateToolpathTime(model, options)`
 - `getToolpathWarnings(model)`
@@ -53,8 +52,8 @@ It exports:
 - `mergePreviewMetadata(job, previewMetadata, thumbnailPath)`
 
 The module is pure/testable and has no DOM dependency except the optional canvas renderer. The
-SD-hosted upload flow uses it to parse a selected G-code file before upload, show a thumbnail and
-stats, and then update the `/jobs/*.job.json` preview metadata when the existing file APIs allow it.
+SD-hosted upload flows parse a selected G-code file before upload, render a fixed 128x128 canvas,
+encode it as PNG, and update `/jobs/*.job.json` preview metadata without building SVG path markup.
 
 The full preview page also uses this same module now. `www/preview.js` parses the selected file with
 `parseGCodeToToolpath()`, adapts the model through `www/lib/preview-data-adapter.js`, renders the

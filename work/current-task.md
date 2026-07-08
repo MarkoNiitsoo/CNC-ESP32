@@ -72,3 +72,7 @@ for Marlin on a BTT SKR Pro.
 - Automatic or power-loss job resume. Guarded Production Resume is two-phase, requires manual
   router verification, and gives firmware ownership of Phase 2 after explicit operator hold.
 - WebSocket.
+## Operator Zero / Origin workflow
+
+Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata
+persistence, single-axis zero actions, and a modal history/diagnostics view.

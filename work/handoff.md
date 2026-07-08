@@ -1348,3 +1348,51 @@ No firmware upload is required.
 - Hardware validation must confirm Count/M92-based machine coordinates after Home All, jog, G92,
   another jog, and saved-zero restore before any cutter-on recovery test.
 - Verification passes: 26 test files / 241 tests; PlatformIO uses 19.4% RAM and 67.1% flash.
+
+## 2026-07-07 - PNG thumbnail foundation handoff
+
+- Upload thumbnail target is fixed at 128x128 PNG under `/jobs/thumbs`; existing job JSON fields
+  are preserved when upload-time preview metadata is refreshed.
+- Firmware remains unchanged; browser upload wiring and verification continue next.
+
+## 2026-07-07 - PNG thumbnail upload handoff
+
+- Upload-time sidecars use `/jobs/thumbs/<original-name>.png` and `/jobs/<original-name>.job.json`.
+- A sidecar failure is reported after the original file upload; the CNC file remains available and
+  can be selected/uploaded again to regenerate metadata.
+- Regression coverage rejects reintroduction of SVG thumbnail generation in either upload surface.
+- Verification passes at 27 test files / 244 tests; deploy SD UI files only, with no firmware flash.
+
+## 2026-07-07 - PNG thumbnail display fix handoff
+
+- Job metadata continues to store the SD path `/jobs/thumbs/*.png`; UI rendering converts it to
+  `/api/download?path=...` because only `/www` is served as static SD content.
+- Deploy updated `/www/app.js` and `/www/files.js`; firmware remains unchanged.
+- Verification passes at 27 test files / 245 tests.
+
+## 2026-07-07 - Recovery sleep/animation fix handoff
+
+- Hiding or locking the browser no longer issues a job control request. ESP32-owned recovery and
+  normal streams continue while WebSocket telemetry is disconnected; reconnect only resumes UI.
+- Production Resume animation has its own command-number model seeded from the resume position.
+- Firmware remains unchanged; deploy `/www/preview.js` and `/www/lib/toolpath-model.js`.
+- Verification passes at 27 test files / 248 tests.
+
+## 2026-07-08 - Smooth jog handoff
+
+- Firmware `0.6.6-smooth-jog` owns a 50 ms velocity-jog loop with three-tick bounded lookahead;
+  browser `/api/jog/update` timing no longer directly schedules Marlin movement.
+- Every jog session verifies `G91`, sends one movement command per tick, tracks ACKs, and restores
+  `G90` for normal stop, deadman stop, or ACK failure. Firmware flash is required.
+- Verification passes at 27 test files / 250 tests; PlatformIO build uses 19.4% RAM and 67.2% flash.
+
+## 2026-07-08 - Zero / Origin UI handoff
+
+- Setup now presents only trusted Home-relative zero coordinates plus Set Work Zero, X, Y, Z, and
+  History. Job metadata loads and saves automatically.
+- History is operator-oriented and modal; diagnostics retain all legacy/raw metadata without
+  dominating setup.
+- Firmware `0.6.7-zero-origin` adds optional `{axes:"x|y|xyz"}` to `/api/work-zero/set`, so a
+  firmware flash and updated Preview SD UI are both required.
+- Verification passes at 28 test files / 255 tests and mobile 390x844 mock rendering. PlatformIO
+  build uses 19.4% RAM and 67.2% flash.

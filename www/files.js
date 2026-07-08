@@ -5,6 +5,10 @@ const refreshButton = document.querySelector('#refresh');
 const uploadForm = document.querySelector('#upload-form');
 const uploadFile = document.querySelector('#upload-file');
 const overwriteUpload = document.querySelector('#overwrite-upload');
+const uploadSubmit = document.querySelector('#upload-submit');
+const uploadThumbnailPreview = document.querySelector('#upload-thumbnail-preview');
+const uploadThumbnailCanvas = document.querySelector('#upload-thumbnail-canvas');
+const uploadThumbnailStatus = document.querySelector('#upload-thumbnail-status');
 const mkdirForm = document.querySelector('#mkdir-form');
 const folderName = document.querySelector('#folder-name');
 const pathPicker = document.querySelector('#path-picker');
@@ -16,6 +20,12 @@ let activeItemPath = '';
 let fileMetaByPath = new Map();
 const allowedRoots = ['/gcode', '/www', '/firmware', '/jobs', '/logs'];
 const currentJobKey = 'lowrider.currentJob';
+const thumbnailModulesPromise = Promise.all([
+  import('/lib/toolpath-model.js'),
+  import('/lib/upload-thumbnail.js'),
+]);
+let selectedThumbnail = null;
+let thumbnailGeneration = 0;
 
 function parentPath(path) {
   const index = path.lastIndexOf('/');
@@ -146,6 +156,115 @@ function canPreview(item) {
   return item.type === 'file' && /\.(gcode|gc|nc|tap)$/i.test(item.name);
 }
 
+function thumbnailUrl(path) {
+  return `/api/download?path=${encodeURIComponent(path)}`;
+}
+
+function canvasPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Browser could not encode the thumbnail PNG.'));
+    }, 'image/png');
+  });
+}
+
+async function generateSelectedThumbnail() {
+  const token = ++thumbnailGeneration;
+  selectedThumbnail = null;
+  const file = uploadFile.files?.[0];
+  if (!file) {
+    uploadThumbnailPreview.hidden = true;
+    return;
+  }
+  const [, thumbnail] = await thumbnailModulesPromise;
+  if (!thumbnail.isGcodeFileName(file.name)) {
+    uploadThumbnailPreview.hidden = true;
+    return;
+  }
+
+  uploadThumbnailPreview.hidden = false;
+  uploadThumbnailStatus.textContent = 'Generating 128 x 128 PNG preview...';
+  uploadSubmit.disabled = true;
+  try {
+    const [toolpath] = await thumbnailModulesPromise;
+    const text = await file.text();
+    if (token !== thumbnailGeneration) return;
+    const model = toolpath.parseGCodeToToolpath(text);
+    toolpath.renderToolpathToCanvas(model, uploadThumbnailCanvas, {
+      width: thumbnail.THUMBNAIL_SIZE,
+      height: thumbnail.THUMBNAIL_SIZE,
+    });
+    const blob = await canvasPngBlob(uploadThumbnailCanvas);
+    if (token !== thumbnailGeneration) return;
+    selectedThumbnail = {
+      fileName: file.name,
+      fileSize: file.size,
+      lastModified: file.lastModified,
+      blob,
+      model,
+      path: thumbnail.thumbnailPathFor(file.name),
+      jobPath: thumbnail.jobPathForUpload(file.name),
+    };
+    uploadThumbnailStatus.textContent = `PNG ready | ${formatBytes(blob.size)} | ${model.segments.length} segments`;
+  } catch (err) {
+    selectedThumbnail = null;
+    uploadThumbnailStatus.textContent = `Thumbnail unavailable: ${err.message}`;
+  } finally {
+    if (token === thumbnailGeneration) uploadSubmit.disabled = false;
+  }
+}
+
+function selectedThumbnailMatches(file) {
+  return selectedThumbnail && selectedThumbnail.fileName === file.name &&
+    selectedThumbnail.fileSize === file.size && selectedThumbnail.lastModified === file.lastModified;
+}
+
+async function uploadFileTo(path, file, overwrite = true) {
+  const form = new FormData();
+  form.append('path', path);
+  form.append('file', file);
+  const url = overwrite ? '/api/upload?overwrite=true' : '/api/upload';
+  const res = await fetch(url, { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || `Upload failed for ${file.name}`);
+  return data;
+}
+
+async function ensureThumbnailDirectory() {
+  const res = await fetch('/api/mkdir', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: '/jobs/thumbs' }),
+  });
+  if (!res.ok && res.status !== 409) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not create /jobs/thumbs');
+  }
+}
+
+async function existingJob(path) {
+  const res = await fetch(`/api/download?path=${encodeURIComponent(path)}`);
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function uploadThumbnailSidecars(gcodePath, selected) {
+  const [toolpath, thumbnail] = await thumbnailModulesPromise;
+  await ensureThumbnailDirectory();
+  const pngName = basename(selected.path);
+  await uploadFileTo('/jobs/thumbs', new File([selected.blob], pngName, { type: 'image/png' }), true);
+  const previous = await existingJob(selected.jobPath);
+  const job = thumbnail.mergeUploadedFileMetadata(previous, {
+    gcodePath,
+    jobPath: selected.jobPath,
+    thumbnailPath: selected.path,
+    preview: toolpath.buildPreviewMetadata(selected.model),
+  });
+  await uploadFileTo('/jobs', new File([JSON.stringify(job, null, 2)], basename(selected.jobPath), {
+    type: 'application/json',
+  }), true);
+}
+
 function jobPathFor(gcodePath) {
   return `/jobs/${basename(gcodePath)}.job.json`;
 }
@@ -222,7 +341,7 @@ function renderList(items) {
     name.type = 'button';
     name.className = 'file-name file-main';
     name.innerHTML = `
-      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(itemMeta.thumbnailPath)}" alt="">` : `<span class="thumb-placeholder">${item.type === 'dir' ? 'DIR' : canPreview(item) ? 'GC' : 'FILE'}</span>`}
+      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(thumbnailUrl(itemMeta.thumbnailPath))}" alt="">` : `<span class="thumb-placeholder">${item.type === 'dir' ? 'DIR' : canPreview(item) ? 'GC' : 'FILE'}</span>`}
       <span>
         <strong>${html(item.type === 'dir' ? `${item.name}/` : item.name)}</strong>
         <small>${item.type === 'file' ? formatBytes(item.size) : 'folder'}</small>
@@ -347,17 +466,26 @@ uploadForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!uploadFile.files.length) return;
 
-  const form = new FormData();
-  form.append('path', currentPath);
-  form.append('file', uploadFile.files[0]);
-
-  const uploadUrl = overwriteUpload?.checked ? '/api/upload?overwrite=true' : '/api/upload';
-  const res = await fetch(uploadUrl, { method: 'POST', body: form });
-  if (!res.ok) {
-    const data = await res.json();
-    alert(data.error || 'Upload failed');
+  const file = uploadFile.files[0];
+  uploadSubmit.disabled = true;
+  try {
+    await uploadFileTo(currentPath, file, Boolean(overwriteUpload?.checked));
+    if ((currentPath === '/gcode' || currentPath.startsWith('/gcode/')) && selectedThumbnailMatches(file)) {
+      try {
+        await uploadThumbnailSidecars(safeJoin(currentPath, file.name), selectedThumbnail);
+      } catch (err) {
+        alert(`G-code uploaded, but its PNG thumbnail/job metadata failed: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    alert(err.message);
+    uploadSubmit.disabled = false;
+    return;
   }
   uploadForm.reset();
+  selectedThumbnail = null;
+  uploadThumbnailPreview.hidden = true;
+  uploadSubmit.disabled = false;
   await loadPath(currentPath);
 });
 
@@ -385,5 +513,11 @@ pathInput.addEventListener('click', choosePathFromInput);
 pathInput.addEventListener('focus', choosePathFromInput);
 closePathPicker?.addEventListener('click', () => {
   pathPicker.hidden = true;
+});
+uploadFile.addEventListener('change', () => {
+  generateSelectedThumbnail().catch((err) => {
+    uploadThumbnailStatus.textContent = `Thumbnail unavailable: ${err.message}`;
+    uploadSubmit.disabled = false;
+  });
 });
 loadPath(currentPath);

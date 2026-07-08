@@ -261,7 +261,12 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
   const cutBounds = createMutableBounds();
   const lines = String(sourceText || '').split(/\r?\n/);
   const sourceScale = { value: 1 };
-  const position = { x: 0, y: 0, z: 0 };
+  const initialPosition = options.initialPosition || {};
+  const position = {
+    x: Number.isFinite(Number(initialPosition.x)) ? Number(initialPosition.x) : 0,
+    y: Number.isFinite(Number(initialPosition.y)) ? Number(initialPosition.y) : 0,
+    z: Number.isFinite(Number(initialPosition.z)) ? Number(initialPosition.z) : 0,
+  };
   let motion = null;
   let commandNumber = 0;
 
@@ -443,39 +448,6 @@ export function calculateToolpathStats(model, options = {}) {
   return model;
 }
 
-function pathForSegments(segments, bounds, width, height, pad) {
-  if (!boundsAvailable(bounds)) return '';
-  const spanX = Math.max(1, bounds.xMax - bounds.xMin);
-  const spanY = Math.max(1, bounds.yMax - bounds.yMin);
-  const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
-  const x = (value) => pad + (value - bounds.xMin) * scale;
-  const y = (value) => height - pad - (value - bounds.yMin) * scale;
-  return segments
-    .filter((segment) => boundsAvailable(bounds) && (segment.from.x !== segment.to.x || segment.from.y !== segment.to.y))
-    .map((segment) => {
-      const points = [segment.from, ...(segment.points || []).length ? segment.points : [segment.to]];
-      return points.map((point, index) => `${index ? 'L' : 'M'} ${x(point.x).toFixed(2)} ${y(point.y).toFixed(2)}`).join(' ');
-    })
-    .join(' ');
-}
-
-export function renderToolpathThumbnailSvg(model, options = {}) {
-  const width = Number(options.width || 220);
-  const height = Number(options.height || 140);
-  const pad = Number(options.padding || 8);
-  const bounds = boundsAvailable(model.bounds.placementBounds)
-    ? model.bounds.placementBounds
-    : model.bounds.rawTravelBounds;
-
-  if (!boundsAvailable(bounds) || !model.segments?.length) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img"><rect width="100%" height="100%" fill="#07100c"/><text x="50%" y="50%" fill="#9fb1bf" text-anchor="middle" dominant-baseline="middle" font-family="system-ui" font-size="13">No preview</text></svg>`;
-  }
-
-  const travelPath = pathForSegments(model.segments.filter((segment) => !segment.engaged), bounds, width, height, pad);
-  const cutPath = pathForSegments(model.segments.filter((segment) => segment.engaged), bounds, width, height, pad);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img"><rect width="100%" height="100%" fill="#07100c"/><path d="${travelPath}" fill="none" stroke="#2a4452" stroke-width="1"/><path d="${cutPath || travelPath}" fill="none" stroke="#3fc475" stroke-width="1.8"/><rect x="${pad}" y="${pad}" width="${width - pad * 2}" height="${height - pad * 2}" fill="none" stroke="#245f8f" stroke-width="1"/></svg>`;
-}
-
 export function renderToolpathToCanvas(model, canvas, options = {}) {
   if (!canvas?.getContext) return false;
   const ctx = canvas.getContext('2d');
@@ -487,9 +459,40 @@ export function renderToolpathToCanvas(model, canvas, options = {}) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#07100c';
   ctx.fillRect(0, 0, width, height);
-  if (!boundsAvailable(bounds)) return false;
-  const svg = renderToolpathThumbnailSvg(model, { width, height });
-  return Boolean(svg);
+  if (!boundsAvailable(bounds) || !model.segments?.length) return false;
+
+  const pad = Number(options.padding ?? 7);
+  const spanX = Math.max(0.001, bounds.xMax - bounds.xMin);
+  const spanY = Math.max(0.001, bounds.yMax - bounds.yMin);
+  const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
+  const contentWidth = spanX * scale;
+  const contentHeight = spanY * scale;
+  const offsetX = (width - contentWidth) / 2;
+  const offsetY = (height - contentHeight) / 2;
+  const px = (value) => offsetX + (value - bounds.xMin) * scale;
+  const py = (value) => height - offsetY - (value - bounds.yMin) * scale;
+
+  const drawSegments = (segments, strokeStyle, lineWidth) => {
+    ctx.beginPath();
+    for (const segment of segments) {
+      ctx.moveTo(px(segment.from.x), py(segment.from.y));
+      const points = segment.points?.length ? segment.points : [segment.to];
+      for (const point of points) ctx.lineTo(px(point.x), py(point.y));
+    }
+    ctx.strokeStyle = strokeStyle;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  };
+
+  drawSegments(model.segments.filter((segment) => !segment.engaged), '#2a4452', 1);
+  const cutting = model.segments.filter((segment) => segment.engaged);
+  drawSegments(cutting.length ? cutting : model.segments, '#3fc475', 1.5);
+  ctx.strokeStyle = '#245f8f';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+  return true;
 }
 
 export function estimateToolpathTime(model, options = {}) {

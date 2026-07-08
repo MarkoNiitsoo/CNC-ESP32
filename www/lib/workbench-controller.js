@@ -60,10 +60,7 @@ export function installWorkbench(options = {}) {
     '.preview-stats',
     '.placement-panel',
     '#preview-warnings-panel',
-    '.job-panel',
-    '.tool-zero-panel',
-    '.zero-history-panel',
-    '.run-history-panel',
+    '.zero-origin-panel',
     '.feed-override-panel',
     '.dry-run-panel',
   ]);

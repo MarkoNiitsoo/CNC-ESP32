@@ -6,6 +6,7 @@ const refreshFilesButton = document.querySelector('#refresh-files');
 const uploadForm = document.querySelector('#upload-form');
 const uploadFile = document.querySelector('#upload-file');
 const uploadPreviewEl = document.querySelector('#upload-preview');
+const uploadSubmitButton = uploadForm?.querySelector('button[type="submit"]');
 const sdStatusEl = document.querySelector('#sd-status');
 const currentJobCard = document.querySelector('#current-job-card');
 const nextActionCard = document.querySelector('#next-action-card');
@@ -40,6 +41,7 @@ let jobMeta = null;
 let jobStatus = { state: 'UNKNOWN' };
 let activeFilePath = '';
 let pendingUploadPreview = null;
+let uploadAnalysisToken = 0;
 let motionSettingsModule = null;
 let machineConfigModule = null;
 let machineSettingsLoaded = false;
@@ -54,11 +56,16 @@ const machineConfigPromise = import('/lib/machine-config.js').then((module) => {
   return module;
 });
 const deviceSettingsPromise = import('/lib/device-settings.js');
+const uploadThumbnailPromise = import('/lib/upload-thumbnail.js');
 
 const toolpathModulePromise = import('/lib/toolpath-model.js').catch((err) => {
   console.warn('ToolpathModel unavailable', err);
   return null;
 });
+
+function thumbnailUrl(path) {
+  return `/api/download?path=${encodeURIComponent(path)}`;
+}
 let activeRunModule = null;
 import('/lib/job-active-run.js')
   .then((module) => {
@@ -746,7 +753,7 @@ async function renderFiles(items) {
     const thumb = item.type === 'dir'
       ? '<span class="thumb-placeholder">DIR</span>'
       : meta?.thumbnailPath
-        ? `<img class="thumb-image" src="${html(meta.thumbnailPath)}" alt="">`
+        ? `<img class="thumb-image" src="${html(thumbnailUrl(meta.thumbnailPath))}" alt="">`
         : '<span class="thumb-placeholder">GC</span>';
     row.innerHTML = `
       <button class="file-name file-main" type="button">
@@ -854,10 +861,6 @@ async function renameFile(path) {
   await loadFiles(parent);
 }
 
-function safeThumbName(name) {
-  return String(name || 'thumb').replace(/[^A-Za-z0-9._-]/g, '_') + '.svg';
-}
-
 async function uploadTextFile(path, text, contentType = 'application/json') {
   const parent = path.slice(0, path.lastIndexOf('/')) || '/jobs';
   const name = basename(path);
@@ -881,9 +884,9 @@ async function loadExistingJob(path) {
 }
 
 async function saveUploadPreviewMetadata(gcodePath, fileName) {
-  if (!pendingUploadPreview?.metadata) return;
-  const mod = await toolpathModulePromise;
-  if (!mod) return;
+  if (!pendingUploadPreview?.metadata || !pendingUploadPreview?.pngBlob) return;
+  const [mod, thumbnail] = await Promise.all([toolpathModulePromise, uploadThumbnailPromise]);
+  if (!mod || !thumbnail) return;
 
   const jobPath = jobPathFor(gcodePath);
   const existing = await loadExistingJob(jobPath);
@@ -894,51 +897,56 @@ async function saveUploadPreviewMetadata(gcodePath, fileName) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: '/jobs/thumbs' }),
     });
-    thumbnailPath = `/jobs/thumbs/${safeThumbName(fileName)}`;
-    await uploadTextFile(thumbnailPath, pendingUploadPreview.svg, 'image/svg+xml');
+    thumbnailPath = thumbnail.thumbnailPathFor(fileName);
+    await uploadTextFile(thumbnailPath, pendingUploadPreview.pngBlob, 'image/png');
   } catch (err) {
     thumbnailPath = null;
   }
 
-  const baseJob = existing || {
-    schemaVersion: 2,
-    createdAt: new Date().toISOString(),
+  const nextJob = thumbnail.mergeUploadedFileMetadata(existing, {
     gcodePath,
     jobPath,
-  };
-  const nextJob = mod.mergePreviewMetadata({
-    ...baseJob,
-    updatedAt: new Date().toISOString(),
-    gcodePath,
-    jobPath,
-  }, pendingUploadPreview.metadata, thumbnailPath);
+    thumbnailPath,
+    preview: pendingUploadPreview.metadata,
+  });
   await uploadTextFile(jobPath, JSON.stringify(nextJob, null, 2));
 }
 
+function canvasPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Browser could not encode PNG.')), 'image/png');
+  });
+}
+
 async function analyzeSelectedUploadFile() {
+  const token = ++uploadAnalysisToken;
   pendingUploadPreview = null;
   if (!uploadPreviewEl) return;
   uploadPreviewEl.hidden = true;
   uploadPreviewEl.textContent = '';
   const file = uploadFile?.files?.[0];
-  if (!file) return;
+  if (!file) {
+    if (uploadSubmitButton) uploadSubmitButton.disabled = false;
+    return;
+  }
+  if (uploadSubmitButton) uploadSubmitButton.disabled = true;
 
-  const mod = await toolpathModulePromise;
-  if (!mod) {
+  const [mod, thumbnail] = await Promise.all([toolpathModulePromise, uploadThumbnailPromise]);
+  if (!mod || !thumbnail) {
     uploadPreviewEl.hidden = false;
     uploadPreviewEl.textContent = 'ToolpathModel is unavailable; upload will still work without preview metadata.';
+    if (uploadSubmitButton) uploadSubmitButton.disabled = false;
     return;
   }
 
   try {
     const source = await file.text();
+    if (token !== uploadAnalysisToken) return;
     const model = mod.parseGCodeToToolpath(source);
     const metadata = mod.buildPreviewMetadata(model);
-    const svg = mod.renderToolpathThumbnailSvg(model, { width: 260, height: 150 });
-    pendingUploadPreview = { model, metadata, svg };
     uploadPreviewEl.hidden = false;
     uploadPreviewEl.innerHTML = `
-      <div class="upload-thumb">${svg}</div>
+      <div class="upload-thumb"><canvas width="128" height="128" aria-label="Selected G-code thumbnail preview"></canvas></div>
       <dl>
         <dt>Placement bounds</dt><dd>${html(formatBounds(metadata.bounds.placementBounds))}</dd>
         <dt>Warnings</dt><dd>${metadata.warnings.length}</dd>
@@ -947,9 +955,19 @@ async function analyzeSelectedUploadFile() {
       </dl>
       <p class="warning">Estimate is approximate. Review warnings before running.</p>
     `;
+    const canvas = uploadPreviewEl.querySelector('canvas');
+    mod.renderToolpathToCanvas(model, canvas, {
+      width: thumbnail.THUMBNAIL_SIZE,
+      height: thumbnail.THUMBNAIL_SIZE,
+    });
+    const pngBlob = await canvasPngBlob(canvas);
+    if (token !== uploadAnalysisToken) return;
+    pendingUploadPreview = { model, metadata, pngBlob };
   } catch (err) {
     uploadPreviewEl.hidden = false;
     uploadPreviewEl.textContent = `Could not analyze file: ${err.message}`;
+  } finally {
+    if (token === uploadAnalysisToken && uploadSubmitButton) uploadSubmitButton.disabled = false;
   }
 }
 
@@ -971,6 +989,7 @@ async function uploadGcode(event) {
     }
   }
   uploadForm.reset();
+  uploadAnalysisToken += 1;
   if (uploadPreviewEl) uploadPreviewEl.hidden = true;
   pendingUploadPreview = null;
   await loadFiles();

@@ -193,4 +193,26 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(machineBar).toContain('Math.min(MACHINE_Z_MAX_MM');
     expect(machineBar).toContain('max="70"');
   });
+
+  it('decouples 50 ms movement ticks from browser heartbeat timing', () => {
+    const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('void processJogZRestore()'));
+    expect(firmware).toContain('constexpr uint32_t kJogTickIntervalMs = 50');
+    expect(firmware).toContain('constexpr uint8_t kJogPlannerLookahead = 3');
+    expect(startHandler).toContain('sendJogCommandForResponse("G91", 300)');
+    expect(runner).toContain('processJogResponses()');
+    expect(runner).toContain('jogStatus.pendingMoveAcks >= kJogPlannerLookahead');
+    expect(runner).toContain('String cmd = "G0"');
+    expect(runner).not.toContain('String cmd = "G91\\nG0"');
+    expect(runner).not.toContain('readMarlinResponseFor(60');
+  });
+
+  it('restores absolute mode for release, deadman, and acknowledgement failure', () => {
+    const stop = firmware.slice(firmware.indexOf('void stopJogInternal'), firmware.indexOf('void setJogError'));
+    const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('void processJogZRestore()'));
+    expect(stop).toContain('sendJogCommand("G90")');
+    expect(runner).toContain('kJogDeadmanMs');
+    expect(runner).toContain('Marlin jog acknowledgement timed out');
+    expect(runner).toContain('sendJogCommand("M410")');
+    expect(runner).toContain('sendJogCommand("G90")');
+  });
 });
