@@ -1,5 +1,80 @@
 # Handoff
 
+## 2026-07-10 - Pause/resume drain timeout fix
+
+- Live SD `E:\logs\job.log` showed the failing pattern for resume-after-pause: `pause requested`
+  without a later `paused:` marker, plus at least one `priority timeout` during pause handling.
+- Firmware now gives the pause-drain priority `M400` up to 30 s while the runner is in `PAUSING`.
+  This keeps long in-flight moves from tripping the generic 5 s priority timeout before the stream
+  can enter `PAUSED`.
+- The normal 5 s Marlin acknowledgement timeout still applies to regular streamed commands and other
+  priority operations.
+- Focused regression coverage was added in `test/firmware/marlin-transport.test.mjs`.
+- Validation passed: `npm test -- test/firmware/marlin-transport.test.mjs` and
+  `C:\Users\marko\.platformio\penv\Scripts\pio.exe run`.
+
+## 2026-07-10 - Preview preflight listener null-guard
+
+- `www/preview.js` no longer hard-crashes on startup if the Preflight action buttons are missing.
+- The `save-job-preflight` and `refresh-preflight` listener hookups now use optional chaining,
+  matching the rest of the preview page's tolerant event binding pattern.
+- Focused validation passed: `npm test -- test/ui/machine-controls.test.mjs`.
+
+## 2026-07-08 - Preview file-open regression fixed
+
+- Preview file opening from the Files dashboard regressed because `www/preview.js` still assumed the
+  Dry Run `stop-m5` button existed during startup.
+- Current `www/preview.html` again includes the secondary `Stop spindle/laser M5` button in the Dry
+  Run operator panel.
+- Current `www/preview.js` uses `stopM5Button?.addEventListener(...)` so the page does not hard-crash
+  if markup and script drift again.
+- Reproduced and verified in the live mock browser: opening `ex1.gc` now lands on the preview page
+  and renders job content normally.
+- Focused regression coverage remains in `test/ui/machine-controls.test.mjs`, and that file passed.
+
+## 2026-07-08 - Route-first app startup and lazy Files loading
+
+- Main dashboard startup in `www/app.js` is now route-first. It resolves the initial hash route before
+  loading route data.
+- Startup no longer unconditionally calls current-job metadata load or `/gcode` file-list load.
+- Files data is now fetched only through `ensureFilesViewData()`, which is activated by the Files
+  route and explicit file operations.
+- Job metadata is now fetched only through `ensureJobViewData()`, which is activated by the Job route.
+- Logs are fetched lazily on first Logs activation instead of at startup.
+- Settings still lazy-loads only its own machine/device settings path and no longer causes a brief
+  Files-first render or file-list traffic on direct entry.
+- Follow-up completion: `www/telemetry.js` no longer auto-requests `job` and `health` at startup.
+  Those channels are now demand-driven.
+- `www/app.js` requests `health` only on Settings and `job` only on the Job route.
+- `www/machine-bar.js` requests `health` / `job` only while the machine drawer is open, so the
+  compact shell no longer forces those requests on every route.
+- `www/preview.js` explicitly opts in to `health` / `job` telemetry because Preview really does need
+  live run and recovery state.
+- Broader entrypoint audit verified that `www/files.js` is intentionally route-specific and does not
+  add unrelated telemetry demand, while `www/skin-init.js` performs no ESP32 fetches.
+- `www/telemetry.js` now opens the telemetry WebSocket only when a socket-capable channel is actually
+  demanded. Pages with no `job` / `jog` / `log` demand no longer open an idle socket.
+- Added navigation tests that assert startup now uses `resolveInitialView()`, then mounts that route,
+  then loads only that route's data.
+- Added telemetry tests that assert `health` / `job` are demand-driven and not auto-requested on
+  telemetry start, and that socket startup is also demand-gated.
+- Verification passed: `npm test -- test/ui/navigation.test.mjs test/ui/telemetry.test.mjs test/ui/device-settings.test.mjs`
+  plus targeted telemetry/navigation reruns, and full `npm test`.
+
+## 2026-07-08 - Minimal Dry Run operator control
+
+- Dry Run on the Preview page is now reduced to the operator essentials: box size, Safe Z, margin,
+  Aircut toggle, one primary send button, and secondary `M5`.
+- Visible Generate/Copy buttons, raw G-code preview, command counts, run-file/run-mode text, and
+  detailed bounds were removed from the normal Dry Run surface.
+- The primary button is now mode-driven: `Send Box Trace` when Aircut is off, `Send Aircut Toolpath`
+  when Aircut is on.
+- Bounding-box commands still regenerate automatically on active-run/placement/Safe-Z/margin
+  changes. Aircut commands regenerate automatically when Aircut mode is selected.
+- The UI now shows a short reason when the selected dry-run mode cannot be generated or sent.
+- Aircut help text and confirmation now state that spindle/laser start commands are suppressed.
+- Focused validation passed: `npm test -- test/ui/machine-controls.test.mjs`.
+
 ## 2026-07-05 - Coordinate frame refactor in progress
 
 - Firmware is now the intended owner of homing and work-zero frame transitions.
@@ -1396,3 +1471,64 @@ No firmware upload is required.
   firmware flash and updated Preview SD UI are both required.
 - Verification passes at 28 test files / 255 tests and mobile 390x844 mock rendering. PlatformIO
   build uses 19.4% RAM and 67.2% flash.
+
+## 2026-07-08 - Animation/recovery correction handoff
+
+- Reopening a sleeping browser skips stale motion deltas and catches up to the current streamed
+  command; animation backlog is capped at about one second.
+- Recovery zero restore uses saved absolute Home-relative XYZ, with counts/M92 only as a legacy
+  fallback. The guarded firmware sequence is M5, Safe machine Z, machine XY, optional saved machine
+  Z, selected G92 axes, then M114; Home All and idle state are mandatory.
+- Zero History entries expose `Restore & Go`; work-zero entries activate XYZ and Z-zero entries
+  activate only Z after moving through Safe Z. Feed Override belongs to Run, not Zero/Setup.
+- Firmware version is `0.6.8-zero-restore` and must be flashed for the expanded restore contract.
+- Verification passes at 28 test files / 257 tests. PlatformIO build passes at 19.4% RAM and
+  67.3% flash. Upload `www/preview.html`, `www/preview.js`, `www/preview.css`,
+  `www/lib/job-history.js`, and `www/lib/workbench-controller.js` to SD `/www`; then install the
+  new firmware once by WebOTA or wire.
+
+## 2026-07-10 - Smooth motion handoff
+
+- Firmware `0.6.9-smooth-motion` emits 25 ms G1 jog vectors with six-command bounded lookahead;
+  deadman stop, ACK timeout, M410/M5, and G90 restoration are unchanged.
+- Preview animation no longer treats valid planned duration above one second as stale. It still
+  drops telemetry whose firmware timestamp is already stale and resynchronizes after browser sleep.
+- Hardware acceptance should compare joystick motion at low/default/high XY speed with the cutter
+  off, then run a file containing a single multi-second straight and confirm continuous animation.
+- Deployments require the new firmware plus `www/preview.js`; verification is pending.
+- Focused tests pass 56/56. The first full regression had only two stale firmware-version
+  assertions (262/264 passed); those assertions are updated and final rerun/build are pending.
+- Final regression passes 28 files / 264 tests. PlatformIO builds successfully at 19.4% RAM and
+  67.3% flash; the verified image is `.pio-build/esp32cam/firmware.bin`.
+
+## 2026-07-10 - Root SD update handoff
+
+- The simple operator path is now: copy a PlatformIO image to SD root as `/firmware.bin`, insert
+  the card, and reboot. No marker file is required.
+- After a successful install the device renames it to `/firmware.done.bin`; update diagnostics
+  remain in `/logs/update.log`.
+- The older marker-based `/firmware/update.bin` rescue path remains backward compatible and has
+  priority if both forms are present. Firmware/build verification is pending.
+- Documentation now presents root `/firmware.bin` as the primary SD update method and retains the
+  marker-based flow as a backward-compatible recovery option.
+- Verification passes 28 files / 265 tests. PlatformIO builds at 19.4% RAM and 67.3% flash; the
+  verified bootstrap image is `.pio-build/esp32cam/firmware.bin`.
+- Existing devices must install `0.6.10-root-sd-update` once through WebOTA or the older
+  `/firmware/update.bin` plus `/firmware/INSTALL.NOW` flow. Marker-free root updates work after that.
+
+## 2026-07-10 - Simplified cutting UI handoff
+
+- The readiness drawer now exposes Checks, Recovery, and Start Cutting; Arm remains internal only.
+- Start Cutting has one concise three-item final check and keeps Hold-to-Start as the deliberate
+  motion boundary. Feed and transport details are collapsed under advanced sections.
+- Zero / Origin now has a Home Machine action. Automatic arm and homing wiring/tests remain.
+- Readiness is progressive: it shows one contextual next action, including Home Machine before zero
+  setup, while full check metadata stays collapsed.
+- Holding Start now persists the internal arm snapshot from the final three checks immediately
+  before calling the existing firmware-guarded start endpoint. Wiring is complete; tests remain.
+- Dashboard and shared next-action logic now say Review & Start Cut instead of exposing Arm Job.
+- Dedicated tests cover the three-check final review, removal of the physical-X0 prerequisite,
+  automatic arm persistence, and guarded Home Machine routing. Verification remains.
+- Final verification passes 28 test files / 267 tests plus JavaScript syntax and diff checks.
+- Browser-based localhost rendering was blocked by the in-app browser policy, so the final mobile
+  visual acceptance should be done on-device after deploying the updated SD UI files.

@@ -1,5 +1,85 @@
 # Progress
 
+## 2026-07-10 - Pause/resume drain timeout fix
+
+- Investigated the live SD `E:\logs\job.log` after a failed resume attempt.
+- Root cause: some pauses only reached `pause requested` and never logged `paused:` before the user
+  tried Resume. One captured run also showed `priority timeout` during pause handling.
+- Firmware pause handling was using the normal 5 s Marlin acknowledgement timeout even for the
+  pause-drain `M400`, which can legitimately take longer while Marlin finishes the in-flight move.
+- Added a dedicated 30 s timeout for priority `M400` while the runner is in `PAUSING`; normal job
+  and other priority acknowledgements still use the 5 s guard.
+- Added focused firmware transport regression coverage to lock the longer pause-drain timeout path.
+- Verification: `npm test -- test/firmware/marlin-transport.test.mjs` passed and
+  `C:\Users\marko\.platformio\penv\Scripts\pio.exe run` passed.
+
+## 2026-07-10 - Preview preflight listener null-guard
+
+- Fixed a preview startup crash in `www/preview.js` caused by unconditional event binding on the
+  Preflight buttons.
+- Root cause: `saveJobPreflightButton.addEventListener(...)` and
+  `refreshPreflightButton.addEventListener(...)` assumed those nodes always existed, while the rest
+  of the preview page already treated optional UI sections as nullable.
+- Updated both bindings to use optional chaining so `preview.js` does not throw during startup when
+  markup and script drift or a partial preview surface is rendered.
+- Verification: `npm test -- test/ui/machine-controls.test.mjs` passed.
+
+## 2026-07-08 - Preview file-open regression fixed
+
+- Reproduced the failure in the mock browser by opening a G-code file from the Files dashboard.
+- Root cause was a preview startup crash in `www/preview.js`: the Dry Run `stop-m5` button had been
+  removed from `www/preview.html`, but startup still called `stopM5Button.addEventListener(...)`
+  unconditionally.
+- Restored the Dry Run secondary `Stop spindle/laser M5` button and made the event binding tolerant
+  with optional chaining so preview boot does not crash if the control is absent.
+- Browser verification: opening `ex1.gc` now reaches `preview.html` successfully and renders the
+  toolpath instead of failing on a startup `TypeError`.
+- Verification: `npm test -- test/ui/machine-controls.test.mjs` passed.
+
+## 2026-07-08 - Route-first app startup and lazy Files loading
+
+- Fixed main app startup so it resolves the requested hash route before loading any heavy view data.
+- Removed unconditional startup calls that loaded current-job metadata and `/gcode` file listings even
+  when opening non-files routes like Settings.
+- Added route-scoped lazy loaders for Files, Job, and Logs so only the active view fetches its own
+  data.
+- Settings now opens directly without mounting Files first or triggering `/api/files`, `/api/sd/status`,
+  or job JSON fetches.
+- Added startup guards so the initial route does not double-fetch Files or Job data during boot.
+- Follow-up: removed unconditional `health` / `job` telemetry boot requests that still made Settings
+  startup feel half-complete. Telemetry is now demand-driven for those channels too.
+- App dashboard now demands `health` only for Settings and `job` only for the Job route.
+- Machine Bar now demands `health` / `job` only while the drawer is open. Preview explicitly opts in
+  to `health` / `job` telemetry because it needs live run and recovery state.
+- Broader entrypoint audit covered `index.html`/`app.js`, `files.html`/`files.js`,
+  `preview.html`/`preview.js`, `machine-bar.js`, `telemetry.js`, and `skin-init.js`.
+- `files.js` remains route-scoped by design: it loads file list and SD status only for the dedicated
+  Files page and does not opt into unrelated telemetry demand.
+- `skin-init.js` remains safe at startup; it initializes local UI skin state only and performs no ESP32
+  fetches.
+- `telemetry.js` now also gates WebSocket startup behind real socket-capable demand (`job`, `jog`, or
+  `log`) instead of opening a socket on pages that do not need one.
+- Added navigation regression tests to lock the `resolveInitialView -> showView -> ensureViewData`
+  startup order and prevent Files-first boot behavior from returning.
+- Verification: `npm test -- test/ui/navigation.test.mjs test/ui/telemetry.test.mjs test/ui/device-settings.test.mjs`
+  passed; broader telemetry/navigation audit validation also passed, and full `npm test` passed with
+  28 files / 263 tests.
+
+## 2026-07-08 - Minimal Dry Run operator control
+
+- Refactored the Preview Dry Run panel into one operator-focused control path.
+- Removed visible generate/copy command actions, raw command preview, run-file/run-mode details,
+  detailed bounds, and command counts from the normal Dry Run UI.
+- Added one Aircut toggle, one primary send button with mode-driven label, and kept `M5` as a
+  smaller secondary safety action.
+- Bounding-box commands still auto-generate from the active run and now refresh from Safe Z,
+  margin, placement, and run-file updates without requiring a separate Generate step.
+- Aircut generation remains internal, auto-regenerates only when Aircut mode is selected, and the
+  operator UI states that spindle/laser start commands are suppressed.
+- Added a focused UI regression in `test/ui/machine-controls.test.mjs` to lock the minimal Dry Run
+  surface and dynamic send behavior.
+- Verification: `npm test -- test/ui/machine-controls.test.mjs` passed with 22 tests.
+
 ## 2026-07-05 - WebSocket task isolation and persistent Layers
 
 - Live Marlin log showed the prior job did eventually complete, but a sleeping phone produced
@@ -1460,3 +1540,66 @@
 - Mobile mock verification passes at 390x844: Zero opens at drawer top, History is a bounded modal,
   and neither surface has horizontal overflow. Full regression passes 28 files / 255 tests.
 - PlatformIO builds firmware `0.6.7-zero-origin` at 19.4% RAM and 67.2% flash.
+
+## 2026-07-08 - Animation freshness and recovery Z-origin correction
+
+- Browser motion animation now discards telemetry older than one second, bounds queued animation to
+  roughly one second, and resynchronizes to the latest command after visibility reconnect.
+- Saved work-zero restore no longer overwrites the interrupted job's saved Home-relative Z origin
+  with the temporary post-home Z frame. Recovery bounds therefore keep the captured XYZ origin.
+- Saved absolute machine-frame position is authoritative; raw count/steps reconstruction remains a
+  legacy fallback instead of replacing a valid recorded position.
+- Extended guarded `/api/work-zero/restore` for optional Safe-Z-first XYZ travel and selected G92
+  axes. Recovery restores its saved XYZ origin; every Zero History entry now offers `Restore & Go`.
+- Moved Feed Override out of Zero/Setup and into Run.
+- Verification: all 28 test files / 257 tests pass; PlatformIO builds `0.6.8-zero-restore`
+  at 19.4% RAM and 67.3% flash.
+
+## 2026-07-10 - Smooth physical jog and long-line animation
+
+- Changed firmware jog planning from 50 ms G0 chunks to 25 ms coordinated G1 chunks, doubled the
+  bounded Marlin lookahead, and halved per-tick ramp/step limits so acceleration time and safety
+  behavior remain unchanged while physical motion receives smaller, smoother vectors.
+- Removed the one-second queued-duration trim that could cancel an active long straight whenever
+  later motion telemetry arrived. Fresh long moves now run for their feed-derived duration; stale
+  reconnect telemetry is still rejected and an abnormal 128-segment queue triggers resync.
+- Firmware version is now `0.6.9-smooth-motion`; focused and full verification remain to be run.
+- Focused motion/telemetry tests pass 56/56. The first full run passed 262/264; its only failures
+  were two stale assertions that still expected firmware version `0.6.8`, now updated to `0.6.9`.
+- Final verification passes: 28 test files / 264 tests, JavaScript syntax, and diff checks. The
+  AI-Thinker ESP32-CAM PlatformIO build succeeds at 19.4% RAM and 67.3% flash.
+
+## 2026-07-10 - Simple root SD firmware update
+
+- Added automatic boot-time installation of root `/firmware.bin` without an `INSTALL.NOW` marker.
+- A successful root update is renamed to `/firmware.done.bin`, preventing repeat installation.
+- The existing `/firmware/update.bin` plus `/firmware/INSTALL.NOW` rescue flow remains supported
+  and takes precedence when both update forms are present.
+- Firmware version is `0.6.10-root-sd-update`; verification remains to be run.
+- Updated the firmware-update, protocol, architecture, and README instructions so `/firmware.bin`
+  is documented as the primary marker-free SD update path.
+- Verification passes: 28 test files / 265 tests and PlatformIO build. Firmware uses 19.4% RAM
+  and 67.3% flash.
+
+## 2026-07-10 - Simplified cutting workflow
+
+- Removed the operator-facing Arm tab and renamed Run to Start Cutting.
+- Replaced the duplicated Arm/Run checklists with one three-item final cutting check.
+- Moved feed setup and stream diagnostics behind collapsed advanced details while keeping
+  Hold-to-Start and the live safety controls prominent.
+- Added a contextual Home Machine button beside zero/origin setup; behavior wiring is next.
+- Readiness now shows one next action and a five-step preparation count; full blockers, paths, and
+  placement metadata are available only under expanded details.
+- Start Cutting automatically saves the internal arm snapshot after the three final checks and the
+  deliberate hold, then starts through the unchanged firmware arm validation.
+- Home Machine delegates to the existing guarded Home All control and returns trust updates to the
+  active setup/readiness view.
+- Simplified the dashboard Job card to operator essentials and moved file paths, generated-state,
+  blocker lists, and Marlin diagnostics into a collapsed section.
+- Updated shared readiness actions to route an unarmed-but-prepared job directly to Review & Start;
+  added regression coverage for the merged checklist, automatic arm snapshot, and contextual home.
+- Verification passes: JavaScript syntax, diff checks, 60/60 focused workflow tests, and the full
+  28-file / 267-test regression suite.
+- In-app localhost visual verification was unavailable because the browser surface rejected that
+  local target; mobile structure and visibility were therefore verified through DOM/CSS contracts
+  and regression assertions instead of switching to an unapproved browser mechanism.
