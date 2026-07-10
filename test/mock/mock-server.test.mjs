@@ -172,19 +172,26 @@ describe('mock HTTP API', () => {
     expect(env.marlin.spindleOff).toBe(true);
   });
 
-  it('restores saved machine XY at Safe Z and leaves Z zero unchanged', async () => {
+  it('restores a saved XYZ origin from Home using Safe Z first', async () => {
     const { base, env } = await start();
     env.marlin.machine.zMax = 70;
     env.marlin.execute('G0 X25 Y30 Z10');
     env.marlin.execute('G92 X0 Y0 Z0');
+    const logStart = env.marlin.log.length;
     const response = await fetch(`${base}/api/work-zero/restore`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ machineX: 100, machineY: 500, safeMachineZ: 70, travelFeedMmMin: 3000 }),
+      body: JSON.stringify({
+        machineX: 100, machineY: 500, machineZ: 12, safeMachineZ: 70,
+        travelFeedMmMin: 3000, axes: 'xyz', moveToZ: true,
+      }),
     });
     expect(response.ok).toBe(true);
-    expect(env.marlin.machinePosition).toEqual({ x: 100, y: 500, z: 70 });
-    expect(env.marlin.position).toEqual({ x: 0, y: 0, z: 60 });
-    expect(env.marlin.log.map((entry) => entry.text).join('\n')).not.toContain('G92 Z0');
+    expect(env.marlin.machinePosition).toEqual({ x: 100, y: 500, z: 12 });
+    expect(env.marlin.position).toEqual({ x: 0, y: 0, z: 0 });
+    const commands = env.marlin.log.slice(logStart).map((entry) => entry.text);
+    expect(commands.indexOf('G53 G0 Z70.000 F400')).toBeLessThan(commands.indexOf('G53 G0 X100.000 Y500.000 F3000'));
+    expect(commands.indexOf('G53 G0 X100.000 Y500.000 F3000')).toBeLessThan(commands.indexOf('G53 G0 Z12.000 F400'));
+    expect(commands.indexOf('G53 G0 Z12.000 F400')).toBeLessThan(commands.indexOf('G92 X0 Y0 Z0'));
   });
 
   it('clamps Safe Jog to machine Z max in native coordinates after G92', async () => {

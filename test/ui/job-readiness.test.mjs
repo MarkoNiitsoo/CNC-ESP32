@@ -71,7 +71,7 @@ describe('job readiness source workflow', () => {
     expect(getPrimaryNextAction({}, {}).label).toBe('Choose G-code File');
   });
 
-  it('walks source jobs through zero, dry run, arm, then start', () => {
+  it('walks source jobs through zero and dry run into one review-and-start action', () => {
     expect(getPrimaryNextAction(baseJob(), { currentJob }).label).toBe('Set Work Zero');
     expect(getPrimaryNextAction(baseJob({ workZero }), { currentJob }).label).toBe('Set Z Zero');
     expect(getPrimaryNextAction(baseJob({ workZero, toolZero }), { currentJob }).label).toBe('Run Bounding Box / Dry Run');
@@ -79,7 +79,7 @@ describe('job readiness source workflow', () => {
       workZero,
       toolZero,
       dryRun: { lastBoundingBoxTraceStatus: 'complete', activeRunPath: '/gcode/test.gc' },
-    }), { currentJob }).label).toBe('Arm Job');
+    }), { currentJob }).label).toBe('Review & Start Cut');
     expect(getPrimaryNextAction(readySourceJob(), { currentJob }).label).toBe('Start Cut');
   });
 
@@ -126,7 +126,7 @@ describe('job readiness generated workflow', () => {
       workZero,
       toolZero,
       dryRun: { lastAircutStatus: 'complete', activeRunPath: '/jobs/generated/test.run.gc', activeRunFingerprint: 'generated-a' },
-    }), { currentJob }).label).toBe('Arm Job');
+    }), { currentJob }).label).toBe('Review & Start Cut');
     expect(getPrimaryNextAction(validGeneratedJob({
       workZero,
       toolZero,
@@ -153,13 +153,14 @@ describe('job readiness stale and live states', () => {
     expect(getPrimaryNextAction(job, { currentJob }).label).toBe('Run Bounding Box / Dry Run');
   });
 
-  it('returns Arm Job when arm belongs to another active path', () => {
+  it('returns Review & Start when the internal arm belongs to another active path', () => {
     const job = readySourceJob({
       dryRun: { lastBoundingBoxTraceStatus: 'complete', activeRunPath: '/gcode/test.gc' },
       arm: { state: 'ARMED', activeRunPath: '/gcode/old.gc', activeRunMode: 'source' },
     });
 
-    expect(getPrimaryNextAction(job, { currentJob }).label).toBe('Arm Job');
+    expect(getPrimaryNextAction(job, { currentJob }).label).toBe('Review & Start Cut');
+    expect(getPrimaryNextAction(job, { currentJob }).target).toBe('run');
   });
 
   it('prioritizes running and paused live states', () => {

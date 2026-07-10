@@ -47,6 +47,10 @@ let machineConfigModule = null;
 let machineSettingsLoaded = false;
 let deviceInfo = null;
 let deviceRestartRequired = false;
+let filesLoadedPath = '';
+let jobMetaLoadedForPath = '';
+let logsLoadedOnce = false;
+let bootingInitialRoute = false;
 const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
   motionSettingsModule = module;
   return module;
@@ -286,6 +290,7 @@ async function restartDevice() {
 function showView(name) {
   const requested = name || (currentJob ? 'job' : 'files');
   const viewName = requested === 'job' && !currentJob ? 'files' : requested;
+  syncAppTelemetryDemand(viewName);
   window.CncTelemetry?.setDemand('log', 'app-log-view', viewName === 'logs');
   document.querySelectorAll('.view-section').forEach((section) => {
     section.classList.toggle('active', section.dataset.view === viewName);
@@ -306,6 +311,29 @@ function showView(name) {
     machineSettingsLoaded = true;
     loadMachineSettings().catch((err) => setMachineConfigResult(err.message, true));
   }
+  if (!bootingInitialRoute && viewName === 'files') {
+    ensureFilesViewData().catch((err) => {
+      if (launcherList) launcherList.textContent = err.message || 'Could not list files.';
+    });
+  }
+  if (!bootingInitialRoute && viewName === 'job') {
+    ensureJobViewData().catch((err) => {
+      jobMeta = null;
+      renderCurrentJob();
+      if (nextActionCard) {
+        nextActionCard.innerHTML = `<p class="warning">${html(err.message || 'Job data could not be loaded.')}</p>`;
+      }
+    });
+  }
+  if (viewName === 'logs' && !logsLoadedOnce) {
+    logsLoadedOnce = true;
+    refreshLogs().catch((err) => applyLogs({ marlinLog: [], lastError: err.message }));
+  }
+}
+
+function syncAppTelemetryDemand(viewName) {
+  window.CncTelemetry?.setDemand('health', 'app-view', viewName === 'settings');
+  window.CncTelemetry?.setDemand('job', 'app-view', viewName === 'job');
 }
 
 function setMachineConfigResult(message, error = false) {
@@ -442,6 +470,24 @@ function routeFromHash() {
   showView(currentJob ? 'job' : 'files');
 }
 
+function requestedViewFromLocation() {
+  const target = (window.location.hash || '').slice(1);
+  if (['files', 'job', 'logs', 'settings'].includes(target)) return target;
+  return currentJob ? 'job' : 'files';
+}
+
+async function resolveInitialView() {
+  const requested = requestedViewFromLocation();
+  if (requested === 'job') {
+    const valid = await validateCurrentJobFile();
+    if (!valid) {
+      history.replaceState(null, '', '#files');
+      return 'files';
+    }
+  }
+  return requested;
+}
+
 function applyHealth(data) {
     const wifi = data.wifiMode && data.ipAddress ? `${data.wifiMode} ${data.ipAddress}` : 'WiFi unknown';
     if (health) health.textContent = `${data.firmwareVersion || data.firmware || 'Pendant'} | ${wifi}`;
@@ -491,13 +537,16 @@ async function refreshJobStatus() {
 
 async function loadJobMeta() {
   jobMeta = null;
+  jobMetaLoadedForPath = '';
   if (!currentJob?.jobPath) return;
   try {
     const res = await fetch(`/api/download?path=${encodeURIComponent(currentJob.jobPath)}`);
     if (!res.ok) return;
     jobMeta = await res.json();
+    jobMetaLoadedForPath = currentJob.jobPath;
   } catch (err) {
     jobMeta = null;
+    jobMetaLoadedForPath = '';
   }
 }
 
@@ -608,7 +657,7 @@ function nextAction() {
   if (!hasZZero()) return { label: 'Set Z Zero', href: `${previewUrl()}#setup` };
   if (jobMeta?.preflight?.state === 'NOT_READY') return { label: 'Review Preflight', href: `${previewUrl()}#preflight` };
   if (!dryRunDone()) return { label: 'Run Bounding Box', href: `${previewUrl()}#dryrun` };
-  if (armState() !== 'ARMED') return { label: 'Arm Job', href: `${previewUrl()}#arm` };
+  if (armState() !== 'ARMED') return { label: 'Review & Start Cut', href: `${previewUrl()}#run` };
   return { label: 'Start Cut', href: `${previewUrl()}#run` };
 }
 
@@ -622,7 +671,7 @@ function readinessActionForDashboard(action = {}) {
   if (action.id === 'resume_job') return { label: action.label, api: '/api/job/resume' };
   if (action.id === 'monitor_job') return { label: action.label, view: 'job' };
   if (target === 'files') return { label: action.label || 'Choose G-code File', view: 'files' };
-  if (target === 'run' && action.id === 'start_cut') return { label: action.label, href: `${previewUrl()}#run` };
+  if (target === 'run' && (action.id === 'start_cut' || action.id === 'arm_job')) return { label: action.label, href: `${previewUrl()}#run` };
   if (target === 'setup' || target === 'preview' || target === 'preflight' || target === 'dry-run' || target === 'arm' || target === 'run') {
     return { label: action.label || 'Open Job', href: `${previewUrl()}#${target}` };
   }
@@ -669,7 +718,6 @@ function renderCurrentJob() {
     : '';
   currentJobCard.innerHTML = `
     <h2>${html(basename(currentJob.gcodePath))}</h2>
-    <p>${html(currentJob.gcodePath)}</p>
     <div class="mini-preview">
       <span>Preview</span>
       <a class="maintenance-link" href="${previewUrl()}">Open Full Preview</a>
@@ -677,22 +725,25 @@ function renderCurrentJob() {
     <dl>
       <dt>Job state</dt><dd>${html(state)}</dd>
       <dt>Bounds</dt><dd>${bounds ? formatBounds(bounds) : 'Preview needed'}</dd>
-      <dt>Warnings</dt><dd>${warningCount()}</dd>
       <dt>Feed override</dt><dd>${html(feed)}%</dd>
       <dt>Estimated time</dt><dd>${formatMinutes(jobMeta?.preview?.estimate?.effectiveSecondsWithOverride || jobMeta?.preview?.estimate?.nominalSeconds || jobMeta?.preview?.estimatedTimeSeconds)}</dd>
-      <dt>Source file</dt><dd>${html(jobMeta?.sourceGcodePath || currentJob.gcodePath)}</dd>
-      <dt>Run file</dt><dd>${html(run.path || currentJob.gcodePath)}</dd>
-      <dt>Run mode</dt><dd><span class="status-badge ${run.mode === 'generated' ? 'active-badge' : ''}">${html(run.mode === 'generated' ? 'USING GENERATED' : 'USING ORIGINAL')}</span></dd>
-      <dt>Generated</dt><dd>${html(activeRunNeedsUpdate() ? 'Update required' : (jobMeta?.generatedValidation?.status || '-'))}</dd>
       <dt>Work zero</dt><dd>${activeWorkZero ? html(shortTime(activeWorkZero.capturedAt)) : (hasWorkZero() ? 'OK' : 'Missing')}</dd>
       <dt>Z zero</dt><dd>${activeZZero ? html(shortTime(activeZZero.capturedAt)) : (hasZZero() ? 'OK' : 'Missing')}</dd>
-      <dt>Last run</dt><dd>${lastRun ? `${html(lastRun.state || 'started')} ${lastRunBadge}` : '-'}</dd>
       <dt>Dry run</dt><dd>${dryRunDone() ? 'Done' : 'Not done'}</dd>
-      <dt>Arm</dt><dd>${html(armState())}</dd>
-      <dt>Readiness</dt><dd>${readiness ? readiness.badges.map((badge) => `<span class="status-badge ${badge.level === 'active' ? 'active-badge' : badge.level === 'ok' ? 'ok-badge' : badge.level === 'fail' ? 'fail-badge' : badge.level === 'warn' ? 'caution' : ''}">${html(badge.label)}</span>`).join(' ') : '-'}</dd>
-      <dt>Blocking</dt><dd>${readiness?.blockingReasons?.length ? readiness.blockingReasons.map((reason) => html(reason.message)).join('<br>') : 'No blockers before next action'}</dd>
-      <dt>Marlin critical</dt><dd>${html(critical || '-')}</dd>
     </dl>
+    <details class="diagnostics-panel">
+      <summary>Advanced / Diagnostics</summary>
+      <dl>
+        <dt>Source file</dt><dd>${html(jobMeta?.sourceGcodePath || currentJob.gcodePath)}</dd>
+        <dt>Run file</dt><dd>${html(run.path || currentJob.gcodePath)}</dd>
+        <dt>Run mode</dt><dd>${html(run.mode || 'source')}</dd>
+        <dt>Generated</dt><dd>${html(activeRunNeedsUpdate() ? 'Update required' : (jobMeta?.generatedValidation?.status || '-'))}</dd>
+        <dt>Warnings</dt><dd>${warningCount()}</dd>
+        <dt>Last run</dt><dd>${lastRun ? `${html(lastRun.state || 'started')} ${lastRunBadge}` : '-'}</dd>
+        <dt>Blocking</dt><dd>${readiness?.blockingReasons?.length ? readiness.blockingReasons.map((reason) => html(reason.message)).join('<br>') : 'None'}</dd>
+        <dt>Marlin critical</dt><dd>${html(critical || '-')}</dd>
+      </dl>
+    </details>
   `;
 
   const primary = nextAction();
@@ -704,12 +755,11 @@ function renderCurrentJob() {
     <a ${buttonAttrs}>${html(primary.label)}</a>
     <div class="secondary-actions">
       <a class="maintenance-link" href="${previewUrl()}">Full Preview</a>
-      <a class="maintenance-link" href="${previewUrl()}#setup">Set Work / Z Zero</a>
+      <a class="maintenance-link" href="${previewUrl()}#setup">Machine Setup</a>
       ${hasNewerUnusedWorkZero() ? `<a class="maintenance-link" href="${previewUrl()}#setup">Choose previous zero</a>` : ''}
       ${lastRun?.state === 'stopped' || lastRun?.state === 'interrupted' ? `<a class="maintenance-link" href="${previewUrl()}#setup">Review interrupted run</a>` : ''}
-      <a class="maintenance-link" href="${previewUrl()}#dryrun">Run Bounding Box</a>
-      <a class="maintenance-link" href="${previewUrl()}#arm">Arm Job</a>
-      <a class="maintenance-link" href="${previewUrl()}#run">Run Panel</a>
+      <a class="maintenance-link" href="${previewUrl()}#dry-run">Dry Run</a>
+      <a class="maintenance-link" href="${previewUrl()}#run">Start Cutting</a>
       <a class="maintenance-link" href="#logs" data-nav-target="logs">Open Log</a>
     </div>
   `;
@@ -816,6 +866,7 @@ async function loadFiles(path = '/gcode') {
   const data = await readJson(res);
   if (!res.ok) {
     launcherList.textContent = data.error || 'Could not list files.';
+    filesLoadedPath = '';
     return;
   }
   const status = await fetch('/api/sd/status').then(readJson).catch(() => null);
@@ -823,6 +874,30 @@ async function loadFiles(path = '/gcode') {
     sdStatusEl.textContent = `${status.cardType} | ${formatBytes(status.freeBytes)} free`;
   }
   await renderFiles(data.items || []);
+  filesLoadedPath = path;
+}
+
+async function ensureFilesViewData(path = activeFilePath || '/gcode') {
+  const targetPath = path || '/gcode';
+  if (filesLoadedPath === targetPath && launcherList?.childElementCount) return;
+  await loadFiles(targetPath);
+}
+
+async function ensureJobViewData() {
+  if (!currentJob) {
+    jobMeta = null;
+    jobMetaLoadedForPath = '';
+    renderCurrentJob();
+    return;
+  }
+  const valid = await validateCurrentJobFile();
+  if (!valid) {
+    renderCurrentJob();
+    routeFromHash();
+    return;
+  }
+  if (jobMetaLoadedForPath !== currentJob.jobPath) await loadJobMeta();
+  renderCurrentJob();
 }
 
 async function openJob(gcodePath) {
@@ -1117,6 +1192,9 @@ document.addEventListener('click', (event) => {
 window.addEventListener('hashchange', routeFromHash);
 
 async function init() {
+  bootingInitialRoute = true;
+  const initialView = await resolveInitialView();
+  showView(initialView);
   const motion = await motionSettingsPromise;
   const savedMotion = motion.loadMotionSettings();
   showTravelSpeed(savedMotion.travelSpeedMmS, savedMotion);
@@ -1127,14 +1205,31 @@ async function init() {
   });
   window.CncTelemetry?.subscribe('log', applyLogs);
   window.CncTelemetry?.start();
-  await refreshHealth();
-  await refreshJobStatus();
-  await validateCurrentJobFile();
-  await loadJobMeta();
   renderCurrentJob();
-  await loadFiles();
+  await ensureViewData(initialView);
+  bootingInitialRoute = false;
   routeFromHash();
-  window.CncTelemetry?.setDemand('log', 'app-log-view', window.location.hash === '#logs');
+  window.CncTelemetry?.setDemand('log', 'app-log-view', initialView === 'logs');
+}
+
+async function ensureViewData(viewName) {
+  if (viewName === 'files') {
+    await ensureFilesViewData();
+    return;
+  }
+  if (viewName === 'job') {
+    await refreshJobStatus();
+    await ensureJobViewData();
+    return;
+  }
+  if (viewName === 'settings') {
+    await refreshHealth();
+    return;
+  }
+  if (viewName === 'logs' && !logsLoadedOnce) {
+    logsLoadedOnce = true;
+    await refreshLogs();
+  }
 }
 
 init().catch((err) => {

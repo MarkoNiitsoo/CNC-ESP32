@@ -54,6 +54,7 @@ or job runner functionality.
   - Firmware upload endpoint at `/api/update`.
   - Sends `M5` and `M400` before accepting firmware data.
 - SD rescue update:
+  - Automatically installs root `/firmware.bin` and renames it to `/firmware.done.bin` on success.
   - Checks `/firmware/update.bin` and `/firmware/INSTALL.NOW` before WiFi starts.
   - Streams firmware from SD with Arduino `Update`.
   - Logs to `/logs/update.log`.

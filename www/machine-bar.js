@@ -573,6 +573,8 @@
     const overlay = el('machine-drawer-overlay');
     if (shell) shell.hidden = !STATE.drawerOpen;
     if (overlay) overlay.hidden = !STATE.drawerOpen;
+    window.CncTelemetry?.setDemand('health', 'machine-drawer', STATE.drawerOpen);
+    window.CncTelemetry?.setDemand('job', 'machine-drawer', STATE.drawerOpen);
     window.CncTelemetry?.setDemand('log', 'machine-drawer', STATE.drawerOpen);
     window.CncTelemetry?.setDemand('jog', 'machine-drawer', STATE.drawerOpen);
   }
@@ -943,6 +945,13 @@
     button('mb-home-y', () => home('G28 Y', 'This will move the CNC Y axis toward its endstop. Keep your hand near the physical emergency stop.'));
     button('mb-home-z', () => home('G28 Z', 'This will move the CNC toward endstops.'));
     button('mb-home-all', () => home('G28', 'HOME ALL AXES: This moves X/Y/Z. Make sure endstops are connected and machine is clear.', true));
+    addEventListener('cnc-home-machine-request', () => {
+      home('G28', 'HOME ALL AXES: This moves X/Y/Z. Make sure endstops are connected and machine is clear.', true)
+        .catch((err) => {
+          setMessage(err.message || String(err));
+          render();
+        });
+    });
     button('mb-terminal-send', () => {
       const selected = el('mb-terminal-select')?.value;
       return terminalSend(selected === 'custom' ? el('mb-terminal-cmd')?.value : selected);

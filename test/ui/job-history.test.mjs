@@ -8,6 +8,7 @@ import {
   markActiveZero,
   markActiveZZero,
   recordWorkZeroRestore,
+  recordZeroRestore,
   runStateLabel,
   startRunHistory,
   updateRunHistoryFromStatus,
@@ -82,6 +83,18 @@ describe('job history metadata', () => {
     });
     expect(restored.id).toBe(zero.id);
     expect(job.activeWorkZeroId).toBe(zero.id);
+    expect(restored.restores).toHaveLength(1);
+  });
+
+  it('records and activates a restored Z-zero history point', () => {
+    const job = ensureHistory({});
+    const zero = appendZZeroHistory(job, { before: capture('before'), after: capture('after') });
+    job.activeZZeroId = null;
+    const restored = recordZeroRestore(job, zero.id, {
+      machinePosition: { x: 100, y: 500, z: 12 }, safeMachineZ: 70,
+    });
+    expect(restored.id).toBe(zero.id);
+    expect(job.activeZZeroId).toBe(zero.id);
     expect(restored.restores).toHaveLength(1);
   });
 

@@ -3,8 +3,8 @@
 
   const ACTIVE_JOB_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const channels = {
-    health: { url: '/api/health', idleMs: 30000, activeMs: 30000, always: true },
-    job: { url: '/api/job/status', idleMs: 10000, activeMs: 1000, always: true },
+    health: { url: '/api/health', idleMs: 30000, activeMs: 30000, always: false },
+    job: { url: '/api/job/status', idleMs: 10000, activeMs: 1000, always: false },
     log: { url: '/api/marlin/log', idleMs: 5000, activeMs: 2000, always: false },
     jog: { url: '/api/jog/status', idleMs: 2000, activeMs: 1000, always: false },
   };
@@ -62,6 +62,10 @@
     return channels[name]?.always || (demand.get(name)?.size || 0) > 0;
   }
 
+  function wantsSocket() {
+    return isWanted('job') || isWanted('jog') || isWanted('log');
+  }
+
   function intervalFor(name) {
     const config = channels[name];
     return isActive() ? config.activeMs : config.idleMs;
@@ -104,6 +108,8 @@
     if (enabled) owners.add(owner);
     else owners.delete(owner);
     demand.set(name, owners);
+    if (started && wantsSocket()) connectSocket();
+    else if (started && !wantsSocket() && socket) socket.close();
     sendSocketDemand();
     if (enabled) request(name).catch(() => {});
     schedule(name);
@@ -137,7 +143,7 @@
   }
 
   function connectSocket() {
-    if (!started || document.hidden || socket || (location.port && location.port !== '80')) return;
+    if (!started || document.hidden || socket || !wantsSocket() || (location.port && location.port !== '80')) return;
     try {
       socket = new WebSocket(`ws://${location.hostname}:81/`);
     } catch (err) {
@@ -175,8 +181,9 @@
   function start() {
     if (started) return;
     started = true;
-    request('job').catch(() => {});
-    request('health').catch(() => {});
+    Object.keys(channels).forEach((name) => {
+      if (isWanted(name)) request(name).catch(() => {});
+    });
     connectSocket();
   }
 
@@ -188,10 +195,10 @@
       socket?.close();
       return;
     }
-    connectSocket();
     Object.keys(channels).forEach((name) => {
       if (isWanted(name)) request(name).catch(() => {});
     });
+    connectSocket();
   });
 
   window.CncTelemetry = { accept, request, setDemand, start, state, subscribe };

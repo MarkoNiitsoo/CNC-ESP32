@@ -19,7 +19,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "G-code CNC Pendant";
-constexpr const char *firmwareVersion = "0.6.7-zero-origin";
+constexpr const char *firmwareVersion = "0.6.10-root-sd-update";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "G-code-CNC-Setup";
@@ -43,6 +43,8 @@ constexpr const char *kSdUpdateBinPath = "/firmware/update.bin";
 constexpr const char *kSdInstallMarkerPath = "/firmware/INSTALL.NOW";
 constexpr const char *kSdDoneBinPath = "/firmware/update.done.bin";
 constexpr const char *kSdFailedMarkerPath = "/firmware/INSTALL.FAILED";
+constexpr const char *kSdRootUpdateBinPath = "/firmware.bin";
+constexpr const char *kSdRootDoneBinPath = "/firmware.done.bin";
 constexpr const char *kSdUpdateLogPath = "/logs/update.log";
 constexpr const char *kSdJobLogPath = "/logs/job.log";
 constexpr const char *kSdRoots[] = {"/gcode", "/www", "/firmware", "/jobs", "/logs",
@@ -50,18 +52,19 @@ constexpr const char *kSdRoots[] = {"/gcode", "/www", "/firmware", "/jobs", "/lo
 constexpr uint32_t kMarlinBaudrate = 250000;
 constexpr uint32_t kMarlinTimeoutMs = 1500;
 constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000;
+constexpr uint32_t kMarlinPauseDrainAckTimeoutMs = 30000;
 constexpr uint16_t kTelemetryWebSocketPort = 81;
 constexpr uint32_t kTelemetryMinBroadcastMs = 100;
 constexpr uint32_t kJobProgressBroadcastMs = 500;
 constexpr size_t kMotionTelemetrySize = 24;
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
-constexpr uint32_t kJogTickIntervalMs = 50;
+constexpr uint32_t kJogTickIntervalMs = 25;
 constexpr uint32_t kJogDeadmanMs = 500;
 constexpr uint32_t kJogRestoreDelayMs = 5000;
-constexpr uint8_t kJogPlannerLookahead = 3;
-constexpr float kJogVectorRampPerTick = 0.25f;
-constexpr float kJogMaxXyStepMm = 5.0f;
-constexpr float kJogMaxZStepMm = 0.5f;
+constexpr uint8_t kJogPlannerLookahead = 6;
+constexpr float kJogVectorRampPerTick = 0.125f;
+constexpr float kJogMaxXyStepMm = 2.5f;
+constexpr float kJogMaxZStepMm = 0.25f;
 constexpr float kMachineXMaxMm = 1625.0f;
 constexpr float kMachineYMaxMm = 5800.0f;
 constexpr float kMachineZMaxMm = 70.0f;
@@ -1480,9 +1483,9 @@ void logSdUpdate(const String &message) {
   logFile.close();
 }
 
-void markSdUpdateFailed(const String &message) {
+void markSdUpdateFailed(const String &message, bool removeInstallMarker = true) {
   logSdUpdate("SD rescue update failed: " + message);
-  SD_MMC.remove(kSdInstallMarkerPath);
+  if (removeInstallMarker) SD_MMC.remove(kSdInstallMarkerPath);
 
   File failed = SD_MMC.open(kSdFailedMarkerPath, FILE_WRITE);
   if (failed) {
@@ -1509,10 +1512,17 @@ bool checkForSdRescueUpdate() {
   return true;
 }
 
-bool performSdRescueUpdate() {
-  File updateFile = SD_MMC.open(kSdUpdateBinPath, FILE_READ);
+bool checkForRootFirmwareUpdate() {
+  if (!initializeSdCard() || !SD_MMC.exists(kSdRootUpdateBinPath)) return false;
+  logSdUpdate("Root firmware update found at /firmware.bin");
+  return true;
+}
+
+bool performSdFirmwareUpdate(const char *sourcePath, const char *donePath,
+                             bool removeInstallMarker, const String &label) {
+  File updateFile = SD_MMC.open(sourcePath, FILE_READ);
   if (!updateFile) {
-    markSdUpdateFailed("Could not open /firmware/update.bin");
+    markSdUpdateFailed("Could not open " + String(sourcePath), removeInstallMarker);
     return false;
   }
 
@@ -1521,56 +1531,65 @@ bool performSdRescueUpdate() {
 
   if (fileSize == 0) {
     updateFile.close();
-    markSdUpdateFailed("/firmware/update.bin is empty");
+    markSdUpdateFailed(String(sourcePath) + " is empty", removeInstallMarker);
     return false;
   }
 
   if (fileSize > maxSketchSpace) {
     updateFile.close();
-    markSdUpdateFailed("update.bin is larger than free sketch space");
+    markSdUpdateFailed(String(sourcePath) + " is larger than free sketch space", removeInstallMarker);
     return false;
   }
 
-  logSdUpdate("Starting SD rescue update, bytes: " + String(fileSize));
+  logSdUpdate("Starting " + label + " update, bytes: " + String(fileSize));
   if (!Update.begin(fileSize)) {
     const String error = Update.errorString();
     updateFile.close();
-    markSdUpdateFailed("Update.begin failed: " + error);
+    markSdUpdateFailed("Update.begin failed: " + error, removeInstallMarker);
     return false;
   }
 
   const size_t written = Update.writeStream(updateFile);
   updateFile.close();
-  logSdUpdate("SD rescue update bytes written: " + String(written));
+  logSdUpdate(label + " update bytes written: " + String(written));
 
   if (written != fileSize) {
     const String error = Update.errorString();
     Update.abort();
-    markSdUpdateFailed("Update.writeStream wrote " + String(written) + " of " + String(fileSize) + ": " + error);
+    markSdUpdateFailed("Update.writeStream wrote " + String(written) + " of " + String(fileSize) + ": " + error,
+                       removeInstallMarker);
     return false;
   }
 
   if (!Update.end()) {
     const String error = Update.errorString();
-    markSdUpdateFailed("Update.end failed: " + error);
+    markSdUpdateFailed("Update.end failed: " + error, removeInstallMarker);
     return false;
   }
 
   if (!Update.isFinished()) {
-    markSdUpdateFailed("Update did not finish");
+    markSdUpdateFailed("Update did not finish", removeInstallMarker);
     return false;
   }
 
-  SD_MMC.remove(kSdInstallMarkerPath);
-  SD_MMC.remove(kSdDoneBinPath);
-  if (!SD_MMC.rename(kSdUpdateBinPath, kSdDoneBinPath)) {
-    logSdUpdate("SD rescue update succeeded, but update.bin could not be renamed");
+  if (removeInstallMarker) SD_MMC.remove(kSdInstallMarkerPath);
+  SD_MMC.remove(donePath);
+  if (!SD_MMC.rename(sourcePath, donePath)) {
+    logSdUpdate(label + " update succeeded, but firmware could not be renamed to " + String(donePath));
   } else {
-    logSdUpdate("SD rescue update renamed update.bin to update.done.bin");
+    logSdUpdate(label + " update renamed " + String(sourcePath) + " to " + String(donePath));
   }
 
-  logSdUpdate("SD rescue update succeeded; rebooting");
+  logSdUpdate(label + " update succeeded; rebooting");
   return true;
+}
+
+bool performSdRescueUpdate() {
+  return performSdFirmwareUpdate(kSdUpdateBinPath, kSdDoneBinPath, true, "SD rescue");
+}
+
+bool performRootFirmwareUpdate() {
+  return performSdFirmwareUpdate(kSdRootUpdateBinPath, kSdRootDoneBinPath, false, "Root firmware");
 }
 
 String extractCmdFromJson(const String &body) {
@@ -1952,6 +1971,13 @@ void startNextPriorityCommand() {
   logJobEvent("priority: " + cmd);
 }
 
+uint32_t priorityAckTimeoutMs() {
+  if (jobStatus.state == JobRunnerState::Pausing && jobStatus.lastPriorityCommand == "M400") {
+    return kMarlinPauseDrainAckTimeoutMs;
+  }
+  return kMarlinCommandAckTimeoutMs;
+}
+
 void finishPrioritySequence() {
   clearPriorityCommands();
   if (jobStatus.state == JobRunnerState::Preparing) {
@@ -2027,7 +2053,7 @@ void processPriorityCommands() {
   }
 
   if (!responseContainsToken(priorityResponseBuffer, "ok")) {
-    if (millis() - priorityCommandLivenessAtMs > kMarlinCommandAckTimeoutMs) {
+    if (millis() - priorityCommandLivenessAtMs > priorityAckTimeoutMs()) {
       jobStatus.lastPriorityResponse = priorityResponseBuffer;
       jobStatus.lastPriorityError = "Priority command timed out";
       addMarlinLog("rx", true, priorityResponseBuffer.length() > 0 ? priorityResponseBuffer : "timeout", "error");
@@ -2516,7 +2542,9 @@ void processJogRunner() {
     return;
   }
 
-  String cmd = "G0";
+  // G1 keeps adjacent jog vectors in Marlin's coordinated-motion planner instead of
+  // treating every small joystick tick as a separate rapid positioning move.
+  String cmd = "G1";
   if (fabs(dx) >= 0.01f) {
     cmd += " X";
     cmd += String(dx, 3);
@@ -4809,6 +4837,11 @@ void handleRestoreWorkZero() {
     sendJsonError(409, "work-zero restore rejected while motion is active");
     return;
   }
+  if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.homedX ||
+      !machineFrame.homedY || !machineFrame.homedZ) {
+    sendJsonError(409, "Home All is required before restoring a saved zero");
+    return;
+  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
@@ -4817,7 +4850,16 @@ void handleRestoreWorkZero() {
   const String body = server.arg("plain");
   const float machineX = extractJsonFloat(body, "machineX", NAN);
   const float machineY = extractJsonFloat(body, "machineY", NAN);
+  const float machineZ = extractJsonFloat(body, "machineZ", NAN);
   const float safeMachineZ = extractJsonFloat(body, "safeMachineZ", kMachineZMaxMm);
+  const bool moveToZ = extractJsonBool(body, "moveToZ", false);
+  String axes = extractJsonString(body, "axes");
+  axes.toLowerCase();
+  if (axes.length() == 0) axes = "xy";
+  if (axes != "x" && axes != "y" && axes != "z" && axes != "xy" && axes != "xyz") {
+    sendJsonError(400, "axes must be x, y, z, xy, or xyz");
+    return;
+  }
   const float travelFeedMmMin = clampFloat(
       extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   if (!isfinite(machineX) || !isfinite(machineY) || machineX < machineXMin() || machineX > machineXMax() ||
@@ -4827,6 +4869,14 @@ void handleRestoreWorkZero() {
   }
   if (!isfinite(safeMachineZ) || safeMachineZ <= machineZMin() || safeMachineZ > machineZMax()) {
     sendJsonError(400, "Safe machine Z is outside configured limits");
+    return;
+  }
+  if (moveToZ && (!isfinite(machineZ) || machineZ < machineZMin() || machineZ > machineZMax())) {
+    sendJsonError(400, "saved zero Z is outside configured machine limits");
+    return;
+  }
+  if (moveToZ && machineZ > safeMachineZ) {
+    sendJsonError(400, "saved zero Z cannot be above Safe machine Z");
     return;
   }
 
@@ -4843,30 +4893,44 @@ void handleRestoreWorkZero() {
       !sendChecked("M400") ||
       !sendChecked("G53 G0 X" + String(machineX, 3) + " Y" + String(machineY, 3) +
                    " F" + String(travelFeedMmMin, 0)) ||
-      !sendChecked("M400") || !sendChecked("G54") || !sendChecked("G92 X0 Y0") ||
-      !sendChecked("M114")) {
+      !sendChecked("M400")) {
     return;
   }
 
-  machineFrame.workZeroMachineX = machineX;
-  machineFrame.workZeroMachineY = machineY;
+  if (moveToZ && (!sendChecked("G53 G0 Z" + String(machineZ, 3) + " F" +
+                               String(kGotoWorkZeroZFeed, 0)) || !sendChecked("M400"))) return;
+
+  String zeroCommand = "G92";
+  if (axes == "x" || axes == "xy" || axes == "xyz") zeroCommand += " X0";
+  if (axes == "y" || axes == "xy" || axes == "xyz") zeroCommand += " Y0";
+  if (axes == "z" || axes == "xyz") zeroCommand += " Z0";
+  if (!sendChecked("G54") || !sendChecked(zeroCommand) || !sendChecked("M114")) return;
+
+  if (axes == "x" || axes == "xy" || axes == "xyz") machineFrame.workZeroMachineX = machineX;
+  if (axes == "y" || axes == "xy" || axes == "xyz") machineFrame.workZeroMachineY = machineY;
+  if (axes == "z" || axes == "xyz") machineFrame.workZeroMachineZ = machineZ;
   machineFrame.workZeroValid = true;
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
   telemetryPositionDirty = true;
 
-  logJobEvent("restored saved XY work zero at machine X" + String(machineX, 3) +
-              " Y" + String(machineY, 3));
+  logJobEvent("restored saved " + axes + " zero at machine X" + String(machineX, 3) +
+              " Y" + String(machineY, 3) + (moveToZ ? " Z" + String(machineZ, 3) : ""));
   String json = "{\"ok\":true,\"machineX\":";
   json += String(machineX, 3);
   json += ",\"machineY\":";
   json += String(machineY, 3);
+  json += ",\"machineZ\":";
+  json += isfinite(machineZ) ? String(machineZ, 3) : "null";
+  json += ",\"axes\":\"" + axes + "\"";
+  json += ",\"moveToZ\":";
+  json += moveToZ ? "true" : "false";
   json += ",\"safeMachineZ\":";
   json += String(safeMachineZ, 3);
   json += ",\"response\":\"";
   json += jsonEscape(response);
   json += "\",\"frame\":" + machineFrameJson();
-  json += ",\"message\":\"Saved XY work zero restored. Z zero was not changed.\"}";
+  json += ",\"message\":\"Saved zero restored and activated.\"}";
   server.send(200, "application/json", json);
 }
 
@@ -5209,7 +5273,13 @@ void setup() {
   Serial.begin(kMarlinBaudrate, SERIAL_8N1, kMarlinRxPin, kMarlinTxPin);
   loadMachineProfile();
 
-  if (checkForSdRescueUpdate() && performSdRescueUpdate()) {
+  bool sdFirmwareUpdated = false;
+  if (checkForSdRescueUpdate()) {
+    sdFirmwareUpdated = performSdRescueUpdate();
+  } else if (checkForRootFirmwareUpdate()) {
+    sdFirmwareUpdated = performRootFirmwareUpdate();
+  }
+  if (sdFirmwareUpdated) {
     delay(1000);
     ESP.restart();
   }

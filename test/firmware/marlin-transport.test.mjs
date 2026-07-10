@@ -12,6 +12,15 @@ describe('Marlin transport safety', () => {
     expect(source).not.toContain('Serial.print("SD rescue update');
   });
 
+  it('installs a root firmware.bin once and renames it after success', () => {
+    expect(source).toContain('kSdRootUpdateBinPath = "/firmware.bin"');
+    expect(source).toContain('kSdRootDoneBinPath = "/firmware.done.bin"');
+    expect(source).toContain('bool checkForRootFirmwareUpdate()');
+    expect(source).toContain('performRootFirmwareUpdate()');
+    expect(source).toMatch(/checkForSdRescueUpdate\(\)[\s\S]*else if \(checkForRootFirmwareUpdate\(\)\)/);
+    expect(source).toContain('SD_MMC.rename(sourcePath, donePath)');
+  });
+
   it('forces SD API downloads instead of rendering text G-code inline', () => {
     expect(source).toContain('server.sendHeader("Content-Disposition", "attachment; filename=\\\"" + fileName + "\\\"")');
     expect(source).toContain('server.streamFile(file, contentTypeForPath(path))');
@@ -52,11 +61,19 @@ describe('Marlin transport safety', () => {
 
   it('guards preamble and stream acknowledgements without replaying uncertain motion', () => {
     expect(source).toContain('constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000');
+    expect(source).toContain('constexpr uint32_t kMarlinPauseDrainAckTimeoutMs = 30000');
     expect(source).toContain('responseContainsToken(receivedChunk, "busy:")');
     expect(source.match(/responseContainsToken\(receivedChunk, "busy:"\)/g)).toHaveLength(2);
     expect(source).toContain('Marlin acknowledgement timed out; command was not resent: ');
     const runner = source.slice(source.indexOf('void processJobRunner()'), source.indexOf('String htmlPage'));
     expect(runner.match(/Serial\.print\(line\)/g)).toHaveLength(1);
+  });
+
+  it('allows extra drain time before pause marks the stream as failed', () => {
+    expect(source).toContain('uint32_t priorityAckTimeoutMs()');
+    expect(source).toContain('jobStatus.state == JobRunnerState::Pausing && jobStatus.lastPriorityCommand == "M400"');
+    expect(source).toContain('return kMarlinPauseDrainAckTimeoutMs;');
+    expect(source).toContain('millis() - priorityCommandLivenessAtMs > priorityAckTimeoutMs()');
   });
 
   it('keeps M5 on the priority path before the busy transport rejection', () => {
@@ -76,11 +93,11 @@ describe('Marlin transport safety', () => {
     expect(source).toMatch(/jobStatus\.streamMode != "job"[\s\S]*validateTestMotionCommand/);
   });
 
-  it('restores saved XY only through an explicit Safe-Z machine-coordinate endpoint', () => {
+  it('restores saved zeros through an explicit Safe-Z-first machine-coordinate endpoint', () => {
     expect(source).toContain('server.on("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero)');
     const restore = source.slice(source.indexOf('void handleRestoreWorkZero()'), source.indexOf('void handleUpdatePage()'));
-    expect(restore).toMatch(/M5[\s\S]*G53 G0 Z[\s\S]*M400[\s\S]*G53 G0 X[\s\S]*M400[\s\S]*G54[\s\S]*G92 X0 Y0[\s\S]*M114/);
-    expect(restore).not.toContain('G92 Z0');
+    expect(restore).toMatch(/M5[\s\S]*G53 G0 Z[\s\S]*M400[\s\S]*G53 G0 X[\s\S]*M400[\s\S]*moveToZ[\s\S]*G53 G0 Z[\s\S]*G54[\s\S]*zeroCommand[\s\S]*M114/);
+    expect(restore).toContain('zeroCommand += " Z0"');
     expect(restore).not.toContain('G28');
   });
 

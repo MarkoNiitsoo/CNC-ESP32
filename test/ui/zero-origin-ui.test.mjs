@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const html = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
 const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
 const controller = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
 
@@ -10,6 +11,7 @@ describe('operator Zero / Origin workflow', () => {
   it('keeps only operator zero actions visible in the Setup panel', () => {
     const panel = html.slice(html.indexOf('zero-origin-panel'), html.indexOf('feed-override-panel'));
     expect(panel).toContain('Zero / Origin');
+    expect(panel).toContain('Home Machine');
     expect(panel).toContain('Set Work Zero');
     expect(panel).toContain('Set Zero X');
     expect(panel).toContain('Set Zero Y');
@@ -18,6 +20,13 @@ describe('operator Zero / Origin workflow', () => {
     expect(panel).not.toMatch(/Load Job|Save Job|Capture Current Position|G92|Job JSON|Raw M114/);
     expect(controller).toContain("'.zero-origin-panel'");
     expect(controller).not.toContain("'.tool-zero-panel'");
+    expect(html).toContain('class="panel feed-override-panel preview-tab-panel" data-preview-tab="run"');
+  });
+
+  it('offers guarded Home All where homing is required', () => {
+    expect(preview).toContain("{ id: 'home_machine', label: 'Home Machine', target: 'setup' }");
+    expect(preview).toContain("window.dispatchEvent(new CustomEvent('cnc-home-machine-request'))");
+    expect(machineBar).toMatch(/cnc-home-machine-request[\s\S]*home\('G28'[\s\S]*true\)/);
   });
 
   it('keeps diagnostics collapsed and history out of the inline Setup flow', () => {
@@ -26,6 +35,8 @@ describe('operator Zero / Origin workflow', () => {
     expect(html).toContain('<summary>Advanced / Diagnostics</summary>');
     expect(preview).toContain("zeroHistoryDialog.showModal()");
     expect(preview).toContain('Last run: not used yet');
+    expect(preview).toContain('Restore &amp; Go');
+    expect(preview).toMatch(/async function restoreHistoryZero[\s\S]*safeMachineZ[\s\S]*moveToZ: true/);
     expect(preview).toContain('Legacy zero — machine position not recorded');
   });
 

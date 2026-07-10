@@ -83,8 +83,7 @@
         <nav class="drawer-tabs" aria-label="Readiness details">
           <button type="button" class="active" data-preview-tab-button="preflight">Checks</button>
           <button type="button" data-preview-tab-button="recovery">Recovery</button>
-          <button type="button" data-preview-tab-button="arm" data-icon="arm">Arm</button>
-          <button type="button" data-preview-tab-button="run" data-icon="start">Run</button>
+          <button type="button" data-preview-tab-button="run" data-icon="start">Start Cutting</button>
         </nav>
         <div id="readiness-drawer-content" class="drawer-scroll"></div>
       </aside>
@@ -129,17 +128,7 @@
           <input id="placement-rotation" type="number" inputmode="decimal" step="0.1" value="0">
         </div>
         <div class="job-actions">
-          <button type="button" data-rotate-delta="-90">-90</button>
-          <button type="button" data-rotate-delta="-10">-10</button>
-          <button type="button" data-rotate-delta="-1">-1</button>
-          <button type="button" data-rotate-delta="1">+1</button>
-          <button type="button" data-rotate-delta="10">+10</button>
-          <button type="button" data-rotate-delta="90">+90</button>
-          <button id="reset-placement" type="button">Reset Placement</button>
-          <button id="preview-transform" type="button">Preview Transform</button>
-          <button id="generate-run-file" type="button" data-icon="generated">Update Run File</button>
           <button id="use-generated-run" type="button" disabled>Run File Up To Date</button>
-          <button id="use-source-run" type="button">Reset Placement / Use Original</button>
         </div>
         <div id="placement-summary" class="job-summary"></div>
         <pre id="placement-result" class="dry-run-log"></pre>
@@ -154,6 +143,7 @@
         <h2>Zero / Origin</h2>
         <div id="zero-origin-summary" class="zero-origin-summary"></div>
         <div class="zero-origin-actions">
+          <button id="home-machine-zero" type="button">Home Machine</button>
           <button id="set-work-zero" type="button" data-icon="workZero">Set Work Zero</button>
           <button id="set-zero-x" type="button">Set Zero X</button>
           <button id="set-zero-y" type="button">Set Zero Y</button>
@@ -163,21 +153,24 @@
         <div id="job-result" class="job-result" role="status"></div>
       </section>
 
-      <section class="panel feed-override-panel preview-tab-panel" data-preview-tab="setup">
-        <h2>Feed Override</h2>
-        <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
-        <div id="feed-override-summary" class="job-summary"></div>
-        <div class="dry-run-inputs">
-          <label for="feed-start-percent">Start feed override (%)</label>
-          <input id="feed-start-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
-        </div>
-        <div class="job-actions">
-          <button type="button" data-feed-start="50">50%</button>
-          <button type="button" data-feed-start="75">75%</button>
-          <button type="button" data-feed-start="100">100%</button>
-          <button type="button" data-feed-start="125">125%</button>
-          <button type="button" data-feed-start="150" class="caution">150%</button>
-        </div>
+      <section class="panel feed-override-panel preview-tab-panel" data-preview-tab="run">
+        <details class="operator-diagnostics">
+          <summary>Feed setup</summary>
+          <h2>Feed Override</h2>
+          <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
+          <div id="feed-override-summary" class="job-summary"></div>
+          <div class="dry-run-inputs">
+            <label for="feed-start-percent">Start feed override (%)</label>
+            <input id="feed-start-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
+          </div>
+          <div class="job-actions">
+            <button type="button" data-feed-start="50">50%</button>
+            <button type="button" data-feed-start="75">75%</button>
+            <button type="button" data-feed-start="100">100%</button>
+            <button type="button" data-feed-start="125">125%</button>
+            <button type="button" data-feed-start="150" class="caution">150%</button>
+          </div>
+        </details>
       </section>
 
       <dialog id="zero-history-dialog" class="zero-history-dialog">
@@ -226,8 +219,8 @@
         <div class="work-zero-restore-panel">
           <h3>Saved Work Zero</h3>
           <div id="work-zero-restore-summary" class="job-summary"></div>
-          <button id="restore-saved-work-zero" type="button" disabled>Restore Saved XY Work Zero</button>
-          <p class="form-hint">Homes are not run automatically. Z zero is not changed.</p>
+          <button id="restore-saved-work-zero" type="button" disabled>Restore Saved Work Zero</button>
+          <p class="form-hint">Home All first. The saved home-relative XYZ origin is restored; homing is never automatic.</p>
         </div>
         <div id="recovery-summary" class="job-summary"></div>
         <div class="job-actions">
@@ -270,29 +263,27 @@
 
       <section class="panel dry-run-panel preview-tab-panel" data-preview-tab="dry-run">
         <h2>Dry Run</h2>
-        <p class="warning">This is not an emergency stop. Keep the physical emergency stop within reach.</p>
         <div id="dry-run-summary" class="job-summary"></div>
         <div class="dry-run-inputs">
           <label for="safe-z">Safe Z (mm)</label>
           <input id="safe-z" type="number" inputmode="decimal" step="0.1" value="15">
           <label for="trace-margin">Margin (mm)</label>
           <input id="trace-margin" type="number" inputmode="decimal" step="0.1" value="0">
+          <label for="dry-run-aircut">Aircut toolpath</label>
+          <label class="recovery-overlay-toggle dry-run-toggle"><input id="dry-run-aircut" type="checkbox"> ON</label>
         </div>
+        <p class="form-hint">When Aircut is ON, the full toolpath is sent at Safe Z and spindle/laser start commands are suppressed.</p>
         <div class="job-actions">
-          <button id="generate-trace" type="button" data-icon="bounds">Generate Bounding Box Commands</button>
-          <button id="send-trace" type="button" disabled>Send Bounding Box Trace</button>
-          <button id="copy-trace" type="button">Copy Commands</button>
-          <button id="generate-aircut" type="button" data-icon="dryRun">Generate Aircut Commands</button>
-          <button id="send-aircut" type="button" disabled>Send Aircut Toolpath</button>
-          <button id="copy-aircut" type="button">Copy Aircut Commands</button>
+          <button id="send-dry-run" type="button" disabled>Send Box Trace</button>
           <button id="stop-m5" type="button" aria-label="Stop spindle or laser M5" data-icon="m5">Stop spindle/laser M5</button>
-          <a class="maintenance-link" href="#preview-canvas">Back to Preview</a>
         </div>
-        <pre id="trace-commands" class="command-preview"></pre>
+        <p id="dry-run-status" class="form-hint"></p>
+        <p class="form-hint dry-run-warning">This is not an emergency stop. Keep the physical emergency stop within reach.</p>
+        <pre id="trace-commands" class="command-preview" hidden></pre>
         <pre id="dry-run-log" class="dry-run-log"></pre>
       </section>
 
-      <section class="panel arm-panel preview-tab-panel" data-preview-tab="arm">
+      <section class="panel arm-panel preview-tab-panel" data-preview-tab="arm" hidden aria-hidden="true">
         <h2>Job Readiness / Arm Job</h2>
         <div id="arm-state" class="arm-state arm-not-ready">NOT_READY</div>
         <p>Arming does not move the CNC. It only marks this job as checked and ready for a future run command.</p>
@@ -315,52 +306,54 @@
         <div id="arm-result" class="job-result"></div>
       </section>
 
-      <section id="run-panel" class="panel run-panel preview-tab-panel" data-preview-tab="run" hidden>
-        <h2>Run Job</h2>
-        <p class="warning">This is not a physical emergency stop.</p>
-        <p>FreeCAD usually outputs G54. Start Job applies G54, optionally applies G92, then lifts to Safe start Z before streaming file lines.</p>
-        <div id="run-summary" class="job-summary"></div>
-        <section class="feed-live-control">
-          <h3>Feed Override</h3>
-          <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
-          <div id="feed-live-summary" class="job-summary"></div>
-          <div class="job-actions feed-actions">
-            <button type="button" data-feed-live="50">50%</button>
-            <button type="button" data-feed-live="75">75%</button>
-            <button type="button" data-feed-live="100">100%</button>
-            <button type="button" data-feed-live="125">125%</button>
-            <button type="button" data-feed-live="150" class="caution">150%</button>
-            <button type="button" data-feed-delta="-10">-10%</button>
-            <button type="button" data-feed-delta="10">+10%</button>
-          </div>
-          <div class="dry-run-inputs">
-            <label for="feed-live-percent">Set percent</label>
-            <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
-            <button id="feed-live-set" type="button">Set Feed Override</button>
-          </div>
-          <div id="feed-live-result" class="job-result"></div>
-        </section>
-        <div class="dry-run-inputs">
-          <input id="start-mode" type="hidden" value="use_active_work_zero">
-          <p>Start uses the saved active work zero. Starting a job never changes zero.</p>
-          <label for="run-safe-start-z">Safe start Z (mm)</label>
-          <input id="run-safe-start-z" type="number" inputmode="decimal" min="0" max="200" step="0.1" value="15">
-        </div>
-        <fieldset class="arm-checklist">
-          <legend>Ready To Start</legend>
-          <label><input type="checkbox" data-run-check="toolAtWorkZero"> The tool is physically at the intended work X0/Y0/Z0.</label>
-          <label><input type="checkbox" data-run-check="zZeroCorrect"> Z zero is correct.</label>
-          <label><input type="checkbox" data-run-check="materialFixed"> Material is fixed.</label>
-          <label><input type="checkbox" data-run-check="spindleOff"> Spindle/laser is off.</label>
+      <section id="run-panel" class="panel run-panel preview-tab-panel" data-preview-tab="run">
+        <h2>Review &amp; Start Cutting</h2>
+        <div id="run-operator-summary" class="operator-start-summary"></div>
+        <fieldset id="run-final-checklist" class="arm-checklist final-start-checklist">
+          <legend>Final check</legend>
+          <label><input type="checkbox" data-run-check="materialAndPathClear"> Material and clamps are secure; the toolpath is clear.</label>
+          <label><input type="checkbox" data-run-check="toolAndZZeroVerified"> The correct tool is installed and Z zero is checked.</label>
+          <label><input type="checkbox" data-run-check="spindleStateReady"> Router/spindle is in the intended start state.</label>
         </fieldset>
         <div class="job-actions">
           <button id="start-job" class="hold-to-confirm" type="button" aria-label="Hold to Start Cut" data-icon="start">Hold to Start Cut</button>
           <button id="pause-job" type="button" aria-label="Pause Job" data-icon="pause">Pause Job</button>
           <button id="resume-job" type="button">Resume Job</button>
-          <button id="stop-job" type="button" aria-label="Stop job" data-icon="stop">Stop job: M5 + pause stream</button>
-          <button id="refresh-job-status" type="button">Refresh Status</button>
+          <button id="stop-job" type="button" aria-label="Stop job" data-icon="stop">Stop Job</button>
         </div>
-        <pre id="run-log" class="dry-run-log"></pre>
+        <p class="form-hint">Hold to start. Pause, Stop, and M5 remain available in the machine bar.</p>
+        <details class="operator-diagnostics">
+          <summary>Advanced run details</summary>
+          <p>Start uses the saved active work zero and lifts to Safe start Z before streaming.</p>
+          <div id="run-summary" class="job-summary"></div>
+          <section class="feed-live-control">
+            <h3>Live Feed Override</h3>
+            <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
+            <div id="feed-live-summary" class="job-summary"></div>
+            <div class="job-actions feed-actions">
+              <button type="button" data-feed-live="50">50%</button>
+              <button type="button" data-feed-live="75">75%</button>
+              <button type="button" data-feed-live="100">100%</button>
+              <button type="button" data-feed-live="125">125%</button>
+              <button type="button" data-feed-live="150" class="caution">150%</button>
+              <button type="button" data-feed-delta="-10">-10%</button>
+              <button type="button" data-feed-delta="10">+10%</button>
+            </div>
+            <div class="dry-run-inputs">
+              <label for="feed-live-percent">Set percent</label>
+              <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
+              <button id="feed-live-set" type="button">Set Feed Override</button>
+            </div>
+            <div id="feed-live-result" class="job-result"></div>
+          </section>
+          <div class="dry-run-inputs">
+            <input id="start-mode" type="hidden" value="use_active_work_zero">
+            <label for="run-safe-start-z">Safe start Z (mm)</label>
+            <input id="run-safe-start-z" type="number" inputmode="decimal" min="0" max="200" step="0.1" value="15">
+          </div>
+          <button id="refresh-job-status" type="button">Refresh Status</button>
+          <pre id="run-log" class="dry-run-log"></pre>
+        </details>
       </section>
     </main>
 

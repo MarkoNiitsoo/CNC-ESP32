@@ -402,7 +402,15 @@ Do not update while the CNC is moving or cutting.
 
 ### SD Rescue Update
 
-If WiFi or the UI is broken, copy firmware to:
+If WiFi or the UI is broken, copy firmware directly to the SD root:
+
+```text
+/firmware.bin
+```
+
+Reboot the ESP32-CAM. After a successful install it becomes `/firmware.done.bin`.
+
+The older explicit rescue flow is also supported. Copy firmware to:
 
 ```text
 /firmware/update.bin
@@ -414,9 +422,7 @@ Then create:
 /firmware/INSTALL.NOW
 ```
 
-Reboot the ESP32-CAM. The firmware only starts the rescue update when both files exist.
-
-Do not rely on a root-level `firmware.bin`; it is ignored.
+Reboot the ESP32-CAM. This older rescue flow starts only when both files exist.
 
 ## Roadmap
 

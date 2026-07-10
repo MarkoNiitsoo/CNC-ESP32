@@ -121,7 +121,7 @@ describe('current job next action', () => {
     expect(nextJobAction({
       currentJob,
       job: { preview: { bounds: {} }, ...completeZeroJob, dryRun: { lastBoundingBoxTraceStatus: 'complete' } },
-    }).label).toBe('Arm Job');
+    }).label).toBe('Review & Start Cut');
     expect(nextJobAction({
       currentJob,
       job: { preview: { bounds: {} }, ...completeZeroJob, dryRun: { lastBoundingBoxTraceStatus: 'complete' }, arm: { state: 'ARMED' } },

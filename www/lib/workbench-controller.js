@@ -61,7 +61,6 @@ export function installWorkbench(options = {}) {
     '.placement-panel',
     '#preview-warnings-panel',
     '.zero-origin-panel',
-    '.feed-override-panel',
     '.dry-run-panel',
   ]);
   appendExisting(byId('readiness-drawer-content'), [
@@ -69,6 +68,7 @@ export function installWorkbench(options = {}) {
     '.preflight-panel',
     '.recovery-panel',
     '.arm-panel',
+    '.feed-override-panel',
     '.run-panel',
   ]);
 

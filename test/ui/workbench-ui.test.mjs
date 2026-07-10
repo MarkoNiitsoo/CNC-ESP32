@@ -241,6 +241,7 @@ describe('canvas workbench control policy', () => {
     expect(middleArc.x).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(middleArc.y).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(motionDurationMs(line, { feedOverridePercent: 100 })).toBe(1000);
+    expect(motionDurationMs({ ...line, length: 3000, feed: 3000 }, { feedOverridePercent: 100 })).toBe(30000);
   });
 
   it('reconstructs omitted compact telemetry events from preview command numbers', () => {

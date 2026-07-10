@@ -31,6 +31,7 @@ const setZeroYButton = document.querySelector('#set-zero-y');
 const captureSetZeroButton = document.querySelector('#capture-set-zero');
 const downloadJobButton = document.querySelector('#download-job');
 const zeroOriginSummaryEl = document.querySelector('#zero-origin-summary');
+const homeMachineZeroButton = document.querySelector('#home-machine-zero');
 const zeroHistoryDialog = document.querySelector('#zero-history-dialog');
 const openZeroHistoryButton = document.querySelector('#open-zero-history');
 const closeZeroHistoryButton = document.querySelector('#close-zero-history');
@@ -63,13 +64,10 @@ const productionResumeHoldButton = document.querySelector('#production-resume-ho
 const dryRunSummaryEl = document.querySelector('#dry-run-summary');
 const safeZInput = document.querySelector('#safe-z');
 const traceMarginInput = document.querySelector('#trace-margin');
-const generateTraceButton = document.querySelector('#generate-trace');
-const sendTraceButton = document.querySelector('#send-trace');
-const copyTraceButton = document.querySelector('#copy-trace');
-const generateAircutButton = document.querySelector('#generate-aircut');
-const sendAircutButton = document.querySelector('#send-aircut');
-const copyAircutButton = document.querySelector('#copy-aircut');
+const dryRunAircutToggle = document.querySelector('#dry-run-aircut');
+const sendDryRunButton = document.querySelector('#send-dry-run');
 const stopM5Button = document.querySelector('#stop-m5');
+const dryRunStatusEl = document.querySelector('#dry-run-status');
 const traceCommandsEl = document.querySelector('#trace-commands');
 const dryRunLogEl = document.querySelector('#dry-run-log');
 const armStateEl = document.querySelector('#arm-state');
@@ -92,6 +90,8 @@ const feedOverrideSummaryEl = document.querySelector('#feed-override-summary');
 const feedStartPercentInput = document.querySelector('#feed-start-percent');
 const feedStartButtons = [...document.querySelectorAll('[data-feed-start]')];
 const runPanel = document.querySelector('#run-panel');
+const runOperatorSummaryEl = document.querySelector('#run-operator-summary');
+const runFinalChecklistEl = document.querySelector('#run-final-checklist');
 const runSummaryEl = document.querySelector('#run-summary');
 const runLogEl = document.querySelector('#run-log');
 const feedLiveSummaryEl = document.querySelector('#feed-live-summary');
@@ -136,7 +136,6 @@ let aircutCommands = [];
 let aircutSafety = { ok: false, messages: [] };
 let dryRunStatus = 'idle';
 let activeTestMotion = null;
-let activeDryRunCommands = 'trace';
 let gcodeText = '';
 let gcodeHashSha256 = '';
 let gcodeFingerprint = '';
@@ -167,6 +166,11 @@ let activeMotionAnimation = null;
 let lastMotionSequence = 0;
 const motionAnimationQueue = [];
 let recoveryMotionSegments = null;
+const MAX_MOTION_ANIMATION_AGE_MS = 1000;
+const MAX_MOTION_ANIMATION_SEGMENTS = 128;
+let motionResyncPending = false;
+let jobStatusReceivedAtMs = 0;
+let jobStatusFirmwareUptimeMs = 0;
 let redirectingToFiles = false;
 let recoveryPlan = null;
 let recoveryOverlayVisible = true;
@@ -265,7 +269,7 @@ function readinessIcon(label) {
 function actionIcon(action = {}) {
   return ({
     choose_file: 'files', update_run_file: 'generated', set_work_zero: 'workZero', set_z_zero: 'zZero',
-    run_dry_run: 'dryRun', arm_job: 'arm', start_cut: 'start', monitor_job: 'log', resume_job: 'start',
+    home_machine: 'home', run_dry_run: 'dryRun', arm_job: 'start', start_cut: 'start', monitor_job: 'log', resume_job: 'start',
     review_last_run: 'log', pause_job: 'pause', stop_job: 'stop', m5: 'm5',
   })[action.id] || 'ok';
 }
@@ -340,10 +344,11 @@ function actionTab(action) {
 
 function focusReadinessTarget(action) {
   const focusMap = {
+    home_machine: homeMachineZeroButton,
     set_work_zero: setWorkZeroButton,
     set_z_zero: setZZeroButton,
-    run_dry_run: generateTraceButton,
-    arm_job: armJobButton,
+    run_dry_run: sendDryRunButton,
+    arm_job: startJobButton,
     start_cut: startJobButton,
     monitor_job: refreshJobStatusButton,
     resume_job: resumeJobButton,
@@ -369,6 +374,14 @@ async function handleReadinessAction(action) {
     renderReadiness();
     return;
   }
+  if (action.id === 'home_machine') {
+    showPreviewTab('setup');
+    workbenchController?.openForTab('setup');
+    history.replaceState(null, '', '#setup');
+    window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
+    focusReadinessTarget(action);
+    return;
+  }
   const tab = actionTab(action);
   if (previewTabButtons.some((button) => button.dataset.previewTabButton === tab)) {
     showPreviewTab(tab);
@@ -390,28 +403,49 @@ function renderReadiness() {
   });
   const placement = readiness.placement || {};
   const blockers = readiness.blockingReasons || [];
+  let primary = readiness.primaryAction;
+  if (['set_work_zero', 'set_z_zero'].includes(primary?.id) && machineNeedsHome()) {
+    primary = { id: 'home_machine', label: 'Home Machine', target: 'setup' };
+  } else if (primary?.id === 'arm_job') {
+    primary = { id: 'start_cut', label: 'Review & Start Cut', target: 'run' };
+  }
+  const preparationSteps = [
+    !machineNeedsHome(),
+    readiness.activeRun?.status === 'ok',
+    readiness.zero?.workZero === 'ok',
+    readiness.zero?.zZero === 'ok',
+    readiness.dryRun?.status === 'ok',
+  ];
+  const completedSteps = preparationSteps.filter(Boolean).length;
   const badgeHtml = (readiness.badges || [])
     .map((badge) => `<span class="status-badge ${badgeClass(badge.level)}">${html(badge.label)}</span>`)
     .join('');
   const blockerHtml = blockers.length
     ? `<ul class="readiness-blockers">${blockers.map((reason) => `<li>${html(compactReadinessReason(reason.message))}</li>`).join('')}</ul>`
-    : '<p class="ok-text">No readiness blockers before the next action.</p>';
+    : '<p class="ok-text">Preparation is complete.</p>';
+  const nextMessage = primary?.id === 'start_cut'
+    ? 'Preparation is complete. Review the three final checks, then hold to start.'
+    : blockers.length ? compactReadinessReason(blockers[0].message) : 'Continue with the next action.';
 
   readinessSummaryEl.innerHTML = `
-    <div class="readiness-badges">${badgeHtml}</div>
-    <dl>
-      <dt>Active run file</dt><dd>${html(readiness.activeRun?.path || '-')}</dd>
-      <dt>Active mode</dt><dd>${html(readiness.activeRun?.mode || '-')}</dd>
-      <dt>Placement</dt><dd>${placement.identity ? 'Original placement' : 'Transformed placement'}${placement.dirty ? ' (update needed)' : ''}</dd>
-      <dt>Rotation</dt><dd>${Number(placement.rotationDeg || 0).toFixed(2)} deg</dd>
-      <dt>Latest run</dt><dd>${html(readiness.run?.status || '-')}</dd>
-    </dl>
-    <h3>Blocking reasons</h3>
-    ${blockerHtml}
+    <div class="operator-readiness-progress"><strong>${completedSteps} / ${preparationSteps.length}</strong><span>preparation steps ready</span></div>
+    <h3>${html(primary?.label || 'Review Job')}</h3>
+    <p>${html(nextMessage)}</p>
+    <details class="operator-diagnostics">
+      <summary>All checks and technical details</summary>
+      <div class="readiness-badges">${badgeHtml}</div>
+      <dl>
+        <dt>Active run file</dt><dd>${html(readiness.activeRun?.path || '-')}</dd>
+        <dt>Active mode</dt><dd>${html(readiness.activeRun?.mode || '-')}</dd>
+        <dt>Placement</dt><dd>${placement.identity ? 'Original placement' : 'Transformed placement'}${placement.dirty ? ' (update needed)' : ''}</dd>
+        <dt>Rotation</dt><dd>${Number(placement.rotationDeg || 0).toFixed(2)} deg</dd>
+        <dt>Latest run</dt><dd>${html(readiness.run?.status || '-')}</dd>
+      </dl>
+      ${blockerHtml}
+    </details>
   `;
 
   readinessPrimaryEl.textContent = '';
-  const primary = readiness.primaryAction;
   const primaryButton = document.createElement('button');
   primaryButton.type = 'button';
   primaryButton.className = 'primary-action';
@@ -428,7 +462,8 @@ function renderReadiness() {
   readinessPrimaryEl.append(primaryButton);
 
   readinessSecondaryEl.textContent = '';
-  (readiness.secondaryActions || []).forEach((secondary) => {
+  const showSecondary = ['running', 'paused'].includes(readiness.run?.status);
+  (showSecondary ? readiness.secondaryActions || [] : []).forEach((secondary) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = secondary.label;
@@ -808,10 +843,9 @@ function checklistComplete() {
 
 function defaultRunChecklistState() {
   return {
-    toolAtWorkZero: false,
-    zZeroCorrect: false,
-    materialFixed: false,
-    spindleOff: false,
+    materialAndPathClear: false,
+    toolAndZZeroVerified: false,
+    spindleStateReady: false,
   };
 }
 
@@ -953,19 +987,21 @@ function renderPreflight() {
   preflightStateEl.textContent = currentPreflight.state.replace('_', ' ');
   preflightStateEl.className = `preflight-state preflight-${currentPreflight.state.toLowerCase().replace('_', '-')}`;
 
-  if (currentPreflight.state === 'NOT_READY') preflightActionEl.textContent = 'Fix failed checks before running this job.';
-  else if (currentPreflight.state === 'WARNINGS') preflightActionEl.textContent = 'Warnings should be reviewed before running.';
-  else if (currentPreflight.state === 'READY') preflightActionEl.textContent = 'This job appears ready for a future run command.';
+  if (currentPreflight.state === 'NOT_READY') preflightActionEl.textContent = 'Complete the next required action below.';
+  else if (currentPreflight.state === 'WARNINGS') preflightActionEl.textContent = 'Review the warnings that affect this cut.';
+  else if (currentPreflight.state === 'READY') preflightActionEl.textContent = 'Automatic job checks pass.';
   else preflightActionEl.textContent = 'Load a preview to check job readiness.';
 
-  preflightChecksEl.textContent = '';
-  currentPreflight.checks.forEach((check) => {
-    const row = document.createElement('div');
-    row.className = `preflight-check preflight-check-${check.level}`;
-    const icon = check.level === 'pass' ? 'PASS' : check.level === 'fail' ? 'FAIL' : 'WARN';
-    row.textContent = `${icon} ${check.message}`;
-    preflightChecksEl.append(row);
-  });
+  const important = currentPreflight.checks.filter((check) => check.level !== 'pass');
+  const passCount = currentPreflight.checks.filter((check) => check.level === 'pass').length;
+  const renderCheck = (check) => `<div class="preflight-check preflight-check-${check.level}">${check.level === 'pass' ? 'PASS' : check.level === 'fail' ? 'FAIL' : 'WARN'} ${html(check.message)}</div>`;
+  preflightChecksEl.innerHTML = `
+    ${important.length ? important.map(renderCheck).join('') : '<p class="ok-text">No issues need operator attention.</p>'}
+    <details class="operator-diagnostics">
+      <summary>All automatic checks (${passCount} passed)</summary>
+      ${currentPreflight.checks.map(renderCheck).join('')}
+    </details>
+  `;
   renderArmPanel();
 }
 
@@ -994,9 +1030,31 @@ function armBlockers() {
   if (currentPreflight?.checks?.some((check) => check.level === 'fail')) blockers.push('Preflight has failed checks.');
   if (!hasWorkZero()) blockers.push('Work zero is missing.');
   if (!gcodeFingerprint) blockers.push('G-code fingerprint has not been computed.');
-  if (!checklistComplete()) blockers.push('All readiness checklist items must be checked.');
   blockers.push(...activeRunBlockers());
   return blockers;
+}
+
+function machineNeedsHome() {
+  return currentMachineFrame?.trusted !== true || currentMachineFrame?.absoluteFromHome !== true;
+}
+
+function startPreparationBlockers() {
+  if (machineNeedsHome()) return ['Home the machine before setting or using the job zero.'];
+  const blockers = [];
+  if (jobReadinessModule) {
+    const readiness = jobReadinessModule.buildJobReadiness(previewReadinessJob(), {
+      currentJob: { gcodePath: filePath, jobPath: jobPathFor(filePath) },
+      jobStatus: jobRunStatus || {},
+    });
+    blockers.push(...(readiness.blockingReasons || [])
+      .filter((reason) => reason.id !== 'arm_missing' && reason.id !== 'arm_stale')
+      .map((reason) => compactReadinessReason(reason.message)));
+  }
+  if (currentPreflight?.checks?.some((check) => check.level === 'fail') &&
+      !blockers.some((message) => /run file|work zero|z zero/i.test(message))) {
+    blockers.push('Resolve the failed job checks.');
+  }
+  return [...new Set(blockers)];
 }
 
 function visibleArmState() {
@@ -1102,10 +1160,8 @@ function renderLiveFeedOverride() {
 function renderRunPanel() {
   try {
     if (!runPanel || !runSummaryEl || !startJobButton || !pauseJobButton || !resumeJobButton || !stopJobButton) return;
-    const armState = visibleArmState();
-    const preflightHasFail = currentPreflight?.checks?.some((check) => check.level === 'fail');
-    const canShow = armState === 'ARMED';
-    runPanel.hidden = !canShow;
+    const preparationBlockers = startPreparationBlockers();
+    runPanel.hidden = false;
 
     const state = jobRunStatus?.state || 'IDLE';
     const running = state === 'RUNNING';
@@ -1116,14 +1172,43 @@ function renderRunPanel() {
     const stopping = state === 'STOPPING';
     const active = running || preparing || pausing || paused || resuming || stopping;
     const statusUnknown = !jobStatusHealthy || state === 'UNKNOWN';
-    const startAllowed = canShow && !preflightHasFail && !active && !toollessResumeRunning && !productionResumeRunning;
+    const startAllowed = preparationBlockers.length === 0 && !active && !toollessResumeRunning && !productionResumeRunning;
     const startChecklistReady = runChecklistComplete();
 
-    startJobButton.hidden = !startAllowed;
+    startJobButton.hidden = active;
     startJobButton.disabled = !startAllowed || !startChecklistReady;
+    startJobButton.textContent = startAllowed ? 'Hold to Start Cut' : 'Complete Preparation First';
+    if (runFinalChecklistEl) runFinalChecklistEl.hidden = !startAllowed;
+    pauseJobButton.hidden = !(running || pausing || statusUnknown);
+    resumeJobButton.hidden = !paused;
+    stopJobButton.hidden = !(active || statusUnknown);
     pauseJobButton.disabled = !(running || statusUnknown);
     resumeJobButton.disabled = !paused;
     stopJobButton.disabled = stopping;
+
+    if (runOperatorSummaryEl) {
+      const bounds = generatedBounds() || parsed?.bounds;
+      const width = bounds ? Number(bounds.xMax) - Number(bounds.xMin) : null;
+      const height = bounds ? Number(bounds.yMax) - Number(bounds.yMin) : null;
+      if (active || state === 'COMPLETED' || state === 'ERROR' || state === 'STOPPED') {
+        runOperatorSummaryEl.innerHTML = `
+          <div class="operator-run-state"><strong>${html(state)}</strong><span>${Number(jobRunStatus?.progressPercent || 0).toFixed(1)}%</span></div>
+          <p>${html(basename(currentRunPath()) || 'Active job')} · Feed ${feedStatusPercent()}%</p>
+        `;
+      } else if (preparationBlockers.length) {
+        runOperatorSummaryEl.innerHTML = `
+          <p class="eyebrow">NEXT STEP</p>
+          <strong>${html(preparationBlockers[0])}</strong>
+          <p>Open Checks to complete the required action.</p>
+        `;
+      } else {
+        runOperatorSummaryEl.innerHTML = `
+          <p class="eyebrow">READY FOR FINAL REVIEW</p>
+          <strong>${html(basename(currentRunPath()) || 'Job')}</strong>
+          <p>${Number.isFinite(width) && Number.isFinite(height) ? `${width.toFixed(1)} × ${height.toFixed(1)} mm · ` : ''}Safe Z ${Number(jobState?.safeStartZ ?? runSafeStartZInput?.value ?? 15).toFixed(1)} mm · Feed ${feedStatusPercent()}%</p>
+        `;
+      }
+    }
 
     runSummaryEl.innerHTML = `
       <dl>
@@ -1145,8 +1230,10 @@ function renderRunPanel() {
         <dt>Last error</dt><dd>${runStatusValue('lastError')}</dd>
       </dl>
     `;
-    if (startAllowed && !startChecklistReady) {
-      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Complete all Ready To Start checks before starting the job.</div></div>';
+    if (preparationBlockers.length) {
+      runSummaryEl.innerHTML += `<div class="dry-run-errors">${preparationBlockers.map((message) => `<div>${html(message)}</div>`).join('')}</div>`;
+    } else if (startAllowed && !startChecklistReady) {
+      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Complete the three final checks before starting the job.</div></div>';
     }
     if (statusUnknown) {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Status could not be parsed. Stop remains available.</div></div>';
@@ -1205,6 +1292,8 @@ function updateJobRunPolling() {
 
 async function applyJobRunStatus(data) {
   jobRunStatus = data;
+  jobStatusReceivedAtMs = performance.now();
+  jobStatusFirmwareUptimeMs = Number(data?.uptimeMs) || 0;
   jobStatusHealthy = true;
   if (!data?.streamMode || data.streamMode === 'job') await syncRunHistoryFromStatus(data);
   if (data?.streamMode === 'production-resume') await syncProductionResumeFromStatus(data);
@@ -1359,6 +1448,22 @@ async function sendCmdBestEffort(cmd) {
   }
 }
 
+async function reviewAndStartJobRun() {
+  const blockers = startPreparationBlockers();
+  if (blockers.length) {
+    appendRunLog(`Start blocked: ${blockers.join(' ')}`);
+    renderRunPanel();
+    return;
+  }
+  if (!runChecklistComplete()) {
+    appendRunLog('Start blocked: complete the three final checks first.');
+    return;
+  }
+  const armed = await armJob({ automatic: true });
+  if (!armed) return;
+  await startJobRun();
+}
+
 async function startJobRun() {
   if (visibleArmState() !== 'ARMED') {
     appendRunLog('Start blocked: job is not ARMED.');
@@ -1379,7 +1484,7 @@ async function startJobRun() {
     return;
   }
   if (!runChecklistComplete()) {
-    appendRunLog('Start blocked: complete all Ready To Start checks first.');
+    appendRunLog('Start blocked: complete the three final checks first.');
     return;
   }
 
@@ -1650,6 +1755,23 @@ function playNextMotionAnimation() {
   motionAnimationFrame = requestAnimationFrame(frame);
 }
 
+function trimMotionAnimationBacklog() {
+  if (motionAnimationQueue.length <= MAX_MOTION_ANIMATION_SEGMENTS) return;
+  const latest = motionAnimationQueue[motionAnimationQueue.length - 1];
+  motionAnimationQueue.length = 0;
+  motionAnimationQueue.push(latest);
+  if (activeMotionAnimation) {
+    cancelAnimationFrame(motionAnimationFrame);
+    motionAnimationFrame = null;
+    activeMotionAnimation = null;
+    animatedToolPosition = null;
+  }
+}
+
+function estimatedFirmwareUptimeMs() {
+  return jobStatusFirmwareUptimeMs + Math.max(0, performance.now() - jobStatusReceivedAtMs);
+}
+
 function handleMotionTelemetry(data = {}) {
   if (!workbenchUiModule || !parsed) return;
   const streamSegments = jobRunStatus?.streamMode === 'production-resume' && recoveryMotionSegments
@@ -1658,6 +1780,12 @@ function handleMotionTelemetry(data = {}) {
   for (const event of data.events || []) {
     const sequence = Number(event.sequence);
     if (!Number.isFinite(sequence) || sequence <= lastMotionSequence) continue;
+    if (motionResyncPending || (Number.isFinite(Number(event.sentAtMs)) &&
+        estimatedFirmwareUptimeMs() - Number(event.sentAtMs) > MAX_MOTION_ANIMATION_AGE_MS)) {
+      lastMotionSequence = sequence;
+      stopMotionAnimation();
+      continue;
+    }
     const previousSequence = lastMotionSequence;
     lastMotionSequence = sequence;
     const segments = workbenchUiModule.segmentsBetweenCommands(
@@ -1667,7 +1795,7 @@ function handleMotionTelemetry(data = {}) {
       motionAnimationQueue.push({ segment, feedOverridePercent: Number(data.feedOverridePercent) || 100 });
     }
   }
-  if (motionAnimationQueue.length > 600) motionAnimationQueue.splice(0, motionAnimationQueue.length - 600);
+  trimMotionAnimationBacklog();
   playNextMotionAnimation();
 }
 
@@ -1736,6 +1864,9 @@ function setPositionTrust(trusted, source = '', fullHoming = false) {
   } : { trusted: false, fullHoming: false, source, confirmedAt: null, bootUptimeMs: null, firmwareVersion: '' };
   storePositionTrust();
   refreshRecoveryPlan();
+  renderZeroOriginPanel();
+  renderPreflight();
+  renderRunPanel();
 }
 
 function handleRecoveryHealth(health = {}) {
@@ -1873,12 +2004,12 @@ function renderWorkZeroRestore() {
     <dl>
       <dt>Interrupted work zero</dt><dd>${html(zero.label || zero.id)}</dd>
       <dt>Captured</dt><dd>${html(zero.capturedAt || '-')}</dd>
-      <dt>Machine XY</dt><dd>${position ? `X ${fmtValue(position.x)} Y ${fmtValue(position.y)}` : 'Derived from saved counts when restoring'}</dd>
+      <dt>Machine XYZ</dt><dd>${position ? `X ${fmtValue(position.x)} Y ${fmtValue(position.y)} Z ${fmtValue(position.z)}` : 'Derived from saved counts when restoring'}</dd>
       <dt>Position trust</dt><dd>${trusted ? 'HOMED / TRUSTED' : 'HOME ALL REQUIRED'}</dd>
-      <dt>Z zero</dt><dd>Not changed</dd>
+      <dt>Restore</dt><dd>Safe Z first, then saved XYZ and G92 X0 Y0 Z0</dd>
     </dl>
   ` : '<p>No saved work zero is linked to the interrupted run.</p>';
-  restoreSavedWorkZeroButton.disabled = !zero || !counts || !trusted || !idle;
+  restoreSavedWorkZeroButton.disabled = !zero || (!position && !counts) || !trusted || !idle;
 }
 
 async function resolveWorkZeroMachineReference(zero) {
@@ -1891,10 +2022,16 @@ async function resolveWorkZeroMachineReference(zero) {
     throw new Error('Marlin M92 steps/mm changed after this work zero was captured. Restore is blocked.');
   }
   const counts = zero.machineReference?.counts || zero.countsBefore || zero.countsAfter;
-  const position = motion.machinePositionFromCounts(counts, currentSteps);
-  if (!position) throw new Error('Saved step counts are incomplete; machine XY cannot be reconstructed.');
+  const savedPosition = zero.machineReference?.position;
+  const position = savedPosition && ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(savedPosition[axis])))
+    ? { x: Number(savedPosition.x), y: Number(savedPosition.y), z: Number(savedPosition.z) }
+    : motion.machinePositionFromCounts(counts, currentSteps);
+  if (!position) throw new Error('Saved home-relative machine position is incomplete.');
   if (position.x < MACHINE.xMin || position.x > MACHINE.xMax || position.y < MACHINE.yMin || position.y > MACHINE.yMax) {
     throw new Error('Saved machine XY is outside configured G-code CNC limits.');
+  }
+  if (position.z < RECOVERY_LIMITS.zMin || position.z > RECOVERY_LIMITS.zMax) {
+    throw new Error('Saved machine Z is outside configured G-code CNC limits.');
   }
   return { counts, stepsPerMm: currentSteps, position };
 }
@@ -1905,14 +2042,22 @@ async function restoreInterruptedWorkZero() {
   if (!zero) throw new Error('Interrupted run has no saved work zero.');
   const reference = await resolveWorkZeroMachineReference(zero);
   const safeMachineZ = RECOVERY_LIMITS.zMax;
-  if (!confirm(`Restore saved XY work zero?\n\nThe machine will lift to machine Z${safeMachineZ.toFixed(1)}, move to machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}, then set G92 X0 Y0.\n\nZ zero will not be changed.`)) return;
+  if (!confirm(`Restore saved work zero and go there?\n\nThe machine will lift to machine Z${safeMachineZ.toFixed(1)}, move to machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}, descend to saved Z${reference.position.z.toFixed(3)}, then set G92 X0 Y0 Z0.\n\nKeep your hand near the physical emergency stop.`)) return;
 
   restoreSavedWorkZeroButton.disabled = true;
   appendRecoveryLog(`Restoring saved work zero at machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}...`);
   const res = await fetch('/api/work-zero/restore', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ machineX: reference.position.x, machineY: reference.position.y, safeMachineZ, travelFeedMmMin: automaticTravelFeed() }),
+    body: JSON.stringify({
+      machineX: reference.position.x,
+      machineY: reference.position.y,
+      machineZ: reference.position.z,
+      safeMachineZ,
+      travelFeedMmMin: automaticTravelFeed(),
+      axes: 'xyz',
+      moveToZ: true,
+    }),
   });
   const data = await readJsonOrThrow(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Saved work zero restore failed.');
@@ -1926,9 +2071,6 @@ async function restoreInterruptedWorkZero() {
     counts: { ...reference.counts }, stepsPerMm: { ...reference.stepsPerMm }, position: { ...reference.position },
   };
   currentMachineFrame = data.frame || currentMachineFrame;
-  if (Number.isFinite(Number(data.frame?.workZeroMachine?.z))) {
-    zero.machineReference.position.z = Number(data.frame.workZeroMachine.z);
-  }
   zero.frame = {
     homingEpoch: Number(data.frame?.homingEpoch),
     homingSessionId: data.frame?.homingSessionId || '',
@@ -1940,7 +2082,7 @@ async function restoreInterruptedWorkZero() {
   }
   if (data.response) liveToolPosition = parseM114(data.response).position;
   await saveJobQuietly();
-  appendRecoveryLog('Saved XY work zero restored. Review or re-touch Z zero before cutting.');
+  appendRecoveryLog('Saved home-relative XYZ work zero restored. Review recovery checks before cutting.');
   renderHistoryPanels();
   refreshRecoveryPlan();
   draw();
@@ -2484,6 +2626,7 @@ function renderZeroOriginPanel() {
   const frameTrusted = currentMachineFrame?.trusted === true && currentMachineFrame?.absoluteFromHome === true;
   const sameSession = Boolean(zeroSession && zeroSession === currentMachineFrame?.homingSessionId);
   const trustworthy = frameTrusted && sameSession && ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(position?.[axis])));
+  if (homeMachineZeroButton) homeMachineZeroButton.hidden = frameTrusted;
   zeroOriginSummaryEl.innerHTML = trustworthy ? `
     <p class="zero-origin-label">Work zero from home</p>
     <div class="zero-origin-coordinates">
@@ -2640,13 +2783,53 @@ function appendDryRunLog(text) {
   dryRunLogEl.scrollTop = dryRunLogEl.scrollHeight;
 }
 
+function dryRunModeIsAircut() {
+  return Boolean(dryRunAircutToggle?.checked);
+}
+
+function selectedDryRunCommands() {
+  return dryRunModeIsAircut() ? aircutCommands : traceCommands;
+}
+
+function selectedDryRunSafety() {
+  return dryRunModeIsAircut() ? aircutSafety : traceSafety;
+}
+
+function dryRunPrimaryLabel() {
+  return dryRunModeIsAircut() ? 'Send Aircut Toolpath' : 'Send Box Trace';
+}
+
+function isDryRunWarningMessage(message) {
+  return /^Large aircut\./i.test(message || '');
+}
+
+function dryRunStatusMessage() {
+  const safety = selectedDryRunSafety();
+  const commands = selectedDryRunCommands();
+  const blocking = safety.messages.find((message) => !isDryRunWarningMessage(message));
+  if (blocking) return { text: blocking, error: true };
+  if (!commands.length) {
+    return {
+      text: dryRunModeIsAircut() ? 'Aircut toolpath could not be generated.' : 'Box trace could not be generated.',
+      error: true,
+    };
+  }
+  const warning = safety.messages.find((message) => isDryRunWarningMessage(message));
+  if (warning) return { text: warning, error: false };
+  return { text: dryRunModeIsAircut() ? 'Ready to send the Safe Z aircut toolpath.' : 'Ready to send the Safe Z box trace.', error: false };
+}
+
 function setDryRunRunning(isRunning) {
-  sendTraceButton.disabled = isRunning || !traceSafety.ok || traceCommands.length === 0;
-  sendAircutButton.disabled = isRunning || !aircutSafety.ok || aircutCommands.length === 0;
+  const safety = selectedDryRunSafety();
+  const commands = selectedDryRunCommands();
+  if (sendDryRunButton) {
+    sendDryRunButton.textContent = dryRunPrimaryLabel();
+    sendDryRunButton.disabled = isRunning || !safety.ok || commands.length === 0;
+  }
 }
 
 function showCommandPreview(label, commands) {
-  activeDryRunCommands = label;
+  if (!traceCommandsEl) return;
   const shown = commands.slice(0, 100);
   const suffix = commands.length > 100 ? `\n... showing first 100 of ${commands.length} commands` : '';
   traceCommandsEl.textContent = `${label} commands: ${commands.length}\n${shown.join('\n')}${suffix}`;
@@ -2866,25 +3049,26 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
 function renderDryRunPanel() {
   const bounds = generatedBounds();
   const safeZ = Number(safeZInput.value);
-  const b = parsed?.bounds;
+  const margin = Number(traceMarginInput.value);
+  const width = bounds ? bounds.xMax - bounds.xMin : Number.NaN;
+  const height = bounds ? bounds.yMax - bounds.yMin : Number.NaN;
   dryRunSummaryEl.innerHTML = `
     <dl>
-      <dt>Run file</dt><dd>${html(currentRunPath() || '-')}</dd>
-      <dt>Run mode</dt><dd>${html(currentRunLabel())}</dd>
-      <dt>Preview bounds</dt><dd>${b ? `X ${b.xMin.toFixed(2)} .. ${b.xMax.toFixed(2)}, Y ${b.yMin.toFixed(2)} .. ${b.yMax.toFixed(2)}, Z ${b.zMin.toFixed(2)} .. ${b.zMax.toFixed(2)}` : '-'}</dd>
-      <dt>Trace bounds</dt><dd>${bounds ? `X ${bounds.xMin.toFixed(2)} .. ${bounds.xMax.toFixed(2)}, Y ${bounds.yMin.toFixed(2)} .. ${bounds.yMax.toFixed(2)}` : '-'}</dd>
+      <dt>Box</dt><dd>${Number.isFinite(width) && Number.isFinite(height) ? `${width.toFixed(2)} × ${height.toFixed(2)} mm` : '-'}</dd>
       <dt>Safe Z</dt><dd>${Number.isFinite(safeZ) ? `${safeZ} mm` : '-'}</dd>
-      <dt>Bounding box commands</dt><dd>${traceCommands.length}</dd>
-      <dt>Aircut commands</dt><dd>${aircutCommands.length}</dd>
-      <dt>Shown commands</dt><dd>${activeDryRunCommands}</dd>
+      <dt>Margin</dt><dd>${Number.isFinite(margin) ? `${margin} mm` : '-'}</dd>
+      <dt>Aircut toolpath</dt><dd>${dryRunModeIsAircut() ? 'ON' : 'OFF'}</dd>
       <dt>Status</dt><dd>${dryRunStatus}</dd>
     </dl>
   `;
 
-  const messages = [...traceSafety.messages, ...aircutSafety.messages];
-  if (messages.length) {
-    dryRunSummaryEl.innerHTML += `<div class="dry-run-errors">${messages.map((message) => `<div>${message}</div>`).join('')}</div>`;
+  if (dryRunStatusEl) {
+    const statusMessage = dryRunStatusMessage();
+    dryRunStatusEl.textContent = statusMessage.text;
+    dryRunStatusEl.classList.toggle('warning', statusMessage.error);
   }
+
+  setDryRunRunning(/running/i.test(dryRunStatus));
 }
 
 function renderJobPanel() {
@@ -2966,6 +3150,9 @@ function renderZeroHistoryPanel() {
       <p class="history-last-run ${run ? runClass : ''}">${run
         ? `Last run: ${html(runState || 'unknown')}${suspicious ? ' ⚠' : ''} · ${html(localTimestamp(run.endedAt || run.startedAt))}`
         : 'Last run: not used yet'}</p>
+      <div class="history-actions">
+        <button type="button" class="restore-history-zero" ${position ? '' : 'disabled'}>Restore &amp; Go</button>
+      </div>
       <details class="history-details">
         <summary>Details</summary>
         <dl>
@@ -2978,8 +3165,81 @@ function renderZeroHistoryPanel() {
         <pre>${html(JSON.stringify(zero, null, 2))}</pre>
       </details>
     `;
+    article.querySelector('.restore-history-zero')?.addEventListener('click', () => {
+      restoreHistoryZero(zero).catch((err) => setJobResult(err.message, true));
+    });
     zeroHistorySummaryEl.append(article);
   });
+}
+
+async function restoreHistoryZero(zero) {
+  if (!positionTrust.trusted || !positionTrust.fullHoming) {
+    throw new Error('Home All first so the saved point can be resolved from machine home.');
+  }
+  const activeStates = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'];
+  if (activeStates.includes(String(jobRunStatus?.state || '').toUpperCase())) {
+    throw new Error('Stop the active job before restoring a zero.');
+  }
+  const reference = await resolveWorkZeroMachineReference(zero);
+  const safeMachineZ = RECOVERY_LIMITS.zMax;
+  const axes = zero.type === 'zZero' ? 'z' : 'xyz';
+  const zeroLabel = zero.type === 'zZero' ? 'Z zero' : 'work zero';
+  if (!confirm(`Restore this ${zeroLabel} and go there?\n\nThe machine will lift to Z${safeMachineZ.toFixed(1)}, move to machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}, then descend to saved Z${reference.position.z.toFixed(3)}.\n\nKeep your hand near the physical emergency stop.`)) return;
+
+  const res = await fetch('/api/work-zero/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      machineX: reference.position.x,
+      machineY: reference.position.y,
+      machineZ: reference.position.z,
+      safeMachineZ,
+      travelFeedMmMin: automaticTravelFeed(),
+      axes,
+      moveToZ: true,
+    }),
+  });
+  const data = await readJsonOrThrow(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Zero restore failed.');
+
+  const history = await jobHistoryPromise;
+  const job = ensureJobState();
+  history.recordZeroRestore(job, zero.id, {
+    machinePosition: reference.position,
+    stepsPerMm: reference.stepsPerMm,
+    safeMachineZ,
+    result: 'completed',
+  });
+  currentMachineFrame = data.frame || currentMachineFrame;
+  zero.machineReference = {
+    ...zero.machineReference,
+    position: { ...reference.position },
+    counts: reference.counts ? { ...reference.counts } : null,
+    stepsPerMm: { ...reference.stepsPerMm },
+  };
+  zero.frame = {
+    homingEpoch: Number(data.frame?.homingEpoch),
+    homingSessionId: data.frame?.homingSessionId || '',
+    revision: Number(data.frame?.revision),
+  };
+  if (zero.type === 'workZero') {
+    job.workZero.machineReference = structuredClone(zero.machineReference);
+    job.workZero.frame = { ...zero.frame };
+  } else if (job.workZero?.machineReference?.position && data.frame?.workZeroMachine) {
+    job.workZero.machineReference.position = { ...data.frame.workZeroMachine };
+    job.workZero.frame = { ...zero.frame };
+  }
+  if (job.arm?.state === 'ARMED') job.arm.state = 'STALE';
+  if (data.response) liveToolPosition = parseM114(data.response).position;
+  await saveJobQuietly();
+  zeroHistoryDialog?.close?.();
+  setJobResult(`${zeroLabel === 'Z zero' ? 'Z zero' : 'Work zero'} restored and active.`);
+  renderJobPanel();
+  renderToolZeroPanel();
+  renderPreflight();
+  renderArmPanel();
+  refreshRecoveryPlan();
+  draw();
 }
 
 function operatorZeroError(error) {
@@ -3382,18 +3642,19 @@ async function saveArmedJob() {
   setArmResult(`Saved ${job.jobPath}`);
 }
 
-async function armJob() {
+async function armJob(options = {}) {
+  const automatic = options.automatic === true;
   const blockers = armBlockers();
   if (blockers.length) {
     setArmResult(`Cannot arm: ${blockers.join(' ')}`, true);
     renderArmPanel();
-    return;
+    return false;
   }
 
   const warnings = armWarnings();
-  if (warnings.length) {
+  if (warnings.length && !automatic) {
     const text = `${warnings.length} warning(s) exist.\n\nWarnings exist. Confirm that you have reviewed them before arming this job.`;
-    if (!confirm(text)) return;
+    if (!confirm(text)) return false;
   }
 
   const job = ensureJobState();
@@ -3421,17 +3682,21 @@ async function armJob() {
       boundingBoxStatus: dryRun.lastBoundingBoxTraceStatus || 'idle',
       aircutStatus: dryRun.lastAircutStatus || 'idle',
     },
-    checklist: checklistState(),
+    checklist: automatic ? runChecklistState() : checklistState(),
+    source: automatic ? 'review-and-start' : 'manual-arm',
   };
 
   try {
     await saveJob();
     setArmResult(`Job armed and saved at ${job.arm.armedAt}`);
+    renderArmPanel();
+    return true;
   } catch (err) {
     job.arm = previousArm;
     setArmResult(`Arm failed because the job JSON could not be saved: ${err.message}`, true);
+    renderArmPanel();
+    return false;
   }
-  renderArmPanel();
 }
 
 function disarmJob() {
@@ -3504,7 +3769,7 @@ async function sendAircutToolpath() {
     return;
   }
 
-  let confirmText = 'This will move the CNC through the full XY toolpath at safe Z without cutting. Keep your hand near the physical emergency stop.';
+  let confirmText = 'This will move the CNC through the full XY toolpath at safe Z without cutting. Spindle/laser start commands are suppressed. Keep your hand near the physical emergency stop.';
   const hasPreflightFail = currentPreflight?.checks?.some((check) => check.level === 'fail');
   if (hasPreflightFail) {
     confirmText += '\n\nPreflight has failed checks. Review them before continuing.';
@@ -4770,9 +5035,14 @@ async function loadPreview() {
 }
 
 function refreshDryRunCommands() {
-  const showAircut = activeDryRunCommands === 'Aircut' && aircutCommands.length;
   generateTraceCommands();
-  if (showAircut) generateAircutCommands();
+  if (dryRunModeIsAircut()) generateAircutCommands();
+  else renderDryRunPanel();
+}
+
+async function sendSelectedDryRun() {
+  if (dryRunModeIsAircut()) await sendAircutToolpath();
+  else await sendBoundingBoxTrace();
 }
 
 function guardedRunClick(label, action) {
@@ -4857,9 +5127,12 @@ useGeneratedRunButton?.addEventListener('click', () => generateRunFile({ overwri
 useSourceRunButton?.addEventListener('click', () => selectSourceRunInUi().catch((err) => appendPlacementResult(`Use original failed: ${err.message}`)));
 loadJobButton?.addEventListener('click', () => loadJob().catch((err) => setJobResult(err.message, true)));
 saveJobButton?.addEventListener('click', () => saveJob().catch((err) => setJobResult(err.message, true)));
-saveJobPreflightButton.addEventListener('click', () => saveJobWithPreflight().catch((err) => setJobResult(err.message, true)));
+saveJobPreflightButton?.addEventListener('click', () => saveJobWithPreflight().catch((err) => setJobResult(err.message, true)));
 capturePositionButton?.addEventListener('click', () => captureCurrentPosition().catch((err) => setJobResult(err.message, true)));
 setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz').catch((err) => setJobResult(operatorZeroError(err), true)));
+homeMachineZeroButton?.addEventListener('click', () => {
+  window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
+});
 setZeroXButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'x').catch((err) => setJobResult(operatorZeroError(err), true)));
 setZeroYButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'y').catch((err) => setJobResult(operatorZeroError(err), true)));
 captureSetZeroButton?.addEventListener('click', () => setWorkZeroWithCapture().catch((err) => setJobResult(err.message, true)));
@@ -4874,14 +5147,9 @@ feedStartButtons.forEach((button) => {
   button.addEventListener('click', () => setFeedStartPercent(button.dataset.feedStart));
 });
 feedStartPercentInput?.addEventListener('change', () => setFeedStartPercent(feedStartPercentInput.value));
-refreshPreflightButton.addEventListener('click', renderPreflight);
-generateTraceButton.addEventListener('click', generateTraceCommands);
-sendTraceButton.addEventListener('click', () => sendBoundingBoxTrace().catch((err) => appendDryRunLog(`Trace failed: ${err.message}`)));
-copyTraceButton.addEventListener('click', () => copyTraceCommands().catch((err) => appendDryRunLog(`Copy failed: ${err.message}`)));
-generateAircutButton.addEventListener('click', generateAircutCommands);
-sendAircutButton.addEventListener('click', () => sendAircutToolpath().catch((err) => appendDryRunLog(`Aircut failed: ${err.message}`)));
-copyAircutButton.addEventListener('click', () => copyAircutCommands().catch((err) => appendDryRunLog(`Copy aircut failed: ${err.message}`)));
-stopM5Button.addEventListener('click', stopSpindleM5);
+refreshPreflightButton?.addEventListener('click', renderPreflight);
+sendDryRunButton?.addEventListener('click', () => sendSelectedDryRun().catch((err) => appendDryRunLog(`Dry run failed: ${err.message}`)));
+stopM5Button?.addEventListener('click', stopSpindleM5);
 armJobButton?.addEventListener('click', () => armJob().catch((err) => setArmResult(err.message, true)));
 disarmJobButton?.addEventListener('click', disarmJob);
 saveArmedJobButton?.addEventListener('click', () => saveArmedJob().catch((err) => setArmResult(err.message, true)));
@@ -4892,7 +5160,7 @@ setZZeroButton?.addEventListener('click', () => setZZeroWithCapture(null, { conf
 captureSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture().catch((err) => setToolZeroResult(err.message, true)));
 saveToolZeroButton?.addEventListener('click', () => saveToolZeroToJob().catch((err) => setToolZeroResult(err.message, true)));
 workbenchUiPromise.then((ui) => {
-  installHoldAction(startJobButton, startJobRun, ui.actionPolicy('start_cut'));
+  installHoldAction(startJobButton, reviewAndStartJobRun, ui.actionPolicy('start_cut'));
 });
 pauseJobButton?.addEventListener('click', guardedRunClick('Pause', pauseJobRun));
 resumeJobButton?.addEventListener('click', guardedRunClick('Resume', resumeJobRun));
@@ -4906,6 +5174,7 @@ feedDeltaButtons.forEach((button) => {
 });
 feedLiveSetButton?.addEventListener('click', () => setLiveFeedOverride(feedLivePercentInput?.value));
 safeZInput.addEventListener('input', refreshDryRunCommands);
+dryRunAircutToggle?.addEventListener('change', refreshDryRunCommands);
 recoverySafeZInput?.addEventListener('input', refreshRecoveryPlan);
 recoveryOverlayInput?.addEventListener('change', () => {
   recoveryOverlayVisible = Boolean(recoveryOverlayInput.checked);
@@ -5016,6 +5285,11 @@ addEventListener('cnc-critical-control', (event) => {
 });
 document.addEventListener('visibilitychange', () => {
   // Firmware owns active streams. Hiding or sleeping the browser must never issue motion control.
+  if (document.hidden) {
+    motionResyncPending = true;
+    lastMotionSequence = Number(jobRunStatus?.currentLineNumber) || lastMotionSequence;
+    stopMotionAnimation();
+  }
 });
 addEventListener('cnc-motion-settings-change', (event) => {
   motionSettings = motionSettingsModule?.saveMotionSettings(event.detail || {}) || motionSettings;
@@ -5065,6 +5339,12 @@ loadPreview().catch(() => redirectToFiles(filePath));
 window.CncTelemetry?.subscribe('job', (data) => {
   applyJobRunStatus(data).catch((err) => appendRunLog(`Status update failed: ${err.message}`));
   if (String(data?.state || '').toUpperCase() === 'RUNNING' && data?.lastCommand) {
+    if (motionResyncPending) {
+      lastMotionSequence = Number(data.currentLineNumber) || lastMotionSequence;
+      motionResyncPending = false;
+      stopMotionAnimation();
+      return;
+    }
     handleMotionTelemetry({
       events: [{ sequence: data.currentLineNumber, command: data.lastCommand }],
       feedOverridePercent: data.feedOverridePercent,
@@ -5080,6 +5360,8 @@ window.CncTelemetry?.subscribe('job', (data) => {
 });
 window.CncTelemetry?.subscribe('motion', handleMotionTelemetry);
 window.CncTelemetry?.subscribe('health', handleRecoveryHealth);
+window.CncTelemetry?.setDemand('job', 'preview-page', true);
+window.CncTelemetry?.setDemand('health', 'preview-page', true);
 window.CncTelemetry?.start();
 if (runPanel) refreshJobStatus().catch(() => {
   jobStatusHealthy = false;

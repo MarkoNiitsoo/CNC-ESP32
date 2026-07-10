@@ -136,7 +136,7 @@ export function getPrimaryNextAction(job = {}, options = {}) {
   if (zeroStatus(current, 'zZero') !== 'ok') return action('set_z_zero', 'Set Z Zero', 'setup');
   const dry = dryRunStatus(current);
   if (dry !== 'ok') return action('run_dry_run', 'Run Bounding Box / Dry Run', 'dry-run');
-  if (armStatus(current) !== 'armed') return action('arm_job', 'Arm Job', 'arm');
+  if (armStatus(current) !== 'armed') return action('arm_job', 'Review & Start Cut', 'run');
   return action('start_cut', 'Start Cut', 'run');
 }
 

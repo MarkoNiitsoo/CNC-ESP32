@@ -195,9 +195,9 @@ export function createZeroHistoryEntry(options = {}) {
   };
 }
 
-export function recordWorkZeroRestore(job, zeroId, details = {}) {
+export function recordZeroRestore(job, zeroId, details = {}) {
   ensureHistory(job);
-  const entry = job.zeroHistory.find((zero) => zero.id === zeroId && zero.type === 'workZero');
+  const entry = job.zeroHistory.find((zero) => zero.id === zeroId);
   if (!entry) return null;
   if (!Array.isArray(entry.restores)) entry.restores = [];
   entry.restores.push({
@@ -207,8 +207,14 @@ export function recordWorkZeroRestore(job, zeroId, details = {}) {
     safeMachineZ: Number(details.safeMachineZ),
     result: details.result || 'completed',
   });
-  job.activeWorkZeroId = entry.id;
+  if (entry.type === 'zZero') job.activeZZeroId = entry.id;
+  else job.activeWorkZeroId = entry.id;
   return entry;
+}
+
+export function recordWorkZeroRestore(job, zeroId, details = {}) {
+  const entry = job.zeroHistory?.find((zero) => zero.id === zeroId && zero.type === 'workZero');
+  return entry ? recordZeroRestore(job, zeroId, details) : null;
 }
 
 export function appendWorkZeroHistory(job, options = {}) {

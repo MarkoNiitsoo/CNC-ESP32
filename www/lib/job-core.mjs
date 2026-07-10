@@ -133,6 +133,6 @@ export function nextJobAction({ currentJob = null, jobStatus = {}, job = {} }) {
   if (!jobWithPath.toolZero?.afterG92Z?.rawM114 && !jobWithPath.toolZero?.capturedAt) return { label: 'Set Z Zero', target: 'setup' };
   if (jobWithPath.preflight?.state === 'NOT_READY') return { label: 'Review Preflight', target: 'preflight' };
   if (jobWithPath.dryRun?.lastBoundingBoxTraceStatus !== 'complete' && jobWithPath.dryRun?.lastAircutStatus !== 'complete') return { label: 'Run Bounding Box', target: 'dryrun' };
-  if (jobWithPath.arm?.state !== 'ARMED') return { label: 'Arm Job', target: 'arm' };
+  if (jobWithPath.arm?.state !== 'ARMED') return { label: 'Review & Start Cut', target: 'run' };
   return { label: 'Start Cut', target: 'run' };
 }

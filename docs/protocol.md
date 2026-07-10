@@ -194,17 +194,18 @@ boot the pendant starts the `G-code-CNC-Setup` AP if no credentials are saved.
 
 ## SD Rescue Update
 
-At boot, before WiFi and the HTTP server start, the firmware checks the SD card for both:
+At boot, before WiFi and the HTTP server start, the firmware first supports the explicit rescue pair:
 
 ```text
 /firmware/update.bin
 /firmware/INSTALL.NOW
 ```
 
-Both files are required. A root-level `/firmware.bin` is ignored. Results are logged to
-`/logs/update.log`. On success, the marker is removed and `update.bin` is renamed to
-`update.done.bin` when possible. On failure, the marker is removed and `INSTALL.FAILED` is written
-so the device does not enter an update loop.
+Both files are required for that flow. If the explicit pair is not present, a root-level
+`/firmware.bin` is installed automatically without a marker and renamed to `/firmware.done.bin`
+after success. Results are logged to `/logs/update.log`. The explicit rescue flow removes its
+marker and renames `update.bin` to `update.done.bin` when possible. On failure it removes the marker
+and writes `INSTALL.FAILED` so the device does not enter an update loop.
 
 ## SD File API
 
@@ -648,13 +649,17 @@ This is controlled positioning, not a physical emergency stop. A Marlin error, a
 
 ### `POST /api/work-zero/restore`
 
-Restores saved XY after Home All from M114 counts and M503/M92 steps-per-mm. Request fields are
-`machineX`, `machineY`, `safeMachineZ`, and `travelFeedMmMin`.
+Restores a saved home-relative zero after Home All. Request fields are `machineX`, `machineY`,
+optional `machineZ`, `safeMachineZ`, `travelFeedMmMin`, `axes` (`x`, `y`, `z`, `xy`, or `xyz`),
+and `moveToZ`. Saved absolute machine-frame coordinates are authoritative; M114 counts plus
+M503/M92 steps-per-mm remain a compatibility fallback for older job JSON.
 
 The idle-only sequence is M5, G21/G90, M400, `G53 G0 Z<safeMachineZ>`, M400,
-`G53 G0 X<machineX> Y<machineY>`, M400, G54, `G92 X0 Y0`, M114. Z zero is never changed and
-homing is never automatic. Firmware validates XY/Z limits before motion. G53 remains forbidden in
-uploaded/generated/recovery streams; this endpoint is the narrow, fully owned Safe-Z-first exception.
+`G53 G0 X<machineX> Y<machineY>`, M400, optional `G53 G0 Z<machineZ>`, M400, G54, the selected
+G92 axes, and M114. The browser uses full XYZ restore for an interrupted work zero and Z-only G92
+for a historical tool-Z zero. Home All is required and is never run automatically. Firmware validates
+all requested machine coordinates before motion. G53 remains forbidden in uploaded/generated/recovery
+streams; this endpoint is the narrow, fully owned Safe-Z-first exception.
 
 ## SD-Hosted UI
 

@@ -353,24 +353,40 @@ export async function createMockServer(options = {}) {
         const body = await readJson(req);
         const machineX = Number(body.machineX);
         const machineY = Number(body.machineY);
+        const machineZ = Number(body.machineZ);
         const safeMachineZ = Number(body.safeMachineZ ?? 70);
         const travelFeed = Number(body.travelFeedMmMin ?? 3000);
+        const axes = String(body.axes || 'xy').toLowerCase();
+        const moveToZ = body.moveToZ === true;
         if (!Number.isFinite(machineX) || !Number.isFinite(machineY) || machineX < 0 || machineX > 1625 || machineY < 0 || machineY > 5800) {
           throw new Error('saved work-zero XY is outside configured machine limits');
         }
         if (!Number.isFinite(safeMachineZ) || safeMachineZ <= 0 || safeMachineZ > 70) throw new Error('Safe machine Z is outside configured limits');
+        if (!['x', 'y', 'z', 'xy', 'xyz'].includes(axes)) throw new Error('axes must be x, y, z, xy, or xyz');
+        if (moveToZ && (!Number.isFinite(machineZ) || machineZ < 0 || machineZ > 70)) throw new Error('saved zero Z is outside configured machine limits');
+        if (moveToZ && machineZ > safeMachineZ) throw new Error('saved zero Z cannot be above Safe machine Z');
         const commands = [
           'M5', 'G21', 'G90', 'M400', `G53 G0 Z${safeMachineZ.toFixed(3)} F400`, 'M400',
           `G53 G0 X${machineX.toFixed(3)} Y${machineY.toFixed(3)} F${travelFeed.toFixed(0)}`,
-          'M400', 'G54', 'G92 X0 Y0', 'M114',
+          'M400',
         ];
+        if (moveToZ) commands.push(`G53 G0 Z${machineZ.toFixed(3)} F400`, 'M400');
+        const zeroWords = [
+          ['x', 'xy', 'xyz'].includes(axes) ? 'X0' : '',
+          ['y', 'xy', 'xyz'].includes(axes) ? 'Y0' : '',
+          ['z', 'xyz'].includes(axes) ? 'Z0' : '',
+        ].filter(Boolean).join(' ');
+        commands.push('G54', `G92 ${zeroWords}`, 'M114');
         let last;
         for (const command of commands) {
           last = env.marlin.execute(command, { priority: true, allowMachineCoordinates: true });
           if (!last.ok) return json(res, 502, last);
         }
         syncMockFrame(env);
-        return json(res, 200, { ok: true, machineX, machineY, safeMachineZ, response: last.response, message: 'Saved XY work zero restored. Z zero was not changed.' });
+        return json(res, 200, {
+          ok: true, machineX, machineY, machineZ: moveToZ ? machineZ : null, axes, moveToZ, safeMachineZ,
+          response: last.response, frame: env.machineFrame, message: 'Saved zero restored and activated.',
+        });
       }
       if (req.method === 'GET' && pathname === '/api/jog/status') {
         const age = env.jog.lastUpdateAt ? Date.now() - env.jog.lastUpdateAt : 0;

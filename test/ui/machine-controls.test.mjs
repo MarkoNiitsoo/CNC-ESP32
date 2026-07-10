@@ -8,6 +8,17 @@ const preview = await readFile(new URL('../../www/preview.js', import.meta.url),
 const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 
 describe('compact machine drawer', () => {
+  it('uses one operator-facing Review and Start workflow with an internal arm snapshot', () => {
+    expect(previewHtml).not.toContain('data-preview-tab-button="arm"');
+    expect(previewHtml).toContain('data-preview-tab-button="run" data-icon="start">Start Cutting');
+    expect(previewHtml).toContain('data-run-check="materialAndPathClear"');
+    expect(previewHtml).toContain('data-run-check="toolAndZZeroVerified"');
+    expect(previewHtml).toContain('data-run-check="spindleStateReady"');
+    expect(previewHtml).not.toContain('data-run-check="toolAtWorkZero"');
+    expect(preview).toMatch(/reviewAndStartJobRun[\s\S]*armJob\(\{ automatic: true \}\)[\s\S]*startJobRun\(\)/);
+    expect(preview).toContain("source: automatic ? 'review-and-start' : 'manual-arm'");
+  });
+
   it('prevents mobile long-press selection on interactive buttons', () => {
     expect(styles).toMatch(/button,[\s\S]*?\[role="button"\][\s\S]*?user-select:\s*none;[\s\S]*?-webkit-user-select:\s*none;[\s\S]*?-webkit-touch-callout:\s*none;/);
   });
@@ -37,6 +48,21 @@ describe('compact machine drawer', () => {
     const send = preview.slice(sendStart, sendEnd);
     expect(send).toContain('const returnCapture = await captureM114()');
     expect(send).toContain('traceCommandsWithReturnPosition(traceCommands, returnCapture)');
+  });
+
+  it('keeps the dry run operator UI minimal and mode-driven', () => {
+    expect(previewHtml).toContain('id="send-dry-run"');
+    expect(previewHtml).toContain('id="dry-run-aircut"');
+    expect(previewHtml).toContain('id="stop-m5"');
+    expect(previewHtml).toContain('Stop spindle/laser M5');
+    expect(previewHtml).not.toContain('Generate Bounding Box Commands');
+    expect(previewHtml).not.toContain('Generate Aircut Commands');
+    expect(previewHtml).not.toContain('Copy Commands');
+    expect(previewHtml).not.toContain('Copy Aircut Commands');
+    expect(preview).toContain("function sendSelectedDryRun()");
+    expect(preview).toContain("return dryRunModeIsAircut() ? 'Send Aircut Toolpath' : 'Send Box Trace';");
+    expect(preview).toContain("if (dryRunModeIsAircut()) await sendAircutToolpath();");
+    expect(preview).toContain("Spindle/laser start commands are suppressed.");
   });
 
   it('normalizes missing zero objects in old or partial job JSON before capture', async () => {
@@ -194,14 +220,15 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(machineBar).toContain('max="70"');
   });
 
-  it('decouples 50 ms movement ticks from browser heartbeat timing', () => {
+  it('decouples smooth 25 ms movement ticks from browser heartbeat timing', () => {
     const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('void processJogZRestore()'));
-    expect(firmware).toContain('constexpr uint32_t kJogTickIntervalMs = 50');
-    expect(firmware).toContain('constexpr uint8_t kJogPlannerLookahead = 3');
+    expect(firmware).toContain('constexpr uint32_t kJogTickIntervalMs = 25');
+    expect(firmware).toContain('constexpr uint8_t kJogPlannerLookahead = 6');
+    expect(firmware).toContain('constexpr float kJogVectorRampPerTick = 0.125f');
     expect(startHandler).toContain('sendJogCommandForResponse("G91", 300)');
     expect(runner).toContain('processJogResponses()');
     expect(runner).toContain('jogStatus.pendingMoveAcks >= kJogPlannerLookahead');
-    expect(runner).toContain('String cmd = "G0"');
+    expect(runner).toContain('String cmd = "G1"');
     expect(runner).not.toContain('String cmd = "G91\\nG0"');
     expect(runner).not.toContain('readMarlinResponseFor(60');
   });
