@@ -1,5 +1,30 @@
 # Progress
 
+## 2026-07-10 - Files card view and hold actions
+
+- Refactored the dedicated Files page so previewable G-code entries no longer expose duplicate
+  `Select`, `Open Job`, and `Full Preview` actions that all opened the same full preview page.
+- Files and folders now render as thumbnail-first cards instead of compact rows, giving stored job
+  preview images much more visual weight in the grid.
+- A normal tap/click on a G-code card now opens that file as the current job in Preview; folders
+  still open directly on tap.
+- Added hold/right-click card actions for maintenance operations instead: file cards now expose
+  download, rename, and delete from the expanded action area, while folders expose rename/delete.
+- Added a focused UI regression test to lock the direct-open behavior, long-press/context-menu
+  action handling, and icon-card layout expectations.
+- Verification: `npm test -- test/ui/files-view.test.mjs` passed.
+
+## 2026-07-10 - Setup AP retained during station mode
+
+- Investigated a phone-to-ESP32 connectivity regression after recent firmware changes.
+- Root cause was in WiFi startup: once saved STA credentials connected, firmware switched to a
+  station-only path and the phone could no longer rely on the ESP32 setup AP staying available.
+- Updated WiFi startup so the setup AP remains active in `ap+sta` mode while the saved STA link is
+  connected; failed STA joins still settle back to plain setup AP.
+- Added a small `/wifi` diagnostics improvement so the page shows the setup AP name/IP when both
+  radio paths are active.
+- Verification: `C:\Users\marko\.platformio\penv\Scripts\platformio.exe run --environment esp32cam` passed.
+
 ## 2026-07-10 - Pause/resume drain timeout fix
 
 - Investigated the live SD `E:\logs\job.log` after a failed resume attempt.
@@ -1603,3 +1628,75 @@
 - In-app localhost visual verification was unavailable because the browser surface rejected that
   local target; mobile structure and visibility were therefore verified through DOM/CSS contracts
   and regression assertions instead of switching to an unapproved browser mechanism.
+
+## 2026-07-10 - Job workflow v3 foundation
+
+- Added a non-migrating Job JSON v3 workflow model with explicit frame, work-zero, verification,
+  and start-authorization decisions.
+- Added a central gate evaluator for homing/manual frame, work zero, physical verification, and cut.
+- Replaced ambiguous parallel dry-run state in the new model with one active decision: Bounds,
+  Aircut, or deliberately Skipped, scoped to run/transform/work-zero identity.
+- Added unit coverage for gate progression, skip evidence, stale sibling isolation, invalidation,
+  and boot-session expiry. Preview integration remains.
+- Preview and dashboard now accept only schema-3 setup metadata; older Job JSON setup state is
+  rejected and replaced by a fresh pending workflow rather than migrated.
+- New uploads create schema-3 workflow placeholders and ignore legacy setup fields.
+
+### Firmware frame integration
+
+- Firmware now exposes a per-boot session and distinguishes `homed`, `manual-unhomed`, and
+  `untrusted` frames. A manual frame can preserve current G54 coordinates or set current XYZ as
+  zero, and expires automatically after an ESP restart.
+- Work-zero and Z-zero capture now operate in either an absolute homed frame or the explicitly
+  acknowledged manual frame. Manual job starts require the matching boot session; homed starts
+  retain absolute machine-coordinate validation.
+- Firmware authorization now targets the v3 `startAuthorizationToken` instead of legacy Arm state.
+
+### Guided Prepare & Cut integration
+
+- The left drawer now contains only geometry, placement, and rotation; zero setup, physical checks,
+  recovery, and cutting live in one right-side `Prepare & Cut` workflow.
+- Each incomplete gate explains the problem and offers its corrective actions in place: Home All or
+  confirmed unhomed override, work-zero choice, then Bounds / Full Aircut / deliberate skip.
+- Bounds and Aircut completion are persisted immediately as one immutable verification decision;
+  an unrelated stale check can no longer invalidate the selected completed check.
+- Final hold writes a compact one-use v3 start authorization, starts the exact active run, then
+  clears the authorization. Manual-frame and skipped-check warnings are also drawn on the canvas.
+- The development mock implements the same per-boot manual frame and v3 authorization contract.
+- Final JavaScript/mock/static regression passes 29 files and 275 tests; `git diff --check` is clean.
+- PlatformIO compilation could not be rerun because the sandbox cannot write `.platformio` and the
+  required permission escalation was unavailable at the account usage limit. In-app localhost
+  visual inspection was also rejected by the existing browser security policy for that target.
+
+## 2026-07-11 - File opening and file-card UX
+
+- Fixed all preview launches failing after the workflow-v3 integration: `preview.js` now loads as
+  an ES module, matching its static imports.
+- First file open now awaits metadata persistence and creates a complete Job JSON v3 from the live
+  job state instead of briefly writing a partial preview-only setup.
+- Both file surfaces open G-code directly from the card. Shift-click, right-click, or a 450 ms hold
+  reveals Rename / Download / Details / Delete actions without a separate Select button.
+- Maintenance actions are an absolute overlay, so opening them no longer changes card height or
+  reflows the surrounding grid.
+- Removed extension, `has job`, and `preview` badges. G54 is the normal system workspace and is no
+  longer emitted or counted as a warning; legacy stored G54 messages are filtered from badges.
+- Final verification passes 30 test files / 279 tests, JavaScript syntax checks, and
+  `git diff --check`.
+
+## 2026-07-11 - Bounds verification identity fix
+
+- Bounds/Aircut/Skip now normalize the current Job state and copy the live active-run path, mode,
+  and fingerprint before creating verification evidence. Saving can no longer make freshly created
+  evidence stale by changing its identity afterward.
+- Verification failures now identify the actual invalidation source: missing choice, active run,
+  placement, or work zero, instead of the generic `Physical verification is not current` message.
+- Full regression remains green at 30 files / 279 tests.
+
+## 2026-07-11 - Thumbnail creation on file open
+
+- Preview open now checks whether the Job JSON thumbnail path exists on SD.
+- When missing, the already parsed source ToolpathModel is rendered through the shared canvas engine
+  to a 128x128 PNG, `/jobs/thumbs` is created if needed, and the PNG is uploaded there.
+- The resulting `thumbnailPath` is persisted in the same awaited Job JSON v3 metadata transaction.
+  Existing valid thumbnails are reused without regeneration.
+- Full regression passes 30 files / 280 tests.

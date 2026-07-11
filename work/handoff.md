@@ -1,5 +1,25 @@
 # Handoff
 
+## 2026-07-10 - Files card view and hold actions
+
+- The Files page no longer shows the redundant `Select`, `Open Job`, and `Full Preview` controls.
+  Previewable G-code cards now open Preview directly on normal tap/click.
+- Maintenance actions were moved behind card hold/right-click. File cards expose Download, Rename,
+  and Delete; folder cards expose Rename and Delete.
+- The folder contents surface is now a thumbnail-first card grid so saved PNG previews are larger
+  and easier to scan on touch devices.
+- Focused regression coverage lives in `test/ui/files-view.test.mjs`.
+- Validation passed: `npm test -- test/ui/files-view.test.mjs`.
+
+## 2026-07-10 - Setup AP retained during station mode
+
+- Firmware WiFi startup no longer drops the setup AP after a saved STA join succeeds.
+- The ESP32 now keeps `G-code-CNC-Setup` active in `ap+sta` mode, so a phone can still connect
+  directly even when the controller is also on the saved infrastructure network.
+- If the saved STA join times out, the firmware stays in plain setup AP mode as before.
+- `/wifi` now shows the setup AP SSID/IP alongside the STA status when both are active.
+- Validation passed: `C:\Users\marko\.platformio\penv\Scripts\platformio.exe run --environment esp32cam`.
+
 ## 2026-07-10 - Pause/resume drain timeout fix
 
 - Live SD `E:\logs\job.log` showed the failing pattern for resume-after-pause: `pause requested`
@@ -1532,3 +1552,45 @@ No firmware upload is required.
 - Final verification passes 28 test files / 267 tests plus JavaScript syntax and diff checks.
 - Browser-based localhost rendering was blocked by the in-app browser policy, so the final mobile
   visual acceptance should be done on-device after deploying the updated SD UI files.
+
+## 2026-07-10 - Workflow v3 foundation handoff
+
+- `www/lib/job-workflow.js` defines the new schema-3 four-gate workflow; no legacy migration path
+  is planned.
+- Physical verification is now modeled as exactly one current Bounds/Aircut/Skipped decision whose
+  identity includes run path/fingerprint, transform, and work-zero token.
+- Manual-frame decisions expire when the firmware boot-session changes. Firmware exposure of that
+  boot session and preview integration are next.
+- Preview/dashboard loading now rejects non-v3 setup metadata, and upload metadata creation emits
+  schema 3 directly. Existing SD Job JSON files must be recreated after deployment.
+- Firmware `0.6.11-guided-cut-workflow` adds `/api/machine/manual-frame` with `preserve` and
+  `set-zero` modes without inventing homed or absolute machine coordinates.
+- Manual starts require `use_manual_work_frame` and the current `bootSessionId`; homed starts retain
+  homing-session and absolute work-zero checks. Preview must write
+  `startAuthorizationToken: "AUTHORIZED"` immediately before start and clear it afterward.
+- Preview integration is complete: `renderReadiness()` is now driven by the central v3 evaluator,
+  offers the corrective action at each gate, and uses one-time start authorization rather than Arm.
+- The geometry drawer is intentionally separate on the left. All operational preparation and cut
+  actions are grouped in the right `Prepare & Cut` drawer, while warning state remains visible on
+  the graphical work area.
+- Verification passes all 29 test files / 275 tests plus JavaScript syntax and diff checks.
+  PlatformIO build and on-device visual acceptance remain because this session could not obtain
+  `.platformio` write permission and the in-app browser policy blocks the configured localhost.
+
+## 2026-07-11 file-view handoff
+
+- The deployed `preview.html` must include `<script type="module" src="/preview.js">`; the missing
+  module type was the reason every selected G-code returned immediately to Files.
+- Copy the updated `preview.html`, `preview.js`, `app.js`, `files.js`, `style.css`,
+  `lib/gcode-core.mjs`, and `lib/toolpath-model.js` to `/www` while preserving the `/www/lib`
+  directory structure.
+- File actions now overlay cards and are available through Shift-click, right-click, or hold.
+  Ordinary click/tap opens the file and missing Job JSON v3 is generated during that first open.
+- Final verification: 30 test files / 279 tests pass; JavaScript syntax and diff checks pass.
+- Bounds verification now goes through `recordPhysicalVerification()`, which canonicalizes the live
+  run identity before evidence creation and immediate persistence. Deploy updated `preview.js` and
+  `lib/job-workflow.js` together.
+- Missing thumbnails are now generated during preview open using `sourceToolpathModel` and the same
+  `renderToolpathToCanvas()` engine used by upload previews. Deploy updated `preview.js`; it reuses
+  `/www/lib/upload-thumbnail.js` and writes the PNG to `/jobs/thumbs` before saving Job JSON.
+- Final regression after thumbnail-on-open integration: 30 files / 280 tests.
