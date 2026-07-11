@@ -60,7 +60,8 @@ describe('preview data adapter', () => {
     ].join('\n'));
     const adapted = adaptToolpathForPreview(model);
 
-    expect(adapted.warningGroups.workspace.join('\n')).toContain('G54 default workspace');
+    expect(adapted.warningGroups.workspace.join('\n')).toContain('Non-default workspace');
+    expect(adapted.warningGroups.workspace.join('\n')).not.toContain('G54 default workspace');
     expect(adapted.warningGroups.unsupported.join('\n')).toContain('G91');
     expect(adapted.warningGroups.transformSensitive.join('\n')).toContain('G92 inside source');
   });

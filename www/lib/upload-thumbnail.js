@@ -1,4 +1,5 @@
 export const THUMBNAIL_SIZE = 128;
+export const JOB_SCHEMA_VERSION = 3;
 
 export function isGcodeFileName(name = '') {
   return /\.(gcode|gc|nc|tap)$/i.test(String(name));
@@ -20,10 +21,10 @@ export function jobPathForUpload(name = '') {
 
 export function mergeUploadedFileMetadata(existingJob, details = {}) {
   const now = details.updatedAt || new Date().toISOString();
-  const base = existingJob && typeof existingJob === 'object' ? existingJob : {};
+  const base = existingJob && Number(existingJob.schemaVersion) === JOB_SCHEMA_VERSION ? existingJob : {};
   return {
     ...base,
-    schemaVersion: Number(base.schemaVersion) || 2,
+    schemaVersion: JOB_SCHEMA_VERSION,
     createdAt: base.createdAt || now,
     updatedAt: now,
     gcodePath: details.gcodePath,
@@ -34,5 +35,9 @@ export function mergeUploadedFileMetadata(existingJob, details = {}) {
       ...(base.preview || {}),
       ...(details.preview || {}),
     },
+    frameDecision: base.frameDecision || { mode: 'pending', bootSessionId: '', homingSessionId: '', acknowledgedAt: null },
+    workZeroDecision: base.workZeroDecision || { mode: 'pending', token: '', bootSessionId: '', capturedAt: null },
+    verificationDecision: base.verificationDecision || { type: 'pending', result: 'pending' },
+    startAuthorization: base.startAuthorization || { state: 'pending' },
   };
 }

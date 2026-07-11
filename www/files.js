@@ -20,6 +20,7 @@ let activeItemPath = '';
 let fileMetaByPath = new Map();
 const allowedRoots = ['/gcode', '/www', '/firmware', '/jobs', '/logs'];
 const currentJobKey = 'lowrider.currentJob';
+const LONG_PRESS_MS = 450;
 const thumbnailModulesPromise = Promise.all([
   import('/lib/toolpath-model.js'),
   import('/lib/upload-thumbnail.js'),
@@ -289,10 +290,8 @@ async function loadFileMeta(item) {
 
 function fileBadges(item, meta) {
   const badges = [];
-  if (meta) badges.push('has job');
-  if (meta?.preview) badges.push('preview');
-  const warnings = Number(meta?.preview?.warnings?.length || 0);
-  if (warnings) badges.push(`${warnings} warnings`);
+  const warnings = (meta?.preview?.warnings || []).filter((warning) => !/G54 default workspace|default-workspace/i.test(String(warning?.message || warning)));
+  if (warnings.length) badges.push(`${warnings.length} need attention`);
   const estimate = formatMinutes(meta?.preview?.estimate?.effectiveSecondsWithOverride || meta?.preview?.estimate?.nominalSeconds);
   if (estimate) badges.push(estimate);
   return badges.map((badge) => `<span class="status-badge">${html(badge)}</span>`).join('');
@@ -312,8 +311,86 @@ function rowButton(text, onClick) {
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = text;
-  button.addEventListener('click', onClick);
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    onClick(event);
+  });
   return button;
+}
+
+function openItem(item) {
+  if (item.type === 'dir') {
+    loadPath(item.path);
+    return;
+  }
+  if (canPreview(item)) {
+    saveCurrentJob(item.path);
+    window.location.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
+    return;
+  }
+  activeItemPath = activeItemPath === item.path ? '' : item.path;
+}
+
+function openActions(item) {
+  activeItemPath = item.path;
+}
+
+function bindCardInteractions(target, item, items) {
+  let longPressTimer = null;
+  let suppressClick = false;
+
+  const clearLongPress = () => {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  };
+
+  target.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    openActions(item);
+    renderList(items);
+  });
+
+  target.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    suppressClick = false;
+    clearLongPress();
+    longPressTimer = setTimeout(() => {
+      suppressClick = true;
+      openActions(item);
+      renderList(items);
+    }, LONG_PRESS_MS);
+  });
+
+  ['pointerup', 'pointercancel', 'pointerleave', 'dragstart'].forEach((eventName) => {
+    target.addEventListener(eventName, clearLongPress);
+  });
+
+  target.addEventListener('click', (event) => {
+    if (event.target?.closest?.('.file-actions')) return;
+    if (suppressClick) {
+      suppressClick = false;
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey) {
+      event.preventDefault();
+      openActions(item);
+      renderList(items);
+      return;
+    }
+    openItem(item);
+    renderList(items);
+  });
+
+  target.addEventListener('keydown', (event) => {
+    if (event.target?.closest?.('.file-actions')) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openItem(item);
+    renderList(items);
+  });
 }
 
 function renderList(items) {
@@ -321,7 +398,7 @@ function renderList(items) {
 
   if (!allowedRoots.includes(currentPath)) {
     const row = document.createElement('div');
-    row.className = 'file-row';
+    row.className = 'file-row file-parent-row';
     const link = document.createElement('button');
     link.type = 'button';
     link.className = 'file-name';
@@ -334,71 +411,41 @@ function renderList(items) {
   items.forEach((item) => {
     const itemMeta = fileMetaByPath.get(item.path) || null;
     const row = document.createElement('div');
-    row.className = 'file-row compact-row';
+    row.className = 'file-row file-card compact-row';
     row.classList.toggle('expanded', item.path === activeItemPath);
+    row.dataset.itemType = item.type;
 
-    const name = document.createElement('button');
-    name.type = 'button';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+
+    const name = document.createElement('div');
     name.className = 'file-name file-main';
     name.innerHTML = `
-      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(thumbnailUrl(itemMeta.thumbnailPath))}" alt="">` : `<span class="thumb-placeholder">${item.type === 'dir' ? 'DIR' : canPreview(item) ? 'GC' : 'FILE'}</span>`}
+      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(thumbnailUrl(itemMeta.thumbnailPath))}" alt="">` : `<span class="thumb-placeholder" aria-hidden="true">${item.type === 'dir' ? 'Folder' : 'No preview'}</span>`}
       <span>
         <strong>${html(item.type === 'dir' ? `${item.name}/` : item.name)}</strong>
         <small>${item.type === 'file' ? formatBytes(item.size) : 'folder'}</small>
         <span class="badge-row">${fileBadges(item, itemMeta)}</span>
       </span>
     `;
-    name.addEventListener('click', () => {
-      if (item.type === 'dir') {
-        loadPath(item.path);
-        return;
-      }
-      activeItemPath = activeItemPath === item.path ? '' : item.path;
-      renderList(items);
-    });
-
-    const meta = document.createElement('span');
-    meta.className = 'file-meta';
-    meta.textContent = item.type === 'file' ? 'Select' : 'Open';
-    meta.addEventListener('click', () => {
-      if (item.type === 'dir') {
-        loadPath(item.path);
-      } else if (canPreview(item)) {
-        saveCurrentJob(item.path);
-        window.location.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
-      } else {
-        activeItemPath = activeItemPath === item.path ? '' : item.path;
-        renderList(items);
-      }
-    });
+    bindCardInteractions(row, item, items);
 
     const actions = document.createElement('div');
     actions.className = 'file-actions';
     actions.hidden = item.path !== activeItemPath;
-
-    if (canPreview(item)) {
-      actions.append(rowButton('Open Job', () => {
-        saveCurrentJob(item.path);
-        window.location.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
-      }));
-      const preview = document.createElement('a');
-      preview.className = 'maintenance-link';
-      preview.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
-      preview.textContent = 'Full Preview';
-      actions.append(preview);
-    }
 
     if (item.type === 'file') {
       const download = document.createElement('a');
       download.className = 'maintenance-link';
       download.href = `/api/download?path=${encodeURIComponent(item.path)}`;
       download.textContent = 'Download';
+      download.addEventListener('click', (event) => event.stopPropagation());
       actions.append(download);
     }
 
     actions.append(rowButton('Rename', () => renamePath(item.path)));
     actions.append(rowButton('Delete', () => deletePath(item.path)));
-    row.append(name, meta, actions);
+    row.append(name, actions);
     listEl.append(row);
   });
 }

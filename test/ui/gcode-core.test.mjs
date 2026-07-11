@@ -17,7 +17,7 @@ describe('G-code parser safety basics', () => {
     expect(parsed.analysis.hasG90).toBe(true);
     expect(parsed.analysis.hasG54).toBe(true);
     expect(parsed.analysis.nonDefaultWorkspaceCommands).toEqual([]);
-    expect(parsed.warnings).toContain('G54 default workspace command found.');
+    expect(parsed.warnings).not.toContain('G54 default workspace command found.');
     expect(parsed.warnings.some((warning) => warning.includes('Unsupported commands'))).toBe(false);
     expect(parsed.bounds).toMatchObject({
       xMin: 0,

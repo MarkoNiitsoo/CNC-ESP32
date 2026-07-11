@@ -169,7 +169,6 @@ export function parseGcode(text) {
   if (!analysis.hasG21) warnings.push('File does not contain G21 millimeter mode.');
   if (!analysis.hasG90) warnings.push('File does not contain G90 absolute mode.');
   if (analysis.hasG91) warnings.push('File contains G91 relative mode.');
-  if (analysis.hasG54) warnings.push('G54 default workspace command found.');
   if (analysis.hasSpindleOn) warnings.push('File contains M3/M4 spindle or laser enable command.');
   if (analysis.hasZ && bounds.zMin < -30) warnings.push(`Z minimum ${bounds.zMin.toFixed(2)} mm is below -30 mm.`);
   if (bounds.xMin < MACHINE_LIMITS.xMin || bounds.xMax > MACHINE_LIMITS.xMax ||

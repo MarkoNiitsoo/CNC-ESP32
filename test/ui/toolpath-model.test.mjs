@@ -88,10 +88,10 @@ describe('ToolpathModel bounds', () => {
 });
 
 describe('ToolpathModel warnings and unsupported commands', () => {
-  it('treats G54 as default info, and G55+/G91/G92/G53 as transform-sensitive warnings', () => {
+  it('keeps G54 out of warnings, and treats G55+/G91/G92/G53 as transform-sensitive warnings', () => {
     const g54 = parseGCodeToToolpath(fixture('freecad-g54.gc'));
     expect(g54.unsupportedCommands.map((item) => item.command)).not.toContain('G54');
-    expect(getToolpathWarnings(g54).join('\n')).toContain('G54 default workspace command found');
+    expect(getToolpathWarnings(g54).join('\n')).not.toContain('G54 default workspace command found');
 
     const risky = parseGCodeToToolpath([
       'G21',

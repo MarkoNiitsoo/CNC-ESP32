@@ -313,7 +313,6 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
           addUnsupported(model, command, 'G53 machine-coordinate move is unsafe for transform/resume assumptions.', lineNumber);
         } else if (g === 54) {
           model.modal.workspace = 'G54';
-          addWarning(model, 'default-workspace', 'G54 default workspace command found.', lineNumber);
         } else if ((g >= 55 && g <= 59) || [59.1, 59.2, 59.3].includes(g)) {
           model.modal.workspace = command;
           addUnsupported(model, command, 'Non-default workspace command found. This may conflict with captured work zero.', lineNumber);

@@ -10,6 +10,7 @@ import {
 
 const filesSource = await readFile(new URL('../../www/files.js', import.meta.url), 'utf8');
 const appSource = await readFile(new URL('../../www/app.js', import.meta.url), 'utf8');
+const previewSource = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
 const toolpathSource = await readFile(new URL('../../www/lib/toolpath-model.js', import.meta.url), 'utf8');
 
 describe('upload-time PNG thumbnails', () => {
@@ -23,6 +24,7 @@ describe('upload-time PNG thumbnails', () => {
 
   it('preserves existing safety and history metadata while refreshing preview fields', () => {
     const original = {
+      schemaVersion: 3,
       createdAt: '2026-01-01T00:00:00.000Z',
       workZero: { capturedAt: 'keep' }, arm: { state: 'ARMED' },
       runHistory: [{ id: 'run-1' }], recoveryHistory: [{ id: 'recovery-1' }],
@@ -50,6 +52,13 @@ describe('upload-time PNG thumbnails', () => {
     expect(toolpathSource).not.toContain('renderToolpathThumbnailSvg');
     expect(filesSource).not.toContain('image/svg+xml');
     expect(appSource).not.toContain('image/svg+xml');
+  });
+
+  it('creates and persists a missing PNG during the first preview open', () => {
+    expect(previewSource).toContain("const thumbnailModulePromise = import('/lib/upload-thumbnail.js')");
+    expect(previewSource).toMatch(/async function createMissingPreviewThumbnail[\s\S]*sourceToolpathModel \|\| toolpathModel[\s\S]*renderToolpathToCanvas[\s\S]*previewCanvasPngBlob[\s\S]*\/api\/upload\?overwrite=true/);
+    expect(previewSource).toMatch(/syncPreviewMetadata[\s\S]*createMissingPreviewThumbnail\(thumbnailPath\)[\s\S]*thumbnailPath \|\| null/);
+    expect(previewSource).toContain('await syncPreviewMetadata();');
   });
 
   it('loads stored thumbnail paths through the SD download API', () => {

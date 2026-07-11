@@ -1143,20 +1143,22 @@ pre {
 
 .file-list {
   display: grid;
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
 }
 
 .file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  padding: 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: stretch;
+  padding: 12px;
 }
 
 .file-name {
   min-width: 0;
   background: transparent;
+  border: 0;
   padding: 0;
   text-align: left;
   color: #ffffff;
@@ -1166,20 +1168,41 @@ pre {
   opacity: 1;
 }
 
-.file-meta {
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
 .compact-row {
   align-items: stretch;
 }
 
+.file-card {
+  position: relative;
+  align-content: start;
+  min-height: 224px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.file-card:hover,
+.file-card:focus-visible {
+  border-color: rgba(63, 196, 117, 0.62);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.file-card.expanded {
+  border-color: rgba(255, 209, 102, 0.72);
+}
+
+.file-parent-row {
+  grid-column: 1 / -1;
+  min-height: auto;
+}
+
 .file-main {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
 }
 
 .file-main strong,
@@ -1198,21 +1221,21 @@ pre {
 }
 
 .thumb-placeholder {
-  width: 44px;
-  height: 44px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #0b131a;
   color: var(--green);
-  font-size: 0.72rem;
+  font-size: 0.92rem;
   font-weight: 900;
 }
 
 .thumb-image {
-  width: 56px;
-  height: 44px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   object-fit: contain;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1276,18 +1299,6 @@ pre {
   gap: 6px 10px;
 }
 
-.select-file,
-.file-meta {
-  min-height: 44px;
-  display: grid;
-  place-items: center;
-  border-radius: 7px;
-  padding: 0 12px;
-  background: #243442;
-  color: #fff;
-  font-weight: 800;
-}
-
 .badge-row {
   display: flex;
   flex-wrap: wrap;
@@ -1318,10 +1329,25 @@ pre {
 }
 
 .file-actions {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  align-content: end;
+  padding: 16px 12px 12px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(5, 8, 10, 0.18) 15%, rgba(5, 8, 10, 0.96) 62%);
+}
+
+.file-actions[hidden] {
+  display: none;
+}
+
+.file-actions .maintenance-link,
+.file-actions button {
+  width: 100%;
 }
 
 .more-actions {
