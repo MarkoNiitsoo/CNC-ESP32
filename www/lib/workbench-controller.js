@@ -1,7 +1,7 @@
 import { createWorkbenchState, reduceWorkbenchState, zoomPanForGesture } from './workbench-ui.js';
 
-const LEFT_TABS = new Set(['preview', 'setup', 'dry-run']);
-const RIGHT_TABS = new Set(['preflight', 'recovery', 'arm', 'run']);
+const LEFT_TABS = new Set(['preview']);
+const RIGHT_TABS = new Set(['setup', 'dry-run', 'preflight', 'recovery', 'arm', 'run']);
 export const LAYER_STORAGE_KEY = 'lowrider.workbench.layers.v1';
 
 export function loadLayerPreferences(storage, defaults) {
@@ -60,14 +60,13 @@ export function installWorkbench(options = {}) {
     '.preview-stats',
     '.placement-panel',
     '#preview-warnings-panel',
-    '.zero-origin-panel',
-    '.dry-run-panel',
   ]);
   appendExisting(byId('readiness-drawer-content'), [
     '.readiness-panel',
+    '.zero-origin-panel',
+    '.dry-run-panel',
     '.preflight-panel',
     '.recovery-panel',
-    '.arm-panel',
     '.feed-override-panel',
     '.run-panel',
   ]);

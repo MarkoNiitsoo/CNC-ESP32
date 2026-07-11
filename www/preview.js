@@ -1,3 +1,12 @@
+import {
+  JOB_SCHEMA_VERSION,
+  createVerificationDecision,
+  emptyWorkflow,
+  evaluateWorkflow,
+  isJobV3,
+  workflowFor,
+} from './lib/job-workflow.js';
+
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
 const currentJobKey = 'lowrider.currentJob';
@@ -209,6 +218,7 @@ const toolpathModulesPromise = Promise.all([
   import('/lib/toolpath-model.js'),
   import('/lib/preview-data-adapter.js'),
 ]).then(([toolpath, adapter]) => ({ toolpath, adapter }));
+const thumbnailModulePromise = import('/lib/upload-thumbnail.js');
 const jobHistoryPromise = import('/lib/job-history.js');
 const toolpathTransformPromise = import('/lib/toolpath-transform.js');
 let jobActiveRunModule = null;
@@ -391,88 +401,170 @@ async function handleReadinessAction(action) {
   focusReadinessTarget(action);
 }
 
+function workflowHardBlockers() {
+  const blockers = [...activeRunBlockers()];
+  (currentPreflight?.checks || [])
+    .filter((check) => check.level === 'fail' && check.id !== 'workZero')
+    .forEach((check) => blockers.push(check.message));
+  return [...new Set(blockers)];
+}
+
+function guidedWorkflowStatus() {
+  return evaluateWorkflow(ensureJobState(), {
+    machineFrame: currentMachineFrame || {},
+    bootSessionId: currentMachineFrame?.bootSessionId || '',
+    hardBlockers: workflowHardBlockers(),
+  });
+}
+
+async function postManualFrame(mode) {
+  const res = await fetch('/api/machine/manual-frame', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  });
+  const data = await readJsonOrThrow(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Manual work frame failed');
+  currentMachineFrame = data.frame || currentMachineFrame;
+  return data;
+}
+
+async function continueWithoutHoming() {
+  if (!confirm('Continue without homing? The controller cannot verify absolute machine position or prevent travel beyond the real table limits.')) return;
+  if (!confirm('This is an emergency/intentional override. Confirm again that you accept responsibility for the current machine position.')) return;
+  const data = await postManualFrame('confirm');
+  const job = ensureJobState();
+  job.frameDecision = {
+    mode: 'manual-unhomed',
+    bootSessionId: data.frame?.bootSessionId || '',
+    homingSessionId: '',
+    acknowledgedAt: nowIso(),
+  };
+  job.workZeroDecision = emptyWorkflow().workZeroDecision;
+  job.verificationDecision = emptyWorkflow().verificationDecision;
+  await saveJobQuietly();
+  renderAllWorkflowPanels();
+}
+
+async function acceptManualWorkZero(mode) {
+  const data = await postManualFrame(mode);
+  const job = ensureJobState();
+  const capturedAt = nowIso();
+  const token = `manual:${data.frame?.bootSessionId || ''}:${capturedAt}`;
+  job.workZero.beforeG92 = parseM114(data.before || '');
+  job.workZero.afterG92 = parseM114(data.after || '');
+  job.workZero.capturedAt = capturedAt;
+  job.workZero.machineReference = null;
+  job.workZero.frame = {
+    bootSessionId: data.frame?.bootSessionId || '',
+    revision: Number(data.frame?.revision),
+  };
+  job.workZeroDecision = {
+    mode: mode === 'set-zero' ? 'manual-set' : 'existing-marlin',
+    token,
+    bootSessionId: data.frame?.bootSessionId || '',
+    capturedAt,
+  };
+  job.startMode = 'use_manual_work_frame';
+  job.verificationDecision = emptyWorkflow().verificationDecision;
+  await saveJobQuietly();
+  setJobResult(mode === 'set-zero' ? 'Current position set as work zero' : 'Existing G54 work coordinates accepted');
+  renderAllWorkflowPanels();
+}
+
+async function skipPhysicalVerification() {
+  if (!confirm('Skip Bounds Check and Full Aircut? Confirm only if you have independently verified that the part, clamps, and toolpath fit safely.')) return;
+  await recordPhysicalVerification('skipped');
+  renderAllWorkflowPanels();
+  draw();
+}
+
+async function recordPhysicalVerification(type, options = {}) {
+  const job = ensureJobState();
+  const mode = currentRunMode();
+  job.activeRun.path = currentRunPath();
+  job.activeRun.mode = mode;
+  if (mode === 'generated') job.activeRun.generatedFingerprint = gcodeFingerprint || job.activeRun.generatedFingerprint || '';
+  else job.activeRun.sourceFingerprint = gcodeFingerprint || job.activeRun.sourceFingerprint || '';
+  job.verificationDecision = createVerificationDecision(job, {
+    type,
+    safeZ: options.safeZ,
+    margin: options.margin,
+  });
+  await saveJobQuietly();
+  return job.verificationDecision;
+}
+
+function renderAllWorkflowPanels() {
+  renderZeroOriginPanel();
+  renderPreflight();
+  renderRunPanel();
+  draw();
+}
+
+function workflowButton(label, action, className = '') {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  if (className) button.className = className;
+  button.addEventListener('click', () => Promise.resolve(action()).catch((err) => {
+    setJobResult(err.message, true);
+    appendRunLog(`Preparation failed: ${err.message}`);
+  }));
+  return button;
+}
+
 function renderReadiness() {
   if (!readinessSummaryEl || !readinessPrimaryEl || !readinessSecondaryEl) return;
-  if (!jobReadinessModule) {
-    readinessSummaryEl.textContent = 'Loading job readiness...';
-    return;
-  }
-  const readiness = jobReadinessModule.buildJobReadiness(previewReadinessJob(), {
-    currentJob: { gcodePath: filePath, jobPath: jobPathFor(filePath) },
-    jobStatus: jobRunStatus || {},
-  });
-  const placement = readiness.placement || {};
-  const blockers = readiness.blockingReasons || [];
-  let primary = readiness.primaryAction;
-  if (['set_work_zero', 'set_z_zero'].includes(primary?.id) && machineNeedsHome()) {
-    primary = { id: 'home_machine', label: 'Home Machine', target: 'setup' };
-  } else if (primary?.id === 'arm_job') {
-    primary = { id: 'start_cut', label: 'Review & Start Cut', target: 'run' };
-  }
-  const preparationSteps = [
-    !machineNeedsHome(),
-    readiness.activeRun?.status === 'ok',
-    readiness.zero?.workZero === 'ok',
-    readiness.zero?.zZero === 'ok',
-    readiness.dryRun?.status === 'ok',
-  ];
-  const completedSteps = preparationSteps.filter(Boolean).length;
-  const badgeHtml = (readiness.badges || [])
-    .map((badge) => `<span class="status-badge ${badgeClass(badge.level)}">${html(badge.label)}</span>`)
-    .join('');
-  const blockerHtml = blockers.length
-    ? `<ul class="readiness-blockers">${blockers.map((reason) => `<li>${html(compactReadinessReason(reason.message))}</li>`).join('')}</ul>`
-    : '<p class="ok-text">Preparation is complete.</p>';
-  const nextMessage = primary?.id === 'start_cut'
-    ? 'Preparation is complete. Review the three final checks, then hold to start.'
-    : blockers.length ? compactReadinessReason(blockers[0].message) : 'Continue with the next action.';
+  const status = guidedWorkflowStatus();
+  const completedSteps = [status.frame.ok, status.workZero.ok, status.verification.ok].filter(Boolean).length;
+  const copy = {
+    blocked: ['Job needs attention', status.hardBlockers[0] || 'Resolve the job file problem before moving the machine.'],
+    frame: ['Establish machine position', 'Home All is recommended. You may deliberately continue without homing when recovering material or a job.'],
+    'work-zero': ['Set the work zero', status.frame.mode === 'manual-unhomed' ? 'Set the current position as zero, or explicitly keep the existing Marlin G54 work coordinates.' : 'Move to the job origin and set the current XYZ as work zero.'],
+    verification: ['Verify the physical fit', 'Run a quick Bounds Check, run a Full Aircut, or deliberately skip this check.'],
+    cut: ['Ready for final review', 'Preparation is complete. Review the three final checks, then hold to start.'],
+  }[status.gate];
 
   readinessSummaryEl.innerHTML = `
-    <div class="operator-readiness-progress"><strong>${completedSteps} / ${preparationSteps.length}</strong><span>preparation steps ready</span></div>
-    <h3>${html(primary?.label || 'Review Job')}</h3>
-    <p>${html(nextMessage)}</p>
+    <div class="operator-readiness-progress"><strong>${completedSteps} / 3</strong><span>preparation decisions ready</span></div>
+    <h3>${html(copy[0])}</h3>
+    <p>${html(copy[1])}</p>
+    ${status.warnings.length ? `<p class="warning">${html(status.warnings.join(' · '))}</p>` : ''}
     <details class="operator-diagnostics">
-      <summary>All checks and technical details</summary>
-      <div class="readiness-badges">${badgeHtml}</div>
+      <summary>Preparation details</summary>
       <dl>
-        <dt>Active run file</dt><dd>${html(readiness.activeRun?.path || '-')}</dd>
-        <dt>Active mode</dt><dd>${html(readiness.activeRun?.mode || '-')}</dd>
-        <dt>Placement</dt><dd>${placement.identity ? 'Original placement' : 'Transformed placement'}${placement.dirty ? ' (update needed)' : ''}</dd>
-        <dt>Rotation</dt><dd>${Number(placement.rotationDeg || 0).toFixed(2)} deg</dd>
-        <dt>Latest run</dt><dd>${html(readiness.run?.status || '-')}</dd>
+        <dt>Machine frame</dt><dd>${html(status.frame.label)}</dd>
+        <dt>Work zero</dt><dd>${html(status.workZero.label)}</dd>
+        <dt>Physical verification</dt><dd>${html(status.verification.label)}</dd>
+        <dt>Active run</dt><dd>${html(currentRunPath() || '-')}</dd>
       </dl>
-      ${blockerHtml}
+      ${status.hardBlockers.length ? `<ul class="readiness-blockers">${status.hardBlockers.map((reason) => `<li>${html(reason)}</li>`).join('')}</ul>` : ''}
     </details>
   `;
 
   readinessPrimaryEl.textContent = '';
-  const primaryButton = document.createElement('button');
-  primaryButton.type = 'button';
-  primaryButton.className = 'primary-action';
-  primaryButton.textContent = primary?.label || 'Review Job';
-  primaryButton.dataset.icon = actionIcon(primary);
-  primaryButton.addEventListener('click', () => {
-    handleReadinessAction(primary).catch((err) => {
-      if (jobResultEl) {
-        jobResultEl.textContent = `Readiness action failed: ${err.message}`;
-        jobResultEl.classList.add('error');
-      }
-    });
-  });
-  readinessPrimaryEl.append(primaryButton);
-
   readinessSecondaryEl.textContent = '';
-  const showSecondary = ['running', 'paused'].includes(readiness.run?.status);
-  (showSecondary ? readiness.secondaryActions || [] : []).forEach((secondary) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = secondary.label;
-    button.dataset.icon = actionIcon(secondary);
-    button.addEventListener('click', () => {
-      handleReadinessAction(secondary).catch((err) => appendRunLog(`Readiness action failed: ${err.message}`));
-    });
-    readinessSecondaryEl.append(button);
-  });
+  if (status.gate === 'frame') {
+    readinessPrimaryEl.append(workflowButton('Home All', () => window.dispatchEvent(new CustomEvent('cnc-home-machine-request')), 'primary-action'));
+    readinessSecondaryEl.append(workflowButton('Continue Without Homing', continueWithoutHoming, 'machine-danger'));
+  } else if (status.gate === 'work-zero') {
+    if (status.frame.mode === 'homed') {
+      readinessPrimaryEl.append(workflowButton('Set Work Zero Here', () => setWorkZeroWithCapture(null, 'xyz'), 'primary-action'));
+    } else {
+      readinessPrimaryEl.append(workflowButton('Set Current Position as Zero', () => acceptManualWorkZero('set-zero'), 'primary-action'));
+      readinessSecondaryEl.append(workflowButton('Use Existing G54 Coordinates', () => acceptManualWorkZero('preserve')));
+    }
+  } else if (status.gate === 'verification') {
+    readinessPrimaryEl.append(workflowButton('Run Bounds Check', sendBoundingBoxTrace, 'primary-action'));
+    readinessSecondaryEl.append(workflowButton('Run Full Aircut', sendAircutToolpath));
+    readinessSecondaryEl.append(workflowButton('Continue Without Check', skipPhysicalVerification, 'caution'));
+  } else if (status.gate === 'cut') {
+    readinessPrimaryEl.append(workflowButton('Review & Start Cut', () => {
+      showPreviewTab('run');
+      workbenchController?.openForTab('run');
+    }, 'primary-action'));
+  }
   renderWorkbenchStatus();
 }
 
@@ -740,7 +832,7 @@ function refreshToolpathEstimateForFeed() {
 function newJobState() {
   const createdAt = nowIso();
   return {
-    schemaVersion: 2,
+    schemaVersion: JOB_SCHEMA_VERSION,
     createdAt,
     updatedAt: createdAt,
     gcodePath: filePath,
@@ -785,6 +877,7 @@ function newJobState() {
     activeWorkZeroId: null,
     activeZZeroId: null,
     placement: defaultPlacementState(),
+    ...emptyWorkflow(),
     notes: '',
   };
 }
@@ -1039,22 +1132,12 @@ function machineNeedsHome() {
 }
 
 function startPreparationBlockers() {
-  if (machineNeedsHome()) return ['Home the machine before setting or using the job zero.'];
-  const blockers = [];
-  if (jobReadinessModule) {
-    const readiness = jobReadinessModule.buildJobReadiness(previewReadinessJob(), {
-      currentJob: { gcodePath: filePath, jobPath: jobPathFor(filePath) },
-      jobStatus: jobRunStatus || {},
-    });
-    blockers.push(...(readiness.blockingReasons || [])
-      .filter((reason) => reason.id !== 'arm_missing' && reason.id !== 'arm_stale')
-      .map((reason) => compactReadinessReason(reason.message)));
-  }
-  if (currentPreflight?.checks?.some((check) => check.level === 'fail') &&
-      !blockers.some((message) => /run file|work zero|z zero/i.test(message))) {
-    blockers.push('Resolve the failed job checks.');
-  }
-  return [...new Set(blockers)];
+  const status = guidedWorkflowStatus();
+  if (status.gate === 'cut') return [];
+  if (status.gate === 'blocked') return status.hardBlockers;
+  if (status.gate === 'frame') return ['Home All or deliberately continue without homing.'];
+  if (status.gate === 'work-zero') return ['Set or confirm the active work zero.'];
+  return ['Run Bounds Check, run Full Aircut, or deliberately continue without the check.'];
 }
 
 function visibleArmState() {
@@ -1459,28 +1542,18 @@ async function reviewAndStartJobRun() {
     appendRunLog('Start blocked: complete the three final checks first.');
     return;
   }
-  const armed = await armJob({ automatic: true });
-  if (!armed) return;
   await startJobRun();
 }
 
 async function startJobRun() {
-  if (visibleArmState() !== 'ARMED') {
-    appendRunLog('Start blocked: job is not ARMED.');
-    return;
-  }
   const runPath = currentRunPath();
   const runMode = currentRunMode();
   const runCheck = jobActiveRunModule?.assertCanUseActiveRunForExecution
-    ? jobActiveRunModule.assertCanUseActiveRunForExecution(ensureJobState(), { requireArm: true })
+    ? jobActiveRunModule.assertCanUseActiveRunForExecution(ensureJobState(), { requireArm: false })
     : null;
   const runBlockers = runCheck ? (runCheck.ok ? [] : runCheck.reasons.map((item) => item.message)) : activeRunBlockers();
   if (runBlockers.length) {
     appendRunLog(`Start blocked: ${runBlockers.join(' ')}`);
-    return;
-  }
-  if (currentPreflight?.checks?.some((check) => check.level === 'fail')) {
-    appendRunLog('Start blocked: Preflight has failed checks.');
     return;
   }
   if (!runChecklistComplete()) {
@@ -1492,7 +1565,23 @@ async function startJobRun() {
   if (warnings.length) appendRunLog(`Starting after deliberate hold with ${warnings.length} reviewed warning(s).`);
 
   const job = ensureJobState();
+  const workflow = guidedWorkflowStatus();
+  if (workflow.gate !== 'cut') {
+    appendRunLog('Start blocked: preparation decisions are no longer current.');
+    return;
+  }
   const zeroReference = activeWorkZeroReference();
+  job.startMode = workflow.frame.mode === 'manual-unhomed' ? 'use_manual_work_frame' : 'use_active_work_zero';
+  job.startAuthorization = {
+    state: 'authorized',
+    activeRunPath: runPath,
+    activeRunFingerprint: gcodeFingerprint,
+    frameMode: workflow.frame.mode,
+    verificationType: workflow.verification.type,
+    checklist: runChecklistState(),
+    authorizedAt: nowIso(),
+  };
+  job.startAuthorizationToken = 'AUTHORIZED';
   const history = await jobHistoryPromise;
   const run = history.startRunHistory(job, jobRunStatus || {});
   try {
@@ -1502,6 +1591,7 @@ async function startJobRun() {
       gcodePath: runPath,
       jobPath: jobPathFor(filePath),
       startMode: job.startMode,
+      bootSessionId: currentMachineFrame?.bootSessionId || '',
       workZeroId: zeroReference.id,
       homingEpoch: zeroReference.homingEpoch,
       homingSessionId: zeroReference.homingSessionId,
@@ -1517,6 +1607,8 @@ async function startJobRun() {
       transformFingerprint: job.activeRun?.transformFingerprint || '',
     });
     history.updateRunHistoryFromStatus(job, { ...data, state: data.state || 'RUNNING' });
+    job.startAuthorization = emptyWorkflow().startAuthorization;
+    job.startAuthorizationToken = '';
     await saveJobQuietly();
     renderHistoryPanels();
     appendRunLog(`Started ${data.gcodePath || runPath} with ${job.startMode}.`);
@@ -1589,16 +1681,17 @@ async function syncRunHistoryFromStatus(status) {
 
 function ensureJobState() {
   if (!jobState) jobState = newJobState();
+  jobState.schemaVersion = JOB_SCHEMA_VERSION;
+  Object.assign(jobState, workflowFor(jobState));
   ensureZeroState(jobState);
   jobState.gcodePath = filePath;
   jobState.sourceGcodePath = jobState.sourceGcodePath || filePath;
   jobState.jobPath = jobPathFor(filePath);
   ensureActiveRunShape(jobState);
-  jobState.startMode = 'use_active_work_zero';
+  if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
   if (jobState.safeStartZ === undefined || jobState.safeStartZ === null) jobState.safeStartZ = Number(safeZInput?.value) || 15;
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
-  if (startModeSelect) jobState.startMode = startModeSelect.value || jobState.startMode;
   if (runSafeStartZInput) jobState.safeStartZ = Math.max(0, Math.min(200, Number(runSafeStartZInput.value || jobState.safeStartZ || 15)));
   jobState.feedOverride = {
     ...currentFeedOverride(),
@@ -3365,7 +3458,18 @@ async function loadJob() {
     return;
   }
 
-  jobState = await res.json();
+  const loaded = await res.json();
+  if (!isJobV3(loaded)) {
+    jobExists = false;
+    jobState = newJobState();
+    setJobResult('Old job setup is not supported. Create a new setup for this file.', true);
+    renderJobPanel();
+    renderFeedOverridePanel();
+    renderPreflight();
+    return;
+  }
+  jobState = loaded;
+  Object.assign(jobState, workflowFor(jobState));
   ensureZeroState(jobState);
   ensureActiveRunShape(jobState);
   ensureHistoryShape(jobState);
@@ -3377,7 +3481,7 @@ async function loadJob() {
   if (runSafeStartZInput) {
     runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
   }
-  jobState.startMode = 'use_active_work_zero';
+  if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
   jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
@@ -3402,7 +3506,7 @@ async function loadJob() {
 
 async function saveJob() {
   const job = ensureJobState();
-  const json = JSON.stringify(job, null, 2);
+  const json = JSON.stringify(job);
   const file = new File([json], basename(job.jobPath), { type: 'application/json' });
   const form = new FormData();
   form.append('path', '/jobs');
@@ -3428,7 +3532,8 @@ async function loadExistingJobJson() {
   try {
     const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(filePath))}`);
     if (!res.ok) return null;
-    return await res.json();
+    const loaded = await res.json();
+    return isJobV3(loaded) ? loaded : null;
   } catch (err) {
     return null;
   }
@@ -3589,7 +3694,7 @@ async function selectSourceRunInUi() {
 }
 
 async function uploadJobJson(job) {
-  const json = JSON.stringify(job, null, 2);
+  const json = JSON.stringify(job);
   const file = new File([json], basename(job.jobPath), { type: 'application/json' });
   const form = new FormData();
   form.append('path', '/jobs');
@@ -3599,24 +3704,79 @@ async function uploadJobJson(job) {
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Preview metadata save failed');
 }
 
+function previewCanvasPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Browser could not encode the preview thumbnail PNG'));
+    }, 'image/png');
+  });
+}
+
+async function ensurePreviewThumbnailDirectory() {
+  const res = await fetch('/api/mkdir', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: '/jobs/thumbs' }),
+  });
+  if (!res.ok && res.status !== 409) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Could not create thumbnail folder');
+  }
+}
+
+async function storedThumbnailExists(path) {
+  if (!path) return false;
+  const res = await fetch(`/api/download?path=${encodeURIComponent(path)}`).catch(() => null);
+  return Boolean(res?.ok);
+}
+
+async function createMissingPreviewThumbnail(existingPath = '') {
+  if (await storedThumbnailExists(existingPath)) return existingPath;
+  const [{ toolpath }, thumbnail] = await Promise.all([toolpathModulesPromise, thumbnailModulePromise]);
+  const model = sourceToolpathModel || toolpathModel;
+  if (!model) return existingPath || '';
+  const canvas = document.createElement('canvas');
+  canvas.width = thumbnail.THUMBNAIL_SIZE;
+  canvas.height = thumbnail.THUMBNAIL_SIZE;
+  if (!toolpath.renderToolpathToCanvas(model, canvas, {
+    width: thumbnail.THUMBNAIL_SIZE,
+    height: thumbnail.THUMBNAIL_SIZE,
+  })) return existingPath || '';
+
+  const blob = await previewCanvasPngBlob(canvas);
+  const thumbnailPath = thumbnail.thumbnailPathFor(basename(filePath));
+  await ensurePreviewThumbnailDirectory();
+  const form = new FormData();
+  form.append('path', '/jobs/thumbs');
+  form.append('file', new File([blob], basename(thumbnailPath), { type: 'image/png' }));
+  const res = await fetch('/api/upload?overwrite=true', { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Thumbnail upload failed');
+  return thumbnailPath;
+}
+
 async function syncPreviewMetadata() {
   if (!toolpathModel || !previewSummaryData) return;
   try {
     const { adapter } = await toolpathModulesPromise;
     const existing = await loadExistingJobJson();
-    const base = existing || {
-      schemaVersion: 2,
-      createdAt: nowIso(),
-      gcodePath: filePath,
-      jobPath: jobPathFor(filePath),
-    };
+    const base = existing || ensureJobState();
+    let thumbnailPath = base.thumbnailPath || '';
+    try {
+      thumbnailPath = await createMissingPreviewThumbnail(thumbnailPath);
+    } catch (err) {
+      appendRunLog(`Thumbnail was not saved: ${err.message}`);
+    }
     const merged = adapter.mergePreviewIntoJob({
       ...base,
       updatedAt: nowIso(),
       gcodePath: filePath,
       jobPath: jobPathFor(filePath),
-    }, toolpathModel, base.thumbnailPath || null);
+    }, toolpathModel, thumbnailPath || null);
     await uploadJobJson(merged);
+    jobState = merged;
+    Object.assign(jobState, workflowFor(jobState));
     jobExists = true;
     // Routine preview persistence stays silent; this status area is reserved for operator actions.
   } catch (err) {
@@ -3692,6 +3852,8 @@ async function armJob(options = {}) {
     renderArmPanel();
     return true;
   } catch (err) {
+    job.startAuthorization = emptyWorkflow().startAuthorization;
+    job.startAuthorizationToken = '';
     job.arm = previousArm;
     setArmResult(`Arm failed because the job JSON could not be saved: ${err.message}`, true);
     renderArmPanel();
@@ -3746,6 +3908,9 @@ async function sendBoundingBoxTrace() {
       jobState.dryRun = dryRunSummary();
       jobState.dryRun.lastBoundingBoxTraceAt = nowIso();
       jobState.dryRun.lastBoundingBoxTraceStatus = 'complete';
+      await recordPhysicalVerification('bounds', {
+        safeZ: Number(safeZInput.value), margin: Number(traceMarginInput.value),
+      });
     }
     appendDryRunLog('Bounding box trace complete; starting X/Y/Z restored');
   } catch (err) {
@@ -3795,6 +3960,9 @@ async function sendAircutToolpath() {
       jobState.dryRun.lastAircutAt = nowIso();
       jobState.dryRun.lastAircutStatus = 'complete';
       jobState.dryRun.lastAircutCommandCount = Number(finalStatus.acknowledgedLineCount || aircutCommands.length);
+      await recordPhysicalVerification('aircut', {
+        safeZ: Number(safeZInput.value), margin: Number(traceMarginInput.value),
+      });
     }
     appendDryRunLog('Aircut complete');
   } catch (err) {
@@ -3985,6 +4153,21 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
     axes: selectedAxes,
     method: selectedAxes === 'xyz' ? 'G92 X0 Y0 Z0' : `G92 ${selectedAxes.toUpperCase()}0`,
   });
+  if (selectedAxes === 'xyz') {
+    job.frameDecision = {
+      mode: 'homed',
+      bootSessionId: data.frame?.bootSessionId || '',
+      homingSessionId: data.frame?.homingSessionId || '',
+      acknowledgedAt: nowIso(),
+    };
+    job.workZeroDecision = {
+      mode: 'homed',
+      token: job.activeWorkZeroId || `homed:${data.frame?.homingSessionId || ''}:${job.workZero.capturedAt}`,
+      bootSessionId: data.frame?.bootSessionId || '',
+      capturedAt: job.workZero.capturedAt,
+    };
+    job.verificationDecision = emptyWorkflow().verificationDecision;
+  }
   if (job.arm?.state === 'ARMED') job.arm.state = 'STALE';
   await saveJobQuietly();
   setJobResult(selectedAxes === 'x' ? 'X zero saved' : selectedAxes === 'y' ? 'Y zero saved' : 'Work zero saved');
@@ -4508,10 +4691,9 @@ function draw() {
     strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, jobPx, jobPy, colors.rawBounds, [7, 5]);
     strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, jobPx, jobPy, colors.cutBounds, [3, 3]);
     strokeBounds(ctx, transformedPreview?.generatedRunBounds, jobPx, jobPy, colors.placementBounds, [8, 4]);
-    const dryRunComplete = jobState?.dryRun?.lastBoundingBoxTraceStatus === 'complete' ||
-      jobState?.dryRun?.lastAircutStatus === 'complete';
-    if (dryRunComplete) {
-      const margin = Number(jobState?.dryRun?.margin || 0);
+    const verification = jobState?.verificationDecision || {};
+    if (verification.result === 'complete' && ['bounds', 'aircut'].includes(verification.type)) {
+      const margin = Number(verification.margin || 0);
       const active = parsed?.bounds;
       if (hasBounds(active)) {
         strokeBounds(ctx, {
@@ -4640,6 +4822,21 @@ function draw() {
     ctx.beginPath();
     ctx.arc(toolX, toolY, 9, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
+  }
+  const workflow = jobState ? guidedWorkflowStatus() : null;
+  const canvasWarnings = [];
+  if (workflow?.frame.mode === 'manual-unhomed') canvasWarnings.push('UNHOMED POSITION');
+  if (workflow?.verification.type === 'skipped') canvasWarnings.push('PHYSICAL CHECK SKIPPED');
+  if (canvasWarnings.length) {
+    ctx.save();
+    ctx.font = '700 11px system-ui, sans-serif';
+    const label = canvasWarnings.join(' · ');
+    const width = Math.min(w - 24, ctx.measureText(label).width + 20);
+    ctx.fillStyle = 'rgba(140, 68, 12, 0.9)';
+    ctx.fillRect(12, h - 38, width, 26);
+    ctx.fillStyle = '#fff4df';
+    ctx.fillText(label, 22, h - 21);
     ctx.restore();
   }
 }
@@ -5000,7 +5197,7 @@ async function loadPreview() {
     if (runSafeStartZInput) {
       runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
     }
-    jobState.startMode = 'use_active_work_zero';
+    if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
     if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
     if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
     jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
@@ -5030,7 +5227,7 @@ async function loadPreview() {
   await jobRecoveryPromise;
   refreshRecoveryPlan();
   draw();
-  syncPreviewMetadata();
+  await syncPreviewMetadata();
   if (!jobExists) await checkJobExists();
 }
 

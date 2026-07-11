@@ -19,7 +19,7 @@ describe('machine discovery and configuration', () => {
   });
 
   it('exposes cached M115 info and guarded editable endpoints', () => {
-    expect(firmware).toContain('firmwareVersion = "0.6.10-root-sd-update"');
+    expect(firmware).toContain('firmwareVersion = "0.6.11-guided-cut-workflow"');
     expect(firmware).toContain('Preferences machinePrefs');
     expect(firmware).toContain('area:{full:{min:{x:%f,y:%f,z:%f}');
     expect(firmware).toContain('server.on("/api/machine/info", HTTP_GET, handleMachineInfo)');

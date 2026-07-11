@@ -64,24 +64,26 @@ export class MockJobRunner {
     if (this.isActive()) throw new Error('another job is already active');
     const job = JSON.parse(await this.sd.readText(request.jobPath));
     const active = getActiveRun(job);
-    const execution = assertCanUseActiveRunForExecution(job, { requireArm: true });
+    const execution = assertCanUseActiveRunForExecution(job, { requireArm: false });
     if (!execution.ok) throw new Error(execution.message);
-    if (active.path !== request.gcodePath) throw new Error('requested path is not the armed active run path');
-    if (request.activeRunMode && active.mode !== request.activeRunMode) throw new Error('active run mode changed after arm');
-    if (job.arm?.activeRunPath && job.arm.activeRunPath !== active.path) throw new Error('active run path changed after arm');
-    if (request.activeRunFingerprint && job.arm?.activeRunFingerprint &&
-        request.activeRunFingerprint !== job.arm.activeRunFingerprint) {
-      throw new Error('active run fingerprint changed after arm');
-    }
+    if (job.startAuthorizationToken !== 'AUTHORIZED') throw new Error('job JSON has no valid start authorization');
+    if (active.path !== request.gcodePath) throw new Error('requested path is not the authorized active run path');
+    if (request.activeRunMode && active.mode !== request.activeRunMode) throw new Error('active run mode changed after authorization');
 
     const text = await this.sd.readText(active.path);
     const bytes = Buffer.byteLength(text);
     const startMode = request.startMode || job.startMode || 'use_active_work_zero';
-    if (startMode !== 'use_active_work_zero') throw new Error('Start Job never applies G92');
-    const zero = this.frame?.workZeroMachine;
-    if (!this.frame?.trusted || !zero || Number(request.homingEpoch) !== Number(this.frame.homingEpoch) ||
-        !request.workZeroId || ['x', 'y', 'z'].some((axis) => Math.abs(Number(request[`workZeroMachine${axis.toUpperCase()}`]) - Number(zero[axis])) > 0.05)) {
-      throw new Error('active work zero does not match the homed machine frame');
+    if (!['use_active_work_zero', 'use_manual_work_frame'].includes(startMode)) throw new Error('invalid start mode');
+    if (startMode === 'use_manual_work_frame') {
+      if (!this.frame?.manualWorkFrameValid || !this.frame?.workZeroValid || request.bootSessionId !== this.frame.bootSessionId) {
+        throw new Error('manual work frame expired');
+      }
+    } else {
+      const zero = this.frame?.workZeroMachine;
+      if (!this.frame?.trusted || !zero || Number(request.homingEpoch) !== Number(this.frame.homingEpoch) ||
+          !request.workZeroId || ['x', 'y', 'z'].some((axis) => Math.abs(Number(request[`workZeroMachine${axis.toUpperCase()}`]) - Number(zero[axis])) > 0.05)) {
+        throw new Error('active work zero does not match the homed machine frame');
+      }
     }
     const safeStartZ = Number.isFinite(Number(request.safeStartZ)) ? Number(request.safeStartZ) : Number(job.safeStartZ || 15);
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));

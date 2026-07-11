@@ -31,11 +31,11 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('<header class=\\"panel maintenance-header\\"><h1>WiFi Settings</h1>');
   });
 
-  it('checks arm and generated metadata across the complete streamed job JSON', () => {
+  it('checks start authorization and generated metadata across the complete streamed job JSON', () => {
     const armedStart = source.indexOf('bool jobJsonIsArmed');
     const armedEnd = source.indexOf('String readJobJsonSnippet', armedStart);
     const armed = source.slice(armedStart, armedEnd);
-    expect(armed).toContain('jobFileContainsText(jobPath, "\\\"arm\\\":{\\\"state\\\":\\\"ARMED\\\"")');
+    expect(armed).toContain('jobFileContainsText(jobPath, "\\\"startAuthorizationToken\\\":\\\"AUTHORIZED\\\"")');
     expect(armed).not.toContain('8192');
     const generatedStart = source.indexOf('bool jobJsonAllowsActiveGeneratedRun');
     const generatedEnd = source.indexOf('bool jobJsonAllowsProductionResume', generatedStart);

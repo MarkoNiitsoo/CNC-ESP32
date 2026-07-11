@@ -8,15 +8,32 @@ const preview = await readFile(new URL('../../www/preview.js', import.meta.url),
 const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 
 describe('compact machine drawer', () => {
-  it('uses one operator-facing Review and Start workflow with an internal arm snapshot', () => {
+  it('keeps geometry left and the guided preparation workflow together on the right', () => {
+    expect(previewHtml).toContain('<h2>Placement</h2>');
+    expect(previewHtml).toContain('<h2>Prepare & Cut</h2>');
+    expect(previewHtml).not.toContain('data-preview-tab-button="setup"');
+    expect(previewHtml).not.toContain('data-preview-tab-button="dry-run"');
+    expect(preview).toContain("workflowButton('Continue Without Homing'");
+    expect(preview).toContain("workflowButton('Use Existing G54 Coordinates'");
+    expect(preview).toContain("workflowButton('Run Bounds Check'");
+    expect(preview).toContain("workflowButton('Continue Without Check'");
+  });
+
+  it('persists Bounds and Aircut evidence immediately as one workflow decision', () => {
+    expect(preview).toMatch(/lastBoundingBoxTraceStatus = 'complete';[\s\S]*await recordPhysicalVerification\('bounds'/);
+    expect(preview).toMatch(/lastAircutStatus = 'complete';[\s\S]*await recordPhysicalVerification\('aircut'/);
+    expect(preview).toMatch(/async function recordPhysicalVerification[\s\S]*ensureJobState\(\)[\s\S]*createVerificationDecision[\s\S]*await saveJobQuietly\(\)/);
+  });
+
+  it('uses one operator-facing Review and Start workflow with a one-time authorization', () => {
     expect(previewHtml).not.toContain('data-preview-tab-button="arm"');
     expect(previewHtml).toContain('data-preview-tab-button="run" data-icon="start">Start Cutting');
     expect(previewHtml).toContain('data-run-check="materialAndPathClear"');
     expect(previewHtml).toContain('data-run-check="toolAndZZeroVerified"');
     expect(previewHtml).toContain('data-run-check="spindleStateReady"');
     expect(previewHtml).not.toContain('data-run-check="toolAtWorkZero"');
-    expect(preview).toMatch(/reviewAndStartJobRun[\s\S]*armJob\(\{ automatic: true \}\)[\s\S]*startJobRun\(\)/);
-    expect(preview).toContain("source: automatic ? 'review-and-start' : 'manual-arm'");
+    expect(preview).toMatch(/reviewAndStartJobRun[\s\S]*await startJobRun\(\)/);
+    expect(preview).toContain("job.startAuthorizationToken = 'AUTHORIZED'");
   });
 
   it('prevents mobile long-press selection on interactive buttons', () => {
@@ -65,11 +82,11 @@ describe('compact machine drawer', () => {
     expect(preview).toContain("Spindle/laser start commands are suppressed.");
   });
 
-  it('normalizes missing zero objects in old or partial job JSON before capture', async () => {
+  it('normalizes missing zero objects in accepted v3 job JSON before capture', async () => {
     const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
     expect(preview).toContain('function ensureZeroState(job)');
     expect(preview).toMatch(/function ensureJobState\(\)[\s\S]*?ensureZeroState\(jobState\)/);
-    expect(preview).toMatch(/jobState = await res\.json\(\);\s*ensureZeroState\(jobState\)/);
+    expect(preview).toMatch(/jobState = loaded;[\s\S]*?ensureZeroState\(jobState\)/);
     expect(preview).toMatch(/jobState = existingJob;\s*ensureZeroState\(jobState\)/);
     expect(preview).toContain('beforeG92: normalizedCapture(workZero.beforeG92)');
     expect(preview).toContain('beforeG92Z: normalizedCapture(toolZero.beforeG92Z)');
@@ -171,8 +188,8 @@ describe('firmware-owned coordinate frames', () => {
   it('never reapplies G92 from the normal Start Job preamble', () => {
     const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
     expect(preamble).not.toMatch(/G92/);
-    expect(firmware).toContain('Start Job never applies G92');
-    expect(preview).toContain("startMode: 'use_active_work_zero'");
+    expect(firmware).toContain('startMode must use an active homed or manually confirmed work frame');
+    expect(preview).toContain("'use_manual_work_frame'");
     expect(previewHtml).not.toContain('value="apply_current_position_as_work_zero"');
   });
 

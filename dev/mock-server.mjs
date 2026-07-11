@@ -113,7 +113,8 @@ export async function createMockEnvironment(options = {}) {
   const frame = {
     machine: null, work: { ...marlin.position }, workZeroMachine: null,
     homedAxes: { x: false, y: false, z: false }, homingEpoch: 0, homingSessionId: '',
-    absoluteFromHome: false, homeReference: null, revision: 0, trusted: false,
+    bootSessionId: `mock-boot-${Date.now()}`, absoluteFromHome: false, manualWorkFrameValid: false,
+    workZeroValid: false, frameMode: 'untrusted', homeReference: null, revision: 0, trusted: false,
   };
   const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: config.lineDelayMs });
   const jog = {
@@ -272,6 +273,9 @@ export async function createMockServer(options = {}) {
           env.frame.homingEpoch += 1;
           env.frame.homingSessionId = `mock-home-${env.frame.homingEpoch}-${Date.now()}`;
           env.frame.absoluteFromHome = true;
+          env.frame.manualWorkFrameValid = false;
+          env.frame.workZeroValid = true;
+          env.frame.frameMode = 'homed';
           env.frame.homeReference = {
             counts: Object.fromEntries(['x', 'y', 'z'].map((axis) => [axis, Math.round(env.marlin.machinePosition[axis] * env.marlin.stepsPerMm[axis])])),
             stepsPerMm: { ...env.marlin.stepsPerMm },
@@ -282,6 +286,9 @@ export async function createMockServer(options = {}) {
           for (const axis of axes) env.frame.homedAxes[axis] = true;
           env.frame.trusted = false;
           env.frame.absoluteFromHome = false;
+          env.frame.manualWorkFrameValid = false;
+          env.frame.workZeroValid = false;
+          env.frame.frameMode = 'untrusted';
           env.frame.homingSessionId = '';
           env.frame.homeReference = null;
           env.frame.workZeroMachine = null;
@@ -291,23 +298,48 @@ export async function createMockServer(options = {}) {
         env.frame.revision += 1;
         return json(res, 200, env.frame);
       }
+      if (req.method === 'POST' && pathname === '/api/machine/manual-frame') {
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'confirming a manual work frame requires idle Marlin transport' });
+        const mode = String((await readJson(req)).mode || '').toLowerCase();
+        if (!['confirm', 'preserve', 'set-zero'].includes(mode)) throw new Error('mode must be confirm, preserve, or set-zero');
+        const before = env.marlin.execute('M114').response;
+        if (mode !== 'confirm') env.marlin.execute('G54');
+        if (mode === 'set-zero') env.marlin.execute('G92 X0 Y0 Z0');
+        const after = env.marlin.execute('M114').response;
+        env.frame.machine = null;
+        env.frame.work = { ...env.marlin.position };
+        env.frame.workZeroMachine = null;
+        env.frame.homedAxes = { x: false, y: false, z: false };
+        env.frame.homingSessionId = '';
+        env.frame.absoluteFromHome = false;
+        env.frame.manualWorkFrameValid = true;
+        env.frame.workZeroValid = mode !== 'confirm';
+        env.frame.frameMode = 'manual-unhomed';
+        env.frame.homeReference = null;
+        env.frame.trusted = false;
+        env.frame.revision += 1;
+        return json(res, 200, { ok: true, mode, before, after, frame: env.frame });
+      }
       if (req.method === 'POST' && pathname === '/api/work-zero/set') {
-        if (!env.frame.trusted || env.runner.isActive()) return json(res, 409, { ok: false, error: 'Home All is required before setting a job work zero' });
+        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || env.runner.isActive()) return json(res, 409, { ok: false, error: 'Home All or a confirmed manual work frame is required before setting work zero' });
         const body = await readJson(req);
         const axes = ['x', 'y'].includes(String(body.axes || '').toLowerCase()) ? String(body.axes).toLowerCase() : 'xyz';
         const before = env.marlin.execute('M114').response;
         env.marlin.execute(axes === 'x' ? 'G92 X0' : axes === 'y' ? 'G92 Y0' : 'G92 X0 Y0 Z0');
         const after = env.marlin.execute('M114').response;
         syncMockFrame(env);
-        env.frame.workZeroMachine ||= { ...env.marlin.machinePosition };
-        if (axes === 'x' || axes === 'xyz') env.frame.workZeroMachine.x = env.marlin.machinePosition.x;
-        if (axes === 'y' || axes === 'xyz') env.frame.workZeroMachine.y = env.marlin.machinePosition.y;
-        if (axes === 'xyz') env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        if (env.frame.absoluteFromHome) {
+          env.frame.workZeroMachine ||= { ...env.marlin.machinePosition };
+          if (axes === 'x' || axes === 'xyz') env.frame.workZeroMachine.x = env.marlin.machinePosition.x;
+          if (axes === 'y' || axes === 'xyz') env.frame.workZeroMachine.y = env.marlin.machinePosition.y;
+          if (axes === 'xyz') env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        }
+        env.frame.workZeroValid = true;
         env.frame.revision += 1;
         return json(res, 200, { ok: true, axes, before, after, frame: env.frame });
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/set-z') {
-        if (!env.frame.trusted || !env.frame.workZeroMachine || env.runner.isActive()) {
+        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || !env.frame.workZeroValid || env.runner.isActive()) {
           return json(res, 409, { ok: false, error: 'Home All and an active work frame are required before setting Z zero' });
         }
         const before = env.marlin.execute('M114').response;

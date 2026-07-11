@@ -61,7 +61,7 @@ or sensitive configuration is included.
   "friendlyName": "ESP32 CNC",
   "localUrl": "http://cnc.local",
   "ip": "192.168.1.42",
-  "mode": "sta",
+  "mode": "ap+sta",
   "mdnsEnabled": true,
   "bluetooth": {
     "enabled": true,
@@ -72,6 +72,8 @@ or sensitive configuration is included.
   "configSource": "defaults"
 }
 ```
+
+`mode` is `ap`, `sta`, or `ap+sta` depending on the active radio path.
 
 Bluetooth is a discovery label only. `started:false` does not indicate a WiFi or web-server fault.
 
@@ -125,7 +127,7 @@ Example response:
   "sketchSize": 827593,
   "freeSketchSpace": 1310720,
   "baudrate": 250000,
-  "wifiMode": "sta",
+  "wifiMode": "ap+sta",
   "ipAddress": "192.168.1.42",
   "ssid": "WorkshopWiFi",
   "rssi": -58,
@@ -287,6 +289,7 @@ Request body:
   "jobPath": "/jobs/test.gcode.job.json",
   "activeRunMode": "source",
   "startMode": "use_active_work_zero",
+  "bootSessionId": "A1B2C3D4-E5F60708",
   "workZeroId": "zero-...",
   "homingEpoch": 3,
   "workZeroMachineX": 100,
@@ -296,27 +299,28 @@ Request body:
 }
 ```
 
-The firmware rejects unsafe paths, missing files, non-`/jobs` job paths, and job JSON that is not
-marked `ARMED`. Normal source jobs must use a `gcodePath` under `/gcode`. Generated transformed jobs
+The firmware rejects unsafe paths, missing files, non-`/jobs` job paths, and Job JSON v3 without
+the one-use `startAuthorizationToken: "AUTHORIZED"` written by the final hold action. Normal source jobs must use a `gcodePath` under `/gcode`. Generated transformed jobs
 may use `/jobs/generated/...` only when `activeRunMode` is `"generated"` and the saved job JSON
 contains the same path as a validated active run. The browser sets generated active-run intent when
 the operator changes visible placement; there is no separate generated-file confirmation step in the
-normal workflow. The MVP verifies `ARMED` and generated active-run
-provenance with minimal string checks; robust JSON parsing is a TODO. The only normal start mode is
-`use_active_work_zero`.
+normal workflow. Firmware verifies start authorization and generated active-run provenance with
+bounded whole-file string checks; robust JSON parsing remains a TODO. Homed starts use
+`use_active_work_zero`; an explicitly acknowledged unhomed frame uses `use_manual_work_frame`.
 
-ARMED, workspace permission, and generated active-run validation tokens are scanned across the
+Start authorization, workspace permission, and generated active-run validation tokens are scanned across the
 complete SD file with a bounded rolling buffer. Their location is not limited to the first 8/16 KB
 of job history.
 
-Before streaming, firmware verifies the requested work-zero ID, homing epoch, and machine-space
-origin against its active frame. It then sends:
+For a homed start, firmware verifies the requested work-zero ID, homing epoch/session, and
+machine-space origin against its active frame. For a manual start, it instead requires the current
+per-boot ID and an active manual work frame; no absolute machine coordinates are invented. It then sends:
 
 `M5`, `G21`, `G90`, `G54`, `M220 S<startPercent>`, `M400`, `M114`,
 `G0 Z<safeStartZ> F400`, `M400`, `G0 F<travelFeedMmMin>`
 
 Normal Start Job never sends `G92`. A mismatch returns HTTP 409 and requires Set Work Zero or an
-explicit saved-zero restore before re-arming.
+explicit saved-zero restore before authorizing start again.
 
 An accepted request returns status with `state: "PREPARING"`. Firmware executes the preamble
 asynchronously and publishes the later `RUNNING` or `ERROR` transition through normal job-status
@@ -331,11 +335,14 @@ homing epoch immediately.
 ### Coordinate frame API
 
 - `GET /api/machine/frame` returns `machine`, `work`, `workZeroMachine`, homed axes,
-  `homingEpoch`, revision, and trust state.
+  `homingEpoch`, `homingSessionId`, `bootSessionId`, `frameMode`, revision, and trust state.
 - `POST /api/machine/home` accepts `{ "axes": "x|y|z|xy|all" }`. Home All establishes a new
   trusted epoch and deterministic temporary baseline at physical home.
-- `POST /api/work-zero/set` requires trusted Home All and accepts optional
-  `{ "axes": "x|y|xyz" }` (`xyz` is the backward-compatible default). It performs the complete
+- `POST /api/machine/manual-frame` accepts `{ "mode": "confirm|preserve|set-zero" }`. `confirm`
+  acknowledges the current unhomed position without selecting a zero; `preserve` accepts current
+  G54 work coordinates; `set-zero` applies G92 XYZ0. All manual state expires on ESP restart.
+- `POST /api/work-zero/set` requires trusted Home All or the current confirmed manual frame and
+  accepts optional `{ "axes": "x|y|xyz" }`. It performs the complete
   M400/M114/G92/M114 transaction for only those axes and returns the synchronized frame.
 - `POST /api/work-zero/set-z` performs the corresponding Z-only transaction and updates the same
 machine-space frame without changing X/Y origin.

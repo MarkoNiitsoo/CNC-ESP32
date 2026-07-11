@@ -77,7 +77,7 @@ describe('mock HTTP API', () => {
     await env.sd.writeText(jobPath, JSON.stringify({
       gcodePath, sourceGcodePath: gcodePath, placement: { rotationDeg: 0 },
       activeRun: { mode: 'source', path: gcodePath, sourceFingerprint: fingerprint },
-      arm: { state: 'ARMED', activeRunMode: 'source', activeRunPath: gcodePath, activeRunFingerprint: fingerprint },
+      schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED',
       feedOverride: { startPercent: 100, resetTo100AfterJob: true },
     }));
     const startResponse = await fetch(`${base}/api/job/start`, {
@@ -85,6 +85,7 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({
         gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
         startMode: 'use_active_work_zero', workZeroId: 'zero-api', homingEpoch: zeroFrame.frame.homingEpoch,
+        homingSessionId: zeroFrame.frame.homingSessionId,
         workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
         workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
         workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
@@ -116,6 +117,24 @@ describe('mock HTTP API', () => {
     expect(env.marlin.position.x).toBe(0);
     expect(env.marlin.position.y).toBe(500);
     expect(result.frame.workZeroMachine.x).toBe(100);
+  });
+
+  it('supports a manual unhomed frame without inventing machine coordinates', async () => {
+    const { base } = await start();
+    const confirmed = await fetch(`${base}/api/machine/manual-frame`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'confirm' }),
+    }).then((res) => res.json());
+    expect(confirmed.frame).toMatchObject({
+      frameMode: 'manual-unhomed', manualWorkFrameValid: true,
+      workZeroValid: false, machine: null, workZeroMachine: null,
+    });
+    const zero = await fetch(`${base}/api/machine/manual-frame`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'set-zero' }),
+    }).then((res) => res.json());
+    expect(zero.frame).toMatchObject({ workZeroValid: true, machine: null, workZeroMachine: null });
+    expect(zero.after).toMatch(/X:0\.0+ Y:0\.0+ Z:0\.0+/);
   });
 
   it('uploads and streams validated native-arc Aircut through one start request', async () => {

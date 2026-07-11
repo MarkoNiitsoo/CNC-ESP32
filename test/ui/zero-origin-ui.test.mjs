@@ -24,7 +24,8 @@ describe('operator Zero / Origin workflow', () => {
   });
 
   it('offers guarded Home All where homing is required', () => {
-    expect(preview).toContain("{ id: 'home_machine', label: 'Home Machine', target: 'setup' }");
+    expect(preview).toContain("workflowButton('Home All'");
+    expect(preview).toContain("workflowButton('Continue Without Homing'");
     expect(preview).toContain("window.dispatchEvent(new CustomEvent('cnc-home-machine-request'))");
     expect(machineBar).toMatch(/cnc-home-machine-request[\s\S]*home\('G28'[\s\S]*true\)/);
   });

@@ -19,7 +19,7 @@
 
 namespace {
 constexpr const char *kFirmwareName = "G-code CNC Pendant";
-constexpr const char *firmwareVersion = "0.6.10-root-sd-update";
+constexpr const char *firmwareVersion = "0.6.11-guided-cut-workflow";
 constexpr const char *buildDate = __DATE__;
 constexpr const char *buildTime = __TIME__;
 constexpr const char *kSetupApSsid = "G-code-CNC-Setup";
@@ -189,6 +189,7 @@ struct PositionTelemetry {
 struct MachineFrameState {
   bool machineValid = false;
   bool absoluteFromHome = false;
+  bool manualWorkFrameValid = false;
   bool workZeroValid = false;
   bool homedX = false;
   bool homedY = false;
@@ -330,6 +331,7 @@ String marlinAsyncLine;
 String streamMotionMode = "G0";
 PositionTelemetry marlinPosition;
 MachineFrameState machineFrame;
+String bootSessionId;
 MachineProfile machineProfile;
 MachineDiscoveryState machineDiscoveryState = MachineDiscoveryState::Idle;
 String machineDiscoveryResponse;
@@ -2246,7 +2248,7 @@ void updatePositionFromMarlinResponse(const String &response) {
           static_cast<float>(countY - machineFrame.homeCountY) / machineFrame.stepsY;
       machineFrame.machineZ = machineProfile.fullZMax +
           static_cast<float>(countZ - machineFrame.homeCountZ) / machineFrame.stepsZ;
-    } else if (machineFrame.workZeroValid) {
+    } else if (machineFrame.workZeroValid && !machineFrame.manualWorkFrameValid) {
       machineFrame.machineValid = true;
       machineFrame.machineX = machineFrame.workZeroMachineX + x;
       machineFrame.machineY = machineFrame.workZeroMachineY + y;
@@ -2272,7 +2274,7 @@ String machineFrameJson() {
   } else {
     json += ",\"machine\":null";
   }
-  if (machineFrame.workZeroValid) {
+  if (machineFrame.workZeroValid && machineFrame.absoluteFromHome) {
     json += ",\"workZeroMachine\":{\"x\":" + String(machineFrame.workZeroMachineX, 3) +
             ",\"y\":" + String(machineFrame.workZeroMachineY, 3) +
             ",\"z\":" + String(machineFrame.workZeroMachineZ, 3) + "}";
@@ -2284,7 +2286,18 @@ String machineFrameJson() {
           ",\"z\":" + String(machineFrame.homedZ ? "true" : "false") + "}";
   json += ",\"homingEpoch\":" + String(machineFrame.homingEpoch);
   json += ",\"homingSessionId\":\"" + jsonEscape(machineFrame.homingSessionId) + "\"";
+  json += ",\"bootSessionId\":\"" + jsonEscape(bootSessionId) + "\"";
   json += ",\"absoluteFromHome\":" + String(machineFrame.absoluteFromHome ? "true" : "false");
+  json += ",\"manualWorkFrameValid\":" + String(machineFrame.manualWorkFrameValid ? "true" : "false");
+  json += ",\"frameMode\":\"";
+  if (machineFrame.absoluteFromHome && machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ) {
+    json += "homed";
+  } else if (machineFrame.manualWorkFrameValid) {
+    json += "manual-unhomed";
+  } else {
+    json += "untrusted";
+  }
+  json += "\"";
   if (machineFrame.absoluteFromHome) {
     json += ",\"homeReference\":{\"counts\":{\"x\":" + String(machineFrame.homeCountX) +
             ",\"y\":" + String(machineFrame.homeCountY) + ",\"z\":" + String(machineFrame.homeCountZ) + "}";
@@ -3135,11 +3148,19 @@ String formValue(const char *name) {
   return value;
 }
 
+bool wifiStaConnected() {
+  return (activeWifiMode == "sta" || activeWifiMode == "ap+sta") && WiFi.status() == WL_CONNECTED;
+}
+
 String currentIpAddress() {
-  if (activeWifiMode == "sta" && WiFi.status() == WL_CONNECTED) {
+  if (wifiStaConnected()) {
     return WiFi.localIP().toString();
   }
 
+  return WiFi.softAPIP().toString();
+}
+
+String setupApIpAddress() {
   return WiFi.softAPIP().toString();
 }
 
@@ -3293,7 +3314,7 @@ void handleHealth() {
   json += "\",\"ssid\":\"";
   json += jsonEscape(activeWifiSsid);
   json += "\"";
-  if (activeWifiMode == "sta" && WiFi.status() == WL_CONNECTED) {
+  if (wifiStaConnected()) {
     json += ",\"rssi\":";
     json += String(WiFi.RSSI());
   }
@@ -3898,7 +3919,7 @@ void handleCommand() {
 }
 
 bool jobJsonIsArmed(const String &jobPath) {
-  return jobFileContainsText(jobPath, "\"arm\":{\"state\":\"ARMED\"");
+  return jobFileContainsText(jobPath, "\"startAuthorizationToken\":\"AUTHORIZED\"");
 }
 
 String readJobJsonSnippet(const String &jobPath) {
@@ -4290,26 +4311,35 @@ void handleJobStart() {
   const String activeRunMode = extractJsonString(body, "activeRunMode");
   String startMode = extractJsonString(body, "startMode");
   if (startMode.length() == 0) startMode = "use_active_work_zero";
-  if (startMode != "use_active_work_zero") {
-    sendJsonError(400, "Start Job never applies G92; set and save work zero before arming");
+  if (startMode != "use_active_work_zero" && startMode != "use_manual_work_frame") {
+    sendJsonError(400, "startMode must use an active homed or manually confirmed work frame");
     return;
   }
+  const String requestedBootSessionId = extractJsonString(body, "bootSessionId");
   const int requestedHomingEpoch = extractJsonInt(body, "homingEpoch", -1);
   const String requestedHomingSessionId = extractJsonString(body, "homingSessionId");
   const String requestedWorkZeroId = extractJsonString(body, "workZeroId");
   const float requestedZeroX = extractJsonFloat(body, "workZeroMachineX", NAN);
   const float requestedZeroY = extractJsonFloat(body, "workZeroMachineY", NAN);
   const float requestedZeroZ = extractJsonFloat(body, "workZeroMachineZ", NAN);
-  if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
-      requestedWorkZeroId.length() == 0 || requestedHomingEpoch < 0 || requestedHomingSessionId.length() == 0 ||
-      static_cast<uint32_t>(requestedHomingEpoch) != machineFrame.homingEpoch ||
-      requestedHomingSessionId != machineFrame.homingSessionId ||
-      !isfinite(requestedZeroX) || !isfinite(requestedZeroY) || !isfinite(requestedZeroZ) ||
-      fabs(requestedZeroX - machineFrame.workZeroMachineX) > 0.05f ||
-      fabs(requestedZeroY - machineFrame.workZeroMachineY) > 0.05f ||
-      fabs(requestedZeroZ - machineFrame.workZeroMachineZ) > 0.05f) {
-    sendJsonError(409, "active work zero does not match this absolute Home All session; restore or set work zero again");
-    return;
+  if (startMode == "use_manual_work_frame") {
+    if (!machineFrame.manualWorkFrameValid || !machineFrame.workZeroValid ||
+        requestedBootSessionId.length() == 0 || requestedBootSessionId != bootSessionId) {
+      sendJsonError(409, "manual work frame expired; confirm Continue without homing and work zero again");
+      return;
+    }
+  } else {
+    if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
+        requestedWorkZeroId.length() == 0 || requestedHomingEpoch < 0 || requestedHomingSessionId.length() == 0 ||
+        static_cast<uint32_t>(requestedHomingEpoch) != machineFrame.homingEpoch ||
+        requestedHomingSessionId != machineFrame.homingSessionId ||
+        !isfinite(requestedZeroX) || !isfinite(requestedZeroY) || !isfinite(requestedZeroZ) ||
+        fabs(requestedZeroX - machineFrame.workZeroMachineX) > 0.05f ||
+        fabs(requestedZeroY - machineFrame.workZeroMachineY) > 0.05f ||
+        fabs(requestedZeroZ - machineFrame.workZeroMachineZ) > 0.05f) {
+      sendJsonError(409, "active work zero does not match this absolute Home All session; restore or set work zero again");
+      return;
+    }
   }
   const float safeStartZ = clampFloat(extractJsonFloat(body, "safeStartZ", 15.0f), 0.0f, 200.0f);
   const float travelFeedMmMin = clampFloat(
@@ -4333,7 +4363,7 @@ void handleJobStart() {
     return;
   }
   if (!jobJsonIsArmed(jobPath)) {
-    sendJsonError(409, "job JSON is not ARMED");
+    sendJsonError(409, "job JSON has no valid start authorization");
     return;
   }
   if (generatedRunPath) {
@@ -4572,6 +4602,58 @@ void handleMachineFrame() {
   server.send(200, "application/json", machineFrameJson());
 }
 
+void handleManualMachineFrame() {
+  if (machineFrameControlBusy()) {
+    sendJsonError(409, "confirming a manual work frame requires idle Marlin transport");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+  String mode = extractJsonString(server.arg("plain"), "mode");
+  mode.toLowerCase();
+  if (mode != "confirm" && mode != "preserve" && mode != "set-zero") {
+    sendJsonError(400, "mode must be confirm, preserve, or set-zero");
+    return;
+  }
+
+  String before;
+  String after;
+  if (!runFrameCommand("M400", before, 120000) || !runFrameCommand("M114", before)) {
+    sendJsonError(502, "Marlin did not accept the manual work frame: " + before);
+    return;
+  }
+  if (mode != "confirm" && !runFrameCommand("G54", after)) {
+    sendJsonError(502, "Marlin did not select G54: " + after);
+    return;
+  }
+  if (mode == "set-zero" && !runFrameCommand("G92 X0 Y0 Z0", after)) {
+    sendJsonError(502, "Marlin did not set the current position as work zero: " + after);
+    return;
+  }
+  if (!runFrameCommand("M114", after)) {
+    sendJsonError(502, "Marlin position could not be captured: " + after);
+    return;
+  }
+
+  machineFrame.machineValid = false;
+  machineFrame.absoluteFromHome = false;
+  machineFrame.manualWorkFrameValid = true;
+  machineFrame.workZeroValid = mode != "confirm";
+  machineFrame.homedX = false;
+  machineFrame.homedY = false;
+  machineFrame.homedZ = false;
+  machineFrame.homingSessionId = "";
+  machineFrame.updatedAtMs = millis();
+  ++machineFrame.revision;
+  telemetryPositionDirty = true;
+  String json = "{\"ok\":true,\"mode\":\"" + mode + "\",\"before\":\"" +
+                jsonEscape(before) + "\",\"after\":\"" + jsonEscape(after) +
+                "\",\"frame\":" + machineFrameJson() + "}";
+  server.send(200, "application/json", json);
+}
+
 void handleMachineHome() {
   if (machineFrameControlBusy()) {
     sendJsonError(409, "homing requires idle Marlin transport");
@@ -4650,6 +4732,7 @@ void handleMachineHome() {
     machineFrame.countY = homeCountY;
     machineFrame.countZ = homeCountZ;
     machineFrame.absoluteFromHome = true;
+    machineFrame.manualWorkFrameValid = false;
     machineFrame.workZeroValid = true;
     machineFrame.workZeroMachineX = machineFrame.machineX;
     machineFrame.workZeroMachineY = machineFrame.machineY;
@@ -4662,6 +4745,7 @@ void handleMachineHome() {
   } else {
     machineFrame.workZeroValid = false;
     machineFrame.absoluteFromHome = false;
+    machineFrame.manualWorkFrameValid = false;
     machineFrame.homingSessionId = "";
     runFrameCommand("M114", response);
   }
@@ -4676,9 +4760,10 @@ void handleSetWorkZero() {
     sendJsonError(409, "setting work zero requires idle Marlin transport");
     return;
   }
-  if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.homedX ||
-      !machineFrame.homedY || !machineFrame.homedZ) {
-    sendJsonError(409, "Home All is required before setting a job work zero");
+  const bool homedFrame = machineFrame.machineValid && machineFrame.absoluteFromHome &&
+      machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
+  if (!homedFrame && !machineFrame.manualWorkFrameValid) {
+    sendJsonError(409, "Home All or a confirmed manual work frame is required before setting work zero");
     return;
   }
   String axes = server.hasArg("plain") ? extractJsonString(server.arg("plain"), "axes") : "";
@@ -4705,12 +4790,14 @@ void handleSetWorkZero() {
     sendJsonError(502, "Marlin work-zero transaction failed: " + after);
     return;
   }
-  machineFrame.machineX = targetMachineX;
-  machineFrame.machineY = targetMachineY;
-  machineFrame.machineZ = targetMachineZ;
-  if (axes == "x" || axes == "xyz") machineFrame.workZeroMachineX = targetMachineX;
-  if (axes == "y" || axes == "xyz") machineFrame.workZeroMachineY = targetMachineY;
-  if (axes == "xyz") machineFrame.workZeroMachineZ = targetMachineZ;
+  if (homedFrame) {
+    machineFrame.machineX = targetMachineX;
+    machineFrame.machineY = targetMachineY;
+    machineFrame.machineZ = targetMachineZ;
+    if (axes == "x" || axes == "xyz") machineFrame.workZeroMachineX = targetMachineX;
+    if (axes == "y" || axes == "xyz") machineFrame.workZeroMachineY = targetMachineY;
+    if (axes == "xyz") machineFrame.workZeroMachineZ = targetMachineZ;
+  }
   machineFrame.workZeroValid = true;
   marlinPosition.valid = true;
   if (axes == "x" || axes == "xyz") marlinPosition.x = 0;
@@ -4730,8 +4817,8 @@ void handleSetZZero() {
     sendJsonError(409, "setting Z zero requires idle Marlin transport");
     return;
   }
-  if (!machineFrame.machineValid || !machineFrame.workZeroValid) {
-    sendJsonError(409, "Home All and an active work frame are required before setting Z zero");
+  if ((!machineFrame.machineValid && !machineFrame.manualWorkFrameValid) || !machineFrame.workZeroValid) {
+    sendJsonError(409, "an active homed or manually confirmed work frame is required before setting Z zero");
     return;
   }
   String before;
@@ -4745,8 +4832,10 @@ void handleSetZZero() {
     sendJsonError(502, "Marlin Z-zero transaction failed: " + after);
     return;
   }
-  machineFrame.machineZ = targetMachineZ;
-  machineFrame.workZeroMachineZ = targetMachineZ;
+  if (machineFrame.absoluteFromHome) {
+    machineFrame.machineZ = targetMachineZ;
+    machineFrame.workZeroMachineZ = targetMachineZ;
+  }
   marlinPosition.z = 0;
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
@@ -4965,6 +5054,12 @@ void handleWifiPage() {
   body += currentIpAddress();
   body += " | SSID: ";
   body += htmlEscape(activeWifiSsid);
+  if (activeWifiMode == "ap+sta") {
+    body += " | Setup AP: ";
+    body += htmlEscape(kSetupApSsid);
+    body += " @ ";
+    body += setupApIpAddress();
+  }
   body += "</p></header>";
   body += "<section class=\"panel maintenance-panel\">";
   body += "<form method=\"post\" action=\"/api/wifi/save\">";
@@ -5153,24 +5248,24 @@ void handleStyleCss() {
   }
 }
 
-void startWifiAp() {
-  WiFi.mode(WIFI_AP);
+void startWifiAp(wifi_mode_t mode = WIFI_AP) {
+  WiFi.mode(mode);
   WiFi.softAPsetHostname(deviceIdentity.hostname.c_str());
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                     IPAddress(255, 255, 255, 0));
   WiFi.softAP(kSetupApSsid, kSetupApPassword);
-  activeWifiMode = "ap";
+  activeWifiMode = mode == WIFI_AP_STA ? "ap+sta" : "ap";
   activeWifiSsid = kSetupApSsid;
 }
 
 bool tryWifiSta(const String &ssid, const String &pass) {
-  WiFi.mode(WIFI_STA);
+  startWifiAp(WIFI_AP_STA);
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   const uint32_t start = millis();
   while (millis() - start < kStaConnectTimeoutMs) {
     if (WiFi.status() == WL_CONNECTED) {
-      activeWifiMode = "sta";
+      activeWifiMode = "ap+sta";
       activeWifiSsid = ssid;
       return true;
     }
@@ -5178,6 +5273,8 @@ bool tryWifiSta(const String &ssid, const String &pass) {
   }
 
   WiFi.disconnect(true);
+  activeWifiMode = "ap";
+  activeWifiSsid = kSetupApSsid;
   return false;
 }
 
@@ -5223,6 +5320,7 @@ void startHttpServer() {
   server.on("/api/machine/save", HTTP_POST, handleMachineSave);
   server.on("/api/machine/frame", HTTP_GET, handleMachineFrame);
   server.on("/api/machine/home", HTTP_POST, handleMachineHome);
+  server.on("/api/machine/manual-frame", HTTP_POST, handleManualMachineFrame);
   server.on("/api/marlin/log", HTTP_GET, handleMarlinLog);
   server.on("/api/cmd", HTTP_POST, handleCommand);
   server.on("/api/ui/status", HTTP_GET, handleUiStatus);
@@ -5271,6 +5369,10 @@ void startHttpServer() {
 
 void setup() {
   Serial.begin(kMarlinBaudrate, SERIAL_8N1, kMarlinRxPin, kMarlinTxPin);
+  char bootSession[24];
+  snprintf(bootSession, sizeof(bootSession), "%08lX-%08lX",
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
+  bootSessionId = bootSession;
   loadMachineProfile();
 
   bool sdFirmwareUpdated = false;

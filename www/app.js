@@ -36,6 +36,7 @@ const saveDeviceSettingsButton = document.querySelector('#save-device-settings')
 const restartDeviceButton = document.querySelector('#restart-device');
 
 const currentJobKey = 'lowrider.currentJob';
+const FILE_LONG_PRESS_MS = 450;
 let currentJob = readCurrentJob();
 let jobMeta = null;
 let jobStatus = { state: 'UNKNOWN' };
@@ -542,7 +543,9 @@ async function loadJobMeta() {
   try {
     const res = await fetch(`/api/download?path=${encodeURIComponent(currentJob.jobPath)}`);
     if (!res.ok) return;
-    jobMeta = await res.json();
+    const loaded = await res.json();
+    jobMeta = Number(loaded?.schemaVersion) === 3 ? loaded : null;
+    if (!jobMeta) return;
     jobMetaLoadedForPath = currentJob.jobPath;
   } catch (err) {
     jobMeta = null;
@@ -575,7 +578,7 @@ function previewBounds(meta = jobMeta) {
 }
 
 function warningCount(meta = jobMeta) {
-  return Number(meta?.preview?.warnings?.length || meta?.arm?.warningCount || 0);
+  return (meta?.preview?.warnings || []).filter((warning) => !/G54 default workspace|default-workspace/i.test(String(warning?.message || warning))).length;
 }
 
 function hasWorkZero(meta = jobMeta) {
@@ -587,7 +590,16 @@ function hasZZero(meta = jobMeta) {
 }
 
 function dryRunDone(meta = jobMeta) {
-  return meta?.dryRun?.lastBoundingBoxTraceStatus === 'complete' || meta?.dryRun?.lastAircutStatus === 'complete';
+  return meta?.verificationDecision?.result === 'complete';
+}
+
+function verificationLabel(meta = jobMeta) {
+  const decision = meta?.verificationDecision;
+  if (decision?.result !== 'complete') return 'Not chosen';
+  if (decision.type === 'bounds') return 'Bounds complete';
+  if (decision.type === 'aircut') return 'Full Aircut complete';
+  if (decision.type === 'skipped') return 'Skipped deliberately';
+  return 'Not chosen';
 }
 
 function armState(meta = jobMeta) {
@@ -637,7 +649,7 @@ function hasNewerUnusedWorkZero(meta = jobMeta) {
 }
 
 function nextAction() {
-  if (readinessModule) {
+  if (readinessModule && Number(jobMeta?.schemaVersion) !== 3) {
     const readiness = readinessModule.buildJobReadiness(jobMeta || {}, {
       currentJob,
       jobStatus,
@@ -653,6 +665,7 @@ function nextAction() {
   if (lastRun?.state === 'stopped' || lastRun?.state === 'interrupted') return { label: 'Review Interrupted Run', href: `${previewUrl()}#setup` };
   if (!previewBounds()) return { label: 'Open Preview', href: previewUrl() };
   if (activeRunNeedsUpdate()) return { label: 'Update Run File', href: `${previewUrl()}#preview` };
+  if (Number(jobMeta?.schemaVersion) === 3) return { label: 'Prepare & Cut', href: `${previewUrl()}#preflight` };
   if (!hasWorkZero()) return { label: 'Set Work Zero', href: `${previewUrl()}#setup` };
   if (!hasZZero()) return { label: 'Set Z Zero', href: `${previewUrl()}#setup` };
   if (jobMeta?.preflight?.state === 'NOT_READY') return { label: 'Review Preflight', href: `${previewUrl()}#preflight` };
@@ -679,7 +692,7 @@ function readinessActionForDashboard(action = {}) {
 }
 
 function dashboardReadiness() {
-  if (!readinessModule || !currentJob) return null;
+  if (!readinessModule || !currentJob || Number(jobMeta?.schemaVersion) === 3) return null;
   return readinessModule.buildJobReadiness(jobMeta || {}, {
     currentJob,
     jobStatus,
@@ -728,8 +741,7 @@ function renderCurrentJob() {
       <dt>Feed override</dt><dd>${html(feed)}%</dd>
       <dt>Estimated time</dt><dd>${formatMinutes(jobMeta?.preview?.estimate?.effectiveSecondsWithOverride || jobMeta?.preview?.estimate?.nominalSeconds || jobMeta?.preview?.estimatedTimeSeconds)}</dd>
       <dt>Work zero</dt><dd>${activeWorkZero ? html(shortTime(activeWorkZero.capturedAt)) : (hasWorkZero() ? 'OK' : 'Missing')}</dd>
-      <dt>Z zero</dt><dd>${activeZZero ? html(shortTime(activeZZero.capturedAt)) : (hasZZero() ? 'OK' : 'Missing')}</dd>
-      <dt>Dry run</dt><dd>${dryRunDone() ? 'Done' : 'Not done'}</dd>
+      <dt>Physical check</dt><dd>${html(verificationLabel())}</dd>
     </dl>
     <details class="diagnostics-panel">
       <summary>Advanced / Diagnostics</summary>
@@ -740,7 +752,7 @@ function renderCurrentJob() {
         <dt>Generated</dt><dd>${html(activeRunNeedsUpdate() ? 'Update required' : (jobMeta?.generatedValidation?.status || '-'))}</dd>
         <dt>Warnings</dt><dd>${warningCount()}</dd>
         <dt>Last run</dt><dd>${lastRun ? `${html(lastRun.state || 'started')} ${lastRunBadge}` : '-'}</dd>
-        <dt>Blocking</dt><dd>${readiness?.blockingReasons?.length ? readiness.blockingReasons.map((reason) => html(reason.message)).join('<br>') : 'None'}</dd>
+        <dt>Preparation</dt><dd>${readiness?.blockingReasons?.length ? readiness.blockingReasons.map((reason) => html(reason.message)).join('<br>') : 'Open Prepare & Cut for live checks'}</dd>
         <dt>Marlin critical</dt><dd>${html(critical || '-')}</dd>
       </dl>
     </details>
@@ -755,25 +767,76 @@ function renderCurrentJob() {
     <a ${buttonAttrs}>${html(primary.label)}</a>
     <div class="secondary-actions">
       <a class="maintenance-link" href="${previewUrl()}">Full Preview</a>
-      <a class="maintenance-link" href="${previewUrl()}#setup">Machine Setup</a>
+      <a class="maintenance-link" href="${previewUrl()}#preview">Place & Rotate</a>
       ${hasNewerUnusedWorkZero() ? `<a class="maintenance-link" href="${previewUrl()}#setup">Choose previous zero</a>` : ''}
       ${lastRun?.state === 'stopped' || lastRun?.state === 'interrupted' ? `<a class="maintenance-link" href="${previewUrl()}#setup">Review interrupted run</a>` : ''}
-      <a class="maintenance-link" href="${previewUrl()}#dry-run">Dry Run</a>
-      <a class="maintenance-link" href="${previewUrl()}#run">Start Cutting</a>
+      <a class="maintenance-link" href="${previewUrl()}#preflight">Prepare & Cut</a>
       <a class="maintenance-link" href="#logs" data-nav-target="logs">Open Log</a>
     </div>
   `;
 }
 
 function fileBadges(item, meta = null) {
-  const badges = [item.name.split('.').pop()?.toLowerCase() || 'file'];
-  if (meta) badges.push('has job');
-  if (meta?.preview) badges.push('preview');
-  const warnings = Number(meta?.preview?.warnings?.length || 0);
-  if (warnings) badges.push(`${warnings} warnings`);
+  const badges = [];
+  const warnings = (meta?.preview?.warnings || []).filter((warning) => !/G54 default workspace|default-workspace/i.test(String(warning?.message || warning)));
+  if (warnings.length) badges.push(`${warnings.length} need attention`);
   const estimate = formatMinutes(meta?.preview?.estimate?.effectiveSecondsWithOverride || meta?.preview?.estimate?.nominalSeconds);
   if (estimate !== '-') badges.push(estimate);
   return badges.map((badge) => `<span class="status-badge">${html(badge)}</span>`).join('');
+}
+
+function bindLauncherCard(row, actions, item) {
+  let longPressTimer = null;
+  let suppressClick = false;
+  const setActionsOpen = (open) => {
+    document.querySelectorAll('#launcher-list .file-card.expanded').forEach((other) => {
+      if (other === row) return;
+      other.classList.remove('expanded');
+      const otherActions = other.querySelector('.file-actions');
+      if (otherActions) otherActions.hidden = true;
+    });
+    row.classList.toggle('expanded', open);
+    actions.hidden = !open;
+  };
+  const clearLongPress = () => {
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = null;
+  };
+  row.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    setActionsOpen(true);
+  });
+  row.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.target.closest('.file-actions')) return;
+    suppressClick = false;
+    clearLongPress();
+    longPressTimer = setTimeout(() => {
+      suppressClick = true;
+      setActionsOpen(true);
+    }, FILE_LONG_PRESS_MS);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave', 'dragstart'].forEach((name) => row.addEventListener(name, clearLongPress));
+  row.addEventListener('click', (event) => {
+    if (event.target.closest('.file-actions')) return;
+    if (suppressClick) {
+      suppressClick = false;
+      event.preventDefault();
+      return;
+    }
+    if (event.shiftKey) {
+      event.preventDefault();
+      setActionsOpen(true);
+      return;
+    }
+    if (item.type === 'dir') loadFiles(item.path);
+    else openJob(item.path);
+  });
+  row.addEventListener('keydown', (event) => {
+    if (!['Enter', ' '].includes(event.key) || event.target.closest('.file-actions')) return;
+    event.preventDefault();
+    if (item.type === 'dir') loadFiles(item.path);
+    else openJob(item.path);
+  });
 }
 
 async function fileMetadataFor(item) {
@@ -798,65 +861,41 @@ async function renderFiles(items) {
   for (const item of gcodeItems) {
     const meta = await fileMetadataFor(item);
     const row = document.createElement('article');
-    row.className = 'file-row compact-row';
+    row.className = 'file-row file-card compact-row';
     row.dataset.path = item.path;
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
     const thumb = item.type === 'dir'
-      ? '<span class="thumb-placeholder">DIR</span>'
+      ? '<span class="thumb-placeholder" aria-hidden="true">Folder</span>'
       : meta?.thumbnailPath
         ? `<img class="thumb-image" src="${html(thumbnailUrl(meta.thumbnailPath))}" alt="">`
-        : '<span class="thumb-placeholder">GC</span>';
+        : '<span class="thumb-placeholder" aria-hidden="true">No preview</span>';
     row.innerHTML = `
-      <button class="file-name file-main" type="button">
+      <div class="file-name file-main">
         ${thumb}
         <span>
           <strong>${html(item.type === 'dir' ? `${item.name}/` : item.name)}</strong>
-          <small>${item.type === 'file' ? `${formatBytes(item.size)} | ${html(item.name.split('.').pop() || 'file')}` : 'folder'}</small>
+          <small>${item.type === 'file' ? formatBytes(item.size) : 'folder'}</small>
           <span class="badge-row">${fileBadges(item, meta)}</span>
         </span>
-      </button>
-      <button class="select-file" type="button">${item.type === 'file' ? 'Select' : 'Open'}</button>
+      </div>
       <div class="file-actions" hidden></div>
     `;
-    const main = row.querySelector('.file-main');
-    const select = row.querySelector('.select-file');
     const actions = row.querySelector('.file-actions');
-    const expand = () => {
-      document.querySelectorAll('.compact-row.expanded').forEach((openRow) => {
-        if (openRow !== row) {
-          openRow.classList.remove('expanded');
-          const openActions = openRow.querySelector('.file-actions');
-          if (openActions) openActions.hidden = true;
-        }
-      });
-      row.classList.toggle('expanded');
-      actions.hidden = !row.classList.contains('expanded');
-    };
-    main.addEventListener('click', () => {
-      if (item.type === 'dir') loadFiles(item.path);
-      else expand();
-    });
-    select.addEventListener('click', () => {
-      if (item.type === 'dir') loadFiles(item.path);
-      else openJob(item.path);
-    });
     actions.innerHTML = item.type === 'file' ? `
-      <button type="button" data-open-job>Open Job</button>
-      <a class="maintenance-link" href="${previewUrl(item.path)}">Full Preview</a>
-      <details class="more-actions">
-        <summary>More</summary>
-        <button type="button" data-rename>Rename</button>
-        <a class="maintenance-link" href="/api/download?path=${encodeURIComponent(item.path)}">Download</a>
-        <button type="button" data-view-raw>View Raw / Details</button>
-        <button type="button" data-delete class="danger-button">Delete</button>
-      </details>
+      <button type="button" data-rename>Rename</button>
+      <a class="maintenance-link" href="/api/download?path=${encodeURIComponent(item.path)}">Download</a>
+      <button type="button" data-view-raw>Details</button>
+      <button type="button" data-delete class="danger-button">Delete</button>
     ` : '';
-    actions.querySelector('[data-open-job]')?.addEventListener('click', () => openJob(item.path));
+    bindLauncherCard(row, actions, item);
     actions.querySelector('[data-rename]')?.addEventListener('click', () => renameFile(item.path));
     actions.querySelector('[data-view-raw]')?.addEventListener('click', () => {
       const preview = meta?.preview;
       alert(`${item.path}\n${formatBytes(item.size)}\nWarnings: ${preview?.warnings?.length || 0}\nEstimate: ${formatMinutes(preview?.estimate?.effectiveSecondsWithOverride || preview?.estimate?.nominalSeconds)}\nBounds: ${formatBounds(preview?.bounds?.placementBounds || preview?.bounds)}`);
     });
     actions.querySelector('[data-delete]')?.addEventListener('click', () => deleteFile(item.path));
+    actions.querySelectorAll('a, button').forEach((control) => control.addEventListener('click', (event) => event.stopPropagation()));
     launcherList.append(row);
   }
 }

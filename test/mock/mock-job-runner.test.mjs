@@ -24,7 +24,8 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
     placement: mode === 'generated' ? { rotationDeg: 90, generatedRunPath: gcodePath, dirty: validation !== 'valid' } : { rotationDeg: 0 },
     activeRun: { mode, path: gcodePath, generatedFingerprint: mode === 'generated' ? fingerprint : '', sourceFingerprint: mode === 'source' ? fingerprint : '', transformFingerprint: 'transform' },
     generatedValidation: mode === 'generated' ? { status: validation, generatedFingerprint: fingerprint, transformFingerprint: 'transform' } : null,
-    arm: { state: 'ARMED', activeRunMode: mode, activeRunPath: gcodePath, activeRunFingerprint: fingerprint, transformFingerprint: mode === 'generated' ? 'transform' : '' },
+    schemaVersion: 3,
+    startAuthorizationToken: 'AUTHORIZED',
     feedOverride: { startPercent: 100, resetTo100AfterJob: true },
   };
   const jobPath = '/jobs/job.job.json';
@@ -49,6 +50,28 @@ async function waitForState(runner, states, timeout = 1000) {
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe('MockJobRunner', () => {
+  it('accepts an explicitly authorized manual frame only in the same boot session', async () => {
+    const ctx = await fixture();
+    ctx.runner.frame.trusted = false;
+    ctx.runner.frame.workZeroMachine = null;
+    ctx.runner.frame.manualWorkFrameValid = true;
+    ctx.runner.frame.workZeroValid = true;
+    ctx.runner.frame.bootSessionId = 'boot-one';
+    ctx.request.startMode = 'use_manual_work_frame';
+    ctx.request.bootSessionId = 'boot-one';
+    await ctx.runner.start(ctx.request);
+    expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
+
+    const expired = await fixture();
+    Object.assign(expired.runner.frame, {
+      trusted: false, workZeroMachine: null, manualWorkFrameValid: true,
+      workZeroValid: true, bootSessionId: 'boot-two',
+    });
+    expired.request.startMode = 'use_manual_work_frame';
+    expired.request.bootSessionId = 'old-boot';
+    await expect(expired.runner.start(expired.request)).rejects.toThrow(/expired/i);
+  });
+
   it('streams an armed source job to completion', async () => {
     const ctx = await fixture();
     await ctx.runner.start(ctx.request);
