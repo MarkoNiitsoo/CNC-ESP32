@@ -6,6 +6,7 @@ import {
   isJobV3,
   workflowFor,
 } from './lib/job-workflow.js';
+import { collapseRepeatedStepdownPasses } from './lib/aircut-toolpath.js';
 
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
@@ -147,6 +148,7 @@ let traceCommands = [];
 let traceSafety = { ok: false, messages: [] };
 let aircutCommands = [];
 let aircutSafety = { ok: false, messages: [] };
+let aircutOptimization = { skippedPasses: 0, skippedSegments: 0, keptPasses: 0 };
 let dryRunStatus = 'idle';
 let activeTestMotion = null;
 let gcodeText = '';
@@ -2988,6 +2990,10 @@ function dryRunStatusMessage() {
   }
   const warning = safety.messages.find((message) => isDryRunWarningMessage(message));
   if (warning) return { text: warning, error: false };
+  if (dryRunModeIsAircut() && aircutOptimization.skippedPasses > 0) {
+    const passes = aircutOptimization.skippedPasses;
+    return { text: `Ready to send the Safe Z aircut toolpath. ${passes} repeated stepdown pass${passes === 1 ? '' : 'es'} will be skipped.`, error: false };
+  }
   return { text: dryRunModeIsAircut() ? 'Ready to send the Safe Z aircut toolpath.' : 'Ready to send the Safe Z box trace.', error: false };
 }
 
@@ -3119,13 +3125,29 @@ function ensureZeroState(job) {
 function generateAircutCommands() {
   const safeZ = Number(safeZInput.value);
   aircutCommands = [];
+  aircutOptimization = { skippedPasses: 0, skippedSegments: 0, keptPasses: 0 };
   let previousPoint = null;
   let truncated = false;
   const maxMovementCommands = 20000;
 
   if (parsed && Number.isFinite(safeZ)) {
     aircutCommands = ['M5', 'G21', 'G90', 'G54', `G0 Z${fmtMm(safeZ)} F${SAFETY_Z_FEED_MM_MIN}`];
-    for (const segment of toolpathModel?.segments || parsed.segments) {
+    const optimized = collapseRepeatedStepdownPasses(toolpathModel?.segments || parsed.segments);
+    aircutOptimization = {
+      skippedPasses: optimized.skippedPasses,
+      skippedSegments: optimized.skippedSegments,
+      keptPasses: optimized.keptPasses,
+    };
+    for (const segment of optimized.segments) {
+      const rapid = segment.rapid ?? segment.type === 'rapid';
+      const from = segment.from;
+      const disconnected = previousPoint && (
+        Math.abs(previousPoint.x - from.x) > 0.001 || Math.abs(previousPoint.y - from.y) > 0.001
+      );
+      if (!rapid && (!previousPoint || disconnected)) {
+        aircutCommands.push(`G0 X${fmtMm(from.x)} Y${fmtMm(from.y)} F${automaticTravelFeed()}`);
+        previousPoint = { x: from.x, y: from.y };
+      }
       const item = commandForSegment(segment, previousPoint);
       if (!item) continue;
       aircutCommands.push(item.command);
@@ -3140,7 +3162,10 @@ function generateAircutCommands() {
 
   aircutSafety = validateAircut(safeZ, aircutCommands.length);
   if (truncated) aircutSafety.messages.push('Aircut command list was limited to keep the browser responsive.');
-  showCommandPreview('Aircut', aircutCommands);
+  const label = aircutOptimization.skippedPasses > 0
+    ? `Aircut (${aircutOptimization.skippedPasses} repeated stepdown pass${aircutOptimization.skippedPasses === 1 ? '' : 'es'} skipped)`
+    : 'Aircut';
+  showCommandPreview(label, aircutCommands);
   setDryRunRunning(dryRunStatus === 'running');
   renderDryRunPanel();
 }

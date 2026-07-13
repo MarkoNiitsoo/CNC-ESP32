@@ -80,6 +80,8 @@ describe('compact machine drawer', () => {
     expect(preview).toContain("return dryRunModeIsAircut() ? 'Send Aircut Toolpath' : 'Send Box Trace';");
     expect(preview).toContain("if (dryRunModeIsAircut()) await sendAircutToolpath();");
     expect(preview).toContain("Spindle/laser start commands are suppressed.");
+    expect(preview).toContain('collapseRepeatedStepdownPasses(toolpathModel?.segments || parsed.segments)');
+    expect(preview).toContain('repeated stepdown pass');
   });
 
   it('normalizes missing zero objects in accepted v3 job JSON before capture', async () => {

@@ -277,7 +277,7 @@
           <label for="dry-run-aircut">Aircut toolpath</label>
           <label class="recovery-overlay-toggle dry-run-toggle"><input id="dry-run-aircut" type="checkbox"> ON</label>
         </div>
-        <p class="form-hint">When Aircut is ON, the full toolpath is sent at Safe Z and spindle/laser start commands are suppressed.</p>
+        <p class="form-hint">When Aircut is ON, the XY toolpath is sent at Safe Z and spindle/laser start commands are suppressed. Identical stepdown passes at different Z levels run once.</p>
         <div class="job-actions">
           <button id="send-dry-run" type="button" disabled>Send Box Trace</button>
           <button id="stop-m5" type="button" aria-label="Stop spindle or laser M5" data-icon="m5">Stop spindle/laser M5</button>
