@@ -1700,3 +1700,126 @@
 - The resulting `thumbnailPath` is persisted in the same awaited Job JSON v3 metadata transaction.
   Existing valid thumbnails are reused without regeneration.
 - Full regression passes 30 files / 280 tests.
+
+## 2026-07-12 - File-scoped state and compact recovery
+
+- Job JSON filenames now derive from the complete normalized G-code path plus a stable hash. Files
+  with the same basename in different folders can no longer share preparation or run history.
+- All Job JSON readers verify `sourceGcodePath`; unrelated or stale sidecars are ignored.
+- A terminal firmware status belonging to another file is shown as idle after a new file is opened;
+  active machine work remains visible and is never hidden.
+- Recovery now leads with a short actionable summary and three production confirmations. Saved-zero
+  restore, motion-only positioning, no-tool testing, settings, details, and logs are collapsed by
+  default to preserve work-area space.
+- Regression passes 30 test files / 282 tests.
+
+## 2026-07-12 - Thumbnail fallback after Job path change
+
+- File cards now probe the deterministic PNG sidecar when a new path-scoped Job JSON does not yet
+  exist. Existing thumbnails remain visible without importing any legacy job state or history.
+- Both dashboard and Files views use the same fallback.
+
+## 2026-07-12 - Machine drawer below persistent controls
+
+- The machine drawer and its scrim now begin below the measured machine-bar height, keeping the
+  work-area state line and Pause / Stop / M5 controls visible while the drawer is open.
+- Removed the duplicate state, feed, Pause, Stop, and M5 controls from the drawer header.
+
+## 2026-07-13 - Direction-locked joystick controls
+
+- Reworked the compact jog dock around one central free-direction XY joystick and eight nearby
+  cardinal/diagonal arrow handles.
+- Each arrow locks motion to its exact axis or 45-degree diagonal. Pressing begins at low speed;
+  pulling outward increases the firmware jog vector magnitude and releasing stops the jog.
+- Kept Z+/Z- as separate visible controls so Z motion cannot be mixed accidentally with XY.
+- Replaced the settings chevron with a gear and changed Safe Z to a labelled range slider alongside
+  the existing XY and Z maximum-speed sliders.
+- Mobile render review moved Z+/Z- into a true vertical rail and added visible axis labels to the
+  four cardinal arrows; diagonal arrows remain visually distinct without crowded labels.
+- Browser hit-testing found the transparent XY pad above the settings gear; the gear now has an
+  explicit foreground stacking level so it reliably opens the slider panel by touch.
+- Verification: focused machine controls passed 26 tests; the full suite passed 30 files / 284
+  tests. Local mobile mock review confirmed the vertical Z rail and the gear-opened three sliders.
+
+## 2026-07-13 - Overlapped jog segments
+
+- Kept the 25 ms jog send cadence but lengthened each queued G1 segment to 40 ms. The resulting
+  15 ms planning overlap gives Marlin the next segment before the current movement should end.
+- Increased the per-segment XY/Z caps in proportion to segment duration. Feed is still derived from
+  the configured maximum speed, so the overlap does not raise that speed.
+- Replaced separate Z+/Z- buttons with one spring-return vertical Z slider. Center is neutral;
+  distance upward/downward controls Z+/Z- vector magnitude and release uses the existing hard stop.
+- Styled the Z control as a compact vertical track with fixed Z+/Z- end labels and a centered
+  spring-return handle, preserving the existing mobile jog dock width.
+- Verification: focused jog/transport checks passed 45 tests; full suite passed 30 files / 284
+  tests; PlatformIO build succeeded at 19.4% RAM and 67.5% flash.
+- Local mock drag verification confirmed Z+ proportional input, release back to IDLE, centered
+  handle reset, and an unobstructed settings-gear hit target.
+
+## 2026-07-13 - Bounded jog horizon and natural release
+
+- Replaced the continuously growing 25/40 ms submission pattern with an estimated motion horizon:
+  refill starts at 40 ms and is capped at 80 ms while the 25 ms service tick remains responsive.
+- Normal jog stop no longer sends M400 or M410. It stops producing segments, appends G90 after the
+  already-sent relative moves, and remains STOPPING until acknowledgements and the short horizon drain.
+- Deadman, acknowledgement timeout, and explicitly emergency stop requests retain M410/M5 so loss
+  of browser control cannot silently turn into an unbounded natural coast.
+- Browser pointerup now requests `{ emergency: false }`; pointer cancellation, lost capture, request
+  failure, blur, and hidden-page events explicitly request the emergency stop path.
+- Verification: focused jog/transport checks passed 45 tests; full suite passed 30 files / 284
+  tests; PlatformIO build succeeded at 19.4% RAM and 67.6% flash.
+
+## 2026-07-13 - User-confirmed Restore Z
+
+- Removed timed automatic Z restoration. A completed Safe XY jog now exposes a saved restore target
+  without issuing any Z movement by itself.
+- Added `POST /api/jog/restore-z`. It requires idle state, rechecks current Z against the captured
+  Safe Z within 0.5 mm, then performs and waits for the user-requested Z move.
+- Emergency/deadman stops and any Z jog invalidate the pending restore target.
+- Replaced the Restore Z checkbox with a disabled-by-default action button. After a natural Safe XY
+  release it shows the captured target directly, for example `Restore Z 34 mm`, and asks for a
+  current-X/Y clearance confirmation before calling the restore endpoint.
+- Updated the development mock to preserve and explicitly restore the same target; it never moves Z
+  automatically after a normal jog release.
+- Z capture and validation now wait for Marlin's `M400` acknowledgement before sending `M114`, so
+  the saved and checked coordinates cannot be confused with an earlier command response.
+- Verification: focused Restore Z checks passed 39 tests; full suite passed 30 files / 285 tests;
+  PlatformIO build succeeded at 19.4% RAM and 67.6% flash. Local UI review confirmed the
+  disabled `Restore Z unavailable` button fits beside Safe in the gear panel.
+
+## 2026-07-13 - Stable UI during jog
+
+- Skin icon application now skips icon slots whose markup is already current, preventing unrelated
+  state refreshes from rebuilding every button icon.
+- Added targeted position, Marlin-log, and jog readout renderers; the 150 ms jog request path now
+  refreshes only jog state instead of the complete machine bar.
+- High-frequency jog, position, and Marlin-log telemetry subscriptions now use those targeted
+  renderers. Position telemetry emits a machine-frame change only when its frame revision changes,
+  so Preview does not rebuild setup/control panels for every moving coordinate.
+- Pause/Resume keeps a stable label and icon slot; its icon is reapplied only when the actual
+  Pause/Resume role changes.
+- Predicted jog coordinates still refresh immediately, but only the two position text readouts are
+  touched.
+- Verification: focused UI/telemetry checks passed 46 tests; full suite passed 30 files / 285 tests;
+  JavaScript syntax and diff checks passed.
+
+## 2026-07-13 - Absolute jog targets
+
+- Jog status now carries a captured absolute work-coordinate command target for X/Y/Z. This will be
+  the single firmware/UI position source while jog segments are queued.
+- Safe-Z completion now captures all three work axes after `M400`; non-Safe jog has a matching
+  `M400` + `M114` capture path before any segment can be generated.
+- Replaced `G91` jog segments with `G90` + absolute `G1 X/Y/Z` targets accumulated only in firmware.
+  Emergency/error paths invalidate the target; every later jog start resynchronizes from `M114`.
+- Jog heartbeat, emergency-stop, and transport errors are now persisted to `/logs/job.log` for
+  diagnosing intermittent control loss.
+- Browser position rendering no longer estimates or sums 150 ms jog steps. It accepts only complete
+  firmware `commandedWorkX/Y/Z` snapshots and lets live Marlin position telemetry correct physical
+  progress independently.
+- Development mock now starts in `G90`, returns the same absolute commanded fields, and executes
+  absolute G1 targets so browser/API tests exercise the production coordinate contract.
+- While an absolute jog target is active, slower physical position autoreports no longer overwrite
+  the displayed command target and cause a brief backwards/forwards jump. They resume immediately
+  after jog stops or the target is invalidated.
+- Verification: focused firmware/UI/mock coverage passed 58 tests; full suite passed 30 files / 285
+  tests. PlatformIO build succeeded at 19.4% RAM and 67.7% flash.

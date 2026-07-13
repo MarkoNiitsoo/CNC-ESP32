@@ -1594,3 +1594,98 @@ No firmware upload is required.
   `renderToolpathToCanvas()` engine used by upload previews. Deploy updated `preview.js`; it reuses
   `/www/lib/upload-thumbnail.js` and writes the PNG to `/jobs/thumbs` before saving Job JSON.
 - Final regression after thumbnail-on-open integration: 30 files / 280 tests.
+
+## 2026-07-12 recovery and new-file handoff
+
+- Deploy `preview.html`, `preview.js`, `app.js`, `files.js`, and `lib/upload-thumbnail.js` together:
+  job sidecar naming changed to full-path-derived hashed names. Old basename-only sidecars are
+  intentionally unsupported and will be recreated when a file is opened.
+- Opening another file starts with that file's own preparation/history state. Machine-level facts
+  such as homing and the live work frame remain intact because they describe the physical machine.
+- Recovery remains available only for the exact interrupted run identity. Advanced and diagnostic
+  controls are present but collapsed by default; production resume uses the compact checklist from
+  `lib/job-recovery.js`.
+- Verification: 30 test files / 282 tests. On-device visual and real interrupted-cut acceptance are
+  still required before relying on production recovery.
+- `app.js` and `files.js` also restore existing PNG cards directly when the new hashed Job JSON has
+  not been created yet; this does not restore old preparation or run state.
+- Deploy `machine-bar.js` and `style.css` together for the drawer offset and simplified header. The
+  offset follows the live machine-bar height, including a temporarily visible Marlin status row.
+
+## 2026-07-13 joystick handoff
+
+- Deploy `machine-bar.js` and `style.css` together. The jog dock now has a free XY center stick,
+  eight direction-locked draggable arrows, visible Z+/Z- controls, and a gear-opened slider panel.
+- Direction arrows reuse the existing firmware-backed jog start/update/stop heartbeat. Their exact
+  axis or diagonal is fixed; only vector magnitude changes as the handle is pulled radially.
+- Safe Z remains capped by the existing 70 mm machine limit. No firmware endpoint changed.
+- The final mobile layout uses a vertical Z rail and labels the cardinal direction handles X+/X-/Y+/Y-.
+- The settings gear has an explicit foreground z-index; keep it above the pad when adjusting dock layout.
+- Verification: `npm.cmd test` passed 30 files / 284 tests. Local mock browser hit-testing confirmed
+  that the gear itself receives the click and exposes Safe Z, XY max, and Z max sliders.
+
+## 2026-07-13 continuous jog follow-up
+
+- Firmware jog G1 segments now represent 40 ms while being submitted every 25 ms, keeping a
+  bounded 15 ms overlap in Marlin's planner without changing the configured feed limit.
+- Z is now one centered vertical proportional slider. Pull up/down for Z+/Z-; pull distance controls
+  vector magnitude, and pointer release/cancel/loss uses the existing jog stop path.
+- The Z handle is visually centered at rest and moves only inside its labelled vertical track.
+- Verification: 30 files / 284 tests pass and the ESP32-CAM firmware build succeeds (19.4% RAM,
+  67.5% flash). Mock-browser Z+ drag/release returned to IDLE and recentered the handle.
+
+## 2026-07-13 natural jog-stop follow-up
+
+- Firmware now keeps an estimated 40-80 ms motion horizon instead of submitting 40 ms moves every
+  25 ms indefinitely. This bounds input lag while keeping the next G1 available to Marlin.
+- `/api/jog/stop` accepts `{ "emergency": false }` for natural planner drain without M400/M410;
+  missing body or `emergency: true` remains the hard safety-stop path.
+- `machine-bar.js` sends natural stop only for pointerup. All ambiguous control-loss events send
+  `emergency: true`, preserving the safety boundary.
+- Verification: 30 files / 284 tests pass and ESP32-CAM firmware builds at 19.4% RAM / 67.6% flash.
+
+## 2026-07-13 manual Restore Z handoff
+
+- Firmware never restores jog Z on a timer. Safe XY release only sets `zRestoreAvailable` and keeps
+  the captured `originalZ` for explicit `POST /api/jog/restore-z`.
+- Restore validates idle state and unchanged Safe Z before moving. Emergency stop or Z-axis jog
+  invalidates the saved target.
+- Deploy `machine-bar.js` and `style.css` with the firmware. The settings panel now exposes a button
+  labelled with the pending target (for example `Restore Z 34 mm`); it is disabled when no target is
+  safely available and asks for explicit clearance confirmation before the request.
+- The mock endpoint mirrors this manual-only flow. Firmware coordinate capture waits for `M400 ok`
+  before `M114`, including before the restore safety check.
+- Verification: 30 files / 285 tests pass; ESP32-CAM firmware builds at 19.4% RAM / 67.6% flash.
+  The inactive Restore Z button was also checked in the local gear-panel layout.
+
+## 2026-07-13 stable jog UI handoff
+
+- Deploy `lib/ui-skins.js` with the jog UI update. Icon application is now idempotent and no longer
+  rewrites unchanged button icon markup.
+- `machine-bar.js` has separate fast readout renderers; jog acknowledgements no longer invoke the
+  full machine-bar render.
+- Jog/log/position telemetry uses those fast paths. Stable frame revisions no longer emit repeated
+  `cnc-machine-frame` events, and Pause/Resume preserves its existing icon DOM.
+- Predicted jog motion updates only the machine-bar and drawer coordinate text, preserving responsive
+  feedback without rebuilding controls.
+- Verification: 30 files / 285 tests pass, including focused machine-control, telemetry, and skin
+  coverage. No firmware rebuild is needed for this UI-only follow-up.
+
+## 2026-07-13 absolute jog target handoff
+
+- Firmware jog status exposes `commandedWorkX/Y/Z` only after an absolute starting position has been
+  captured; clients must ignore these fields when `commandedPositionCaptured` is false.
+- Both Safe and non-Safe starts obtain the absolute baseline only after Marlin confirms queued motion
+  complete and returns a full XYZ `M114` position.
+- Jog motion now remains in `G90` and queues absolute `G1` targets. Any hard stop/error invalidates
+  the commanded target so a subsequent session must recapture actual Marlin position.
+- `/logs/job.log` now records jog heartbeat timeouts, requested emergency stops, and jog errors.
+- `machine-bar.js` removed browser-side incremental jog prediction. It renders the firmware's complete
+  absolute commanded position when valid, while ordinary position telemetry remains authoritative for
+  measured physical position.
+- The mock server mirrors the absolute `G1` target/status contract; keep it aligned when jog status is
+  extended further.
+- During JOGGING/STOPPING with a valid command target, the UI ignores lagging position autoreports to
+  avoid visual oscillation. Physical telemetry becomes authoritative again after stop/error.
+- Deploy firmware, `machine-bar.js`, and the matching mock/test changes together. Verification passes
+  30 files / 285 tests; ESP32-CAM build uses 19.4% RAM / 67.7% flash.
