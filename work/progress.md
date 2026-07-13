@@ -1823,3 +1823,53 @@
   after jog stops or the target is invalidated.
 - Verification: focused firmware/UI/mock coverage passed 58 tests; full suite passed 30 files / 285
   tests. PlatformIO build succeeded at 19.4% RAM and 67.7% flash.
+
+## 2026-07-13 - Work-zero history restoration safety
+
+- Kept the development mock aligned with firmware: `/api/work-zero/goto` now rejects movement until the current machine session has an active work zero.
+- Extended the mock integration coverage to prove a cold/untrusted session is rejected and a fully homed active frame is accepted.
+- The accepted-path fixture now homes, positions the mock in explicit machine coordinates, establishes an active XYZ zero, then verifies the bounded Safe-Z move instead of relying on an implicit startup coordinate frame.
+
+- `/api/work-zero/goto` now rejects movement unless firmware has an active work zero. Saved Job JSON
+  coordinates alone can no longer turn `G0 X0 Y0` into an unintended move toward machine Home.
+- Moved Zero / Origin from the unreachable legacy `setup` tab into the start of the visible Prepare
+  tab. Added an inline saved-work-zero selector and explicit `Restore & Activate` action.
+- The Prepare selector lists only work-zero entries with complete home-relative XYZ references. It is
+  enabled for selection immediately, but restoration remains blocked until Home All and an idle job.
+- A saved zero from an earlier session is labelled `Saved work zero — not active`; only firmware
+  `workZeroValid` plus matching homing session is labelled active.
+- Machine-bar X0/Y0/XY0 controls are disabled whenever the live frame has no active work zero, with
+  the same check repeated before the API call.
+- Removed remaining operator routes to the hidden `#setup` tab. Work-zero setup now opens Prepare,
+  interrupted work opens Recovery, and the dashboard calls metadata `Saved work zero — activate in
+  Prepare` instead of implying it is live.
+- Updated the dashboard's secondary `Choose previous zero` and `Review interrupted run` links to the
+  same Prepare/Recovery destinations.
+- Verification: focused work-zero/mock/UI coverage passed 6 files / 83 tests; full suite passed 30
+  files / 285 tests. PlatformIO firmware build succeeded at 19.4% RAM and 67.7% flash.
+
+## 2026-07-14 - Persistent Home All readiness control
+
+- Moved Home All out of the changing guided-workflow action slot into a dedicated persistent control
+  in Job Readiness. Advancing from machine-frame setup to work-zero setup no longer removes it.
+- The persistent control reuses the existing confirmed `cnc-home-machine-request` flow and stays
+  visible but disabled while a job is preparing, running, paused, resuming, or stopping.
+- Readiness focus for a `home_machine` action now targets the persistent button.
+- Updated UI coverage to assert that Home All is static and no longer generated only for the frame gate.
+- Verification: local browser QA showed one visible, enabled Home All control in Job Readiness; focused
+  UI coverage passed 3 files / 55 tests and the full suite passed 30 files / 285 tests.
+
+## 2026-07-14 - Aircut collapses repeated stepdowns
+
+- Added a browser-side Aircut geometry pass that groups engaged XY paths and compares them without Z.
+- Identical geometry repeated at another Z depth is emitted once; intentional repeats with the same Z
+  profile, different contours, trailing travel/parking moves, and arc geometry remain distinct.
+- Aircut now inserts a Safe-Z rapid to the start of a retained cutting pass if optimization creates a
+  discontinuity, preventing an unintended diagonal or invalid arc start.
+- The Dry Run UI reports how many repeated stepdown passes were skipped and explains the behavior inline.
+- Added focused coverage for multi-depth, same-depth, reverse-direction, and distinct-contour cases.
+- Extended coverage to native G2/G3-style arc passes and asserted that the live Aircut generator uses
+  the stepdown collapse result.
+- Verification: local browser QA loaded the new module with no console errors and showed the updated
+  Aircut explanation. Focused coverage passed 3 files / 46 tests, then 2 files / 32 tests after the
+  arc integration assertion; the full suite passed 31 files / 290 tests.

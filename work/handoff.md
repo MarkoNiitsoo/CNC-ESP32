@@ -1689,3 +1689,43 @@ No firmware upload is required.
   avoid visual oscillation. Physical telemetry becomes authoritative again after stop/error.
 - Deploy firmware, `machine-bar.js`, and the matching mock/test changes together. Verification passes
   30 files / 285 tests; ESP32-CAM build uses 19.4% RAM / 67.7% flash.
+
+## 2026-07-13 work-zero history safety handoff
+
+- The development mock now enforces the same active-work-zero guard as firmware; its integration test covers both the rejected cold-session path and the accepted active-frame path.
+- The accepted mock path uses an explicit machine-coordinate fixture and establishes XYZ zero after homing, so the test does not depend on startup offsets.
+
+- Firmware Go To Work Zero now requires `machineFrame.workZeroValid`. After restart the operator must
+  set a new zero or explicitly restore a saved history entry before X0/Y0 movement is accepted.
+- `preview.html` places Zero / Origin in Prepare and exposes saved work-zero selection inline; the old
+  History dialog remains available for detailed work- and Z-zero history.
+- `preview.js` distinguishes saved metadata from the live active frame. Restore remains guarded by
+  Home All, Safe-Z machine-coordinate travel, and idle job state, then refreshes history/readiness.
+- `machine-bar.js` disables and rejects Go To Work Zero when live `workZeroValid` is false; firmware
+  independently enforces the same boundary.
+- Dashboard/readiness links no longer target `#setup`. Saved metadata is explicitly labelled saved,
+  while activation/restoration happens in Prepare after Home All.
+- Verification passed 30 files / 285 tests; ESP32-CAM firmware build uses 19.4% RAM / 67.7% flash.
+- Deploy the firmware plus `preview.html`, `preview.js`, `preview.css`, `machine-bar.js`, and `app.js`
+  together so the active-frame safety rule and its operator workflow stay aligned.
+
+## 2026-07-14 persistent Home All handoff
+
+- Job Readiness now owns a static Home All button. It remains in the same place after successful
+  homing while the gate-specific action advances to Set Work Zero, verification, or start review.
+- It dispatches the existing guarded full-homing request and is disabled, not hidden, during active
+  job states. Re-homing starts a new homing session, so the saved work zero must then be restored or set.
+- Local browser QA confirmed the control is visible in Job Readiness. Full verification passed 30
+  files / 285 tests; no firmware change or firmware upload is required for this UI-only update.
+
+## 2026-07-14 Aircut stepdown-collapse handoff
+
+- Aircut no longer repeats an identical XY cutting pass merely because the source repeats it at other
+  Z depths. The first geometry pass is retained and later different-Z copies are removed.
+- Same-Z repeats are deliberately preserved, as are different contours and final travel/parking moves.
+- Generated Aircut remains a bounded browser-side artifact; firmware still validates and streams the
+  uploaded test-motion file without loading the production job into RAM.
+- Functional tests cover line contours in both traversal directions, intentional same-Z repeats,
+  distinct geometry, trailing travel, and repeated native arc passes.
+- Browser QA confirmed the module loads and the operator hint describes the one-pass behavior. Full
+  verification passed 31 files / 290 tests. This is a web-asset change; no firmware upload is required.
