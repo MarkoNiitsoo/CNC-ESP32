@@ -27,8 +27,11 @@ describe('operator Zero / Origin workflow', () => {
     expect(html).toContain('class="panel feed-override-panel preview-tab-panel" data-preview-tab="run"');
   });
 
-  it('offers guarded Home All where homing is required', () => {
-    expect(preview).toContain("workflowButton('Home All'");
+  it('keeps guarded Home All visible while readiness advances', () => {
+    expect(html).toContain('id="readiness-home-all"');
+    expect(preview).toContain("const readinessHomeAllButton = document.querySelector('#readiness-home-all')");
+    expect(preview).toContain('readinessHomeAllButton.disabled = homeBusy');
+    expect(preview).not.toContain("workflowButton('Home All'");
     expect(preview).toContain("workflowButton('Continue Without Homing'");
     expect(preview).toContain("window.dispatchEvent(new CustomEvent('cnc-home-machine-request'))");
     expect(machineBar).toMatch(/cnc-home-machine-request[\s\S]*home\('G28'[\s\S]*true\)/);

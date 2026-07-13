@@ -27,6 +27,7 @@ const useSourceRunButton = document.querySelector('#use-source-run');
 const placementSummaryEl = document.querySelector('#placement-summary');
 const placementResultEl = document.querySelector('#placement-result');
 const readinessSummaryEl = document.querySelector('#readiness-summary');
+const readinessHomeAllButton = document.querySelector('#readiness-home-all');
 const readinessPrimaryEl = document.querySelector('#readiness-primary');
 const readinessSecondaryEl = document.querySelector('#readiness-secondary');
 const jobSummaryEl = document.querySelector('#job-summary');
@@ -358,7 +359,7 @@ function actionTab(action) {
 
 function focusReadinessTarget(action) {
   const focusMap = {
-    home_machine: homeMachineZeroButton,
+    home_machine: readinessHomeAllButton || homeMachineZeroButton,
     set_work_zero: setWorkZeroButton,
     set_z_zero: setZZeroButton,
     run_dry_run: sendDryRunButton,
@@ -521,6 +522,12 @@ function workflowButton(label, action, className = '') {
 function renderReadiness() {
   if (!readinessSummaryEl || !readinessPrimaryEl || !readinessSecondaryEl) return;
   const status = guidedWorkflowStatus();
+  const machineState = String(jobRunStatus?.state || '').toUpperCase();
+  const homeBusy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(machineState);
+  if (readinessHomeAllButton) {
+    readinessHomeAllButton.disabled = homeBusy;
+    readinessHomeAllButton.title = homeBusy ? 'Home All is available when the machine is idle.' : 'Re-home every axis';
+  }
   const completedSteps = [status.frame.ok, status.workZero.ok, status.verification.ok].filter(Boolean).length;
   const copy = {
     blocked: ['Job needs attention', status.hardBlockers[0] || 'Resolve the job file problem before moving the machine.'],
@@ -550,7 +557,6 @@ function renderReadiness() {
   readinessPrimaryEl.textContent = '';
   readinessSecondaryEl.textContent = '';
   if (status.gate === 'frame') {
-    readinessPrimaryEl.append(workflowButton('Home All', () => window.dispatchEvent(new CustomEvent('cnc-home-machine-request')), 'primary-action'));
     readinessSecondaryEl.append(workflowButton('Continue Without Homing', continueWithoutHoming, 'machine-danger'));
   } else if (status.gate === 'work-zero') {
     if (status.frame.mode === 'homed') {
@@ -5402,6 +5408,9 @@ saveJobButton?.addEventListener('click', () => saveJob().catch((err) => setJobRe
 saveJobPreflightButton?.addEventListener('click', () => saveJobWithPreflight().catch((err) => setJobResult(err.message, true)));
 capturePositionButton?.addEventListener('click', () => captureCurrentPosition().catch((err) => setJobResult(err.message, true)));
 setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz').catch((err) => setJobResult(operatorZeroError(err), true)));
+readinessHomeAllButton?.addEventListener('click', () => {
+  window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
+});
 homeMachineZeroButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
 });
