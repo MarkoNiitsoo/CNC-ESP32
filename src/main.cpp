@@ -59,12 +59,14 @@ constexpr uint32_t kJobProgressBroadcastMs = 500;
 constexpr size_t kMotionTelemetrySize = 24;
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
 constexpr uint32_t kJogTickIntervalMs = 25;
+constexpr uint32_t kJogSegmentDurationMs = 40;
+constexpr uint32_t kJogHorizonRefillMs = 40;
+constexpr uint32_t kJogMaxHorizonMs = 80;
 constexpr uint32_t kJogDeadmanMs = 500;
-constexpr uint32_t kJogRestoreDelayMs = 5000;
 constexpr uint8_t kJogPlannerLookahead = 6;
 constexpr float kJogVectorRampPerTick = 0.125f;
-constexpr float kJogMaxXyStepMm = 2.5f;
-constexpr float kJogMaxZStepMm = 0.25f;
+constexpr float kJogMaxXyStepMm = 4.0f;
+constexpr float kJogMaxZStepMm = 0.4f;
 constexpr float kMachineXMaxMm = 1625.0f;
 constexpr float kMachineYMaxMm = 5800.0f;
 constexpr float kMachineZMaxMm = 70.0f;
@@ -138,11 +140,10 @@ struct JogStatus {
   JogState state = JogState::Idle;
   bool safeJog = true;
   bool zLiftedForJog = false;
-  bool restoreZAfterJog = true;
   bool originalZCaptured = false;
   bool safeLiftWorkZCaptured = false;
   bool zChangedDuringJog = false;
-  bool zRestoreScheduled = false;
+  bool zRestoreAvailable = false;
   float safeLiftZ = kMachineZMaxMm;
   float safeLiftWorkZ = 0.0f;
   float originalZ = 0.0f;
@@ -156,7 +157,10 @@ struct JogStatus {
   float appliedY = 0.0f;
   float appliedZ = 0.0f;
   float appliedSpeed = 0.0f;
-  bool relativeModeActive = false;
+  bool commandedPositionCaptured = false;
+  float commandedWorkX = 0.0f;
+  float commandedWorkY = 0.0f;
+  float commandedWorkZ = 0.0f;
   uint8_t pendingMoveAcks = 0;
   String responseLine;
   String lastCommand;
@@ -166,8 +170,8 @@ struct JogStatus {
   uint32_t lastUpdateMs = 0;
   uint32_t lastTickMs = 0;
   uint32_t lastMoveSentAtMs = 0;
-  uint32_t zRestoreAtMs = 0;
-  uint32_t restoreDelayMs = kJogRestoreDelayMs;
+  uint32_t queuedMotionHorizonMs = 0;
+  uint32_t lastHorizonUpdateMs = 0;
 };
 
 struct MarlinLogEntry {
@@ -1247,8 +1251,6 @@ String jogStatusJson() {
   json += jogStatus.safeJog ? "true" : "false";
   json += ",\"safeLiftZ\":";
   json += String(jogStatus.safeLiftZ, 2);
-  json += ",\"restoreZAfterJog\":";
-  json += jogStatus.restoreZAfterJog ? "true" : "false";
   json += ",\"originalZCaptured\":";
   json += jogStatus.originalZCaptured ? "true" : "false";
   json += ",\"originalZ\":";
@@ -1257,10 +1259,16 @@ String jogStatusJson() {
   json += jogStatus.safeLiftWorkZCaptured ? String(jogStatus.safeLiftWorkZ, 3) : "null";
   json += ",\"zChangedDuringJog\":";
   json += jogStatus.zChangedDuringJog ? "true" : "false";
-  json += ",\"zRestoreScheduled\":";
-  json += jogStatus.zRestoreScheduled ? "true" : "false";
-  json += ",\"zRestoreDueMs\":";
-  json += jogStatus.zRestoreScheduled && jogStatus.zRestoreAtMs > now ? String(jogStatus.zRestoreAtMs - now) : "0";
+  json += ",\"zRestoreAvailable\":";
+  json += jogStatus.zRestoreAvailable ? "true" : "false";
+  json += ",\"commandedPositionCaptured\":";
+  json += jogStatus.commandedPositionCaptured ? "true" : "false";
+  json += ",\"commandedWorkX\":";
+  json += jogStatus.commandedPositionCaptured ? String(jogStatus.commandedWorkX, 3) : "null";
+  json += ",\"commandedWorkY\":";
+  json += jogStatus.commandedPositionCaptured ? String(jogStatus.commandedWorkY, 3) : "null";
+  json += ",\"commandedWorkZ\":";
+  json += jogStatus.commandedPositionCaptured ? String(jogStatus.commandedWorkZ, 3) : "null";
   json += ",\"xyFeedMax\":";
   json += String(jogStatus.xyFeedMax, 0);
   json += ",\"zFeedMax\":";
@@ -2350,7 +2358,12 @@ void processIdleMarlinAutoreport() {
 }
 
 bool captureJogOriginalZ() {
-  sendJogCommand("M400");
+  const String waitResponse = sendJogCommandForResponse("M400", 120000);
+  if (!responseContainsToken(waitResponse, "ok") || responseContainsToken(waitResponse, "Error:")) {
+    jogStatus.originalZCaptured = false;
+    jogStatus.lastError = "Marlin did not finish motion before capturing jog Z";
+    return false;
+  }
   const String response = sendJogCommandForResponse("M114", 300);
   jogStatus.lastM114 = response;
   float z = 0.0f;
@@ -2366,34 +2379,95 @@ bool captureJogOriginalZ() {
 }
 
 bool captureJogSafeLiftWorkZ() {
-  sendJogCommand("M400");
+  const String waitResponse = sendJogCommandForResponse("M400", 120000);
+  if (!responseContainsToken(waitResponse, "ok") || responseContainsToken(waitResponse, "Error:")) {
+    jogStatus.safeLiftWorkZCaptured = false;
+    jogStatus.commandedPositionCaptured = false;
+    jogStatus.lastError = "Marlin did not finish the Safe Z lift";
+    return false;
+  }
   const String response = sendJogCommandForResponse("M114", 300);
   jogStatus.lastM114 = response;
+  float x = 0.0f;
+  float y = 0.0f;
   float z = 0.0f;
-  if (!parseAxisFromM114(response, 'Z', z)) {
+  if (!parseAxisFromM114(response, 'X', x) || !parseAxisFromM114(response, 'Y', y) ||
+      !parseAxisFromM114(response, 'Z', z)) {
     jogStatus.safeLiftWorkZCaptured = false;
-    jogStatus.lastError = "could not verify safe jog Z with M114";
+    jogStatus.commandedPositionCaptured = false;
+    jogStatus.lastError = "could not verify Safe Z work position with M114";
     return false;
   }
 
   jogStatus.safeLiftWorkZ = z;
   jogStatus.safeLiftWorkZCaptured = true;
+  jogStatus.commandedWorkX = x;
+  jogStatus.commandedWorkY = y;
+  jogStatus.commandedWorkZ = z;
+  jogStatus.commandedPositionCaptured = true;
   return true;
 }
 
-void scheduleJogZRestore() {
-  if (!jogStatus.safeJog || !jogStatus.restoreZAfterJog || !jogStatus.zLiftedForJog ||
+bool captureJogCommandedWorkPosition() {
+  const String waitResponse = sendJogCommandForResponse("M400", 120000);
+  if (!responseContainsToken(waitResponse, "ok") || responseContainsToken(waitResponse, "Error:")) {
+    jogStatus.commandedPositionCaptured = false;
+    jogStatus.lastError = "Marlin did not finish motion before starting absolute jog";
+    return false;
+  }
+  const String response = sendJogCommandForResponse("M114", 300);
+  jogStatus.lastM114 = response;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  if (!parseAxisFromM114(response, 'X', x) || !parseAxisFromM114(response, 'Y', y) ||
+      !parseAxisFromM114(response, 'Z', z)) {
+    jogStatus.commandedPositionCaptured = false;
+    jogStatus.lastError = "could not capture absolute jog position with M114";
+    return false;
+  }
+
+  jogStatus.commandedWorkX = x;
+  jogStatus.commandedWorkY = y;
+  jogStatus.commandedWorkZ = z;
+  jogStatus.commandedPositionCaptured = true;
+  return true;
+}
+
+void offerJogZRestore() {
+  if (!jogStatus.safeJog || !jogStatus.zLiftedForJog ||
       !jogStatus.originalZCaptured || !jogStatus.safeLiftWorkZCaptured || jogStatus.zChangedDuringJog) {
     return;
   }
 
-  jogStatus.zRestoreScheduled = true;
-  jogStatus.zRestoreAtMs = millis() + jogStatus.restoreDelayMs;
+  jogStatus.zRestoreAvailable = true;
   telemetryJogDirty = true;
 }
 
-void stopJogInternal(bool sendStopCommands) {
-  if (!sendStopCommands && !jogIsActive() && jogStatus.state != JogState::Error) {
+void updateJogMotionHorizon(uint32_t now) {
+  if (jogStatus.lastHorizonUpdateMs == 0) {
+    jogStatus.lastHorizonUpdateMs = now;
+    return;
+  }
+  const uint32_t elapsed = now - jogStatus.lastHorizonUpdateMs;
+  jogStatus.lastHorizonUpdateMs = now;
+  jogStatus.queuedMotionHorizonMs = elapsed >= jogStatus.queuedMotionHorizonMs
+                                          ? 0
+                                          : jogStatus.queuedMotionHorizonMs - elapsed;
+}
+
+void finishGracefulJogStop() {
+  jogStatus.pendingMoveAcks = 0;
+  jogStatus.responseLine = "";
+  jogStatus.queuedMotionHorizonMs = 0;
+  jogStatus.lastHorizonUpdateMs = 0;
+  jogStatus.state = JogState::Idle;
+  offerJogZRestore();
+  telemetryJogDirty = true;
+}
+
+void stopJogInternal(bool emergencyStop) {
+  if (!emergencyStop && !jogIsActive() && jogStatus.state != JogState::Error) {
     return;
   }
 
@@ -2406,28 +2480,35 @@ void stopJogInternal(bool sendStopCommands) {
   jogStatus.appliedY = 0;
   jogStatus.appliedZ = 0;
   jogStatus.appliedSpeed = 0;
-  if (sendStopCommands) {
+  if (emergencyStop) {
     sendJogCommand("M410");
     sendJogCommand("M5");
-  } else {
-    sendJogCommand("M400");
+    sendJogCommand("G90");
+    jogStatus.commandedPositionCaptured = false;
+    jogStatus.pendingMoveAcks = 0;
+    jogStatus.responseLine = "";
+    jogStatus.queuedMotionHorizonMs = 0;
+    jogStatus.lastHorizonUpdateMs = 0;
+    jogStatus.zRestoreAvailable = false;
+    jogStatus.state = JogState::Idle;
+    telemetryJogDirty = true;
+    return;
   }
-  sendJogCommand("G90");
-  jogStatus.relativeModeActive = false;
-  jogStatus.pendingMoveAcks = 0;
-  jogStatus.responseLine = "";
-  jogStatus.state = JogState::Idle;
-  scheduleJogZRestore();
+
+  // Normal pointer release: stop adding absolute targets and let the short
+  // planner horizon drain naturally without inserting a hard stop.
   telemetryJogDirty = true;
 }
 
 void setJogError(const String &message) {
   jogStatus.lastError = message;
   jogStatus.state = JogState::Error;
+  jogStatus.commandedPositionCaptured = false;
   jogStatus.x = 0;
   jogStatus.y = 0;
   jogStatus.z = 0;
   jogStatus.speed = 0;
+  logJobEvent("jog error: " + message);
   telemetryJogDirty = true;
 }
 
@@ -2437,12 +2518,12 @@ bool prepareSafeJogLift() {
     return true;
   }
 
-  if (jogStatus.safeLiftZ <= 0 || jogStatus.zFeedMax <= 0 || jogStatus.restoreDelayMs < 1000) {
+  if (jogStatus.safeLiftZ <= 0 || jogStatus.zFeedMax <= 0) {
     setJogError("invalid safe jog settings");
     return false;
   }
 
-  if (jogStatus.restoreZAfterJog && !jogStatus.originalZCaptured && !captureJogOriginalZ()) {
+  if (!jogStatus.originalZCaptured && !captureJogOriginalZ()) {
     setJogError(jogStatus.lastError);
     return false;
   }
@@ -2489,7 +2570,7 @@ void processJogResponses() {
         addMarlinLog("rx", true, line, "error");
         setJogError("Marlin rejected jog movement: " + line);
         sendJogCommand("G90");
-        jogStatus.relativeModeActive = false;
+        jogStatus.commandedPositionCaptured = false;
         jogStatus.pendingMoveAcks = 0;
         return;
       }
@@ -2500,25 +2581,42 @@ void processJogResponses() {
 }
 
 void processJogRunner() {
-  if (jogStatus.state != JogState::Jogging) {
+  if (jogStatus.state != JogState::Jogging && jogStatus.state != JogState::Stopping) {
     return;
   }
 
   const uint32_t now = millis();
   processJogResponses();
+  updateJogMotionHorizon(now);
+  if (jogStatus.state == JogState::Stopping) {
+    if (jogStatus.pendingMoveAcks > 0 && now - jogStatus.lastMoveSentAtMs > 1000) {
+      sendJogCommand("M410");
+      sendJogCommand("M5");
+      sendJogCommand("G90");
+      jogStatus.commandedPositionCaptured = false;
+      jogStatus.pendingMoveAcks = 0;
+      setJogError("Marlin graceful jog stop acknowledgement timed out");
+      return;
+    }
+    if (jogStatus.pendingMoveAcks == 0 && jogStatus.queuedMotionHorizonMs == 0) {
+      finishGracefulJogStop();
+    }
+    return;
+  }
   if (jogStatus.state != JogState::Jogging) return;
   if (jogStatus.pendingMoveAcks > 0 && now - jogStatus.lastMoveSentAtMs > 1000) {
     sendJogCommand("M410");
     sendJogCommand("M5");
     sendJogCommand("G90");
-    jogStatus.relativeModeActive = false;
+    jogStatus.commandedPositionCaptured = false;
     jogStatus.pendingMoveAcks = 0;
     setJogError("Marlin jog acknowledgement timed out");
     return;
   }
   if (jogStatus.lastUpdateMs == 0 || now - jogStatus.lastUpdateMs > kJogDeadmanMs) {
     jogStatus.lastError = "jog heartbeat timeout; stopped jogging";
-    stopJogInternal(false);
+    logJobEvent("jog stop: heartbeat timeout");
+    stopJogInternal(true);
     return;
   }
 
@@ -2527,6 +2625,7 @@ void processJogRunner() {
   }
 
   if (jogStatus.pendingMoveAcks >= kJogPlannerLookahead) return;
+  if (jogStatus.queuedMotionHorizonMs > kJogHorizonRefillMs) return;
 
   jogStatus.appliedX = approachJogValue(jogStatus.appliedX, clampFloat(jogStatus.x, -1.0f, 1.0f));
   jogStatus.appliedY = approachJogValue(jogStatus.appliedY, clampFloat(jogStatus.y, -1.0f, 1.0f));
@@ -2536,10 +2635,12 @@ void processJogRunner() {
   const float y = jogStatus.appliedY;
   const float z = jogStatus.appliedZ;
   const float speed = jogStatus.appliedSpeed;
-  const float tickSeconds = kJogTickIntervalMs / 1000.0f;
-  const float xyMaxStep = min(kJogMaxXyStepMm, (jogStatus.xyFeedMax / 60.0f) * (kJogTickIntervalMs / 1000.0f));
+  // Cover slightly more motion than one send interval so Marlin receives the next
+  // adjacent G1 before the current segment should finish.
+  const float segmentSeconds = kJogSegmentDurationMs / 1000.0f;
+  const float xyMaxStep = min(kJogMaxXyStepMm, (jogStatus.xyFeedMax / 60.0f) * segmentSeconds);
   const float xyScale = xyMaxStep;
-  const float zMaxStep = min(kJogMaxZStepMm, (jogStatus.zFeedMax / 60.0f) * tickSeconds);
+  const float zMaxStep = min(kJogMaxZStepMm, (jogStatus.zFeedMax / 60.0f) * segmentSeconds);
   const float zScale = zMaxStep * speed;
   const float dx = x * xyScale;
   const float dy = y * xyScale;
@@ -2554,27 +2655,35 @@ void processJogRunner() {
     setJogError("safe jog Z lift is required before X/Y jogging");
     return;
   }
+  if (!jogStatus.commandedPositionCaptured) {
+    setJogError("absolute jog position is unavailable");
+    return;
+  }
 
   // G1 keeps adjacent jog vectors in Marlin's coordinated-motion planner instead of
-  // treating every small joystick tick as a separate rapid positioning move.
+  // treating every small joystick tick as a separate rapid positioning move. Each
+  // target is absolute, so dropped UI updates cannot accumulate coordinate drift.
   String cmd = "G1";
   if (fabs(dx) >= 0.01f) {
+    jogStatus.commandedWorkX += dx;
     cmd += " X";
-    cmd += String(dx, 3);
+    cmd += String(jogStatus.commandedWorkX, 3);
   }
   if (fabs(dy) >= 0.01f) {
+    jogStatus.commandedWorkY += dy;
     cmd += " Y";
-    cmd += String(dy, 3);
+    cmd += String(jogStatus.commandedWorkY, 3);
   }
   if (fabs(dz) >= 0.005f) {
+    jogStatus.commandedWorkZ += dz;
     cmd += " Z";
-    cmd += String(dz, 3);
+    cmd += String(jogStatus.commandedWorkZ, 3);
     jogStatus.zChangedDuringJog = true;
-    jogStatus.zRestoreScheduled = false;
+    jogStatus.zRestoreAvailable = false;
   }
   const float feed = zDistance >= 0.005f && xyDistance < 0.01f
-                         ? clampFloat((zDistance / tickSeconds) * 60.0f, 1.0f, jogStatus.zFeedMax)
-                         : clampFloat((xyDistance / tickSeconds) * 60.0f, 1.0f, jogStatus.xyFeedMax);
+                         ? clampFloat((zDistance / segmentSeconds) * 60.0f, 1.0f, jogStatus.zFeedMax)
+                         : clampFloat((xyDistance / segmentSeconds) * 60.0f, 1.0f, jogStatus.xyFeedMax);
   cmd += " F";
   cmd += String(feed, 0);
   addMarlinLog("tx", true, cmd);
@@ -2583,43 +2692,60 @@ void processJogRunner() {
   jogStatus.lastCommand = cmd;
   ++jogStatus.pendingMoveAcks;
   jogStatus.lastMoveSentAtMs = now;
+  jogStatus.queuedMotionHorizonMs = min(kJogMaxHorizonMs,
+                                        jogStatus.queuedMotionHorizonMs + kJogSegmentDurationMs);
   telemetryJogDirty = true;
 }
 
-void processJogZRestore() {
-  if (!jogStatus.zRestoreScheduled || jogStatus.state != JogState::Idle) {
-    return;
+bool restoreJogZNow(String &error) {
+  if (jogStatus.state != JogState::Idle || !jogStatus.zRestoreAvailable ||
+      !jogStatus.originalZCaptured || jogStatus.zChangedDuringJog) {
+    error = "saved jog Z is not available";
+    return false;
   }
 
-  const uint32_t now = millis();
-  if (now < jogStatus.zRestoreAtMs) {
-    return;
+  const String waitResponse = sendJogCommandForResponse("M400", 120000);
+  if (!responseContainsToken(waitResponse, "ok") || responseContainsToken(waitResponse, "Error:")) {
+    error = "Marlin did not finish motion before checking restored jog Z";
+    jogStatus.lastError = error;
+    return false;
   }
-
-  jogStatus.zRestoreScheduled = false;
-  if (!jogStatus.originalZCaptured || jogStatus.zChangedDuringJog) {
-    return;
-  }
-
-  sendJogCommand("M400");
   const String response = sendJogCommandForResponse("M114", 300);
   jogStatus.lastM114 = response;
   float currentZ = 0.0f;
   if (!parseAxisFromM114(response, 'Z', currentZ)) {
-    jogStatus.lastError = "could not read current Z before restoring jog Z";
-    return;
+    error = "could not read current Z before restoring jog Z";
+    jogStatus.lastError = error;
+    return false;
   }
 
   if (!jogStatus.safeLiftWorkZCaptured || fabs(currentZ - jogStatus.safeLiftWorkZ) > 0.5f) {
-    jogStatus.lastError = "Z changed after jog; automatic restore skipped";
-    return;
+    jogStatus.zRestoreAvailable = false;
+    error = "Z changed after jog; saved restore was cancelled";
+    jogStatus.lastError = error;
+    telemetryJogDirty = true;
+    return false;
   }
 
+  jogStatus.zRestoreAvailable = false;
   sendJogCommand("G90");
   sendJogCommand("G0 Z" + String(jogStatus.originalZ, 3) + " F" + String(jogStatus.zFeedMax, 0));
+  const String finishResponse = sendJogCommandForResponse("M400", 120000);
   sendJogCommand("G90");
+  if (!responseContainsToken(finishResponse, "ok") || responseContainsToken(finishResponse, "Error:")) {
+    error = "Marlin did not confirm restored Z movement";
+    jogStatus.lastError = error;
+    telemetryJogDirty = true;
+    return false;
+  }
+  jogStatus.zLiftedForJog = false;
+  jogStatus.commandedWorkZ = jogStatus.originalZ;
+  jogStatus.commandedPositionCaptured = true;
+  jogStatus.originalZCaptured = false;
+  jogStatus.safeLiftWorkZCaptured = false;
   jogStatus.lastError = "";
   telemetryJogDirty = true;
+  return true;
 }
 
 String stripParenComments(const String &line) {
@@ -4509,21 +4635,18 @@ void handleJogStart() {
   }
 
   const String body = server.arg("plain");
-  const bool continuePendingRestore = jogStatus.zRestoreScheduled && jogStatus.originalZCaptured &&
+  const bool continuePendingRestore = jogStatus.zRestoreAvailable && jogStatus.originalZCaptured &&
                                       !jogStatus.zChangedDuringJog;
   const float pendingOriginalZ = jogStatus.originalZ;
   jogStatus = JogStatus();
   jogStatus.safeJog = extractJsonBool(body, "safeJog", true);
-  jogStatus.restoreZAfterJog = extractJsonBool(body, "restoreZAfterJog", true);
   jogStatus.safeLiftZ = clampFloat(extractJsonFloat(body, "safeLiftZ", kMachineZMaxMm), 0.0f, kMachineZMaxMm);
   jogStatus.xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 3000.0f), 600.0f, 6000.0f);
   jogStatus.zFeedMax = clampFloat(extractJsonFloat(body, "zFeedMax", 400.0f), 20.0f, 800.0f);
-  jogStatus.restoreDelayMs = static_cast<uint32_t>(clampFloat(extractJsonFloat(body, "restoreDelayMs", kJogRestoreDelayMs),
-                                                              1000.0f, 30000.0f));
   jogStatus.startedAtMs = millis();
   jogStatus.lastUpdateMs = millis();
   jogStatus.lastTickMs = 0;
-  if (continuePendingRestore && jogStatus.restoreZAfterJog) {
+  if (continuePendingRestore && jogStatus.safeJog) {
     jogStatus.originalZ = pendingOriginalZ;
     jogStatus.originalZCaptured = true;
   }
@@ -4533,16 +4656,19 @@ void handleJogStart() {
     sendJsonError(400, jogStatus.lastError);
     return;
   }
-
-  const String relativeResponse = sendJogCommandForResponse("G91", 300);
-  if (!responseContainsToken(relativeResponse, "ok") || responseContainsToken(relativeResponse, "Error:") ||
-      responseContainsToken(relativeResponse, "Unknown command")) {
-    sendJogCommand("G90");
-    setJogError("Marlin did not enter relative mode for jog");
+  if (!jogStatus.commandedPositionCaptured && !captureJogCommandedWorkPosition()) {
+    setJogError(jogStatus.lastError);
     sendJsonError(502, jogStatus.lastError);
     return;
   }
-  jogStatus.relativeModeActive = true;
+
+  const String absoluteResponse = sendJogCommandForResponse("G90", 300);
+  if (!responseContainsToken(absoluteResponse, "ok") || responseContainsToken(absoluteResponse, "Error:") ||
+      responseContainsToken(absoluteResponse, "Unknown command")) {
+    setJogError("Marlin did not enter absolute mode for jog");
+    sendJsonError(502, jogStatus.lastError);
+    return;
+  }
 
   jogStatus.state = JogState::Jogging;
   telemetryJogDirty = true;
@@ -4578,7 +4704,22 @@ void handleJogUpdate() {
 }
 
 void handleJogStop() {
-  stopJogInternal(true);
+  const bool emergencyStop = !server.hasArg("plain") || extractJsonBool(server.arg("plain"), "emergency", true);
+  if (emergencyStop && jogIsActive()) logJobEvent("jog emergency stop requested");
+  stopJogInternal(emergencyStop);
+  server.send(200, "application/json", jogStatusJson());
+}
+
+void handleJogRestoreZ() {
+  if (otaActive || jobIsActive() || jogStatus.state != JogState::Idle) {
+    sendJsonError(409, "restoring jog Z requires an idle machine");
+    return;
+  }
+  String error;
+  if (!restoreJogZNow(error)) {
+    sendJsonError(409, error);
+    return;
+  }
   server.send(200, "application/json", jogStatusJson());
 }
 
@@ -5342,6 +5483,7 @@ void startHttpServer() {
   server.on("/api/jog/start", HTTP_POST, handleJogStart);
   server.on("/api/jog/update", HTTP_POST, handleJogUpdate);
   server.on("/api/jog/stop", HTTP_POST, handleJogStop);
+  server.on("/api/jog/restore-z", HTTP_POST, handleJogRestoreZ);
   server.on("/api/jog/status", HTTP_GET, handleJogStatus);
   server.on("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
   server.on("/api/work-zero/set", HTTP_POST, handleSetWorkZero);
@@ -5400,7 +5542,6 @@ void loop() {
   processMachineDiscovery();
   processJobRunner();
   processJogRunner();
-  processJogZRestore();
   processMarlinAutoreportControl();
   processIdleMarlinAutoreport();
 

@@ -103,7 +103,10 @@ describe('compact machine drawer', () => {
   });
 
   it('keeps Pause/Resume, Stop, and M5 in one compact action row', () => {
-    expect(machineBar).toMatch(/machine-drawer-actions[\s\S]*mb-drawer-pause-resume[\s\S]*mb-drawer-stop[\s\S]*mb-drawer-m5/);
+    expect(machineBar).not.toContain('id="mb-drawer-pause-resume"');
+    expect(machineBar).not.toContain('id="mb-drawer-stop"');
+    expect(machineBar).not.toContain('id="mb-drawer-m5"');
+    expect(machineBar).toContain("style.setProperty('--machine-bar-height'");
     expect(machineBar).toContain("const pauseLabel = paused ? 'Resume' : 'Pause'");
   });
 
@@ -112,38 +115,70 @@ describe('compact machine drawer', () => {
     expect(machineBar).toMatch(/machine-homing-axis-row[\s\S]*machine-homing-action-row/);
     expect(machineBar).toMatch(/mb-terminal-select[\s\S]*mb-marlin-log/);
     expect(machineBar).toMatch(/machine-jog-dock[\s\S]*mb-jog-dock-toggle[\s\S]*mb-jog-settings-toggle[\s\S]*mb-jog-pad/);
-    expect(machineBar).toMatch(/machine-jog-dock-settings[\s\S]*data-mb-jog-z="1"[\s\S]*data-mb-jog-z="-1"/);
+    expect(machineBar).toMatch(/machine-jog-dock-settings[\s\S]*mb-jog-safe-z-output[\s\S]*mb-jog-xy-speed[\s\S]*mb-jog-z-speed/);
+    expect(machineBar).toMatch(/mb-jog-center[\s\S]*mb-jog-knob/);
+    expect(machineBar).toMatch(/mb-jog-z-slider[\s\S]*mb-jog-z-handle/);
     expect(machineBar).toContain('machine-jog-handle-label');
     expect(machineBar).toContain('>Jog</span>');
     expect(machineBar.indexOf('mb-jog-pad')).toBeLessThan(machineBar.indexOf('id="machine-drawer"'));
     expect(machineBar).toContain('if (!STATE.jogDockOpen) STATE.jogSettingsOpen = false');
+    expect(machineBar).toContain('id="mb-jog-restore-z" class="machine-jog-restore-button" type="button" disabled');
+    expect(machineBar).not.toContain('id="mb-jog-restore-z" type="checkbox"');
   });
 
   it('stops active jog on pointer release, cancel, blur, and visibility loss', () => {
     expect(machineBar).toContain("window.addEventListener('pointerup', end, true)");
     expect(machineBar).toContain("window.addEventListener('pointercancel', end, true)");
     expect(machineBar).toContain("pad?.addEventListener('lostpointercapture', end)");
-    expect(machineBar).toContain("window.addEventListener('blur', () => stopJog()");
-    expect(machineBar).toMatch(/document\.hidden[\s\S]*stopJog\(\)/);
+    expect(machineBar).toContain("window.addEventListener('blur', () => stopJog(false, true)");
+    expect(machineBar).toMatch(/document\.hidden[\s\S]*stopJog\(false, true\)/);
     expect(machineBar).toMatch(/async function stopJog[\s\S]*resetJoystickVisual\(\)[\s\S]*if \(!shouldStop\) return/);
-    expect(machineBar).toContain('if (sessionId === jogSessionId) STATE.jog = jog');
+    expect(machineBar).toContain("apiPost('/api/jog/stop', { emergency })");
+    expect(machineBar).toContain("stopJog(false, event.type !== 'pointerup')");
+    expect(machineBar).toMatch(/if \(sessionId === jogSessionId\) \{[\s\S]{0,100}STATE\.jog = jog;[\s\S]{0,100}applyCommandedJogPosition\(jog\)/);
     expect(styles).toMatch(/\.machine-jog-dock\s*\{[\s\S]*?z-index:\s*120;[\s\S]*?pointer-events:\s*none;/);
     expect(styles).toMatch(/\.machine-jog-dock-panel\s*\{[\s\S]*?pointer-events:\s*auto;/);
     expect(styles).toMatch(/\.machine-jog-handle\s*\{[\s\S]*?width:\s*28px;[\s\S]*?min-height:\s*74px;[\s\S]*?var\(--cnc-accent\) 68%/);
-    expect(styles).toMatch(/\.machine-jog-z-settings button[\s\S]*?-webkit-touch-callout:\s*none;/);
-    expect(machineBar).toContain("item.addEventListener('contextmenu', (event) => event.preventDefault())");
+    expect(styles).toMatch(/\.machine-jog-z-slider[\s\S]*?-webkit-touch-callout:\s*none;/);
+    expect(machineBar).toContain("zSlider?.addEventListener('contextmenu', (event) => event.preventDefault())");
+  });
+
+  it('locks eight draggable arrows to cardinal and diagonal jog vectors', () => {
+    expect(machineBar.match(/<button class="machine-jog-direction"/g)).toHaveLength(8);
+    expect(machineBar).toContain('function updateDirectionalVector(event, item)');
+    expect(machineBar).toContain('const projectedRadius = pointerX * unitX - pointerY * unitY');
+    expect(machineBar).toContain('x: unitX * speed, y: unitY * speed');
+    expect(machineBar).toMatch(/data-direction-label="Y\+"[\s\S]*data-direction-label="X\+"[\s\S]*data-direction-label="Y-"[\s\S]*data-direction-label="X-"/);
+    expect(machineBar).toContain("item.addEventListener('lostpointercapture', stopDirection)");
+    expect(styles).toMatch(/\.machine-jog-direction\s*\{[\s\S]*touch-action:\s*none;/);
+    expect(machineBar).toContain('function updateZSliderVector(event)');
+    expect(machineBar).toContain('z: speed > 0 ? Math.sign(normalized) : 0, speed');
+    expect(machineBar).toContain("zSlider?.addEventListener('lostpointercapture', stopZSlider)");
+    expect(styles).toMatch(/\.machine-jog-settings-toggle\s*\{[\s\S]*z-index:\s*6;/);
   });
 
   it('publishes commanded jog positions immediately without periodic M114 traffic', () => {
     expect(machineBar).toContain("publishPosition('JOG_CMD')");
     expect(machineBar).toContain("publishPosition('M114')");
-    expect(machineBar).toMatch(/sendJogUpdate[\s\S]*applyPredictedJogTick\(vector, settings\)/);
+    expect(machineBar).toMatch(/sendJogUpdate[\s\S]*applyCommandedJogPosition\(jog\)/);
+    expect(machineBar).toContain('commandedPositionCaptured !== true');
+    expect(machineBar).toContain('x: Number(jog.commandedWorkX)');
+    expect(machineBar).not.toContain('applyPredictedJogTick');
     expect(machineBar).not.toMatch(/setInterval\([\s\S]{0,180}pollPosition/);
     expect(machineBar).not.toContain('refreshJobStatus().then(() => pollPosition())');
     expect(machineBar).toContain("button('mb-m114', refreshPosition)");
     expect(machineBar).toContain("subscribe('position'");
     expect(machineBar).toContain("applyFrame(data, 'MARLIN')");
     expect(machineBar).toMatch(/async function home[\s\S]*apiPost\('\/api\/machine\/home'/);
+    const update = machineBar.slice(machineBar.indexOf('async function sendJogUpdate()'), machineBar.indexOf('async function startJog'));
+    expect(update).toContain('renderJogReadouts()');
+    expect(update).not.toContain('render();');
+    expect(machineBar).toMatch(/subscribe\('jog'[\s\S]{0,120}renderJogReadouts\(\)/);
+    expect(machineBar).toMatch(/subscribe\('position'[\s\S]{0,260}renderPositionReadouts\(\)/);
+    expect(machineBar).toContain("jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true");
+    expect(machineBar).toMatch(/subscribe\('log'[\s\S]{0,240}renderMarlinReadouts\(\)/);
+    expect(machineBar).not.toContain("applyIcons?.(document.querySelector('.machine-shell'))");
+    expect(machineBar).toContain("source !== 'MARLIN' || frame.revision !== previousRevision");
   });
 });
 
@@ -217,7 +252,7 @@ describe('firmware-owned coordinate frames', () => {
     expect(statusJson).not.toContain('json += "\\\",\\\"uptimeMs\\\":"');
   });
 
-  it('shows separate machine/work coordinates and predicts both from jog commands', () => {
+  it('shows separate machine/work coordinates from absolute jog command targets', () => {
     expect(machineBar).toContain('`M X ${fmtAxis(machine.x)}');
     expect(machineBar).toContain('STATE.frame.work = { ...STATE.position }');
     expect(machineBar).toContain('x: zero.x + STATE.position.x');
@@ -238,25 +273,51 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
   });
 
   it('decouples smooth 25 ms movement ticks from browser heartbeat timing', () => {
-    const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('void processJogZRestore()'));
+    const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('bool restoreJogZNow'));
     expect(firmware).toContain('constexpr uint32_t kJogTickIntervalMs = 25');
+    expect(firmware).toContain('constexpr uint32_t kJogSegmentDurationMs = 40');
+    expect(firmware).toContain('constexpr uint32_t kJogHorizonRefillMs = 40');
+    expect(firmware).toContain('constexpr uint32_t kJogMaxHorizonMs = 80');
     expect(firmware).toContain('constexpr uint8_t kJogPlannerLookahead = 6');
     expect(firmware).toContain('constexpr float kJogVectorRampPerTick = 0.125f');
-    expect(startHandler).toContain('sendJogCommandForResponse("G91", 300)');
+    expect(startHandler).toContain('sendJogCommandForResponse("G90", 300)');
+    expect(startHandler).toContain('captureJogCommandedWorkPosition()');
     expect(runner).toContain('processJogResponses()');
     expect(runner).toContain('jogStatus.pendingMoveAcks >= kJogPlannerLookahead');
+    expect(runner).toContain('const float segmentSeconds = kJogSegmentDurationMs / 1000.0f');
+    expect(runner).toContain('jogStatus.queuedMotionHorizonMs > kJogHorizonRefillMs');
+    expect(runner).toContain('jogStatus.queuedMotionHorizonMs + kJogSegmentDurationMs');
     expect(runner).toContain('String cmd = "G1"');
-    expect(runner).not.toContain('String cmd = "G91\\nG0"');
+    expect(runner).toContain('jogStatus.commandedWorkX += dx');
+    expect(runner).toContain('String(jogStatus.commandedWorkX, 3)');
+    expect(runner).not.toContain('sendJogCommandForResponse("G91"');
     expect(runner).not.toContain('readMarlinResponseFor(60');
   });
 
-  it('restores absolute mode for release, deadman, and acknowledgement failure', () => {
+  it('keeps absolute mode and invalidates targets on hard-stop paths', () => {
     const stop = firmware.slice(firmware.indexOf('void stopJogInternal'), firmware.indexOf('void setJogError'));
-    const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('void processJogZRestore()'));
+    const runner = firmware.slice(firmware.indexOf('void processJogRunner()'), firmware.indexOf('bool restoreJogZNow'));
     expect(stop).toContain('sendJogCommand("G90")');
+    expect(stop).toContain('Normal pointer release');
+    expect(stop).not.toContain('sendJogCommand("M400")');
+    expect(stop).toContain('jogStatus.commandedPositionCaptured = false');
     expect(runner).toContain('kJogDeadmanMs');
+    expect(runner).toContain('stopJogInternal(true)');
     expect(runner).toContain('Marlin jog acknowledgement timed out');
     expect(runner).toContain('sendJogCommand("M410")');
     expect(runner).toContain('sendJogCommand("G90")');
+    expect(firmware).toContain('logJobEvent("jog stop: heartbeat timeout")');
+  });
+
+  it('offers an explicit labelled Restore Z action instead of timed automatic motion', () => {
+    const restore = firmware.slice(firmware.indexOf('bool restoreJogZNow'), firmware.indexOf('String stripParenComments'));
+    expect(firmware).toContain('server.on("/api/jog/restore-z", HTTP_POST, handleJogRestoreZ)');
+    expect(firmware).toContain('jogStatus.zRestoreAvailable = true');
+    expect(firmware).not.toContain('processJogZRestore');
+    expect(machineBar).toContain('`Restore Z ${formatRestoreZ(restoreTargetZ)} mm`');
+    expect(machineBar).toContain("apiPost('/api/jog/restore-z')");
+    expect(machineBar).toContain('Make sure the path below the tool is clear.');
+    expect(restore).toContain('sendJogCommandForResponse("M400", 120000)');
+    expect(restore).toContain("fabs(currentZ - jogStatus.safeLiftWorkZ) > 0.5f");
   });
 });

@@ -147,8 +147,11 @@ export function applyIconRoles(root, activeManifest, defaultManifest) {
       slot.setAttribute('aria-hidden', 'true');
       element.prepend(slot);
     }
-    slot.innerHTML = iconMarkup(role, {}, activeManifest, defaultManifest);
-    count += 1;
+    const markup = iconMarkup(role, {}, activeManifest, defaultManifest);
+    if (slot.innerHTML !== markup) {
+      slot.innerHTML = markup;
+      count += 1;
+    }
   });
   return count;
 }

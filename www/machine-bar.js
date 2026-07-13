@@ -29,9 +29,6 @@
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
   const PAUSED_STATES = new Set(['PAUSED']);
   const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'COMPLETED', 'ERROR']);
-  const JOG_TICK_SECONDS = 0.15;
-  const JOG_MAX_XY_STEP_MM = 15;
-  const JOG_MAX_Z_STEP_MM = 0.5;
   const MACHINE_Z_MAX_MM = 70;
 
   window.LowRiderMachineBar = {
@@ -70,10 +67,13 @@
     if (!frame) return false;
     const work = frame.work || frame;
     if (![work?.x, work?.y, work?.z].every(Number.isFinite)) return false;
+    const previousRevision = STATE.frame?.revision;
     STATE.frame = { ...STATE.frame, ...frame, work };
     STATE.position = { x: work.x, y: work.y, z: work.z };
     publishPosition(source);
-    window.dispatchEvent(new CustomEvent('cnc-machine-frame', { detail: STATE.frame }));
+    if (source !== 'MARLIN' || frame.revision !== previousRevision) {
+      window.dispatchEvent(new CustomEvent('cnc-machine-frame', { detail: STATE.frame }));
+    }
     return true;
   }
 
@@ -312,11 +312,26 @@
     return {
       safeJog,
       safeLiftZ: Math.max(1, Math.min(MACHINE_Z_MAX_MM, Number(el('mb-jog-safe-z')?.value || MACHINE_Z_MAX_MM))),
-      restoreZAfterJog: safeJog && Boolean(el('mb-jog-restore-z')?.checked),
-      restoreDelayMs: 5000,
       xyFeedMax: Math.round(xySpeed * 60),
       zFeedMax: Math.round(zSpeed * 60),
     };
+  }
+
+  function formatRestoreZ(value) {
+    return String(Math.round(Number(value) * 100) / 100);
+  }
+
+  async function restoreJogZ() {
+    const targetZ = Number(STATE.jog?.originalZ);
+    if (STATE.jog?.zRestoreAvailable !== true || !Number.isFinite(targetZ)) {
+      throw new Error('No saved Z position is available.');
+    }
+    const targetLabel = formatRestoreZ(targetZ);
+    if (!confirm(`Restore Z to ${targetLabel} mm at the current X/Y position? Make sure the path below the tool is clear.`)) return;
+    STATE.jog = await apiPost('/api/jog/restore-z');
+    setMessage(`Z restored to ${targetLabel} mm.`);
+    await refreshPosition().catch(() => {});
+    render();
   }
 
   function jogIsUiActive() {
@@ -327,30 +342,27 @@
     STATE.jogVector = { x: 0, y: 0, z: 0, speed: 0 };
     const knob = el('mb-jog-knob');
     if (knob) knob.style.transform = 'translate(-50%, -50%)';
+    document.querySelectorAll('[data-mb-jog-direction]').forEach((item) => {
+      item.style.transform = '';
+      item.classList.remove('is-active');
+    });
+    const zHandle = el('mb-jog-z-handle');
+    if (zHandle) zHandle.style.transform = 'translate(-50%, -50%)';
   }
 
-  function applyPredictedJogTick(vector, settings) {
-    const x = Math.max(-1, Math.min(1, Number(vector.x) || 0));
-    const y = Math.max(-1, Math.min(1, Number(vector.y) || 0));
-    const z = Math.max(-1, Math.min(1, Number(vector.z) || 0));
-    const speed = Math.max(0, Math.min(1, Number(vector.speed) || 0));
-    const xyStep = Math.min(JOG_MAX_XY_STEP_MM, (settings.xyFeedMax / 60) * JOG_TICK_SECONDS);
-    const zStep = Math.min(JOG_MAX_Z_STEP_MM, (settings.zFeedMax / 60) * JOG_TICK_SECONDS) * speed;
-    let changed = false;
-
-    if (Number.isFinite(STATE.position.x) && Math.abs(x * xyStep) >= 0.01) {
-      STATE.position.x += x * xyStep;
-      changed = true;
-    }
-    if (Number.isFinite(STATE.position.y) && Math.abs(y * xyStep) >= 0.01) {
-      STATE.position.y += y * xyStep;
-      changed = true;
-    }
-    if (Number.isFinite(STATE.position.z) && Math.abs(z * zStep) >= 0.005) {
-      STATE.position.z += z * zStep;
-      changed = true;
-    }
+  function applyCommandedJogPosition(jog) {
+    if (jog?.commandedPositionCaptured !== true) return false;
+    const next = {
+      x: Number(jog.commandedWorkX),
+      y: Number(jog.commandedWorkY),
+      z: Number(jog.commandedWorkZ),
+    };
+    if (![next.x, next.y, next.z].every(Number.isFinite)) return false;
+    const changed = next.x !== STATE.position.x || next.y !== STATE.position.y || next.z !== STATE.position.z;
+    STATE.position = next;
     if (changed) publishPosition('JOG_CMD');
+    renderPositionReadouts();
+    return true;
   }
 
   async function refreshJogStatus() {
@@ -370,15 +382,16 @@
     if (jogUpdatePending || STATE.jog?.state !== 'JOGGING') return;
     const sessionId = jogSessionId;
     const vector = { ...STATE.jogVector };
-    const settings = jogSettings(Boolean(STATE.jog?.safeJog));
     jogUpdatePending = true;
     try {
       const jog = await apiPost('/api/jog/update', vector);
-      applyPredictedJogTick(vector, settings);
-      if (sessionId === jogSessionId) STATE.jog = jog;
+      if (sessionId === jogSessionId) {
+        STATE.jog = jog;
+        applyCommandedJogPosition(jog);
+      }
     } finally {
       jogUpdatePending = false;
-      render();
+      renderJogReadouts();
     }
   }
 
@@ -394,14 +407,11 @@
         return;
       }
       STATE.jog = jog;
-      if (safeJog && jog.zLiftedForJog && Number.isFinite(Number(jog.safeLiftWorkZ))) {
-        STATE.position.z = Number(jog.safeLiftWorkZ);
-        publishPosition('JOG_CMD');
-      }
+      applyCommandedJogPosition(jog);
       jogTimer = setInterval(() => {
         sendJogUpdate().catch((err) => {
           setMessage(`Jog stopped: ${err.message}`);
-          stopJog().catch(() => {});
+          stopJog(false, true).catch(() => {});
         });
       }, 150);
       await sendJogUpdate();
@@ -411,7 +421,7 @@
     }
   }
 
-  async function stopJog(force = false) {
+  async function stopJog(force = false, emergency = false) {
     const shouldStop = force || jogStartPending || Boolean(jogTimer) || jogIsUiActive();
     jogSessionId += 1;
     resetJoystickVisual();
@@ -420,7 +430,7 @@
     jogUpdatePending = false;
     if (!shouldStop) return;
     try {
-      STATE.jog = await apiPost('/api/jog/stop');
+      STATE.jog = await apiPost('/api/jog/stop', { emergency });
     } catch (err) {
       STATE.jog = { ...(STATE.jog || {}), state: 'ERROR', lastError: err.message };
       throw err;
@@ -430,11 +440,11 @@
   }
 
   function updateJoystickVector(event) {
-    const pad = el('mb-jog-pad');
+    const pad = el('mb-jog-center');
     const knob = el('mb-jog-knob');
     if (!pad || !knob) return;
     const rect = pad.getBoundingClientRect();
-    const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.38);
+    const radius = Math.max(1, Math.min(rect.width, rect.height) * 0.42);
     let dx = event.clientX - (rect.left + rect.width / 2);
     let dy = event.clientY - (rect.top + rect.height / 2);
     const distance = Math.hypot(dx, dy);
@@ -448,61 +458,145 @@
     knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
   }
 
-  function installJoystick() {
+  function updateDirectionalVector(event, item) {
     const pad = el('mb-jog-pad');
+    if (!pad || !item) return;
+    const rect = pad.getBoundingClientRect();
+    const directionX = Number(item.dataset.mbJogX) || 0;
+    const directionY = Number(item.dataset.mbJogY) || 0;
+    const length = Math.hypot(directionX, directionY) || 1;
+    const unitX = directionX / length;
+    const unitY = directionY / length;
+    const pointerX = event.clientX - (rect.left + rect.width / 2);
+    const pointerY = event.clientY - (rect.top + rect.height / 2);
+    const projectedRadius = pointerX * unitX - pointerY * unitY;
+    const restingRadius = Math.min(rect.width, rect.height) * 0.31;
+    const maximumRadius = Math.min(rect.width, rect.height) * 0.46;
+    const range = Math.max(1, maximumRadius - restingRadius);
+    const speed = Math.max(0, Math.min(1, 0.25 + (projectedRadius - restingRadius) / range * 0.75));
+    STATE.jogVector = { x: unitX * speed, y: unitY * speed, z: 0, speed };
+    const pull = Math.max(-8, Math.min(range, projectedRadius - restingRadius));
+    item.style.transform = `translate(-50%, -50%) translate(${unitX * pull}px, ${-unitY * pull}px)`;
+  }
+
+  function updateZSliderVector(event) {
+    const slider = el('mb-jog-z-slider');
+    const handle = el('mb-jog-z-handle');
+    if (!slider || !handle) return;
+    const rect = slider.getBoundingClientRect();
+    const travel = Math.max(1, rect.height / 2 - 24);
+    const rawOffset = event.clientY - (rect.top + rect.height / 2);
+    const offset = Math.max(-travel, Math.min(travel, rawOffset));
+    const normalized = -offset / travel;
+    const deadzone = 0.08;
+    const speed = Math.max(0, Math.min(1, (Math.abs(normalized) - deadzone) / (1 - deadzone)));
+    STATE.jogVector = { x: 0, y: 0, z: speed > 0 ? Math.sign(normalized) : 0, speed };
+    handle.style.transform = `translate(-50%, calc(-50% + ${offset}px))`;
+  }
+
+  function installJoystick() {
+    const pad = el('mb-jog-center');
+    let centerPointerId = null;
     pad?.addEventListener('pointerdown', (event) => {
       if (jogPointerId !== null) return;
       event.preventDefault();
+      centerPointerId = event.pointerId;
       jogPointerId = event.pointerId;
       pad.setPointerCapture?.(event.pointerId);
       updateJoystickVector(event);
       startJog(Boolean(el('mb-jog-safe')?.checked)).catch((err) => {
         setMessage(`Jog unavailable: ${err.message}`);
+        centerPointerId = null;
         jogPointerId = null;
-        stopJog().catch(() => {});
+        stopJog(false, true).catch(() => {});
       });
     });
     pad?.addEventListener('pointermove', (event) => {
-      if (event.pointerId !== jogPointerId) return;
+      if (event.pointerId !== centerPointerId) return;
       event.preventDefault();
       const samples = event.getCoalescedEvents?.() || [event];
       updateJoystickVector(samples[samples.length - 1]);
     });
     const end = (event) => {
-      if (event.pointerId !== jogPointerId) return;
+      if (event.pointerId !== centerPointerId) return;
+      centerPointerId = null;
       jogPointerId = null;
       resetJoystickVisual();
-      stopJog().catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+      stopJog(false, event.type !== 'pointerup').catch((err) => setMessage(`Jog stop failed: ${err.message}`));
     };
     window.addEventListener('pointerup', end, true);
     window.addEventListener('pointercancel', end, true);
     pad?.addEventListener('lostpointercapture', end);
 
-    document.querySelectorAll('[data-mb-jog-z]').forEach((item) => {
+    document.querySelectorAll('[data-mb-jog-direction]').forEach((item) => {
       let pointerId = null;
       item.addEventListener('pointerdown', (event) => {
-        if (pointerId !== null) return;
+        if (pointerId !== null || jogPointerId !== null) return;
         event.preventDefault();
         pointerId = event.pointerId;
+        jogPointerId = event.pointerId;
+        item.classList.add('is-active');
         item.setPointerCapture?.(event.pointerId);
-        STATE.jogVector = { x: 0, y: 0, z: Number(item.dataset.mbJogZ), speed: 1 };
-        startJog(false).catch((err) => {
+        updateDirectionalVector(event, item);
+        startJog(Boolean(el('mb-jog-safe')?.checked)).catch((err) => {
           pointerId = null;
-          setMessage(`Z jog unavailable: ${err.message}`);
-          stopJog().catch(() => {});
+          jogPointerId = null;
+          setMessage(`Directional jog unavailable: ${err.message}`);
+          stopJog(false, true).catch(() => {});
         });
       });
-      const stop = (event) => {
+      item.addEventListener('pointermove', (event) => {
+        if (event.pointerId !== pointerId) return;
+        event.preventDefault();
+        const samples = event.getCoalescedEvents?.() || [event];
+        updateDirectionalVector(samples[samples.length - 1], item);
+      });
+      const stopDirection = (event) => {
         if (event.pointerId !== pointerId) return;
         pointerId = null;
-        stopJog().catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+        jogPointerId = null;
+        resetJoystickVisual();
+        stopJog(false, event.type !== 'pointerup').catch((err) => setMessage(`Jog stop failed: ${err.message}`));
       };
-      item.addEventListener('pointerup', stop);
-      item.addEventListener('pointercancel', stop);
+      item.addEventListener('pointerup', stopDirection);
+      item.addEventListener('pointercancel', stopDirection);
+      item.addEventListener('lostpointercapture', stopDirection);
       item.addEventListener('contextmenu', (event) => event.preventDefault());
-      item.addEventListener('selectstart', (event) => event.preventDefault());
-      item.addEventListener('dragstart', (event) => event.preventDefault());
     });
+
+    const zSlider = el('mb-jog-z-slider');
+    let zPointerId = null;
+    zSlider?.addEventListener('pointerdown', (event) => {
+      if (zPointerId !== null || jogPointerId !== null) return;
+      event.preventDefault();
+      zPointerId = event.pointerId;
+      jogPointerId = event.pointerId;
+      zSlider.setPointerCapture?.(event.pointerId);
+      updateZSliderVector(event);
+      startJog(false).catch((err) => {
+        zPointerId = null;
+        jogPointerId = null;
+        setMessage(`Z jog unavailable: ${err.message}`);
+        stopJog(false, true).catch(() => {});
+      });
+    });
+    zSlider?.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== zPointerId) return;
+      event.preventDefault();
+      const samples = event.getCoalescedEvents?.() || [event];
+      updateZSliderVector(samples[samples.length - 1]);
+    });
+    const stopZSlider = (event) => {
+      if (event.pointerId !== zPointerId) return;
+      zPointerId = null;
+      jogPointerId = null;
+      resetJoystickVisual();
+      stopJog(false, event.type !== 'pointerup').catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+    };
+    zSlider?.addEventListener('pointerup', stopZSlider);
+    zSlider?.addEventListener('pointercancel', stopZSlider);
+    zSlider?.addEventListener('lostpointercapture', stopZSlider);
+    zSlider?.addEventListener('contextmenu', (event) => event.preventDefault());
   }
 
   async function setWorkZero() {
@@ -605,6 +699,73 @@
     syncJogDock();
   }
 
+  function renderPositionReadouts() {
+    const machine = STATE.frame?.machine;
+    const text = machine
+      ? `M X ${fmtAxis(machine.x)} Y ${fmtAxis(machine.y)} Z ${fmtAxis(machine.z)} | W X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`
+      : `W X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`;
+    ['mb-xyz', 'mb-drawer-xyz'].forEach((id) => {
+      const item = el(id);
+      if (item && item.textContent !== text) item.textContent = text;
+    });
+  }
+
+  function renderMarlinReadouts() {
+    const entries = STATE.marlinLog?.entries || [];
+    const lastEntry = entries.length ? entries[entries.length - 1] : null;
+    const last = el('mb-marlin-last');
+    const critical = el('mb-marlin-critical');
+    const log = el('mb-marlin-log');
+    const live = el('mb-live-marlin');
+    if (last) {
+      last.textContent = lastEntry
+        ? `${lastEntry.direction === 'tx' ? '->' : '<-'} ${lastEntry.text || ''}`.trim()
+        : 'No Marlin messages yet.';
+    }
+    if (critical) {
+      critical.hidden = !STATE.marlinLog?.lastCritical;
+      critical.textContent = STATE.marlinLog?.lastCritical ? `Warning: ${STATE.marlinLog.lastCritical}` : '';
+    }
+    if (log) {
+      log.textContent = entries.length
+        ? entries.map((entry) => {
+          const prefix = entry.level === 'error' || entry.level === 'warning'
+            ? '!'
+            : entry.direction === 'tx' ? '->' : '<-';
+          return `${entry.time || '-'} ${prefix}${entry.priority ? ' priority' : ''} ${entry.text || ''}`;
+        }).join('\n')
+        : 'No recent Marlin log entries.';
+      log.scrollTop = log.scrollHeight;
+    }
+    if (live) {
+      const liveText = STATE.marlinLog?.lastCritical || lastEntry?.text || '';
+      live.hidden = !liveText || (!ACTIVE_STATES.has(visibleJobState()) && !STATE.marlinLog?.lastCritical);
+      live.textContent = STATE.marlinLog?.lastCritical ? `! ${liveText}` : `<- ${liveText}`;
+      live.classList.toggle('warning', Boolean(STATE.marlinLog?.lastCritical));
+    }
+  }
+
+  function renderJogReadouts() {
+    const jog = STATE.jog || {};
+    const status = el('mb-jog-status');
+    if (status) {
+      const text = `${jog.state || 'IDLE'} | Safe Z ${jog.zLiftedForJog ? 'lifted' : 'not lifted'} | ${jog.lastError || jog.lastCommand || 'ready'}`;
+      if (status.textContent !== text) status.textContent = text;
+      status.title = text;
+    }
+    const restore = el('mb-jog-restore-z');
+    const targetZ = Number(jog.originalZ);
+    const available = jog.zRestoreAvailable === true && Number.isFinite(targetZ);
+    if (restore) {
+      const label = available ? `Restore Z ${formatRestoreZ(targetZ)} mm` : 'Restore Z unavailable';
+      if (restore.textContent !== label) restore.textContent = label;
+      restore.title = available
+        ? `Move Z to ${formatRestoreZ(targetZ)} mm at the current X/Y position`
+        : 'Safe Jog has no saved Z position to restore';
+    }
+    setDisabled('mb-jog-restore-z', !available || BUSY_STATES.has(visibleJobState()) || jogIsUiActive());
+  }
+
   function render() {
     const state = visibleJobState();
     const running = state === 'RUNNING';
@@ -618,17 +779,14 @@
     const xyzEl = el('mb-xyz');
     const drawerXyzEl = el('mb-drawer-xyz');
     const feedEl = el('mb-feed');
-    const warningEl = el('mb-warning');
     const marlinLastEl = el('mb-marlin-last');
     const marlinCriticalEl = el('mb-marlin-critical');
     const marlinLogEl = el('mb-marlin-log');
-    const drawerStateEl = el('mb-drawer-state');
-    const drawerFeedEl = el('mb-drawer-feed');
     const pauseResumeEl = el('mb-pause');
-    const drawerPauseResumeEl = el('mb-drawer-pause-resume');
     const liveMarlinEl = el('mb-live-marlin');
     const jogStatusEl = el('mb-jog-status');
     const jogSettingsToggleEl = el('mb-jog-settings-toggle');
+    const restoreZEl = el('mb-jog-restore-z');
     const machine = STATE.frame?.machine;
     const xyzText = machine
       ? `M X ${fmtAxis(machine.x)} Y ${fmtAxis(machine.y)} Z ${fmtAxis(machine.z)} | W X ${fmtAxis(STATE.position.x)} Y ${fmtAxis(STATE.position.y)} Z ${fmtAxis(STATE.position.z)}`
@@ -653,9 +811,6 @@
       feedEl.textContent = `${feed}%`;
       feedEl.classList.toggle('caution', feed > 125);
     }
-    if (warningEl) warningEl.hidden = state !== 'UNKNOWN';
-    if (drawerStateEl) drawerStateEl.textContent = state;
-    if (drawerFeedEl) drawerFeedEl.textContent = `${feed}%`;
     if (marlinLastEl) {
       marlinLastEl.textContent = lastEntry
         ? `${lastEntry.direction === 'tx' ? '->' : '<-'} ${lastEntry.text || ''}`.trim()
@@ -683,14 +838,18 @@
     }
 
     const pauseLabel = paused ? 'Resume' : 'Pause';
-    [pauseResumeEl, drawerPauseResumeEl].forEach((item) => {
+    [pauseResumeEl].forEach((item) => {
       if (!item) return;
-      item.textContent = pauseLabel;
+      const label = item.querySelector('.machine-button-label');
+      if (label && label.textContent !== pauseLabel) label.textContent = pauseLabel;
       item.setAttribute('aria-label', `${pauseLabel} job`);
-      item.dataset.icon = paused ? 'start' : 'pause';
+      const icon = paused ? 'start' : 'pause';
+      if (item.dataset.icon !== icon) {
+        item.dataset.icon = icon;
+        window.CncSkin?.applyIcons?.(item);
+      }
       item.classList.toggle('machine-warn', !paused);
     });
-    window.CncSkin?.applyIcons?.(document.querySelector('.machine-shell'));
     if (liveMarlinEl) {
       const liveText = STATE.marlinLog?.lastCritical || lastEntry?.text || '';
       liveMarlinEl.hidden = !liveText || (!ACTIVE_STATES.has(state) && !STATE.marlinLog?.lastCritical);
@@ -704,12 +863,20 @@
       jogStatusEl.title = jogStatusText;
     }
     if (jogSettingsToggleEl) jogSettingsToggleEl.setAttribute('aria-expanded', String(STATE.jogSettingsOpen));
+    const restoreTargetZ = Number(STATE.jog?.originalZ);
+    const restoreAvailable = STATE.jog?.zRestoreAvailable === true && Number.isFinite(restoreTargetZ);
+    if (restoreZEl) {
+      restoreZEl.textContent = restoreAvailable
+        ? `Restore Z ${formatRestoreZ(restoreTargetZ)} mm`
+        : 'Restore Z unavailable';
+      restoreZEl.title = restoreAvailable
+        ? `Move Z to ${formatRestoreZ(restoreTargetZ)} mm at the current X/Y position`
+        : 'Safe Jog has no saved Z position to restore';
+    }
     syncJogDock();
 
     setDisabled('mb-pause', !(running || paused || isUnknown()));
     setDisabled('mb-stop', state === 'STOPPING');
-    setDisabled('mb-drawer-pause-resume', !(running || paused || isUnknown()));
-    setDisabled('mb-drawer-stop', state === 'STOPPING');
 
     const disableZero = busy;
     setDisabled('mb-set-work-zero', disableZero || !canSetup());
@@ -723,6 +890,7 @@
     setDisabled('mb-home-y', disableHoming);
     setDisabled('mb-home-z', disableHoming);
     setDisabled('mb-home-all', disableHoming);
+    setDisabled('mb-jog-restore-z', !restoreAvailable || busy || jogIsUiActive());
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
       item.disabled = disableHoming || jogIsUiActive();
     });
@@ -740,7 +908,7 @@
           <small id="mb-mock-badge" class="machine-mock-badge" title="DEV MOCK - NO REAL MACHINE" hidden>DEV MOCK</small>
         </button>
         <div class="machine-actions">
-          <button id="mb-pause" class="machine-warn" type="button" aria-label="Pause job" data-icon="pause">Pause</button>
+          <button id="mb-pause" class="machine-warn" type="button" aria-label="Pause job" data-icon="pause"><span class="machine-button-label">Pause</span></button>
           <button id="mb-stop" class="machine-danger" type="button" aria-label="Stop job" data-icon="stop">Stop</button>
           <button id="mb-m5" class="machine-danger-dark" type="button" aria-label="Spindle or laser off M5" data-icon="m5">M5</button>
         </div>
@@ -759,28 +927,40 @@
           <span class="machine-jog-handle-label" aria-hidden="true">Jog</span>
         </button>
         <div class="machine-jog-dock-panel" hidden>
-          <button id="mb-jog-settings-toggle" class="machine-jog-settings-toggle" type="button" aria-label="Expand joystick settings" aria-controls="mb-jog-settings" aria-expanded="false" title="Expand joystick settings">
+          <button id="mb-jog-settings-toggle" class="machine-jog-settings-toggle" type="button" aria-label="Joystick settings" aria-controls="mb-jog-settings" aria-expanded="false" title="Joystick settings">
             <svg class="cnc-icon machine-jog-settings-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M6 14l6-6 6 6" />
+              <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z" />
+              <path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l2-1.5-2-3.4-2.5 1a8 8 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A8 8 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.7 7.7 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a8 8 0 0 0 2.6-1.5l2.4 1 2-3.4z" />
             </svg>
           </button>
           <div id="mb-jog-settings" class="machine-jog-settings machine-jog-dock-settings" hidden>
             <p class="warning">Software controls are not a physical emergency stop.</p>
             <div class="machine-jog-setting-toggles">
               <label><input id="mb-jog-safe" type="checkbox" checked> Safe</label>
-              <label><input id="mb-jog-restore-z" type="checkbox" checked> Restore Z</label>
+              <button id="mb-jog-restore-z" class="machine-jog-restore-button" type="button" disabled>Restore Z unavailable</button>
             </div>
-            <label class="machine-jog-setting-field"><span>Safe Z</span><input id="mb-jog-safe-z" type="number" min="1" max="70" step="1" value="70"></label>
+            <label class="machine-jog-setting-field"><span>Safe Z <output id="mb-jog-safe-z-output">70 mm</output></span><input id="mb-jog-safe-z" type="range" min="1" max="70" step="1" value="70"></label>
             <label class="machine-jog-setting-field"><span>XY max <output id="mb-jog-xy-output">50 mm/s</output></span><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50"></label>
             <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5"></label>
-            <div class="machine-jog-z machine-jog-z-settings" aria-label="Z jog controls">
-              <button type="button" data-mb-jog-z="1">Z+</button>
-              <button type="button" data-mb-jog-z="-1">Z-</button>
-            </div>
           </div>
           <div class="machine-jog-dock-core">
-            <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick">
-              <span id="mb-jog-knob" class="machine-jog-knob"></span>
+            <button id="mb-jog-z-slider" class="machine-jog-z-slider" type="button" aria-label="Variable Z jog slider">
+              <span class="machine-jog-z-label machine-jog-z-positive" aria-hidden="true">Z+</span>
+              <span id="mb-jog-z-handle" class="machine-jog-z-handle" aria-hidden="true"></span>
+              <span class="machine-jog-z-label machine-jog-z-negative" aria-hidden="true">Z-</span>
+            </button>
+            <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick and locked directions">
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y+" data-mb-jog-x="0" data-mb-jog-y="1" style="--direction-x:0px;--direction-y:-74px;--direction-angle:-90deg" aria-label="Jog Y positive"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="1" style="--direction-x:52px;--direction-y:-52px;--direction-angle:-45deg" aria-label="Jog X and Y positive"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="X+" data-mb-jog-x="1" data-mb-jog-y="0" style="--direction-x:74px;--direction-y:0px;--direction-angle:0deg" aria-label="Jog X positive"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="-1" style="--direction-x:52px;--direction-y:52px;--direction-angle:45deg" aria-label="Jog X positive and Y negative"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y-" data-mb-jog-x="0" data-mb-jog-y="-1" style="--direction-x:0px;--direction-y:74px;--direction-angle:90deg" aria-label="Jog Y negative"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="-1" data-mb-jog-y="-1" style="--direction-x:-52px;--direction-y:52px;--direction-angle:135deg" aria-label="Jog X and Y negative"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="X-" data-mb-jog-x="-1" data-mb-jog-y="0" style="--direction-x:-74px;--direction-y:0px;--direction-angle:180deg" aria-label="Jog X negative"><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="-1" data-mb-jog-y="1" style="--direction-x:-52px;--direction-y:-52px;--direction-angle:225deg" aria-label="Jog X negative and Y positive"><span aria-hidden="true">&#10148;</span></button>
+              <button id="mb-jog-center" class="machine-jog-center" type="button" aria-label="Free XY joystick">
+                <span id="mb-jog-knob" class="machine-jog-knob"></span>
+              </button>
             </div>
             <p id="mb-jog-status" class="compact-status">IDLE | Safe Z not lifted | ready</p>
           </div>
@@ -788,22 +968,13 @@
       </div>
       <aside id="machine-drawer" class="machine-drawer" hidden aria-label="Machine safety drawer">
         <div class="machine-drawer-head">
-          <div>
-            <strong>Machine</strong>
-            <p><span id="mb-drawer-state">UNKNOWN</span> | Feed <span id="mb-drawer-feed">100%</span></p>
-            <p id="mb-warning" class="warning" hidden>Machine/job state is unknown.</p>
-          </div>
+          <strong>Machine controls</strong>
           <button id="mb-close" type="button">Close</button>
-          <div class="machine-drawer-actions machine-drawer-sticky-actions">
-            <button id="mb-drawer-pause-resume" class="machine-warn" type="button" data-icon="pause">Pause</button>
-            <button id="mb-drawer-stop" class="machine-danger" type="button" data-icon="stop">Stop</button>
-            <button id="mb-drawer-m5" class="machine-danger-dark" type="button" data-icon="m5">M5</button>
-          </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Job Safety</h2>
           <p class="warning">Software stop is not a physical emergency stop.</p>
-          <p>Use the physical emergency stop for real emergencies. The buttons above ask firmware/Marlin to pause, stop, or turn output off.</p>
+          <p>Use the physical emergency stop for real emergencies. Pause, Stop, and M5 remain visible in the machine bar above this drawer.</p>
         </div>
         <div class="machine-drawer-card">
           <h2>Feed Override</h2>
@@ -887,6 +1058,15 @@
     `;
     document.body.prepend(root);
 
+    const machineBar = root.querySelector('.machine-bar');
+    const syncMachineBarHeight = () => {
+      const height = Math.ceil(machineBar?.getBoundingClientRect().height || 58);
+      document.documentElement.style.setProperty('--machine-bar-height', `${height}px`);
+    };
+    syncMachineBarHeight();
+    if (globalThis.ResizeObserver && machineBar) new ResizeObserver(syncMachineBarHeight).observe(machineBar);
+    else globalThis.addEventListener?.('resize', syncMachineBarHeight);
+
     button('mb-toggle', () => toggleDrawer());
     button('mb-close', () => toggleDrawer(false));
     button('machine-drawer-overlay', () => toggleDrawer(false));
@@ -898,15 +1078,10 @@
         toggleJogSettings();
       }
     });
+    button('mb-jog-restore-z', restoreJogZ);
     button('mb-pause', pauseOrResumeJob);
-    button('mb-drawer-pause-resume', pauseOrResumeJob);
     button('mb-stop', stopJob);
-    button('mb-drawer-stop', stopJob);
     button('mb-m5', () => {
-      dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'm5' } }));
-      return sendCmd('M5');
-    });
-    button('mb-drawer-m5', () => {
       dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'm5' } }));
       return sendCmd('M5');
     });
@@ -975,10 +1150,13 @@
       if (el('mb-jog-xy-speed')) el('mb-jog-xy-speed').value = travelSpeedMmS;
       if (el('mb-jog-xy-output')) el('mb-jog-xy-output').textContent = `${travelSpeedMmS} mm/s`;
     });
-    ['mb-jog-xy-speed', 'mb-jog-z-speed'].forEach((id) => {
+    ['mb-jog-safe-z', 'mb-jog-xy-speed', 'mb-jog-z-speed'].forEach((id) => {
       el(id)?.addEventListener('input', (event) => {
-        const output = el(id === 'mb-jog-xy-speed' ? 'mb-jog-xy-output' : 'mb-jog-z-output');
-        if (output) output.textContent = `${event.currentTarget.value} mm/s`;
+        const outputId = id === 'mb-jog-safe-z'
+          ? 'mb-jog-safe-z-output'
+          : id === 'mb-jog-xy-speed' ? 'mb-jog-xy-output' : 'mb-jog-z-output';
+        const output = el(outputId);
+        if (output) output.textContent = `${event.currentTarget.value} ${id === 'mb-jog-safe-z' ? 'mm' : 'mm/s'}`;
         if (id === 'mb-jog-xy-speed' && motionSettingsModule) {
           const settings = motionSettingsModule.saveMotionSettings({ travelSpeedMmS: event.currentTarget.value });
           travelSpeedMmS = settings.travelSpeedMmS;
@@ -1008,19 +1186,21 @@
         entries: Array.isArray(data.entries) ? data.entries.slice(-20) : [],
         lastCritical: data.lastCritical || null,
       };
-      render();
+      renderMarlinReadouts();
     });
     window.CncTelemetry?.subscribe('jog', (data) => {
       STATE.jog = data;
-      render();
+      applyCommandedJogPosition(data);
+      renderJogReadouts();
     });
     window.CncTelemetry?.subscribe('position', (data) => {
+      if (jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true) return;
       if (!applyFrame(data, 'MARLIN')) return;
-      render();
+      renderPositionReadouts();
     });
-    window.addEventListener('blur', () => stopJog().catch(() => {}));
+    window.addEventListener('blur', () => stopJog(false, true).catch(() => {}));
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) stopJog().catch(() => {});
+      if (document.hidden) stopJog(false, true).catch(() => {});
     });
 
     if (window.CncTelemetry) window.CncTelemetry.start();

@@ -119,7 +119,9 @@ export async function createMockEnvironment(options = {}) {
   const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: config.lineDelayMs });
   const jog = {
     state: 'IDLE', safeJog: true, zLiftedForJog: false, safeLiftZ: 70,
-    restoreZAfterJog: true, xyFeedMax: 3000, zFeedMax: 400, lastCommand: '', lastError: '',
+    zRestoreAvailable: false, originalZ: null, safeLiftWorkZ: null, zChangedDuringJog: false,
+    commandedPositionCaptured: false, commandedWorkX: null, commandedWorkY: null, commandedWorkZ: null,
+    xyFeedMax: 3000, zFeedMax: 400, lastCommand: '', lastError: '',
     lastUpdateAt: 0,
   };
   const device = {
@@ -424,6 +426,8 @@ export async function createMockServer(options = {}) {
         const age = env.jog.lastUpdateAt ? Date.now() - env.jog.lastUpdateAt : 0;
         if (env.jog.state === 'JOGGING' && age > 500) {
           env.jog.state = 'IDLE';
+          env.jog.zRestoreAvailable = false;
+          env.jog.commandedPositionCaptured = false;
           env.jog.lastError = 'jog heartbeat timeout; stopped jogging';
         }
         return json(res, 200, { ...env.jog, heartbeatAgeMs: age, uptimeMs: Date.now() - env.startedAt });
@@ -431,12 +435,22 @@ export async function createMockServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/jog/start') {
         if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'jog rejected while job is active' });
         const body = await readJson(req);
+        const continuePendingRestore = env.jog.zRestoreAvailable && Number.isFinite(env.jog.originalZ) && body.safeJog !== false;
+        const pendingOriginalZ = env.jog.originalZ;
+        const originalZ = env.marlin.position.z;
         env.jog = {
           ...env.jog,
           state: 'JOGGING',
           safeJog: body.safeJog !== false,
           safeLiftZ: Math.max(0, Math.min(70, Number(body.safeLiftZ ?? 70))),
-          restoreZAfterJog: body.restoreZAfterJog !== false,
+          zRestoreAvailable: false,
+          originalZ: continuePendingRestore ? pendingOriginalZ : null,
+          safeLiftWorkZ: null,
+          zChangedDuringJog: false,
+          commandedPositionCaptured: false,
+          commandedWorkX: null,
+          commandedWorkY: null,
+          commandedWorkZ: null,
           xyFeedMax: Number(body.xyFeedMax ?? 3000),
           zFeedMax: Number(body.zFeedMax ?? 400),
           zLiftedForJog: false,
@@ -444,6 +458,7 @@ export async function createMockServer(options = {}) {
           lastUpdateAt: Date.now(),
         };
         if (env.jog.safeJog) {
+          if (!Number.isFinite(env.jog.originalZ)) env.jog.originalZ = originalZ;
           for (const command of ['M5', 'G90', `G53 G0 Z${env.jog.safeLiftZ.toFixed(3)} F${env.jog.zFeedMax}`, 'G90']) {
             const result = env.marlin.execute(command, { priority: true, allowMachineCoordinates: command.startsWith('G53 ') });
             if (!result.ok) {
@@ -456,6 +471,11 @@ export async function createMockServer(options = {}) {
           env.jog.safeLiftWorkZ = env.marlin.position.z;
           env.jog.zLiftedForJog = true;
         }
+        env.jog.commandedWorkX = env.marlin.position.x;
+        env.jog.commandedWorkY = env.marlin.position.y;
+        env.jog.commandedWorkZ = env.marlin.position.z;
+        env.jog.commandedPositionCaptured = true;
+        env.marlin.execute('G90', { priority: true });
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
       }
       if (req.method === 'POST' && pathname === '/api/jog/update') {
@@ -468,31 +488,69 @@ export async function createMockServer(options = {}) {
         const dx = x * Math.min(15, env.jog.xyFeedMax / 60 * 0.15);
         const dy = y * Math.min(15, env.jog.xyFeedMax / 60 * 0.15);
         const dz = z * speed * Math.min(0.5, env.jog.zFeedMax / 60 * 0.15);
+        if (Math.abs(dz) >= 0.005) {
+          env.jog.zChangedDuringJog = true;
+          env.jog.zRestoreAvailable = false;
+        }
         if (Math.abs(dx) >= 0.01 || Math.abs(dy) >= 0.01 || Math.abs(dz) >= 0.005) {
           const distance = Math.hypot(dx, dy);
           const feed = Math.abs(dz) >= 0.005 && distance < 0.01
             ? Math.max(20, Math.min(env.jog.zFeedMax, Math.abs(dz) / 0.15 * 60))
             : Math.max(60, Math.min(env.jog.xyFeedMax, distance / 0.15 * 60));
-          const move = `G0${Math.abs(dx) >= 0.01 ? ` X${dx.toFixed(3)}` : ''}${Math.abs(dy) >= 0.01 ? ` Y${dy.toFixed(3)}` : ''}${Math.abs(dz) >= 0.005 ? ` Z${dz.toFixed(3)}` : ''} F${feed.toFixed(0)}`;
-          for (const command of ['G91', move, 'G90']) {
-            const result = env.marlin.execute(command, { priority: true });
-            if (!result.ok) {
-              env.jog.state = 'ERROR';
-              env.jog.lastError = result.error;
-              return json(res, 400, { ok: false, error: result.error });
-            }
-            env.jog.lastCommand = command;
+          if (Math.abs(dx) >= 0.01) env.jog.commandedWorkX += dx;
+          if (Math.abs(dy) >= 0.01) env.jog.commandedWorkY += dy;
+          if (Math.abs(dz) >= 0.005) env.jog.commandedWorkZ += dz;
+          const move = `G1${Math.abs(dx) >= 0.01 ? ` X${env.jog.commandedWorkX.toFixed(3)}` : ''}${Math.abs(dy) >= 0.01 ? ` Y${env.jog.commandedWorkY.toFixed(3)}` : ''}${Math.abs(dz) >= 0.005 ? ` Z${env.jog.commandedWorkZ.toFixed(3)}` : ''} F${feed.toFixed(0)}`;
+          const result = env.marlin.execute(move, { priority: true });
+          if (!result.ok) {
+            env.jog.state = 'ERROR';
+            env.jog.lastError = result.error;
+            env.jog.commandedPositionCaptured = false;
+            return json(res, 400, { ok: false, error: result.error });
           }
+          env.jog.lastCommand = move;
         }
         env.jog.lastUpdateAt = Date.now();
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
       }
       if (req.method === 'POST' && pathname === '/api/jog/stop') {
-        env.marlin.execute('M410', { priority: true });
-        env.marlin.execute('M5', { priority: true });
+        const body = await readJson(req);
+        const emergency = body.emergency === true;
+        if (emergency) {
+          env.marlin.execute('M410', { priority: true });
+          env.marlin.execute('M5', { priority: true });
+          env.jog.zRestoreAvailable = false;
+          env.jog.commandedPositionCaptured = false;
+        } else {
+          env.jog.zRestoreAvailable = env.jog.safeJog && env.jog.zLiftedForJog &&
+            Number.isFinite(env.jog.originalZ) && !env.jog.zChangedDuringJog;
+        }
         env.jog.state = 'IDLE';
-        env.jog.lastCommand = 'M5';
+        env.jog.lastCommand = emergency ? 'M5' : 'G90';
         env.jog.lastUpdateAt = Date.now();
+        return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
+      }
+      if (req.method === 'POST' && pathname === '/api/jog/restore-z') {
+        if (env.runner.isActive() || env.jog.state !== 'IDLE') {
+          return json(res, 409, { ok: false, error: 'Z restore is unavailable while motion is active' });
+        }
+        if (!env.jog.zRestoreAvailable || !Number.isFinite(env.jog.originalZ) ||
+            !Number.isFinite(env.jog.safeLiftWorkZ) || Math.abs(env.marlin.position.z - env.jog.safeLiftWorkZ) > 0.5) {
+          env.jog.zRestoreAvailable = false;
+          return json(res, 409, { ok: false, error: 'saved jog Z is not available at the current Z position' });
+        }
+        const targetZ = env.jog.originalZ;
+        for (const command of ['G90', `G0 Z${targetZ.toFixed(3)} F${env.jog.zFeedMax}`, 'G90']) {
+          const result = env.marlin.execute(command, { priority: true });
+          if (!result.ok) return json(res, 400, { ok: false, error: result.error });
+          env.jog.lastCommand = command;
+        }
+        env.jog.zRestoreAvailable = false;
+        env.jog.zLiftedForJog = false;
+        env.jog.commandedWorkZ = targetZ;
+        env.jog.commandedPositionCaptured = true;
+        env.jog.originalZ = null;
+        env.jog.safeLiftWorkZ = null;
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
       }
       if (pathname.startsWith('/api/')) return json(res, 501, { ok: false, error: `Mock API not implemented: ${pathname}` });

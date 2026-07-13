@@ -179,13 +179,19 @@ describe('mock HTTP API', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ safeJog: false, xyFeedMax: 1200, zFeedMax: 300 }),
     });
-    expect(await jogStart.json()).toMatchObject({ state: 'JOGGING' });
+    expect(await jogStart.json()).toMatchObject({
+      state: 'JOGGING', commandedPositionCaptured: true,
+      commandedWorkX: 0, commandedWorkY: 30, commandedWorkZ: 70,
+    });
+    const jogLogStart = env.marlin.log.length;
     const jogUpdate = await fetch(`${base}/api/jog/update`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ x: 1, y: 0, z: 0, speed: 1 }),
     });
-    expect(await jogUpdate.json()).toMatchObject({ state: 'JOGGING' });
+    expect(await jogUpdate.json()).toMatchObject({ state: 'JOGGING', commandedPositionCaptured: true, commandedWorkX: 3 });
     expect(env.marlin.position.x).toBeGreaterThan(0);
+    expect(env.marlin.log.slice(jogLogStart).map((entry) => entry.text)).toContain('G1 X3.000 F1200');
+    expect(env.marlin.log.slice(jogLogStart).map((entry) => entry.text)).not.toContain('G91');
     const jogStop = await fetch(`${base}/api/jog/stop`, { method: 'POST' });
     expect(await jogStop.json()).toMatchObject({ state: 'IDLE' });
     expect(env.marlin.spindleOff).toBe(true);
@@ -221,14 +227,28 @@ describe('mock HTTP API', () => {
 
     const response = await fetch(`${base}/api/jog/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ safeJog: true, safeLiftZ: 999, restoreZAfterJog: true }),
+      body: JSON.stringify({ safeJog: true, safeLiftZ: 999 }),
     });
     const status = await response.json();
 
     expect(response.ok).toBe(true);
-    expect(status).toMatchObject({ state: 'JOGGING', safeLiftZ: 70, safeLiftWorkZ: 30, zLiftedForJog: true });
+    expect(status).toMatchObject({
+      state: 'JOGGING', safeLiftZ: 70, originalZ: 0, safeLiftWorkZ: 30, zLiftedForJog: true,
+      commandedPositionCaptured: true, commandedWorkZ: 30,
+    });
     expect(env.marlin.machinePosition.z).toBe(70);
-    await fetch(`${base}/api/jog/stop`, { method: 'POST' });
+    const stopped = await fetch(`${base}/api/jog/stop`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ emergency: false }),
+    }).then((res) => res.json());
+    expect(stopped).toMatchObject({ state: 'IDLE', zRestoreAvailable: true, originalZ: 0 });
+    expect(env.marlin.position.z).toBe(30);
+
+    const restored = await fetch(`${base}/api/jog/restore-z`, { method: 'POST' }).then((res) => res.json());
+    expect(restored).toMatchObject({
+      state: 'IDLE', zRestoreAvailable: false, originalZ: null,
+      commandedPositionCaptured: true, commandedWorkZ: 0,
+    });
+    expect(env.marlin.position.z).toBe(0);
   });
 
   it('serves machine info, applies M203, and saves with explicit M500', async () => {
