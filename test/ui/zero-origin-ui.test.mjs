@@ -8,7 +8,7 @@ const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 
 const controller = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
 
 describe('operator Zero / Origin workflow', () => {
-  it('keeps only operator zero actions visible in the Setup panel', () => {
+  it('keeps operator zero actions and saved-zero restore visible at the start of Prepare', () => {
     const panel = html.slice(html.indexOf('zero-origin-panel'), html.indexOf('feed-override-panel'));
     expect(panel).toContain('Zero / Origin');
     expect(panel).toContain('Home Machine');
@@ -17,6 +17,10 @@ describe('operator Zero / Origin workflow', () => {
     expect(panel).toContain('Set Zero Y');
     expect(panel).toContain('Set Zero Z');
     expect(panel).toContain('History');
+    expect(panel).toContain('data-preview-tab="preflight"');
+    expect(panel).toContain('id="prepare-work-zero-history"');
+    expect(panel).toContain('id="restore-prepare-work-zero"');
+    expect(panel).toContain('Restore &amp; Activate');
     expect(panel).not.toMatch(/Load Job|Save Job|Capture Current Position|G92|Job JSON|Raw M114/);
     expect(controller).toContain("'.zero-origin-panel'");
     expect(controller).not.toContain("'.tool-zero-panel'");
@@ -30,13 +34,18 @@ describe('operator Zero / Origin workflow', () => {
     expect(machineBar).toMatch(/cnc-home-machine-request[\s\S]*home\('G28'[\s\S]*true\)/);
   });
 
-  it('keeps diagnostics collapsed and history out of the inline Setup flow', () => {
+  it('keeps detailed history in a dialog while exposing work-zero restore inline', () => {
     expect(html).toContain('<dialog id="zero-history-dialog"');
     expect(html).toContain('<details class="diagnostics-panel">');
     expect(html).toContain('<summary>Advanced / Diagnostics</summary>');
     expect(preview).toContain("zeroHistoryDialog.showModal()");
     expect(preview).toContain('Last run: not used yet');
     expect(preview).toContain('Restore &amp; Go');
+    expect(preview).toContain('function renderPrepareWorkZeroHistory()');
+    expect(preview).toContain('function selectedPrepareWorkZero()');
+    expect(preview).toContain('Saved work zero — not active');
+    expect(preview).toContain('currentMachineFrame?.workZeroValid === true');
+    expect(preview).toMatch(/restorePrepareWorkZeroButton[\s\S]*restoreHistoryZero\(zero\)/);
     expect(preview).toMatch(/async function restoreHistoryZero[\s\S]*safeMachineZ[\s\S]*moveToZ: true/);
     expect(preview).toContain('Legacy zero — machine position not recorded');
   });

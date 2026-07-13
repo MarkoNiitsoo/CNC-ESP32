@@ -137,9 +137,15 @@
         <div id="warnings" class="warning-list"></div>
       </section>
 
-      <section class="panel zero-origin-panel preview-tab-panel" data-preview-tab="setup">
+      <section class="panel zero-origin-panel preview-tab-panel" data-preview-tab="preflight">
         <h2>Zero / Origin</h2>
         <div id="zero-origin-summary" class="zero-origin-summary"></div>
+        <div class="prepare-zero-history">
+          <label for="prepare-work-zero-history">Saved work zeros</label>
+          <select id="prepare-work-zero-history" aria-label="Saved work zeros"></select>
+          <button id="restore-prepare-work-zero" type="button" disabled>Restore &amp; Activate</button>
+          <p id="prepare-work-zero-hint" class="form-hint">Home All first, then restore a saved zero into the current machine session.</p>
+        </div>
         <div class="zero-origin-actions">
           <button id="home-machine-zero" type="button">Home Machine</button>
           <button id="set-work-zero" type="button" data-icon="workZero">Set Work Zero</button>

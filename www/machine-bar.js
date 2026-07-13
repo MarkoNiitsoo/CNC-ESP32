@@ -291,6 +291,9 @@
 
   async function goToWorkZero(axes) {
     if (!canSetup()) throw new Error('Work-zero movement is unavailable while the job is active.');
+    if (STATE.frame?.workZeroValid !== true) {
+      throw new Error('No active work zero. Set one or restore a saved zero from Prepare first.');
+    }
     if (!confirmUnknown('moving to work zero')) return;
     const safeMove = Boolean(el('mb-goto-safe')?.checked);
     const safeZ = Math.max(1, Math.min(200, Number(el('mb-jog-safe-z')?.value || 70)));
@@ -892,7 +895,9 @@
     setDisabled('mb-home-all', disableHoming);
     setDisabled('mb-jog-restore-z', !restoreAvailable || busy || jogIsUiActive());
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
-      item.disabled = disableHoming || jogIsUiActive();
+      const noActiveWorkZero = STATE.frame?.workZeroValid !== true;
+      item.disabled = disableHoming || jogIsUiActive() || noActiveWorkZero;
+      item.title = noActiveWorkZero ? 'Set or restore an active work zero first' : '';
     });
   }
 

@@ -41,6 +41,9 @@ const captureSetZeroButton = document.querySelector('#capture-set-zero');
 const downloadJobButton = document.querySelector('#download-job');
 const zeroOriginSummaryEl = document.querySelector('#zero-origin-summary');
 const homeMachineZeroButton = document.querySelector('#home-machine-zero');
+const prepareWorkZeroHistorySelect = document.querySelector('#prepare-work-zero-history');
+const restorePrepareWorkZeroButton = document.querySelector('#restore-prepare-work-zero');
+const prepareWorkZeroHintEl = document.querySelector('#prepare-work-zero-hint');
 const zeroHistoryDialog = document.querySelector('#zero-history-dialog');
 const openZeroHistoryButton = document.querySelector('#open-zero-history');
 const closeZeroHistoryButton = document.querySelector('#close-zero-history');
@@ -349,6 +352,7 @@ function compactReadinessReason(message) {
 function actionTab(action) {
   const target = action?.target || 'preview';
   if (target === 'dryrun') return 'dry-run';
+  if (target === 'setup') return 'preflight';
   return target;
 }
 
@@ -385,9 +389,9 @@ async function handleReadinessAction(action) {
     return;
   }
   if (action.id === 'home_machine') {
-    showPreviewTab('setup');
-    workbenchController?.openForTab('setup');
-    history.replaceState(null, '', '#setup');
+    showPreviewTab('preflight');
+    workbenchController?.openForTab('preflight');
+    history.replaceState(null, '', '#preflight');
     window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
     focusReadinessTarget(action);
     return;
@@ -2716,6 +2720,57 @@ function lastRunForZero(zero) {
     .sort((a, b) => new Date(b.endedAt || b.startedAt || 0) - new Date(a.endedAt || a.startedAt || 0))[0] || null;
 }
 
+function restorableWorkZeros() {
+  return [...(jobState?.zeroHistory || [])]
+    .filter((zero) => zero?.type === 'workZero' && ['x', 'y', 'z'].every((axis) => (
+      Number.isFinite(Number(zero.machineReference?.position?.[axis]))
+    )))
+    .reverse();
+}
+
+function selectedPrepareWorkZero() {
+  const id = prepareWorkZeroHistorySelect?.value || '';
+  return restorableWorkZeros().find((zero) => zero.id === id) || null;
+}
+
+function renderPrepareWorkZeroHistory() {
+  if (!prepareWorkZeroHistorySelect || !restorePrepareWorkZeroButton || !prepareWorkZeroHintEl) return;
+  const entries = restorableWorkZeros();
+  const previousId = prepareWorkZeroHistorySelect.value;
+  prepareWorkZeroHistorySelect.textContent = '';
+  if (!entries.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No saved work zeros';
+    prepareWorkZeroHistorySelect.append(option);
+    prepareWorkZeroHistorySelect.disabled = true;
+    restorePrepareWorkZeroButton.disabled = true;
+    prepareWorkZeroHintEl.textContent = 'Set Work Zero once to add the first history entry.';
+    return;
+  }
+  entries.forEach((zero) => {
+    const position = zero.machineReference.position;
+    const option = document.createElement('option');
+    option.value = zero.id;
+    option.textContent = `${zero.label || localTimestamp(zero.capturedAt)} — X ${fmtValue(position.x)} Y ${fmtValue(position.y)} Z ${fmtValue(position.z)}`;
+    prepareWorkZeroHistorySelect.append(option);
+  });
+  const preferredId = entries.some((zero) => zero.id === previousId)
+    ? previousId
+    : entries.some((zero) => zero.id === jobState?.activeWorkZeroId)
+      ? jobState.activeWorkZeroId
+      : entries[0].id;
+  prepareWorkZeroHistorySelect.value = preferredId;
+  prepareWorkZeroHistorySelect.disabled = false;
+  const homed = positionTrust.trusted && positionTrust.fullHoming && currentMachineFrame?.absoluteFromHome === true;
+  const busy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']
+    .includes(String(jobRunStatus?.state || '').toUpperCase());
+  restorePrepareWorkZeroButton.disabled = !homed || busy;
+  prepareWorkZeroHintEl.textContent = homed
+    ? 'Restore moves via Safe Z and activates this zero in the current homing session.'
+    : 'Home All first, then restore the selected zero into the current machine session.';
+}
+
 function renderZeroOriginPanel() {
   if (!zeroOriginSummaryEl) return;
   const zero = activeZero('workZero');
@@ -2723,10 +2778,11 @@ function renderZeroOriginPanel() {
   const zeroSession = zero?.frame?.homingSessionId || jobState?.workZero?.frame?.homingSessionId || '';
   const frameTrusted = currentMachineFrame?.trusted === true && currentMachineFrame?.absoluteFromHome === true;
   const sameSession = Boolean(zeroSession && zeroSession === currentMachineFrame?.homingSessionId);
-  const trustworthy = frameTrusted && sameSession && ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(position?.[axis])));
+  const savedPosition = ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(position?.[axis])));
+  const trustworthy = currentMachineFrame?.workZeroValid === true && frameTrusted && sameSession && savedPosition;
   if (homeMachineZeroButton) homeMachineZeroButton.hidden = frameTrusted;
   zeroOriginSummaryEl.innerHTML = trustworthy ? `
-    <p class="zero-origin-label">Work zero from home</p>
+    <p class="zero-origin-label">Active work zero</p>
     <div class="zero-origin-coordinates">
       <span><small>X</small>${fmtValue(position.x)}</span>
       <span><small>Y</small>${fmtValue(position.y)}</span>
@@ -2738,6 +2794,18 @@ function renderZeroOriginPanel() {
     <p class="zero-origin-unknown">Unknown — Home machine first</p>
     <p class="form-hint">${jobExists ? 'Saved metadata cannot be trusted in the current homing session.' : 'Not saved yet'}</p>
   `;
+  if (!trustworthy && savedPosition) {
+    zeroOriginSummaryEl.innerHTML = `
+      <p class="zero-origin-label">Saved work zero — not active</p>
+      <div class="zero-origin-coordinates">
+        <span><small>X</small>${fmtValue(position.x)}</span>
+        <span><small>Y</small>${fmtValue(position.y)}</span>
+        <span><small>Z</small>${fmtValue(position.z)}</span>
+      </div>
+      <p class="warning">This saved zero is not active in the current machine session. Home All, then use Restore &amp; Activate below.</p>
+    `;
+  }
+  renderPrepareWorkZeroHistory();
 }
 
 function activeZero(type) {
@@ -3332,6 +3400,8 @@ async function restoreHistoryZero(zero) {
   await saveJobQuietly();
   zeroHistoryDialog?.close?.();
   setJobResult(`${zeroLabel === 'Z zero' ? 'Z zero' : 'Work zero'} restored and active.`);
+  renderHistoryPanels();
+  renderReadiness();
   renderJobPanel();
   renderToolZeroPanel();
   renderPreflight();
@@ -5334,6 +5404,14 @@ capturePositionButton?.addEventListener('click', () => captureCurrentPosition().
 setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz').catch((err) => setJobResult(operatorZeroError(err), true)));
 homeMachineZeroButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
+});
+restorePrepareWorkZeroButton?.addEventListener('click', () => {
+  const zero = selectedPrepareWorkZero();
+  if (!zero) {
+    setJobResult('Select a saved work zero first.', true);
+    return;
+  }
+  restoreHistoryZero(zero).catch((err) => setJobResult(err.message, true));
 });
 setZeroXButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'x').catch((err) => setJobResult(operatorZeroError(err), true)));
 setZeroYButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'y').catch((err) => setJobResult(operatorZeroError(err), true)));

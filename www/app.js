@@ -669,12 +669,12 @@ function nextAction() {
   if (state === 'RUNNING' || state === 'PREPARING' || state === 'RESUMING') return { label: 'Monitor Job', view: 'job' };
   if (state === 'PAUSED') return { label: 'Resume Job', api: '/api/job/resume' };
   if (state === 'STOPPED' || state === 'ERROR') return { label: 'Open Log', view: 'logs' };
-  if (lastRun?.state === 'stopped' || lastRun?.state === 'interrupted') return { label: 'Review Interrupted Run', href: `${previewUrl()}#setup` };
+  if (lastRun?.state === 'stopped' || lastRun?.state === 'interrupted') return { label: 'Review Interrupted Run', href: `${previewUrl()}#recovery` };
   if (!previewBounds()) return { label: 'Open Preview', href: previewUrl() };
   if (activeRunNeedsUpdate()) return { label: 'Update Run File', href: `${previewUrl()}#preview` };
   if (Number(jobMeta?.schemaVersion) === 3) return { label: 'Prepare & Cut', href: `${previewUrl()}#preflight` };
-  if (!hasWorkZero()) return { label: 'Set Work Zero', href: `${previewUrl()}#setup` };
-  if (!hasZZero()) return { label: 'Set Z Zero', href: `${previewUrl()}#setup` };
+  if (!hasWorkZero()) return { label: 'Set Work Zero', href: `${previewUrl()}#preflight` };
+  if (!hasZZero()) return { label: 'Set Z Zero', href: `${previewUrl()}#preflight` };
   if (jobMeta?.preflight?.state === 'NOT_READY') return { label: 'Review Preflight', href: `${previewUrl()}#preflight` };
   if (!dryRunDone()) return { label: 'Run Bounding Box', href: `${previewUrl()}#dryrun` };
   if (armState() !== 'ARMED') return { label: 'Review & Start Cut', href: `${previewUrl()}#run` };
@@ -747,7 +747,7 @@ function renderCurrentJob() {
       <dt>Bounds</dt><dd>${bounds ? formatBounds(bounds) : 'Preview needed'}</dd>
       <dt>Feed override</dt><dd>${html(feed)}%</dd>
       <dt>Estimated time</dt><dd>${formatMinutes(jobMeta?.preview?.estimate?.effectiveSecondsWithOverride || jobMeta?.preview?.estimate?.nominalSeconds || jobMeta?.preview?.estimatedTimeSeconds)}</dd>
-      <dt>Work zero</dt><dd>${activeWorkZero ? html(shortTime(activeWorkZero.capturedAt)) : (hasWorkZero() ? 'OK' : 'Missing')}</dd>
+      <dt>Saved work zero</dt><dd>${activeWorkZero ? `${html(shortTime(activeWorkZero.capturedAt))} — activate in Prepare` : (hasWorkZero() ? 'Saved — activate in Prepare' : 'Missing')}</dd>
       <dt>Physical check</dt><dd>${html(verificationLabel())}</dd>
     </dl>
     <details class="diagnostics-panel">
@@ -775,8 +775,8 @@ function renderCurrentJob() {
     <div class="secondary-actions">
       <a class="maintenance-link" href="${previewUrl()}">Full Preview</a>
       <a class="maintenance-link" href="${previewUrl()}#preview">Place & Rotate</a>
-      ${hasNewerUnusedWorkZero() ? `<a class="maintenance-link" href="${previewUrl()}#setup">Choose previous zero</a>` : ''}
-      ${lastRun?.state === 'stopped' || lastRun?.state === 'interrupted' ? `<a class="maintenance-link" href="${previewUrl()}#setup">Review interrupted run</a>` : ''}
+      ${hasNewerUnusedWorkZero() ? `<a class="maintenance-link" href="${previewUrl()}#preflight">Choose previous zero</a>` : ''}
+      ${lastRun?.state === 'stopped' || lastRun?.state === 'interrupted' ? `<a class="maintenance-link" href="${previewUrl()}#recovery">Review interrupted run</a>` : ''}
       <a class="maintenance-link" href="${previewUrl()}#preflight">Prepare & Cut</a>
       <a class="maintenance-link" href="#logs" data-nav-target="logs">Open Log</a>
     </div>

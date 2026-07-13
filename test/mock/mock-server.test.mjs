@@ -164,6 +164,27 @@ describe('mock HTTP API', () => {
 
   it('supports bounded work-zero moves and mock jog without hardware', async () => {
     const { base, env } = await start();
+    const blockedGoto = await fetch(`${base}/api/work-zero/goto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ axes: 'x', safeMove: true, safeZ: 70 }),
+    });
+    expect(blockedGoto.status).toBe(409);
+    expect(await blockedGoto.json()).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('active work zero'),
+    });
+
+    const home = await fetch(`${base}/api/machine/home`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ axes: 'all' }),
+    });
+    expect(home.ok).toBe(true);
+    expect(env.marlin.execute('G53 G0 X0 Y0 Z0', { allowMachineCoordinates: true }).ok).toBe(true);
+    const setZero = await fetch(`${base}/api/work-zero/set`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ axes: 'xyz' }),
+    });
+    expect(setZero.ok).toBe(true);
     await fetch(`${base}/api/cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd: 'G0 X20 Y30 Z10' }),

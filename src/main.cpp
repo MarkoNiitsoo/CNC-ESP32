@@ -4999,6 +4999,10 @@ void handleGoToWorkZero() {
     sendJsonError(409, "go to work zero rejected while jog is active");
     return;
   }
+  if (!machineFrame.workZeroValid) {
+    sendJsonError(409, "go to work zero requires an active work zero; set it or restore one from history first");
+    return;
+  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;

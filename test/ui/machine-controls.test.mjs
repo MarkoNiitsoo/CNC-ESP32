@@ -199,6 +199,10 @@ describe('firmware-backed Go To Work Zero', () => {
   it('allows only X, Y, or XY and blocks active job, jog, and OTA', () => {
     expect(handler).toMatch(/axes != "x" && axes != "y" && axes != "xy"/);
     expect(handler).toMatch(/otaActive[\s\S]*jobIsActive\(\)[\s\S]*jogIsActive\(\)/);
+    expect(handler).toContain('if (!machineFrame.workZeroValid)');
+    expect(handler).toContain('set it or restore one from history first');
+    expect(machineBar).toContain("STATE.frame?.workZeroValid !== true");
+    expect(machineBar).toContain('No active work zero. Set one or restore a saved zero from Prepare first.');
   });
 
   it('lifts before XY in safe mode and never sends G92, G28, M3, or M4', () => {

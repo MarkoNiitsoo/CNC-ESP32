@@ -238,6 +238,12 @@ export async function createMockServer(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/goto') {
         if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'go to work zero rejected while job is active' });
+        if (!env.frame.workZeroValid) {
+          return json(res, 409, {
+            ok: false,
+            error: 'go to work zero requires an active work zero; set it or restore one from history first',
+          });
+        }
         const body = await readJson(req);
         const axes = String(body.axes || '').toLowerCase();
         if (!['x', 'y', 'xy'].includes(axes)) throw new Error('axes must be x, y, or xy');

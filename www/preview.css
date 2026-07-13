@@ -374,6 +374,42 @@
   font: 700 0.7rem/1.2 system-ui, sans-serif;
 }
 
+.prepare-zero-history {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #334653;
+  border-radius: 8px;
+  background: rgba(20, 32, 40, 0.72);
+}
+
+.prepare-zero-history label,
+.prepare-zero-history .form-hint {
+  grid-column: 1 / -1;
+}
+
+.prepare-zero-history select {
+  min-width: 0;
+  width: 100%;
+}
+
+.prepare-zero-history .form-hint {
+  margin: 0;
+}
+
+@media (max-width: 560px) {
+  .prepare-zero-history {
+    grid-template-columns: 1fr;
+  }
+
+  .prepare-zero-history label,
+  .prepare-zero-history .form-hint {
+    grid-column: auto;
+  }
+}
+
 .zero-origin-actions {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
