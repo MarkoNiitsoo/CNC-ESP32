@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   THUMBNAIL_SIZE,
   isGcodeFileName,
+  jobPathForUpload,
   mergeUploadedFileMetadata,
   thumbnailFileName,
   thumbnailPathFor,
@@ -20,6 +21,19 @@ describe('upload-time PNG thumbnails', () => {
     expect(isGcodeFileName('notes.txt')).toBe(false);
     expect(thumbnailFileName('part 1.gc')).toBe('part_1.gc.png');
     expect(thumbnailPathFor('part 1.gc')).toBe('/jobs/thumbs/part_1.gc.png');
+  });
+
+  it('scopes job metadata to the complete G-code path', () => {
+    const first = jobPathForUpload('/gcode/customer-a/part.gc');
+    const second = jobPathForUpload('/gcode/customer-b/part.gc');
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^\/jobs\/.*-[0-9a-f]{8}\.job\.json$/);
+    expect(previewSource).toContain('loaded.sourceGcodePath === filePath');
+    expect(filesSource).toContain('loaded?.sourceGcodePath === item.path');
+  });
+
+  it('does not show another file\'s completed run as the newly opened job', () => {
+    expect(previewSource).toMatch(/belongsToAnotherFile[\s\S]*previousJobPath/);
   });
 
   it('preserves existing safety and history metadata while refreshing preview fields', () => {
@@ -66,6 +80,13 @@ describe('upload-time PNG thumbnails', () => {
       expect(source).toContain('/api/download?path=${encodeURIComponent(path)}');
       expect(source).toContain('thumbnailUrl(');
       expect(source).not.toMatch(/src="\$\{html\((?:itemMeta|meta)\.thumbnailPath\)\}"/);
+    }
+  });
+
+  it('falls back to an existing PNG when the new path-scoped Job JSON is not created yet', () => {
+    for (const source of [filesSource, appSource]) {
+      expect(source).toMatch(/thumbnailPathFor\(item\.name \|\| basename\(item\.path\)\)/);
+      expect(source).toMatch(/thumbnailRes\?\.ok \? \{ sourceGcodePath: item\.path, thumbnailPath \} : null/);
     }
   });
 });

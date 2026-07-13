@@ -121,7 +121,7 @@ describe('Toolless Resume Test history and UI', () => {
   });
 
   it('uses explicit no-cutter wording and only explicit critical controls cancel recovery', () => {
-    expect(previewHtml).toContain('Toolless Resume Test');
+    expect(previewHtml).toContain('Advanced: test remaining path without tool');
     expect(previewHtml).toContain('No cutter/router installed. Spindle stays off. This follows the real Z path.');
     expect(previewHtml).toMatch(/id="toolless-resume-start"[^>]*>Toolless Resume From Point<\/button>/);
     expect(previewHtml).toContain('class="production-resume-panel"');

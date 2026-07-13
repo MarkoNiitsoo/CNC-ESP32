@@ -574,7 +574,9 @@ function basename(path) {
 }
 
 function safeJobName(path) {
-  return basename(path).replace(/[^A-Za-z0-9._-]/g, '_') || 'job';
+  const normalized = String(path || '').replace(/^\/+/, '');
+  const readable = normalized.replace(/[^A-Za-z0-9._-]/g, '_').slice(-72) || 'job';
+  return `${readable}-${fnv1a32(normalized)}`;
 }
 
 function jobPathFor(path) {
@@ -1374,12 +1376,18 @@ function updateJobRunPolling() {
 }
 
 async function applyJobRunStatus(data) {
-  jobRunStatus = data;
   jobStatusReceivedAtMs = performance.now();
   jobStatusFirmwareUptimeMs = Number(data?.uptimeMs) || 0;
   jobStatusHealthy = true;
   if (!data?.streamMode || data.streamMode === 'job') await syncRunHistoryFromStatus(data);
   if (data?.streamMode === 'production-resume') await syncProductionResumeFromStatus(data);
+  const terminalStates = new Set(['IDLE', 'COMPLETED', 'STOPPED', 'ERROR']);
+  const belongsToAnotherFile = data?.gcodePath
+    && data.gcodePath !== currentRunPath()
+    && terminalStates.has(String(data.state || '').toUpperCase());
+  jobRunStatus = belongsToAnotherFile
+    ? { state: 'IDLE', progressPercent: 0, previousJobPath: data.gcodePath }
+    : data;
   renderRunPanel();
   refreshRecoveryPlan();
   updateJobRunPolling();
@@ -2199,25 +2207,22 @@ function renderRecoveryPanel() {
   const interruption = recoveryPlan.interruption;
   const blockers = recoveryPlan.blockingReasons || [];
   const recoveryWarnings = recoveryPlan.warnings || [];
+  const available = recoveryPlan.status === 'available';
   recoverySummaryEl.innerHTML = `
-    <dl>
-      <dt>Status</dt><dd>${html(recoveryPlan.status.toUpperCase())}</dd>
-      <dt>Interrupted run</dt><dd>${html(interruption?.runId || '-')}</dd>
-      <dt>Interrupted run file</dt><dd>${html(recoveryPlan.run?.activeRunPath || '-')}</dd>
-      <dt>Current active run</dt><dd>${html(recoveryPlan.activeRunPath || '-')}</dd>
-      <dt>Path match</dt><dd>${recoveryPlan.blockingReasons?.some((item) => item.id === 'activeRunPath') ? 'MISMATCH' : 'MATCH'}</dd>
-      <dt>Last acknowledged</dt><dd>${recoveryPlan.run?.lastAckedLineNumber ?? '-'}</dd>
-      <dt>Last sent</dt><dd>${recoveryPlan.run?.lastSentLineNumber ?? '-'}</dd>
-      <dt>Interrupted command</dt><dd>${interruption?.lineNumber ?? '-'}</dd>
-      <dt>Resume command</dt><dd>${candidate?.lineNumber ?? '-'}</dd>
-      <dt>Resume point</dt><dd>${candidate ? `X${fmtValue(candidate.position.x)} Y${fmtValue(candidate.position.y)} Z${fmtValue(candidate.position.z)}` : '-'}</dd>
-      <dt>Safe Z</dt><dd>${candidate ? fmtValue(candidate.safeZ) : fmtValue(recoverySafeZ())} mm</dd>
-      <dt>Confidence</dt><dd>${html(candidate?.confidence || '-')}</dd>
-    </dl>
-    ${blockers.length ? `<ul class="readiness-blockers">${blockers.map((item) => `<li>${html(item.message)}</li>`).join('')}</ul>` : '<p class="ok-text">Motion-only recovery checks pass.</p>'}
+    <p class="eyebrow">${available ? 'READY TO REVIEW' : 'ACTION REQUIRED'}</p>
+    <strong>${candidate ? `Continue from command ${candidate.lineNumber}` : 'No safe resume point is available'}</strong>
+    ${candidate ? `<p>Resume at X${fmtValue(candidate.position.x)} Y${fmtValue(candidate.position.y)} after moving at Safe Z ${fmtValue(candidate.safeZ)} mm.</p>` : ''}
+    ${blockers.length ? `<ul class="readiness-blockers">${blockers.map((item) => `<li>${html(item.message)}</li>`).join('')}</ul>` : '<p class="ok-text">Interrupted file, machine position and work zero match.</p>'}
     ${recoveryWarnings.length ? `<ul class="dry-run-errors">${recoveryWarnings.map((item) => `<li>${html(item.message)}</li>`).join('')}</ul>` : ''}
-    <p><strong>Command summary:</strong> M5, G21, G90, G54, lift to Safe Z, move XY, M400.</p>
-    <p class="warning">No cutting-depth descent and no spindle/router/laser start will be sent.</p>
+    <details class="operator-diagnostics"><summary>Recovery details</summary>
+      <dl>
+        <dt>Interrupted run</dt><dd>${html(interruption?.runId || '-')}</dd>
+        <dt>Run file</dt><dd>${html(recoveryPlan.run?.activeRunPath || '-')}</dd>
+        <dt>Last acknowledged / sent</dt><dd>${recoveryPlan.run?.lastAckedLineNumber ?? '-'} / ${recoveryPlan.run?.lastSentLineNumber ?? '-'}</dd>
+        <dt>Interrupted / resume command</dt><dd>${interruption?.lineNumber ?? '-'} / ${candidate?.lineNumber ?? '-'}</dd>
+        <dt>Confidence</dt><dd>${html(candidate?.confidence || '-')}</dd>
+      </dl>
+    </details>
   `;
   if (moveToResumePointButton) moveToResumePointButton.disabled = recoveryPlan.status !== 'available' || toollessResumeRunning || productionResumeRunning;
   renderToollessResumePanel();
@@ -3533,7 +3538,7 @@ async function loadExistingJobJson() {
     const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(filePath))}`);
     if (!res.ok) return null;
     const loaded = await res.json();
-    return isJobV3(loaded) ? loaded : null;
+    return isJobV3(loaded) && loaded.sourceGcodePath === filePath ? loaded : null;
   } catch (err) {
     return null;
   }

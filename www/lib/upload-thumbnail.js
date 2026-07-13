@@ -15,8 +15,14 @@ export function thumbnailPathFor(name = '') {
 }
 
 export function jobPathForUpload(name = '') {
-  const safe = String(name).split(/[\\/]/).pop();
-  return `/jobs/${safe}.job.json`;
+  const normalized = String(name).replace(/^\/+/, '');
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const safe = normalized.replace(/[^A-Za-z0-9._-]/g, '_').slice(-72) || 'job';
+  return `/jobs/${safe}-${(hash >>> 0).toString(16).padStart(8, '0')}.job.json`;
 }
 
 export function mergeUploadedFileMetadata(existingJob, details = {}) {

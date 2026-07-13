@@ -424,12 +424,9 @@ export function buildToollessResumePlan(recoveryPlan, toolpathModel, options = {
 }
 
 const PRODUCTION_CHECKLIST = [
-  'routerStateSafe',
-  'toolSecured',
   'materialUnmoved',
-  'workZeroCorrect',
-  'fixturesClear',
-  'cuttingZUnderstood',
+  'toolAndZeroCorrect',
+  'routerReady',
 ];
 const Z_CHANGE_CHECKLIST = ['toolChangeIntentional', 'newZZeroCorrect'];
 

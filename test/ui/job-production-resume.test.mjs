@@ -22,8 +22,7 @@ const model = parseGCodeToToolpath(source);
 const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: 0, zMax: 70 };
 const workZeroMachine = { x: 0, y: 0, z: 35 };
 const checklist = {
-  routerStateSafe: true, toolSecured: true, materialUnmoved: true,
-  workZeroCorrect: true, fixturesClear: true, cuttingZUnderstood: true,
+  materialUnmoved: true, toolAndZeroCorrect: true, routerReady: true,
 };
 
 function jobFor(overrides = {}) {
@@ -151,10 +150,10 @@ describe('Production Resume history and UI guards', () => {
 
   it('distinguishes all three tiers and requires a real hold gesture', () => {
     expect(previewHtml).toContain('Move Axes to Resume Point');
-    expect(previewHtml).toContain('Toolless Resume Test');
+    expect(previewHtml).toContain('Advanced: test remaining path without tool');
     expect(previewHtml).toContain('Production Resume');
     expect(previewHtml).toContain('Hold to Resume Cutting');
-    expect(previewHtml).toContain('Router/spindle state is safe and understood');
+    expect(previewHtml).toContain('Router state is ready and understood');
     expect(previewHtml).toContain('Tool was changed or Z zero was re-touched intentionally');
     expect(previewSource).toContain('setTimeout(() =>');
     expect(previewSource).toContain('}, 1500)');

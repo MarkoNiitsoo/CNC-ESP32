@@ -202,10 +202,9 @@
       </section>
 
       <section class="panel recovery-panel preview-tab-panel" data-preview-tab="recovery">
-        <h2>Motion-only Recovery</h2>
-        <p class="warning">Motion test only. The cutter/spindle/laser must be absent or off. This does not resume cutting.</p>
+        <h2>Resume Interrupted Cut</h2>
         <div id="recovery-trust" class="arm-state arm-not-ready">POSITION UNTRUSTED</div>
-        <div class="dry-run-inputs">
+        <details class="operator-diagnostics"><summary>Recovery settings</summary><div class="dry-run-inputs">
           <label for="recovery-safe-z">Safe Z (mm)</label>
           <input id="recovery-safe-z" type="number" inputmode="decimal" min="0.1" max="70" step="0.1" value="15">
         </div>
@@ -213,50 +212,49 @@
           <button id="recovery-trust-position" type="button">I have homed / position is trusted</button>
           <button id="recovery-untrust-position" type="button">Mark position untrusted</button>
         </div>
-        <label class="recovery-overlay-toggle"><input id="show-recovery-overlay" type="checkbox" checked> Show Recovery Overlay</label>
-        <div class="work-zero-restore-panel">
+        <label class="recovery-overlay-toggle"><input id="show-recovery-overlay" type="checkbox" checked> Show Recovery Overlay</label></details>
+        <details class="operator-diagnostics work-zero-restore-panel">
+          <summary>Saved work zero</summary>
           <h3>Saved Work Zero</h3>
           <div id="work-zero-restore-summary" class="job-summary"></div>
           <button id="restore-saved-work-zero" type="button" disabled>Restore Saved Work Zero</button>
           <p class="form-hint">Home All first. The saved home-relative XYZ origin is restored; homing is never automatic.</p>
-        </div>
+        </details>
         <div id="recovery-summary" class="job-summary"></div>
+        <details class="operator-diagnostics recovery-positioning-panel">
+          <summary>Motion-only positioning</summary>
         <div class="job-actions">
           <button id="fit-resume-point" type="button">Fit Resume Point</button>
           <button id="move-to-resume-point" type="button" disabled>Move Axes to Resume Point</button>
           <button id="cancel-recovery" type="button">Hide Recovery</button>
         </div>
-        <div class="toolless-resume-panel">
-          <h3>Toolless Resume Test</h3>
+        <details class="operator-diagnostics toolless-resume-panel"><summary>Advanced: test remaining path without tool</summary>
           <p class="warning">Toolless resume test. No cutter/router installed. Spindle stays off. This follows the real Z path.</p>
           <label class="recovery-overlay-toggle"><input id="toolless-no-cutter" type="checkbox"> I confirm no cutter/router is installed</label>
           <div id="toolless-resume-summary" class="job-summary"></div>
           <button id="toolless-resume-start" class="machine-danger" type="button" disabled>Toolless Resume From Point</button>
-        </div>
+        </details>
         <div class="production-resume-panel">
           <h3><span class="production-badge">GUARDED</span> Production Resume</h3>
           <p class="warning">Resume Cutting follows the real remaining Z path. The pendant never starts the router/spindle; manual router state is your responsibility.</p>
           <div id="production-resume-summary" class="job-summary"></div>
           <fieldset class="production-checklist">
             <legend>Resume safety checklist</legend>
-            <label><input type="checkbox" data-production-check="routerStateSafe"> Router/spindle state is safe and understood</label>
-            <label><input type="checkbox" data-production-check="toolSecured"> Cutter/tool is installed and secured</label>
             <label><input type="checkbox" data-production-check="materialUnmoved"> Material has not moved</label>
-            <label><input type="checkbox" data-production-check="workZeroCorrect"> Work zero is still correct</label>
-            <label><input type="checkbox" data-production-check="fixturesClear"> Clamps/fixtures are clear</label>
-            <label><input type="checkbox" data-production-check="cuttingZUnderstood"> I understand this will continue at cutting Z</label>
+            <label><input type="checkbox" data-production-check="toolAndZeroCorrect"> Tool, clamps and work/Z zero are correct</label>
+            <label><input type="checkbox" data-production-check="routerReady"> Router state is ready and understood</label>
             <div id="production-z-change-checks" hidden>
               <label><input type="checkbox" data-production-check="toolChangeIntentional"> Tool was changed or Z zero was re-touched intentionally</label>
               <label><input type="checkbox" data-production-check="newZZeroCorrect"> New Z zero is correct for this resume</label>
             </div>
           </fieldset>
-          <button id="production-prepare" type="button" disabled>Phase 1: Reposition at Safe Z</button>
+          <button id="production-prepare" type="button" disabled>Move to Resume Point at Safe Z</button>
           <label class="production-manual-check"><input id="production-router-confirmed" type="checkbox" disabled> At resume point: router was started/verified manually</label>
           <button id="production-resume-hold" class="production-hold" type="button" disabled>Hold to Resume Cutting</button>
           <p class="help-text">After the hold, the ESP32 owns the cutting stream. Closing the browser or losing WiFi does not stop it; use Pause, Stop, or M5 when needed.</p>
           <p class="form-hint">Hold for 1.5 seconds. Release early to cancel.</p>
         </div>
-        <pre id="recovery-log" class="dry-run-log"></pre>
+        <details class="operator-diagnostics"><summary>Technical log</summary><pre id="recovery-log" class="dry-run-log"></pre></details>
       </section>
 
       <section class="panel dry-run-panel preview-tab-panel" data-preview-tab="dry-run">
@@ -296,6 +294,7 @@
           <button id="resume-job" type="button">Resume Job</button>
           <button id="stop-job" type="button" aria-label="Stop job" data-icon="stop">Stop Job</button>
         </div>
+        </details>
         <p class="form-hint">Hold to start. Pause, Stop, and M5 remain available in the machine bar.</p>
         <details class="operator-diagnostics">
           <summary>Advanced run details</summary>

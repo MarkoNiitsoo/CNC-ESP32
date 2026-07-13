@@ -254,20 +254,28 @@ async function uploadThumbnailSidecars(gcodePath, selected) {
   await ensureThumbnailDirectory();
   const pngName = basename(selected.path);
   await uploadFileTo('/jobs/thumbs', new File([selected.blob], pngName, { type: 'image/png' }), true);
-  const previous = await existingJob(selected.jobPath);
+  const sidecarJobPath = thumbnail.jobPathForUpload(gcodePath);
+  const previous = await existingJob(sidecarJobPath);
   const job = thumbnail.mergeUploadedFileMetadata(previous, {
     gcodePath,
-    jobPath: selected.jobPath,
+    jobPath: sidecarJobPath,
     thumbnailPath: selected.path,
     preview: toolpath.buildPreviewMetadata(selected.model),
   });
-  await uploadFileTo('/jobs', new File([JSON.stringify(job, null, 2)], basename(selected.jobPath), {
+  await uploadFileTo('/jobs', new File([JSON.stringify(job, null, 2)], basename(sidecarJobPath), {
     type: 'application/json',
   }), true);
 }
 
 function jobPathFor(gcodePath) {
-  return `/jobs/${basename(gcodePath)}.job.json`;
+  const normalized = String(gcodePath || '').replace(/^\/+/, '');
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const readable = normalized.replace(/[^A-Za-z0-9._-]/g, '_').slice(-72) || 'job';
+  return `/jobs/${readable}-${(hash >>> 0).toString(16).padStart(8, '0')}.job.json`;
 }
 
 function saveCurrentJob(gcodePath) {
@@ -281,11 +289,17 @@ async function loadFileMeta(item) {
   if (!canPreview(item)) return null;
   try {
     const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(item.path))}`);
-    if (!res.ok) return null;
-    return await res.json();
+    if (res.ok) {
+      const loaded = await res.json();
+      if (loaded?.sourceGcodePath === item.path) return loaded;
+    }
   } catch (err) {
-    return null;
+    // A thumbnail may still exist even when this file has no current Job JSON.
   }
+  const [, thumbnail] = await thumbnailModulesPromise;
+  const thumbnailPath = thumbnail.thumbnailPathFor(item.name || basename(item.path));
+  const thumbnailRes = await fetch(thumbnailUrl(thumbnailPath)).catch(() => null);
+  return thumbnailRes?.ok ? { sourceGcodePath: item.path, thumbnailPath } : null;
 }
 
 function fileBadges(item, meta) {
