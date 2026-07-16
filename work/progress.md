@@ -1,5 +1,48 @@
 # Progress
 
+## 2026-07-14 - Firmware-owned manual M6 tool changes
+
+- The streaming job runner now consumes standalone `Tn` selections and exact `M6` commands itself;
+  neither is forwarded blindly to Marlin.
+- At `M6`, firmware first queues `M400`, then `M5`, so already planned cutting motion finishes before
+  the spindle is stopped. The default unconfigured path pauses in place and alerts the operator.
+- Optional configured parking captures the current work position with `M114`, lifts and parks with
+  absolute `G53` moves, then returns through Safe machine Z to the captured work XYZ only after the
+  new tool, Z zero, and explicit operator confirmation are complete.
+- Generic Resume is blocked while a tool change is pending. A dedicated confirmed endpoint owns the
+  transition back to streaming, so closing the browser does not lose the M6 state.
+- Manual `G92 Z0` and configured `G38.2` touch-plate probing are allowed in the controlled M6 stop;
+  probing restores `G90` on failure and only marks Z complete after zero/retract succeeds.
+- Toolpath parsing now collects tool number, nearby G-code tool comment, diameter, M6 line/command,
+  and following spindle `S` value without affecting streaming execution or loading the file in RAM.
+- Preview shows a prominent tool-change operator panel and only enables Continue after Z zero.
+  Configured touch-plate Z zero is also available in normal Preview and Machine Bar zero controls.
+- Browser QA caught and fixed an initial-render race: the M6 panel now rerenders when the active
+  ToolpathModel finishes loading, so comment, diameter, and RPM replace the early command fallback.
+- Browser QA also removed the misleading global Resume action: Machine Bar shows a disabled
+  `Tool Change` state while M6 is pending and leaves continuation to the guarded M6 panel.
+- The compact Machine Bar regression test now covers that guarded M6 label/disable state as well as
+  the normal Pause/Resume action row.
+- DEV MOCK mirrors M6 pause/park/return, manual/touch-plate Z completion, and confirmed continuation.
+- Verification: the full suite passed (34 files, 306 tests), JavaScript syntax checks and
+  `git diff --check` passed, and the ESP32-CAM PlatformIO build succeeded. Browser QA completed a
+  parked T2 change through touch-plate probing and confirmed return/resume with no console errors;
+  `T2`/`M6` stayed host-owned while `G38.2` reached the mock Marlin.
+
+## 2026-07-14 - Tool-change and touch-plate device settings
+
+- Added device-owned tool-change settings for the upcoming manual `M6` workflow: pause in place or
+  park at configured absolute machine X/Y/Safe-Z coordinates.
+- Added the default post-change Z-zero choice and shared touch-plate configuration: enabled state,
+  plate thickness, maximum probe distance, probe feed, and retract distance.
+- Kept the unconfigured behavior deliberately conservative: pause at `M6`, require a manual Z-zero,
+  and do not expose touch-plate probing until it is explicitly enabled.
+- Firmware persists the settings in NVS and exposes guarded `GET`/`PUT`
+  `/api/tool-change/settings` endpoints; settings cannot change while motion is active.
+- Settings UI and the DEV MOCK server use the same normalized contract.
+- Verification: `npm.cmd test -- --run test/ui/tool-change-settings.test.mjs test/mock/mock-server.test.mjs`
+  passed (16 tests).
+
 ## 2026-07-10 - Files card view and hold actions
 
 - Refactored the dedicated Files page so previewable G-code entries no longer expose duplicate
@@ -1873,3 +1916,19 @@
 - Verification: local browser QA loaded the new module with no console errors and showed the updated
   Aircut explanation. Focused coverage passed 3 files / 46 tests, then 2 files / 32 tests after the
   arc integration assertion; the full suite passed 31 files / 290 tests.
+
+## 2026-07-14 - 2D / orthographic 3D workspace view
+
+- Added an accessible 2D/3D segmented control to the canvas toolbar; the selected view is saved in
+  browser storage and restores without changing job or machine state.
+- Kept the existing top-down 2D projection unchanged and added a fixed orthographic 3D projection
+  with no perspective scaling. Fit, pan, wheel zoom, pinch zoom, and the existing fit targets work in
+  both modes.
+- 3D rendering now uses each toolpath point's Z coordinate, including source/generated paths,
+  recovery travel, recovery markers, and the live tool position. The machine table becomes an
+  orthographic grid with X/Y/Z axes and Z-limit guides.
+- Absolute machine-frame live Z is converted to the active work-zero Z frame before projection, so
+  the live marker and work-relative toolpath share the same rendered height without changing XY.
+- Added pure projection and persistence coverage. Browser QA confirmed 2D, orthographic 3D, Fit
+  Active, Fit Table, accessible pressed state, and saved-view restoration. JavaScript syntax and diff
+  checks pass; the full suite passes 31 files / 293 tests.

@@ -1,5 +1,43 @@
 # Handoff
 
+## 2026-07-14 - Firmware-owned manual M6 tool changes
+
+- `src/main.cpp` now owns the `Tn`/`M6` stream boundary. The minimum behavior is always a firmware
+  pause with an operator-visible pending tool change; `M6` is not sent to Marlin.
+- The M6 stop order is deliberately `M400` then `M5`. Configured parking is allowed only with a
+  trusted absolute machine frame and uses `G53`; otherwise firmware falls back to pausing in place.
+- Park mode captures the pre-park work XYZ and uses a guarded return sequence after the new Z zero
+  and explicit `POST /api/job/tool-change/complete { confirmed: true }`.
+- `POST /api/work-zero/set-z` supports the controlled pending-M6 window. The new shared
+  `POST /api/work-zero/touch-plate` runs `G38.2`, applies plate thickness with `G92`, retracts, and
+  updates the firmware frame only after success.
+- Preview maps pending firmware status to `ToolpathModel.toolChanges` so it can show T number,
+  comment/name, diameter, and requested RPM when those values exist in the G-code.
+- `applyActiveRunParse()` rerenders the run panel after parsing; keep this call because M6 status can
+  arrive before the source model and would otherwise leave the tool detail card on its fallback text.
+- Machine Bar deliberately disables its pause/resume button and labels it `Tool Change` while
+  `toolChangePending` is true; only the dedicated confirmed endpoint may resume that state.
+- `test/ui/machine-controls.test.mjs` asserts this guarded label and disabled state; do not reduce it
+  back to the old unconditional Pause/Resume string check.
+- Touch-plate controls remain hidden unless enabled in device settings. When enabled they appear in
+  the M6 panel, Preview Zero / Origin actions, and Machine Bar Zero actions.
+- Full validation passed: 34 test files / 306 tests, JS syntax checks, `git diff --check`, and an
+  ESP32-CAM PlatformIO build. Browser QA also completed a parked T2 change with touch-plate probing,
+  guarded confirmation, captured-position return, and resumed streaming; the browser console was
+  clean and the mock Marlin log contained `G38.2` but no forwarded `T2` or `M6`.
+
+## 2026-07-14 - Tool-change and touch-plate device settings
+
+- Settings now contains a `Tool Change` panel backed by device NVS through
+  `/api/tool-change/settings`.
+- Defaults remain `pause` + `manual`; optional machine-coordinate parking and touch-plate probing
+  must be explicitly configured by the operator.
+- Touch-plate settings are intentionally shared device configuration so the same probe operation can
+  later be offered both during `M6` and beside the normal Set Z Zero controls.
+- This step establishes only the persisted configuration contract. Firmware stream interception,
+  tool metadata, the operator change dialog, probing, and confirmed continuation are the next step.
+- Focused validation passed: `npm.cmd test -- --run test/ui/tool-change-settings.test.mjs test/mock/mock-server.test.mjs`.
+
 ## 2026-07-10 - Files card view and hold actions
 
 - The Files page no longer shows the redundant `Select`, `Open Job`, and `Full Preview` controls.
@@ -1729,3 +1767,16 @@ No firmware upload is required.
   distinct geometry, trailing travel, and repeated native arc passes.
 - Browser QA confirmed the module loads and the operator hint describes the one-pass behavior. Full
   verification passed 31 files / 290 tests. This is a web-asset change; no firmware upload is required.
+
+## 2026-07-14 2D / orthographic 3D workspace handoff
+
+- The preview canvas now has a persistent 2D/3D view selector. 2D remains the default for a browser
+  with no saved choice; 3D uses a fixed orthographic camera, not a perspective camera.
+- `workbench-ui.js` owns the pure world-to-canvas projection. `preview.js` supplies machine-space XY
+  and path-relative Z consistently to paths, bounds, recovery overlays, and the live tool marker.
+- When live telemetry is explicitly machine-frame data, its Z is rendered relative to the active
+  work zero while X/Y stay in homing-table coordinates. Work-coordinate telemetry remains unchanged.
+- Switching views resets only camera zoom/pan and retains the current Fit target, layers, job state,
+  and all machine state. The choice is stored under `lowrider.workbench.view-mode.v1`.
+- This is a web-only change. Browser QA covered both projections, Fit Active/Table, and saved-view
+  restoration. JavaScript syntax and diff checks pass; the full suite passes 31 files / 293 tests.
