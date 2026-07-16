@@ -284,6 +284,12 @@ describe('mock HTTP API', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd: 'G0 X20 Y30 Z10' }),
     });
+    const unsafeGoto = await fetch(`${base}/api/work-zero/goto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ axes: 'x', safeMove: true, safeZ: 130 }),
+    });
+    expect(unsafeGoto.status).toBe(400);
+    expect(await unsafeGoto.json()).toMatchObject({ error: expect.stringContaining('work-frame lift range') });
     const goto = await fetch(`${base}/api/work-zero/goto`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ axes: 'x', safeMove: true, safeZ: 70 }),
@@ -335,7 +341,7 @@ describe('mock HTTP API', () => {
     expect(commands.indexOf('G53 G0 Z12.000 F400')).toBeLessThan(commands.indexOf('G92 X0 Y0 Z0'));
   });
 
-  it('clamps Safe Jog to machine Z max in native coordinates after G92', async () => {
+  it('rejects an invalid Safe Jog Z and uses a valid machine-coordinate target after G92', async () => {
     const { base, env } = await start();
     env.marlin.machine.zMax = 70;
     env.marlin.execute('G0 Z40');
@@ -345,9 +351,15 @@ describe('mock HTTP API', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ safeJog: true, safeLiftZ: 999 }),
     });
-    const status = await response.json();
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('outside the current machine limits') });
 
-    expect(response.ok).toBe(true);
+    const validResponse = await fetch(`${base}/api/jog/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ safeJog: true, safeLiftZ: 70 }),
+    });
+    const status = await validResponse.json();
+    expect(validResponse.ok).toBe(true);
     expect(status).toMatchObject({
       state: 'JOGGING', safeLiftZ: 70, originalZ: 0, safeLiftWorkZ: 30, zLiftedForJog: true,
       commandedPositionCaptured: true, commandedWorkZ: 30,

@@ -87,9 +87,23 @@ function safeUploadName(filename) {
   return name;
 }
 
+function updateMockSafeZ(env) {
+  const machine = env.marlin.machine;
+  const zero = env.frame.absoluteFromHome && env.frame.workZeroValid ? env.frame.workZeroMachine : null;
+  const workMin = zero ? machine.zMin - Number(zero.z) : machine.zMin;
+  const workMax = zero ? machine.zMax - Number(zero.z) : machine.zMax;
+  env.frame.safeZ = {
+    workMin, workMax, liftMin: Math.max(workMin, Number(env.marlin.position.z)),
+    machineMin: machine.zMin, machineMax: machine.zMax,
+    mappedToMachine: Boolean(zero), toolLengthReference: 'active-work-zero',
+    toolChangeParkMachineZ: env.toolChangeSettings?.parkMachineZ ?? machine.zMax,
+  };
+}
+
 function syncMockFrame(env) {
   env.frame.machine = { ...env.marlin.machinePosition };
   env.frame.work = { ...env.marlin.position };
+  updateMockSafeZ(env);
   env.frame.revision += 1;
 }
 
@@ -118,6 +132,8 @@ export async function createMockEnvironment(options = {}) {
     workZeroValid: false, frameMode: 'untrusted', homeReference: null, revision: 0, trusted: false,
   };
   const toolChangeSettings = { ...DEFAULT_TOOL_CHANGE_SETTINGS };
+  const bootstrapEnv = { frame, marlin, toolChangeSettings };
+  updateMockSafeZ(bootstrapEnv);
   const runner = new MockJobRunner({ sd, marlin, frame, toolChangeSettings, lineDelayMs: config.lineDelayMs });
   const jog = {
     state: 'IDLE', safeJog: true, zLiftedForJog: false, safeLiftZ: 70,
@@ -313,8 +329,8 @@ export async function createMockServer(options = {}) {
         if (!['x', 'y', 'xy'].includes(axes)) throw new Error('axes must be x, y, or xy');
         const safeMove = body.safeMove !== false;
         const safeZ = Number(body.safeZ ?? 70);
-        if (safeMove && (!Number.isFinite(safeZ) || safeZ <= 0 || safeZ > 200)) {
-          throw new Error('safeZ must be greater than 0 and no more than 200 mm');
+        if (safeMove) {
+          env.runner.assertSafeZ(safeZ);
         }
         const commands = ['M5', 'G21', 'G90', 'G54'];
         if (safeMove) commands.push(`G0 Z${safeZ.toFixed(3)} F400`);
@@ -323,6 +339,7 @@ export async function createMockServer(options = {}) {
           const result = env.marlin.execute(command, { priority: true });
           if (!result.ok) return json(res, 502, result);
         }
+        syncMockFrame(env);
         return json(res, 200, {
           ok: true, axes, safeMove, safeZ,
           message: 'Work-zero move accepted. Z will remain at safe height after XY movement.',
@@ -367,7 +384,7 @@ export async function createMockServer(options = {}) {
         }
         env.frame.machine = { ...env.marlin.machinePosition };
         env.frame.work = { ...env.marlin.position };
-        env.frame.revision += 1;
+        syncMockFrame(env);
         return json(res, 200, env.frame);
       }
       if (req.method === 'POST' && pathname === '/api/machine/manual-frame') {
@@ -389,6 +406,7 @@ export async function createMockServer(options = {}) {
         env.frame.frameMode = 'manual-unhomed';
         env.frame.homeReference = null;
         env.frame.trusted = false;
+        updateMockSafeZ(env);
         env.frame.revision += 1;
         return json(res, 200, { ok: true, mode, before, after, frame: env.frame });
       }
@@ -407,6 +425,7 @@ export async function createMockServer(options = {}) {
           if (axes === 'xyz') env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
         }
         env.frame.workZeroValid = true;
+        updateMockSafeZ(env);
         env.frame.revision += 1;
         return json(res, 200, { ok: true, axes, before, after, frame: env.frame });
       }
@@ -421,6 +440,7 @@ export async function createMockServer(options = {}) {
         const after = env.marlin.execute('M114').response;
         syncMockFrame(env);
         if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        updateMockSafeZ(env);
         env.runner.markToolChangeZZero('manual');
         return json(res, 200, { ok: true, before, after, frame: env.frame });
       }
@@ -452,6 +472,7 @@ export async function createMockServer(options = {}) {
         }
         syncMockFrame(env);
         if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = contactMachineZ - settings.touchPlateThickness;
+        updateMockSafeZ(env);
         env.runner.markToolChangeZZero('touchplate');
         return json(res, 200, { ok: true, method: 'touchplate', probeCommand, before, contact, after: result.response, frame: env.frame });
       }
@@ -515,12 +536,13 @@ export async function createMockServer(options = {}) {
         const travelFeed = Number(body.travelFeedMmMin ?? 3000);
         const axes = String(body.axes || 'xy').toLowerCase();
         const moveToZ = body.moveToZ === true;
-        if (!Number.isFinite(machineX) || !Number.isFinite(machineY) || machineX < 0 || machineX > 1625 || machineY < 0 || machineY > 5800) {
+        const machine = env.marlin.machine;
+        if (!Number.isFinite(machineX) || !Number.isFinite(machineY) || machineX < machine.xMin || machineX > machine.xMax || machineY < machine.yMin || machineY > machine.yMax) {
           throw new Error('saved work-zero XY is outside configured machine limits');
         }
-        if (!Number.isFinite(safeMachineZ) || safeMachineZ <= 0 || safeMachineZ > 70) throw new Error('Safe machine Z is outside configured limits');
+        if (!Number.isFinite(safeMachineZ) || safeMachineZ < machine.zMin || safeMachineZ > machine.zMax) throw new Error('Safe machine Z is outside configured limits');
         if (!['x', 'y', 'z', 'xy', 'xyz'].includes(axes)) throw new Error('axes must be x, y, z, xy, or xyz');
-        if (moveToZ && (!Number.isFinite(machineZ) || machineZ < 0 || machineZ > 70)) throw new Error('saved zero Z is outside configured machine limits');
+        if (moveToZ && (!Number.isFinite(machineZ) || machineZ < machine.zMin || machineZ > machine.zMax)) throw new Error('saved zero Z is outside configured machine limits');
         if (moveToZ && machineZ > safeMachineZ) throw new Error('saved zero Z cannot be above Safe machine Z');
         const commands = [
           'M5', 'G21', 'G90', 'M400', `G53 G0 Z${safeMachineZ.toFixed(3)} F400`, 'M400',
@@ -563,11 +585,16 @@ export async function createMockServer(options = {}) {
         const continuePendingRestore = env.jog.zRestoreAvailable && Number.isFinite(env.jog.originalZ) && body.safeJog !== false;
         const pendingOriginalZ = env.jog.originalZ;
         const originalZ = env.marlin.position.z;
+        const requestedSafeLiftZ = Number(body.safeLiftZ ?? env.marlin.machine.zMax);
+        if (body.safeJog !== false && (!Number.isFinite(requestedSafeLiftZ) ||
+            requestedSafeLiftZ < env.marlin.machine.zMin || requestedSafeLiftZ > env.marlin.machine.zMax)) {
+          throw new Error('safe jog machine Z is outside the current machine limits');
+        }
         env.jog = {
           ...env.jog,
           state: 'JOGGING',
           safeJog: body.safeJog !== false,
-          safeLiftZ: Math.max(0, Math.min(70, Number(body.safeLiftZ ?? 70))),
+          safeLiftZ: requestedSafeLiftZ,
           zRestoreAvailable: false,
           originalZ: continuePendingRestore ? pendingOriginalZ : null,
           safeLiftWorkZ: null,

@@ -1867,3 +1867,20 @@ No firmware upload is required.
   and all machine state. The choice is stored under `lowrider.workbench.view-mode.v1`.
 - This is a web-only change. Browser QA covered both projections, Fit Active/Table, and saved-view
   restoration. JavaScript syntax and diff checks pass; the full suite passes 31 files / 293 tests.
+
+## 2026-07-16 dynamic Safe Z handoff
+
+- Firmware is authoritative for Safe Z. Normal Start, validated test motion, and Go To Work Zero
+  call the same validator; the former fixed `0..200` UI/API range is no longer a safety boundary.
+- In a homed frame, `machine target Z = workZeroMachineZ + requested work Z`. The target must stay
+  inside the Marlin-discovered full Z range and must not be lower than the current work Z for a
+  safety lift. Manual/unhomed frames can only use the discovered work range and are exposed as
+  `mappedToMachine: false`.
+- Installed tool length is represented by the active Z work zero, so it is intentionally not added
+  a second time. Tool-change station Z remains an independent G53 target and is checked at settings
+  save, M6 park, and M6 return time.
+- `/api/machine/frame.safeZ` is the browser contract. Deploy firmware together with `preview.js` and
+  `machine-bar.js`; otherwise old browser inputs will not display the narrower live range even though
+  firmware will still reject unsafe motion.
+- Full verification passes 39 files / 328 tests. ESP32-CAM firmware build uses 19.6% RAM / 70.7%
+  flash.

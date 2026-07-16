@@ -50,6 +50,39 @@
     return Number.isFinite(value) ? Math.max(10, Math.min(200, Math.round(value))) : 100;
   }
 
+  function safeZBounds() {
+    const safeZ = STATE.frame?.safeZ;
+    const workMin = Number(safeZ?.workMin);
+    const workMax = Number(safeZ?.workMax);
+    const liftMin = Number(safeZ?.liftMin);
+    if (Number.isFinite(workMin) && Number.isFinite(workMax) && workMax >= workMin) {
+      return {
+        min: Number.isFinite(liftMin) ? Math.max(workMin, liftMin) : workMin,
+        max: workMax,
+      };
+    }
+    return { min: 1, max: MACHINE_Z_MAX_MM };
+  }
+
+  function syncSafeZControl() {
+    const input = el('mb-jog-safe-z');
+    if (!input) return;
+    const bounds = safeZBounds();
+    input.min = String(bounds.min);
+    input.max = String(bounds.max);
+    const value = Math.max(bounds.min, Math.min(bounds.max, Number(input.value || bounds.max)));
+    input.value = String(value);
+    const output = el('mb-jog-safe-z-output');
+    if (output) output.textContent = `${value} mm`;
+  }
+
+  function safeWorkZToMachine(workZ) {
+    const zeroMachineZ = Number(STATE.frame?.workZeroMachine?.z);
+    return STATE.frame?.safeZ?.mappedToMachine === true && Number.isFinite(zeroMachineZ)
+      ? zeroMachineZ + Number(workZ)
+      : Number(workZ);
+  }
+
   function publishPosition(source) {
     const zero = STATE.frame?.workZeroMachine;
     if (zero && [STATE.position.x, STATE.position.y, STATE.position.z].every(Number.isFinite)) {
@@ -72,6 +105,7 @@
     const previousRevision = STATE.frame?.revision;
     STATE.frame = { ...STATE.frame, ...frame, work };
     STATE.position = { x: work.x, y: work.y, z: work.z };
+    syncSafeZControl();
     publishPosition(source);
     if (source !== 'MARLIN' || frame.revision !== previousRevision) {
       window.dispatchEvent(new CustomEvent('cnc-machine-frame', { detail: STATE.frame }));
@@ -302,7 +336,8 @@
     }
     if (!confirmUnknown('moving to work zero')) return;
     const safeMove = Boolean(el('mb-goto-safe')?.checked);
-    const safeZ = Math.max(1, Math.min(200, Number(el('mb-jog-safe-z')?.value || 70)));
+    const bounds = safeZBounds();
+    const safeZ = Math.max(bounds.min, Math.min(bounds.max, Number(el('mb-jog-safe-z')?.value || bounds.max)));
     const label = String(axes || '').toUpperCase();
     const message = safeMove
       ? `Move ${label} to work zero after lifting to Z${safeZ.toFixed(1)} mm? Z will remain at safe height.`
@@ -318,9 +353,11 @@
   function jogSettings(safeJog) {
     const xySpeed = Math.max(10, Math.min(100, Number(el('mb-jog-xy-speed')?.value || travelSpeedMmS)));
     const zSpeed = Math.max(1, Math.min(10, Number(el('mb-jog-z-speed')?.value || 5)));
+    const safeWorkZ = Math.max(safeZBounds().min, Math.min(safeZBounds().max,
+      Number(el('mb-jog-safe-z')?.value || safeZBounds().max)));
     return {
       safeJog,
-      safeLiftZ: Math.max(1, Math.min(MACHINE_Z_MAX_MM, Number(el('mb-jog-safe-z')?.value || MACHINE_Z_MAX_MM))),
+      safeLiftZ: safeWorkZToMachine(safeWorkZ),
       xyFeedMax: Math.round(xySpeed * 60),
       zFeedMax: Math.round(zSpeed * 60),
     };
@@ -797,6 +834,7 @@
   }
 
   function render() {
+    syncSafeZControl();
     const state = visibleJobState();
     const recoveryPending = STATE.job?.recoveryCheckpoint?.requiresReview === true;
     const stateLabel = STATE.job?.errorCode === 'COMMUNICATION_LOST' ? 'COMM LOST' : state;

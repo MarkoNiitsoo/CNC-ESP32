@@ -84,6 +84,25 @@ export class MockJobRunner {
     return result;
   }
 
+  safeZLimits() {
+    const machine = this.marlin.machine;
+    const zero = this.frame?.absoluteFromHome && this.frame?.workZeroValid
+      ? this.frame.workZeroMachine
+      : null;
+    const workMin = zero ? machine.zMin - Number(zero.z) : machine.zMin;
+    const workMax = zero ? machine.zMax - Number(zero.z) : machine.zMax;
+    return { workMin, workMax, liftMin: Math.max(workMin, Number(this.marlin.position.z)) };
+  }
+
+  assertSafeZ(value) {
+    const safeZ = Number(value);
+    const limits = this.safeZLimits();
+    if (!Number.isFinite(safeZ) || safeZ < limits.liftMin || safeZ > limits.workMax) {
+      throw new Error(`Safe Z ${safeZ} is outside the current work-frame lift range ${limits.liftMin}..${limits.workMax} mm`);
+    }
+    return safeZ;
+  }
+
   handleToolChange(command) {
     const requested = toolNumberFromCommand(command);
     if (requested !== null) this.status.selectedToolNumber = requested;
@@ -174,7 +193,9 @@ export class MockJobRunner {
         throw new Error('active work zero does not match the homed machine frame');
       }
     }
-    const safeStartZ = Number.isFinite(Number(request.safeStartZ)) ? Number(request.safeStartZ) : Number(job.safeStartZ || 15);
+    const safeStartZ = this.assertSafeZ(Number.isFinite(Number(request.safeStartZ))
+      ? Number(request.safeStartZ)
+      : Number(job.safeStartZ || 15));
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
     this.status = {
       ...this.emptyStatus(), state: 'PREPARING', gcodePath: active.path, jobPath: request.jobPath,
@@ -202,7 +223,7 @@ export class MockJobRunner {
     const safeZ = Number(request.safeZ);
     if (!['aircut', 'toolless'].includes(mode)) throw new Error('test motion mode must be aircut or toolless');
     if (!path.startsWith('/jobs/generated/')) throw new Error('test motion path must be under /jobs/generated');
-    if (!Number.isFinite(safeZ) || safeZ <= 0 || safeZ > 70) throw new Error('Safe Z is outside configured machine limits');
+    this.assertSafeZ(safeZ);
 
     const text = await this.sd.readText(path);
     const commands = text.split(/\r?\n/).map(cleanLine).filter(Boolean);

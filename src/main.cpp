@@ -2245,6 +2245,53 @@ float machineYMax() { return machineProfile.available ? machineProfile.fullYMax 
 float machineZMin() { return machineProfile.available ? machineProfile.fullZMin : -30.0f; }
 float machineZMax() { return machineProfile.available ? machineProfile.fullZMax : kMachineZMaxMm; }
 
+void safeWorkZRange(float &minimum, float &maximum, bool &mappedToMachine) {
+  mappedToMachine = machineFrame.absoluteFromHome && machineFrame.workZeroValid;
+  if (mappedToMachine) {
+    minimum = machineZMin() - machineFrame.workZeroMachineZ;
+    maximum = machineZMax() - machineFrame.workZeroMachineZ;
+    return;
+  }
+  minimum = machineProfile.available ? machineProfile.workZMin : machineZMin();
+  maximum = machineProfile.available ? machineProfile.workZMax : machineZMax();
+}
+
+bool validateSafeWorkZ(float safeWorkZ, bool requireLift, String &error) {
+  float minimum = 0.0f;
+  float maximum = 0.0f;
+  bool mappedToMachine = false;
+  safeWorkZRange(minimum, maximum, mappedToMachine);
+  if (!isfinite(safeWorkZ) || safeWorkZ < minimum - 0.001f || safeWorkZ > maximum + 0.001f) {
+    error = "Safe Z " + String(safeWorkZ, 3) + " is outside the active work-frame range " +
+            String(minimum, 3) + ".." + String(maximum, 3) + " mm";
+    return false;
+  }
+  if (requireLift && marlinPosition.valid && safeWorkZ < marlinPosition.z - 0.01f) {
+    error = "Safe Z would move downward from current work Z " + String(marlinPosition.z, 3) + " mm";
+    return false;
+  }
+  if (mappedToMachine) {
+    const float targetMachineZ = machineFrame.workZeroMachineZ + safeWorkZ;
+    if (targetMachineZ < machineZMin() - 0.001f || targetMachineZ > machineZMax() + 0.001f) {
+      error = "Safe Z maps outside the machine Z limits";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool toolChangeParkIsWithinMachine(String &error) {
+  if (!isfinite(toolChangeSettings.parkMachineX) || !isfinite(toolChangeSettings.parkMachineY) ||
+      !isfinite(toolChangeSettings.parkMachineZ) ||
+      toolChangeSettings.parkMachineX < machineXMin() || toolChangeSettings.parkMachineX > machineXMax() ||
+      toolChangeSettings.parkMachineY < machineYMin() || toolChangeSettings.parkMachineY > machineYMax() ||
+      toolChangeSettings.parkMachineZ < machineZMin() || toolChangeSettings.parkMachineZ > machineZMax()) {
+    error = "configured tool-change park position is outside the current machine limits";
+    return false;
+  }
+  return true;
+}
+
 void processMachineDiscovery() {
   if (machineDiscoveryState == MachineDiscoveryState::Idle) {
     if (!machineDiscoveryPending || millis() < 5000 || machineDiscoveryTransportBusy()) return;
@@ -2770,6 +2817,21 @@ String machineFrameJson() {
   json += ",\"updatedAtMs\":" + String(machineFrame.updatedAtMs);
   json += ",\"trusted\":" + String(machineFrame.machineValid && machineFrame.absoluteFromHome &&
       machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ ? "true" : "false");
+  float safeZMinimum = 0.0f;
+  float safeZMaximum = 0.0f;
+  bool safeZMappedToMachine = false;
+  safeWorkZRange(safeZMinimum, safeZMaximum, safeZMappedToMachine);
+  const float safeZLiftMinimum = marlinPosition.valid && marlinPosition.z > safeZMinimum
+                                    ? marlinPosition.z
+                                    : safeZMinimum;
+  json += ",\"safeZ\":{\"workMin\":" + String(safeZMinimum, 3) +
+          ",\"workMax\":" + String(safeZMaximum, 3) +
+          ",\"liftMin\":" + String(safeZLiftMinimum, 3) +
+          ",\"machineMin\":" + String(machineZMin(), 3) +
+          ",\"machineMax\":" + String(machineZMax(), 3) +
+          ",\"mappedToMachine\":" + String(safeZMappedToMachine ? "true" : "false") +
+          ",\"toolLengthReference\":\"active-work-zero\"";
+  json += ",\"toolChangeParkMachineZ\":" + String(toolChangeSettings.parkMachineZ, 3) + "}";
   json += "}";
   return json;
 }
@@ -2970,7 +3032,8 @@ bool prepareSafeJogLift() {
     return true;
   }
 
-  if (jogStatus.safeLiftZ <= 0 || jogStatus.zFeedMax <= 0) {
+  if (!isfinite(jogStatus.safeLiftZ) || jogStatus.safeLiftZ < machineZMin() ||
+      jogStatus.safeLiftZ > machineZMax() || jogStatus.zFeedMax <= 0) {
     setJogError("invalid safe jog settings");
     return false;
   }
@@ -4086,9 +4149,13 @@ bool beginToolChange(const String &line) {
   }
 
   if (toolChangeSettings.handling == "park") {
+    String parkError;
     if (!machineFrame.absoluteFromHome || !machineFrame.machineValid) {
       jobStatus.toolChangeHandling = "pause";
       logJobEvent("tool change park skipped: absolute machine frame is unavailable");
+    } else if (!toolChangeParkIsWithinMachine(parkError)) {
+      jobStatus.toolChangeHandling = "pause";
+      logJobEvent("tool change park skipped: " + parkError);
     } else {
       const String parkCommands[] = {
           "M114", "G21", "G90",
@@ -5314,8 +5381,9 @@ void handleTestMotionStart() {
     sendJsonError(400, "test motion mode must be aircut or toolless");
     return;
   }
-  if (!isfinite(safeZ) || safeZ <= 0.0f || safeZ > kMachineZMaxMm) {
-    sendJsonError(400, "Safe Z is outside configured machine limits");
+  String safeZError;
+  if (!validateSafeWorkZ(safeZ, true, safeZError)) {
+    sendJsonError(400, safeZError);
     return;
   }
 
@@ -5554,7 +5622,12 @@ void handleJobStart() {
       return;
     }
   }
-  const float safeStartZ = clampFloat(extractJsonFloat(body, "safeStartZ", 15.0f), 0.0f, 200.0f);
+  const float safeStartZ = extractJsonFloat(body, "safeStartZ", 15.0f);
+  String safeZError;
+  if (!validateSafeWorkZ(safeStartZ, true, safeZError)) {
+    sendJsonError(400, safeZError);
+    return;
+  }
   const float travelFeedMmMin = clampFloat(
       extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   const bool sourceRunPath = isPathUnderRoot(gcodePath, "/gcode");
@@ -5728,6 +5801,11 @@ void handleToolChangeComplete() {
       sendJsonError(409, "the pre-park return position is unavailable; stop and recover the job manually");
       return;
     }
+    String parkError;
+    if (!toolChangeParkIsWithinMachine(parkError)) {
+      sendJsonError(409, parkError + "; update tool-change settings before continuing");
+      return;
+    }
     clearPriorityCommands();
     const String returnCommands[] = {
         "G21", "G90",
@@ -5818,7 +5896,12 @@ void handleJogStart() {
   const float pendingOriginalZ = jogStatus.originalZ;
   jogStatus = JogStatus();
   jogStatus.safeJog = extractJsonBool(body, "safeJog", true);
-  jogStatus.safeLiftZ = clampFloat(extractJsonFloat(body, "safeLiftZ", kMachineZMaxMm), 0.0f, kMachineZMaxMm);
+  jogStatus.safeLiftZ = extractJsonFloat(body, "safeLiftZ", machineZMax());
+  if (jogStatus.safeJog && (!isfinite(jogStatus.safeLiftZ) || jogStatus.safeLiftZ < machineZMin() ||
+                            jogStatus.safeLiftZ > machineZMax())) {
+    sendJsonError(400, "safe jog machine Z is outside the current machine limits");
+    return;
+  }
   jogStatus.xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 3000.0f), 600.0f, 6000.0f);
   jogStatus.zFeedMax = clampFloat(extractJsonFloat(body, "zFeedMax", 400.0f), 20.0f, 800.0f);
   jogStatus.startedAtMs = millis();
@@ -6283,9 +6366,12 @@ void handleGoToWorkZero() {
   const float safeZ = extractJsonFloat(body, "safeZ", 70.0f);
   const float travelFeedMmMin = clampFloat(
       extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
-  if (safeMove && (safeZ <= 0.0f || safeZ > 200.0f)) {
-    sendJsonError(400, "safeZ must be greater than 0 and no more than 200 mm");
-    return;
+  if (safeMove) {
+    String safeZError;
+    if (!validateSafeWorkZ(safeZ, true, safeZError)) {
+      sendJsonError(400, safeZError);
+      return;
+    }
   }
 
   String response;

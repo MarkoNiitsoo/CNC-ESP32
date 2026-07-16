@@ -1789,7 +1789,7 @@ function ensureJobState() {
   if (jobState.safeStartZ === undefined || jobState.safeStartZ === null) jobState.safeStartZ = Number(safeZInput?.value) || 15;
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
-  if (runSafeStartZInput) jobState.safeStartZ = Math.max(0, Math.min(200, Number(runSafeStartZInput.value || jobState.safeStartZ || 15)));
+  if (runSafeStartZInput) jobState.safeStartZ = Number(runSafeStartZInput.value || jobState.safeStartZ || 15);
   jobState.feedOverride = {
     ...currentFeedOverride(),
     updatedAt: jobState.feedOverride?.updatedAt || null,
@@ -2079,7 +2079,8 @@ function handleRecoveryHealth(health = {}) {
 }
 
 function recoverySafeZ() {
-  return Math.max(0.1, Math.min(RECOVERY_LIMITS.zMax, Number(recoverySafeZInput?.value || safeZInput?.value || 15)));
+  const limits = activeSafeZLimits();
+  return Math.max(limits.zMin, Math.min(limits.zMax, Number(recoverySafeZInput?.value || safeZInput?.value || 15)));
 }
 
 function automaticTravelFeed() {
@@ -3242,7 +3243,8 @@ function generatedBounds() {
 function validateDryRun(bounds, safeZ) {
   const messages = [];
   if (!parsed) messages.push('Preview bounds are not available.');
-  if (!Number.isFinite(safeZ) || safeZ <= 0) messages.push('Safe Z must be a positive number.');
+  const safeZError = safeZValidationMessage(safeZ);
+  if (safeZError) messages.push(safeZError);
   if (!bounds) messages.push('Bounding box has not been generated.');
   if (bounds && (bounds.xMin < MACHINE.xMin || bounds.xMax > MACHINE.xMax ||
       bounds.yMin < MACHINE.yMin || bounds.yMax > MACHINE.yMax)) {
@@ -3257,7 +3259,8 @@ function validateAircut(safeZ, commandCount) {
   const messages = [];
   const b = parsed?.bounds;
   if (!parsed || !b) messages.push('Preview bounds are not available.');
-  if (!Number.isFinite(safeZ) || safeZ <= 0) messages.push('Safe Z must be a positive number.');
+  const safeZError = safeZValidationMessage(safeZ);
+  if (safeZError) messages.push(safeZError);
   if (b && (b.xMin < MACHINE.xMin || b.xMax > MACHINE.xMax ||
       b.yMin < MACHINE.yMin || b.yMax > MACHINE.yMax)) {
     messages.push(`Generated X/Y bounds exceed machine limits X ${MACHINE.xMin}..${MACHINE.xMax}, Y ${MACHINE.yMin}..${MACHINE.yMax}.`);
@@ -4047,6 +4050,38 @@ async function ensurePreviewThumbnailDirectory() {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || 'Could not create thumbnail folder');
   }
+}
+
+function activeSafeZLimits() {
+  const safeZ = currentMachineFrame?.safeZ;
+  const workMin = Number(safeZ?.workMin);
+  const workMax = Number(safeZ?.workMax);
+  const liftMin = Number(safeZ?.liftMin);
+  if (Number.isFinite(workMin) && Number.isFinite(workMax) && workMax >= workMin) {
+    return {
+      zMin: Number.isFinite(liftMin) ? Math.max(workMin, liftMin) : workMin,
+      zMax: workMax,
+      mappedToMachine: safeZ?.mappedToMachine === true,
+    };
+  }
+  return { zMin: RECOVERY_LIMITS.zMin, zMax: RECOVERY_LIMITS.zMax, mappedToMachine: false };
+}
+
+function applySafeZInputLimits() {
+  const limits = activeSafeZLimits();
+  [safeZInput, recoverySafeZInput, runSafeStartZInput].filter(Boolean).forEach((input) => {
+    input.min = String(limits.zMin);
+    input.max = String(limits.zMax);
+  });
+}
+
+function safeZValidationMessage(value) {
+  const limits = activeSafeZLimits();
+  if (!Number.isFinite(value)) return 'Safe Z must be a number.';
+  if (value < limits.zMin || value > limits.zMax) {
+    return `Safe Z must be within the current lift range ${limits.zMin.toFixed(3)}..${limits.zMax.toFixed(3)} mm.`;
+  }
+  return '';
 }
 
 async function storedThumbnailExists(path) {
@@ -5657,6 +5692,7 @@ async function loadPreview() {
   } catch (err) {
     currentMachineFrame = null;
   }
+  applySafeZInputLimits();
   if (!filePath) {
     redirectToFiles();
     return;
@@ -5990,6 +6026,9 @@ addEventListener('cnc-position-update', (event) => {
 });
 addEventListener('cnc-machine-frame', (event) => {
   currentMachineFrame = event.detail || currentMachineFrame;
+  applySafeZInputLimits();
+  refreshDryRunCommands();
+  refreshRecoveryPlan();
   renderZeroOriginPanel();
   renderPreflight();
   renderArmPanel();

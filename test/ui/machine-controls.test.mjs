@@ -278,12 +278,16 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
   const startHandler = firmware.slice(firmware.indexOf('void handleJogStart()'), firmware.indexOf('void handleJogUpdate()'));
   const safeLift = firmware.slice(firmware.indexOf('bool prepareSafeJogLift()'), firmware.indexOf('void processJogRunner()'));
 
-  it('silently clamps the requested target and moves in native machine coordinates', () => {
+  it('validates the requested target dynamically and moves in native machine coordinates', () => {
     expect(firmware).toContain('constexpr float kMachineZMaxMm = 70.0f');
-    expect(startHandler).toContain('0.0f, kMachineZMaxMm');
+    expect(startHandler).toContain('jogStatus.safeLiftZ < machineZMin()');
+    expect(startHandler).toContain('jogStatus.safeLiftZ > machineZMax()');
     expect(safeLift).toContain('G53 G0 Z');
     expect(safeLift).toContain('captureJogSafeLiftWorkZ()');
-    expect(machineBar).toContain('Math.min(MACHINE_Z_MAX_MM');
+    expect(machineBar).toContain('function safeZBounds()');
+    expect(machineBar).toContain('STATE.frame?.safeZ');
+    expect(machineBar).toContain('Math.min(safeZBounds().max');
+    expect(machineBar).toContain('safeWorkZToMachine(safeWorkZ)');
     expect(machineBar).toContain('max="70"');
   });
 

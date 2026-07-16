@@ -2009,3 +2009,22 @@
 - Added pure projection and persistence coverage. Browser QA confirmed 2D, orthographic 3D, Fit
   Active, Fit Table, accessible pressed state, and saved-view restoration. JavaScript syntax and diff
   checks pass; the full suite passes 31 files / 293 tests.
+
+## 2026-07-16 - Dynamic Safe Z validation
+
+- Replaced the job-start and Go To Work Zero `0..200 mm` acceptance range with a firmware-owned
+  work-Z range calculated from the discovered Marlin machine limits and active home-relative work
+  zero. A requested work Z is transformed back to machine Z before it can be sent.
+- Safe Z rejects a value that would move down from the latest work position. Invalid requests return
+  an error instead of being silently clamped to a different motion.
+- `/api/machine/frame` publishes work minimum/maximum, current lift minimum, machine Z limits,
+  mapping confidence, the active-work-zero tool-length reference, and configured tool-change park Z.
+- Run, dry-run, recovery, Go To Work Zero, and Safe Jog controls consume the live range. Safe Jog
+  converts the selected work Z back to its native G53 machine Z and firmware validates it against
+  discovered limits.
+- Tool-change park coordinates are revalidated when M6 is reached and again before the return
+  sequence, protecting against stale settings after a machine-profile change.
+- The development mock mirrors the dynamic work/machine transform and explicit rejection behavior.
+  Added focused firmware and HTTP coverage.
+- Verification: full suite passes 39 files / 328 tests. PlatformIO ESP32-CAM build succeeds at
+  19.6% RAM and 70.7% flash.
