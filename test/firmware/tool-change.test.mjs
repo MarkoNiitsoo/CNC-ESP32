@@ -9,6 +9,8 @@ describe('firmware-owned M6 tool change', () => {
     expect(source).toMatch(/beginToolChange[\s\S]*appendPriorityCommand\("M400"\)[\s\S]*appendPriorityCommand\("M5"\)/);
     expect(source).toContain('tool change ready: ');
     expect(source).toContain('complete the pending tool change before resuming');
+    expect(source).toContain('jobStatus.toolChangePhase = "TOOL_CHANGE_REQUESTED"');
+    expect(source).toContain('jobStatus.toolChangePhase = "WAITING_FOR_TOOL"');
   });
 
   it('captures a return point, parks with G53, and returns only after explicit confirmation', () => {
@@ -16,6 +18,8 @@ describe('firmware-owned M6 tool change', () => {
     expect(source).toContain('G53 G0 Z');
     expect(source).toContain('G53 G0 X');
     expect(source).toContain('confirmed true is required after the tool has been installed');
+    expect(source).toContain('routerReady true is required after verifying the router or spindle state');
+    expect(source).toContain('jobStatus.toolChangePhase = "RESUMING"');
     expect(source).toContain('set Z zero manually or with the configured touch plate before continuing');
     expect(source).toContain('server.on("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete)');
   });
@@ -25,6 +29,7 @@ describe('firmware-owned M6 tool change', () => {
     expect(source).toContain('G38.2 Z-');
     expect(source).toContain('toolChangeSettings.touchPlateThickness');
     expect(source).toContain('jobStatus.toolChangeZZeroCompleted = true');
+    expect(source).toContain('jobStatus.toolChangePhase = "READY_TO_CONTINUE"');
     expect(source).toContain('server.on("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero)');
   });
 });

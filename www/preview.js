@@ -114,6 +114,7 @@ const toolChangeInfoEl = document.querySelector('#tool-change-info');
 const toolChangeInstructionEl = document.querySelector('#tool-change-instruction');
 const toolChangeManualZButton = document.querySelector('#tool-change-manual-z');
 const toolChangeTouchPlateButton = document.querySelector('#tool-change-touch-plate');
+const toolChangeRouterReadyInput = document.querySelector('#tool-change-router-ready');
 const toolChangeCompleteButton = document.querySelector('#tool-change-complete');
 const toolChangeResultEl = document.querySelector('#tool-change-result');
 const runFinalChecklistEl = document.querySelector('#run-final-checklist');
@@ -1287,12 +1288,18 @@ function renderToolChangeOperator() {
   const zeroComplete = jobRunStatus?.toolChangeZZeroCompleted === true;
   const number = Number(jobRunStatus?.toolChangeToolNumber);
   const toolLabel = Number.isInteger(number) && number >= 0 ? `T${number}` : 'requested tool';
+  const signature = `${jobRunStatus?.toolChangeLine ?? ''}:${toolLabel}`;
+  if (toolChangeRouterReadyInput && toolChangeRouterReadyInput.dataset.toolChangeSignature !== signature) {
+    toolChangeRouterReadyInput.dataset.toolChangeSignature = signature;
+    toolChangeRouterReadyInput.checked = false;
+  }
   const info = pendingToolChangeInfo();
   if (toolChangeTitleEl) toolChangeTitleEl.textContent = `Install ${toolLabel}`;
   if (toolChangeInfoEl) {
     toolChangeInfoEl.innerHTML = `
       <dl>
         <dt>Tool</dt><dd>${html(toolLabel)}</dd>
+        <dt>Firmware phase</dt><dd>${html(jobRunStatus?.toolChangePhase || 'WAITING')}</dd>
         <dt>G-code info</dt><dd>${html(info?.description || jobRunStatus?.toolChangeCommand || 'No tool description in the G-code')}</dd>
         <dt>Diameter</dt><dd>${Number.isFinite(info?.diameterMm) ? `${info.diameterMm.toFixed(3)} mm` : '-'}</dd>
         <dt>Requested RPM</dt><dd>${Number.isFinite(info?.spindleRpm) ? info.spindleRpm : '-'}</dd>
@@ -1306,14 +1313,17 @@ function renderToolChangeOperator() {
       ? 'Finishing queued motion and stopping the spindle. Wait before touching the tool.'
       : !zeroComplete
         ? `Install ${toolLabel}, secure it, then set Z zero manually or with the touch plate.`
-        : 'Z zero is recorded. Verify the tool is secure, then confirm to return and continue.';
+        : 'Z zero is recorded. Verify the tool and router/spindle state, then confirm to return and continue.';
   }
   if (toolChangeManualZButton) toolChangeManualZButton.disabled = !ready || zeroComplete;
   if (toolChangeTouchPlateButton) {
     toolChangeTouchPlateButton.hidden = !toolChangeDeviceSettings?.touchPlateEnabled;
     toolChangeTouchPlateButton.disabled = !ready || zeroComplete;
   }
-  if (toolChangeCompleteButton) toolChangeCompleteButton.disabled = !ready || !zeroComplete;
+  if (toolChangeRouterReadyInput) toolChangeRouterReadyInput.disabled = !ready || !zeroComplete;
+  if (toolChangeCompleteButton) {
+    toolChangeCompleteButton.disabled = !ready || !zeroComplete || !toolChangeRouterReadyInput?.checked;
+  }
   if (zeroComplete && toolChangeResultEl && !toolChangeResultEl.textContent) {
     toolChangeResultEl.textContent = 'Z zero saved. Confirm the installed tool to continue.';
   }
@@ -2307,6 +2317,11 @@ function renderFirmwareRecoveryCheckpoint() {
 
   const matches = firmwareCheckpointMatchesCurrentJob(checkpoint);
   const position = checkpoint.workPosition;
+  const toolChange = checkpoint.toolChange;
+  const toolChangeDetails = toolChange?.phase && toolChange.phase !== 'NONE'
+    ? `<dt>Tool change</dt><dd>${html(toolChange.phase)} · ${Number(toolChange.toolNumber) >= 0 ? `T${Number(toolChange.toolNumber)}` : 'tool unknown'} · next line ${toolChange.nextLineNumber ?? '-'}</dd>
+       <dt>Tool-change safety</dt><dd>parked ${toolChange.parked ? 'yes' : 'no'}, Z zero ${toolChange.zZeroCompleted ? 'complete' : 'required'}, router ready ${toolChange.routerReadyConfirmed ? 'confirmed' : 'not confirmed'}</dd>`
+    : '';
   firmwareRecoveryCheckpointEl.innerHTML = `
     <p class="eyebrow">FIRMWARE RECOVERY RECORD</p>
     <strong>${matches ? 'Interrupted run found for this job' : 'Interrupted run belongs to another job'}</strong>
@@ -2317,6 +2332,7 @@ function renderFirmwareRecoveryCheckpoint() {
       <dt>Run file</dt><dd>${html(checkpoint.gcodePath || '-')}</dd>
       <dt>Firmware state</dt><dd>${html(checkpoint.state || '-')}</dd>
       <dt>Last acknowledged</dt><dd>line ${checkpoint.lastAcknowledgedLineNumber ?? '-'}, byte ${checkpoint.lastAcknowledgedByteOffset ?? '-'}</dd>
+      ${toolChangeDetails}
       <dt>Last known work position</dt><dd>${position ? `X${fmtValue(position.x)} Y${fmtValue(position.y)} Z${fmtValue(position.z)}` : 'unavailable'}</dd>
       <dt>Restart reason</dt><dd>${html(response.resetReason || checkpoint.reason || '-')}</dd>
     </dl>
@@ -4487,9 +4503,10 @@ async function setToolChangeManualZ() {
 async function completeToolChange() {
   const number = Number(jobRunStatus?.toolChangeToolNumber);
   const toolLabel = Number.isInteger(number) && number >= 0 ? `T${number}` : 'the requested tool';
-  if (!confirm(`Confirm that ${toolLabel} is installed securely and the new Z zero is correct.\n\nThe machine may return from the change position and the firmware will continue streaming the job.`)) return;
+  if (!toolChangeRouterReadyInput?.checked) throw new Error('Confirm the intended router/spindle state before continuing.');
+  if (!confirm(`Confirm that ${toolLabel} is installed securely, the new Z zero is correct, and the router/spindle is in the intended state.\n\nThe machine may return from the change position and the firmware will continue streaming the job.`)) return;
   if (toolChangeResultEl) toolChangeResultEl.textContent = 'Returning to the toolpath and continuing...';
-  await postCriticalJobAction('/api/job/tool-change/complete', { confirmed: true });
+  await postCriticalJobAction('/api/job/tool-change/complete', { confirmed: true, routerReady: true });
 }
 
 async function saveToolZeroToJob() {
@@ -5923,6 +5940,7 @@ toolChangeManualZButton?.addEventListener('click', () => setToolChangeManualZ().
 toolChangeTouchPlateButton?.addEventListener('click', () => probeTouchPlateZZero().catch((err) => {
   if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
 }));
+toolChangeRouterReadyInput?.addEventListener('change', renderToolChangeOperator);
 toolChangeCompleteButton?.addEventListener('click', () => completeToolChange().catch((err) => {
   if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
 }));

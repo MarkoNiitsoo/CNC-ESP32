@@ -159,7 +159,7 @@ describe('MockJobRunner', () => {
     expect(await waitForState(ctx.runner, 'PAUSED')).toBe('PAUSED');
     expect(ctx.runner.status).toMatchObject({
       toolChangePending: true, toolChangeReady: true, toolChangeToolNumber: 2,
-      toolChangeZZeroCompleted: false,
+      toolChangeZZeroCompleted: false, toolChangePhase: 'WAITING_FOR_TOOL',
     });
     const sent = ctx.marlin.log.filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
     expect(sent).not.toContain('T2');
@@ -167,9 +167,11 @@ describe('MockJobRunner', () => {
     const stopIndex = sent.lastIndexOf('M5');
     expect(sent[stopIndex - 1]).toBe('M400');
     expect(() => ctx.runner.resume()).toThrow(/complete.*tool change/i);
-    expect(() => ctx.runner.completeToolChange({ confirmed: true })).toThrow(/set Z zero/i);
+    expect(() => ctx.runner.completeToolChange({ confirmed: true, routerReady: true })).toThrow(/set Z zero/i);
     ctx.runner.markToolChangeZZero('manual');
-    ctx.runner.completeToolChange({ confirmed: true });
+    expect(ctx.runner.status.toolChangePhase).toBe('READY_TO_CONTINUE');
+    expect(() => ctx.runner.completeToolChange({ confirmed: true })).toThrow(/routerReady/i);
+    ctx.runner.completeToolChange({ confirmed: true, routerReady: true });
     expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
     expect(ctx.runner.status.activeToolNumber).toBe(2);
   });
@@ -186,9 +188,10 @@ describe('MockJobRunner', () => {
     await ctx.runner.start(ctx.request);
     expect(await waitForState(ctx.runner, 'PAUSED')).toBe('PAUSED');
     expect(ctx.runner.status.toolChangeReturnPosition).toEqual({ x: 10, y: 20, z: 15 });
+    expect(ctx.runner.status).toMatchObject({ toolChangePhase: 'WAITING_FOR_TOOL', toolChangeParked: true });
     expect(ctx.marlin.machinePosition).toMatchObject({ x: 100, y: 200, z: 70 });
     ctx.runner.markToolChangeZZero('manual');
-    ctx.runner.completeToolChange({ confirmed: true });
+    ctx.runner.completeToolChange({ confirmed: true, routerReady: true });
     expect(ctx.marlin.position).toMatchObject({ x: 10, y: 20, z: 15 });
     expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
   });

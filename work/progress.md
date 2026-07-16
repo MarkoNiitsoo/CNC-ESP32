@@ -2028,3 +2028,23 @@
   Added focused firmware and HTTP coverage.
 - Verification: full suite passes 39 files / 328 tests. PlatformIO ESP32-CAM build succeeds at
   19.6% RAM and 70.7% flash.
+
+## 2026-07-16 - Persistent firmware-owned tool-change state
+
+- Expanded the SD active-job checkpoint to schema 2 with explicit M6 phases:
+  `TOOL_CHANGE_REQUESTED`, `PARKING_FOR_TOOL_CHANGE`, `WAITING_FOR_TOOL`,
+  `READY_TO_CONTINUE`, and `RESUMING`.
+- The checkpoint now records the expected tool, M6 command and line, next line/byte offset, selected
+  handling and Z-zero method, whether parking completed, the pre-park return position, whether Z
+  zero completed, and tool/router confirmation state.
+- Critical phase changes are written immediately rather than waiting for the normal two-second or
+  4096-byte checkpoint cadence. A failed transition write blocks continuation with a runner error.
+- Tool-change evidence is retained if the runner enters ERROR, while deliberate Stop and normal
+  completion clear the live M6 phase.
+- Continue now requires a separate operator checkbox for the intended router/spindle state. The
+  firmware independently requires `routerReady: true`; a browser dialog alone cannot bypass it.
+- Recovery checkpoint UI shows an interrupted M6 phase, expected tool, next line, parked status,
+  Z-zero requirement, and router confirmation status.
+- DEV MOCK and focused firmware/UI tests mirror the phase and confirmation contract.
+- Verification: full suite passes 39 files / 328 tests. PlatformIO ESP32-CAM build succeeds at
+  19.6% RAM and 70.8% flash.

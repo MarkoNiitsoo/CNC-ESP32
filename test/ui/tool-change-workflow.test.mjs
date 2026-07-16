@@ -12,12 +12,14 @@ describe('manual tool-change operator workflow', () => {
     expect(html).toContain('id="tool-change-manual-z"');
     expect(html).toContain('id="tool-change-touch-plate"');
     expect(html).toContain('id="tool-change-complete"');
+    expect(html).toContain('id="tool-change-router-ready"');
     expect(preview).toContain('pendingToolChangeInfo()');
     expect(preview).toContain('info?.diameterMm');
     expect(preview).toContain('info?.spindleRpm');
     expect(preview).toMatch(/function applyActiveRunParse[\s\S]*renderWorkbenchStatus\(\);[\s\S]*renderRunPanel\(\);/);
     expect(preview).toContain('resumeJobButton.hidden = !paused || toolChangePending');
-    expect(preview).toContain("postCriticalJobAction('/api/job/tool-change/complete', { confirmed: true })");
+    expect(preview).toContain("postCriticalJobAction('/api/job/tool-change/complete', { confirmed: true, routerReady: true })");
+    expect(preview).toContain("toolChangeCompleteButton.disabled = !ready || !zeroComplete || !toolChangeRouterReadyInput?.checked");
   });
 
   it('exposes configured touch-plate Z zero beside normal Z-zero controls too', () => {

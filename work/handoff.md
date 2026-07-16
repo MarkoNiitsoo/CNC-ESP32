@@ -1884,3 +1884,23 @@ No firmware upload is required.
   firmware will still reject unsafe motion.
 - Full verification passes 39 files / 328 tests. ESP32-CAM firmware build uses 19.6% RAM / 70.7%
   flash.
+
+## 2026-07-16 persistent tool-change handoff
+
+- `/logs/active-job.json` now uses checkpoint schema 2. Its nested `toolChange` object contains the
+  authoritative M6 phase and all evidence required to understand an interrupted change without the
+  original browser session.
+- The phase sequence is requested -> optional parking -> waiting for tool -> ready after Z zero ->
+  resuming. Firmware persists each critical boundary immediately; ordinary periodic checkpointing
+  remains unchanged for streamed progress.
+- `nextByteOffset` points after the intercepted M6 command and `nextLineNumber` names the following
+  source line. These are recovery evidence only: boot still sends M5, invalidates position, and never
+  automatically resumes or completes a tool change.
+- Park completion and the captured work-coordinate return position are persisted separately. A
+  restart or error therefore cannot imply that parking or return motion completed when it did not.
+- `POST /api/job/tool-change/complete` now requires both `{ confirmed: true, routerReady: true }`
+  after Z zero. The Preview UI supplies `routerReady` only after the operator checks the new
+  router/spindle-state confirmation.
+- Deploy firmware, `preview.html`, and `preview.js` together because older UI code does not send the
+  new required confirmation field.
+- Full verification passes 39 files / 328 tests; firmware build is 19.6% RAM / 70.8% flash.

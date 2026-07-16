@@ -137,6 +137,9 @@ struct JobRunnerStatus {
   bool toolChangePending = false;
   bool toolChangeReady = false;
   bool toolChangeZZeroCompleted = false;
+  bool toolChangeParked = false;
+  bool toolChangeToolConfirmed = false;
+  bool toolChangeRouterReadyConfirmed = false;
   int selectedToolNumber = -1;
   int activeToolNumber = -1;
   int toolChangeToolNumber = -1;
@@ -148,6 +151,7 @@ struct JobRunnerStatus {
   String toolChangeCommand;
   String toolChangeHandling = "pause";
   String toolChangeZZeroMethod = "manual";
+  String toolChangePhase = "NONE";
   String lastCommand;
   String lastResponse;
   String lastError;
@@ -413,6 +417,7 @@ String recoveryCheckpointResetReason;
 uint32_t jobCheckpointLastWriteMs = 0;
 size_t jobCheckpointLastAcknowledgedOffset = 0;
 JobRunnerState jobCheckpointLastState = JobRunnerState::Idle;
+String jobCheckpointLastToolChangePhase = "NONE";
 MachineProfile machineProfile;
 MachineDiscoveryState machineDiscoveryState = MachineDiscoveryState::Idle;
 String machineDiscoveryResponse;
@@ -1266,7 +1271,7 @@ bool writePersistentJobCheckpoint(bool activeJob, bool interrupted, const String
   File file = SD_MMC.open(kSdActiveJobCheckpointTempPath, FILE_WRITE);
   if (!file) return false;
 
-  file.print("{\"schemaVersion\":1,\"activeJob\":");
+  file.print("{\"schemaVersion\":2,\"activeJob\":");
   file.print(activeJob ? "true" : "false");
   file.print(",\"interrupted\":");
   file.print(interrupted ? "true" : "false");
@@ -1299,10 +1304,28 @@ bool writePersistentJobCheckpoint(bool activeJob, bool interrupted, const String
   file.print(",\"selectedToolNumber\":"); file.print(jobStatus.selectedToolNumber);
   file.print(",\"activeToolNumber\":"); file.print(jobStatus.activeToolNumber);
   file.print(",\"toolChange\":{\"pending\":"); file.print(jobStatus.toolChangePending ? "true" : "false");
+  file.print(",\"phase\":\""); file.print(jsonEscape(jobStatus.toolChangePhase)); file.print("\"");
   file.print(",\"ready\":"); file.print(jobStatus.toolChangeReady ? "true" : "false");
   file.print(",\"zZeroCompleted\":"); file.print(jobStatus.toolChangeZZeroCompleted ? "true" : "false");
+  file.print(",\"parked\":"); file.print(jobStatus.toolChangeParked ? "true" : "false");
+  file.print(",\"toolConfirmed\":"); file.print(jobStatus.toolChangeToolConfirmed ? "true" : "false");
+  file.print(",\"routerReadyConfirmed\":"); file.print(jobStatus.toolChangeRouterReadyConfirmed ? "true" : "false");
   file.print(",\"toolNumber\":"); file.print(jobStatus.toolChangeToolNumber);
-  file.print(",\"line\":"); file.print(jobStatus.toolChangeLine); file.print("}");
+  file.print(",\"line\":"); file.print(jobStatus.toolChangeLine);
+  file.print(",\"nextLineNumber\":"); file.print(jobStatus.toolChangeLine + 1);
+  file.print(",\"nextByteOffset\":"); file.print(jobStatus.currentByteOffset);
+  file.print(",\"command\":\""); file.print(jsonEscape(jobStatus.toolChangeCommand)); file.print("\"");
+  file.print(",\"handling\":\""); file.print(jsonEscape(jobStatus.toolChangeHandling)); file.print("\"");
+  file.print(",\"zZeroMethod\":\""); file.print(jsonEscape(jobStatus.toolChangeZZeroMethod)); file.print("\"");
+  file.print(",\"returnPosition\":");
+  if (jobStatus.toolChangeReturnPositionCaptured) {
+    file.print("{\"x\":"); file.print(jobStatus.toolChangeReturnWorkX, 3);
+    file.print(",\"y\":"); file.print(jobStatus.toolChangeReturnWorkY, 3);
+    file.print(",\"z\":"); file.print(jobStatus.toolChangeReturnWorkZ, 3); file.print("}");
+  } else {
+    file.print("null");
+  }
+  file.print("}");
   file.print(",\"workPosition\":");
   if (marlinPosition.valid) {
     file.print("{\"x\":"); file.print(marlinPosition.x, 3);
@@ -1327,6 +1350,7 @@ bool writePersistentJobCheckpoint(bool activeJob, bool interrupted, const String
   jobCheckpointLastWriteMs = millis();
   jobCheckpointLastAcknowledgedOffset = jobStatus.lastAcknowledgedByteOffset;
   jobCheckpointLastState = jobStatus.state;
+  jobCheckpointLastToolChangePhase = jobStatus.toolChangePhase;
   jobCheckpointDirty = false;
   recoveryCheckpointGcodePath = jobStatus.gcodePath;
   recoveryCheckpointJobPath = jobStatus.jobPath;
@@ -1342,6 +1366,12 @@ bool beginPersistentJobCheckpoint() {
   jobCheckpointTracking = false;
   setPersistentActiveJobMarker(false);
   return false;
+}
+
+bool persistToolChangeTransition() {
+  touchJobStatus();
+  if (!jobCheckpointTracking) return true;
+  return writePersistentJobCheckpoint(true, false, "");
 }
 
 void clearPersistentJobCheckpoint() {
@@ -1376,10 +1406,11 @@ void processPersistentJobCheckpoint() {
   }
   if (!jobIsActive() || !jobCheckpointDirty) return;
   const bool stateChanged = jobStatus.state != jobCheckpointLastState;
+  const bool toolChangePhaseChanged = jobStatus.toolChangePhase != jobCheckpointLastToolChangePhase;
   const bool intervalElapsed = millis() - jobCheckpointLastWriteMs >= kJobCheckpointIntervalMs;
   const bool bytesAdvanced = jobStatus.lastAcknowledgedByteOffset >= jobCheckpointLastAcknowledgedOffset +
                                                                   kJobCheckpointByteInterval;
-  if (stateChanged || intervalElapsed || bytesAdvanced) {
+  if (stateChanged || toolChangePhaseChanged || intervalElapsed || bytesAdvanced) {
     writePersistentJobCheckpoint(true, false, "");
   }
 }
@@ -1466,6 +1497,13 @@ String jobStatusJson() {
   json += jobStatus.toolChangeReady ? "true" : "false";
   json += ",\"toolChangeZZeroCompleted\":";
   json += jobStatus.toolChangeZZeroCompleted ? "true" : "false";
+  json += ",\"toolChangeParked\":";
+  json += jobStatus.toolChangeParked ? "true" : "false";
+  json += ",\"toolChangeToolConfirmed\":";
+  json += jobStatus.toolChangeToolConfirmed ? "true" : "false";
+  json += ",\"toolChangeRouterReadyConfirmed\":";
+  json += jobStatus.toolChangeRouterReadyConfirmed ? "true" : "false";
+  json += ",\"toolChangePhase\":\"" + jsonEscape(jobStatus.toolChangePhase) + "\"";
   json += ",\"selectedToolNumber\":" + String(jobStatus.selectedToolNumber);
   json += ",\"activeToolNumber\":" + String(jobStatus.activeToolNumber);
   json += ",\"toolChangeToolNumber\":" + String(jobStatus.toolChangeToolNumber);
@@ -2449,6 +2487,14 @@ void startNextPriorityCommand() {
   }
 
   const String &cmd = priorityCommands[priorityCommandIndex];
+  if (jobStatus.toolChangePending && jobStatus.toolChangeHandling == "park" &&
+      cmd.startsWith("G53 G0") && jobStatus.toolChangePhase != "PARKING_FOR_TOOL_CHANGE") {
+    jobStatus.toolChangePhase = "PARKING_FOR_TOOL_CHANGE";
+    if (!persistToolChangeTransition()) {
+      setJobError("could not persist tool-change parking state");
+      return;
+    }
+  }
   addMarlinLog("tx", true, cmd);
   Serial.print(cmd);
   Serial.print('\n');
@@ -2493,12 +2539,18 @@ void finishPrioritySequence() {
     jobStatus.pausedAtMs = millis();
     if (jobStatus.toolChangePending) {
       jobStatus.toolChangeReady = true;
+      jobStatus.toolChangeParked = jobStatus.toolChangeHandling == "park";
+      jobStatus.toolChangePhase = "WAITING_FOR_TOOL";
       const String toolLabel = jobStatus.toolChangeToolNumber >= 0
                                    ? "T" + String(jobStatus.toolChangeToolNumber)
                                    : "the requested tool";
       jobStatus.streamingPausedReason = "M6 tool change: install " + toolLabel +
                                         ", set Z zero, then confirm the change.";
       logJobEvent("tool change ready: " + toolLabel + " line=" + String(jobStatus.toolChangeLine));
+      if (!persistToolChangeTransition()) {
+        setJobError("could not persist ready tool-change state");
+        return;
+      }
     } else {
       jobStatus.streamingPausedReason = "Pause requested. Streaming stopped.";
       logJobEvent("paused: " + jobStatus.gcodePath);
@@ -3570,8 +3622,6 @@ void setJobError(const String &message, bool resetFeedOverride) {
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
-  jobStatus.toolChangePending = false;
-  jobStatus.toolChangeReady = false;
   jobStatus.state = JobRunnerState::Error;
   jobStatus.lastError = message;
   touchJobStatus();
@@ -3706,6 +3756,11 @@ void completeJob() {
   jobStatus.stopRequested = false;
   jobStatus.toolChangePending = false;
   jobStatus.toolChangeReady = false;
+  jobStatus.toolChangeZZeroCompleted = false;
+  jobStatus.toolChangeParked = false;
+  jobStatus.toolChangeToolConfirmed = false;
+  jobStatus.toolChangeRouterReadyConfirmed = false;
+  jobStatus.toolChangePhase = "NONE";
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Completed;
   jobStatus.completedAtMs = millis();
@@ -3726,6 +3781,11 @@ void processJobRunner() {
 
   if (jobStatus.state == JobRunnerState::Resuming) {
     jobStatus.state = JobRunnerState::Running;
+    jobStatus.toolChangePhase = "NONE";
+    jobStatus.toolChangeParked = false;
+    jobStatus.toolChangeToolConfirmed = false;
+    jobStatus.toolChangeRouterReadyConfirmed = false;
+    jobStatus.toolChangeZZeroCompleted = false;
     touchJobStatus();
   }
 
@@ -4129,6 +4189,10 @@ bool beginToolChange(const String &line) {
   jobStatus.toolChangePending = true;
   jobStatus.toolChangeReady = false;
   jobStatus.toolChangeZZeroCompleted = false;
+  jobStatus.toolChangeParked = false;
+  jobStatus.toolChangeToolConfirmed = false;
+  jobStatus.toolChangeRouterReadyConfirmed = false;
+  jobStatus.toolChangePhase = "TOOL_CHANGE_REQUESTED";
   jobStatus.toolChangeReturnPositionCaptured = false;
   jobStatus.toolChangeLine = jobStatus.currentLineNumber;
   jobStatus.toolChangeCommand = line;
@@ -4177,6 +4241,10 @@ bool beginToolChange(const String &line) {
   jobStatus.lastPriorityCommand = "";
   jobStatus.lastPriorityResponse = "";
   jobStatus.lastPriorityError = "";
+  if (!persistToolChangeTransition()) {
+    setJobError("could not persist requested tool-change state");
+    return false;
+  }
   logJobEvent("tool change requested: " + line + " line=" + String(jobStatus.toolChangeLine));
   touchJobStatus();
   return true;
@@ -5784,6 +5852,10 @@ void handleToolChangeComplete() {
     sendJsonError(400, "confirmed true is required after the tool has been installed");
     return;
   }
+  if (!extractJsonBool(server.arg("plain"), "routerReady", false)) {
+    sendJsonError(400, "routerReady true is required after verifying the router or spindle state");
+    return;
+  }
   if (jogIsActive() || priorityCommandCount > 0 || jobStatus.priorityCommandInProgress) {
     sendJsonError(409, "stop jog motion before completing the tool change");
     return;
@@ -5831,6 +5903,9 @@ void handleToolChangeComplete() {
   }
 
   jobStatus.activeToolNumber = jobStatus.toolChangeToolNumber;
+  jobStatus.toolChangeToolConfirmed = true;
+  jobStatus.toolChangeRouterReadyConfirmed = true;
+  jobStatus.toolChangePhase = "RESUMING";
   jobStatus.toolChangePending = false;
   jobStatus.toolChangeReady = false;
   jobStatus.pauseRequested = false;
@@ -5840,7 +5915,11 @@ void handleToolChangeComplete() {
   jobWaitingForOk = false;
   jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
   jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
-  touchJobStatus();
+  if (!persistToolChangeTransition()) {
+    setJobError("could not persist confirmed tool-change state");
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
   logJobEvent("tool change confirmed: T" + String(jobStatus.activeToolNumber));
   server.send(200, "application/json", jobStatusJsonWithMessage("Tool change confirmed. Resume requested."));
 }
@@ -5868,6 +5947,10 @@ void handleJobStop() {
   jobStatus.toolChangePending = false;
   jobStatus.toolChangeReady = false;
   jobStatus.toolChangeZZeroCompleted = false;
+  jobStatus.toolChangeParked = false;
+  jobStatus.toolChangeToolConfirmed = false;
+  jobStatus.toolChangeRouterReadyConfirmed = false;
+  jobStatus.toolChangePhase = "NONE";
   jobStatus.state = JobRunnerState::Stopping;
   jobStatus.streamingPausedReason = "Stop requested. Streaming stopped.";
   queuePriorityCommands("M5", "M410");
@@ -6252,7 +6335,12 @@ void handleSetZZero() {
   if (toolChangeZZero) {
     jobStatus.toolChangeZZeroCompleted = true;
     jobStatus.toolChangeZZeroMethod = "manual";
-    touchJobStatus();
+    jobStatus.toolChangePhase = "READY_TO_CONTINUE";
+    if (!persistToolChangeTransition()) {
+      setJobError("could not persist manual tool-change Z-zero state");
+      sendJsonError(500, jobStatus.lastError);
+      return;
+    }
     logJobEvent("tool change Z zero completed manually");
   }
   telemetryPositionDirty = true;
@@ -6322,7 +6410,12 @@ void handleTouchPlateZZero() {
   if (toolChangeZZero) {
     jobStatus.toolChangeZZeroCompleted = true;
     jobStatus.toolChangeZZeroMethod = "touchplate";
-    touchJobStatus();
+    jobStatus.toolChangePhase = "READY_TO_CONTINUE";
+    if (!persistToolChangeTransition()) {
+      setJobError("could not persist touch-plate tool-change Z-zero state");
+      sendJsonError(500, jobStatus.lastError);
+      return;
+    }
     logJobEvent("tool change Z zero completed with touch plate");
   }
   telemetryPositionDirty = true;

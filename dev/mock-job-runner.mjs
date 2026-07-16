@@ -46,6 +46,8 @@ export class MockJobRunner {
       pauseRequested: false, stopRequested: false, priorityCommandInProgress: false,
       feedOverridePercent: this?.marlin?.feedOverride || 100,
       toolChangePending: false, toolChangeReady: false, toolChangeZZeroCompleted: false,
+      toolChangeParked: false, toolChangeToolConfirmed: false, toolChangeRouterReadyConfirmed: false,
+      toolChangePhase: 'NONE',
       selectedToolNumber: -1, activeToolNumber: -1, toolChangeToolNumber: -1,
       toolChangeLine: 0, toolChangeCommand: '', toolChangeHandling: 'pause',
       toolChangeZZeroMethod: 'manual', toolChangeReturnPositionCaptured: false,
@@ -109,6 +111,10 @@ export class MockJobRunner {
     this.status.toolChangePending = true;
     this.status.toolChangeReady = false;
     this.status.toolChangeZZeroCompleted = false;
+    this.status.toolChangeParked = false;
+    this.status.toolChangeToolConfirmed = false;
+    this.status.toolChangeRouterReadyConfirmed = false;
+    this.status.toolChangePhase = 'TOOL_CHANGE_REQUESTED';
     this.status.toolChangeToolNumber = this.status.selectedToolNumber;
     this.status.toolChangeLine = this.status.currentLineNumber;
     this.status.toolChangeCommand = command;
@@ -125,6 +131,7 @@ export class MockJobRunner {
       if (!this.frame.absoluteFromHome) {
         this.status.toolChangeHandling = 'pause';
       } else {
+        this.status.toolChangePhase = 'PARKING_FOR_TOOL_CHANGE';
         this.status.toolChangeReturnPosition = { ...this.marlin.position };
         this.status.toolChangeReturnPositionCaptured = true;
         const settings = this.toolChangeSettings;
@@ -137,10 +144,12 @@ export class MockJobRunner {
           const result = this.runCommand(priorityCommand, { priority: true, allowMachineCoordinates: true });
           if (!result.ok) return this.fail(result.error);
         }
+        this.status.toolChangeParked = true;
       }
     }
     this.status.state = 'PAUSED';
     this.status.toolChangeReady = true;
+    this.status.toolChangePhase = 'WAITING_FOR_TOOL';
     this.status.pauseRequested = false;
     const tool = this.status.toolChangeToolNumber >= 0 ? `T${this.status.toolChangeToolNumber}` : 'the requested tool';
     this.status.streamingPausedReason = `M6 tool change: install ${tool}, set Z zero, then confirm the change.`;
@@ -425,14 +434,16 @@ export class MockJobRunner {
     if (this.status.state === 'PAUSED' && this.status.toolChangePending && this.status.toolChangeReady) {
       this.status.toolChangeZZeroCompleted = true;
       this.status.toolChangeZZeroMethod = method === 'touchplate' ? 'touchplate' : 'manual';
+      this.status.toolChangePhase = 'READY_TO_CONTINUE';
     }
   }
 
-  completeToolChange({ confirmed = false } = {}) {
+  completeToolChange({ confirmed = false, routerReady = false } = {}) {
     if (this.status.state !== 'PAUSED' || !this.status.toolChangePending || !this.status.toolChangeReady) {
       throw new Error('no completed M6 stop is waiting for confirmation');
     }
     if (!confirmed) throw new Error('confirmed true is required after the tool has been installed');
+    if (!routerReady) throw new Error('routerReady true is required after verifying the router or spindle state');
     if (!this.status.toolChangeZZeroCompleted) throw new Error('set Z zero manually or with the configured touch plate before continuing');
     if (this.status.toolChangeHandling === 'park') {
       const target = this.status.toolChangeReturnPosition;
@@ -449,6 +460,9 @@ export class MockJobRunner {
       }
     }
     this.status.activeToolNumber = this.status.toolChangeToolNumber;
+    this.status.toolChangeToolConfirmed = true;
+    this.status.toolChangeRouterReadyConfirmed = true;
+    this.status.toolChangePhase = 'RESUMING';
     this.status.toolChangePending = false;
     this.status.toolChangeReady = false;
     this.status.pauseRequested = false;
@@ -457,6 +471,11 @@ export class MockJobRunner {
     this.status.lastAcknowledgedLineNumber = this.status.currentLineNumber;
     this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
     this.status.state = 'RUNNING';
+    this.status.toolChangePhase = 'NONE';
+    this.status.toolChangeParked = false;
+    this.status.toolChangeToolConfirmed = false;
+    this.status.toolChangeRouterReadyConfirmed = false;
+    this.status.toolChangeZZeroCompleted = false;
     return this.snapshot('Tool change confirmed. Resume requested.');
   }
 
@@ -467,6 +486,11 @@ export class MockJobRunner {
     this.status.pauseRequested = false;
     this.status.toolChangePending = false;
     this.status.toolChangeReady = false;
+    this.status.toolChangeZZeroCompleted = false;
+    this.status.toolChangeParked = false;
+    this.status.toolChangeToolConfirmed = false;
+    this.status.toolChangeRouterReadyConfirmed = false;
+    this.status.toolChangePhase = 'NONE';
     this.status.streamingPausedReason = 'Stop requested. Streaming stopped.';
     this.runToken += 1;
     this.runCommand('M5', { priority: true });
