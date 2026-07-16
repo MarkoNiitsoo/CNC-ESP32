@@ -23,8 +23,8 @@ describe('machine discovery and configuration', () => {
     expect(firmware).toContain('Preferences machinePrefs');
     expect(firmware).toContain('area:{full:{min:{x:%f,y:%f,z:%f}');
     expect(firmware).toContain('server.on("/api/machine/info", HTTP_GET, handleMachineInfo)');
-    expect(firmware).toContain('server.on("/api/machine/apply", HTTP_POST, handleMachineApply)');
-    expect(firmware).toContain('server.on("/api/machine/save", HTTP_POST, handleMachineSave)');
+    expect(firmware).toContain('operatorRoute("/api/machine/apply", HTTP_POST, handleMachineApply)');
+    expect(firmware).toContain('operatorRoute("/api/machine/save", HTTP_POST, handleMachineSave)');
     expect(firmware).toMatch(/machineConfigurationBusy\(\)[\s\S]*machineDiscoveryTransportBusy/);
     expect(firmware).toContain('editable group must be M92, M203, M201, or M204');
   });

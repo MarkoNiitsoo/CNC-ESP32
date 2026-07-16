@@ -12,6 +12,8 @@
     jog: { state: 'IDLE', zLiftedForJog: false, heartbeatAgeMs: 0, lastCommand: '', lastError: '' },
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
     toolChangeSettings: null,
+    operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true },
+    operatorPanelOpen: false,
   };
   let jogTimer = null;
   let jogUpdatePending = false;
@@ -20,6 +22,7 @@
   let jogSessionId = 0;
   let motionSettingsModule = null;
   let travelSpeedMmS = 50;
+  let operatorTimer = null;
   const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
     motionSettingsModule = module;
     travelSpeedMmS = module.loadMotionSettings().travelSpeedMmS;
@@ -368,6 +371,125 @@
       xyFeedMax: Math.round(xySpeed * 60),
       zFeedMax: Math.round(zSpeed * 60),
     };
+  }
+
+  async function readOperatorResponse(res) {
+    const text = await res.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (err) {
+      throw new Error(`Invalid operator response: ${err.message}`);
+    }
+    if (!res.ok) throw Object.assign(new Error(data.error || `Operator request failed (${res.status})`), { data });
+    return data;
+  }
+
+  async function refreshOperatorStatus() {
+    try {
+      STATE.operator = await readOperatorResponse(await fetch('/api/operator/status', { cache: 'no-store' }));
+    } catch (err) {
+      STATE.operator = { ...STATE.operator, controller: false, readOnly: true, error: err.message };
+    }
+    renderOperatorLock();
+    return STATE.operator;
+  }
+
+  async function claimOperatorControl() {
+    const owner = String(el('mb-operator-owner')?.value || '').trim();
+    const pin = String(el('mb-operator-pin')?.value || '').trim();
+    const status = el('mb-operator-result');
+    try {
+      const data = await readOperatorResponse(await fetch('/api/operator/claim', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, pin }),
+      }));
+      localStorage.setItem('cnc.operator.owner', owner);
+      if (el('mb-operator-pin')) el('mb-operator-pin').value = '';
+      STATE.operator = data;
+      STATE.operatorPanelOpen = false;
+      if (status) status.textContent = 'This browser now controls the machine.';
+      renderOperatorLock();
+    } catch (err) {
+      if (err.data) STATE.operator = { ...STATE.operator, ...err.data };
+      if (status) status.textContent = err.message;
+      renderOperatorLock();
+    }
+  }
+
+  async function releaseOperatorControl() {
+    try {
+      STATE.operator = await readOperatorResponse(await fetch('/api/operator/release', { method: 'POST' }));
+      STATE.operatorPanelOpen = true;
+      renderOperatorLock();
+    } catch (err) {
+      if (el('mb-operator-result')) el('mb-operator-result').textContent = err.message;
+    }
+  }
+
+  async function updateOperatorPin() {
+    const currentPin = String(el('mb-operator-current-pin')?.value || '').trim();
+    const newPin = String(el('mb-operator-new-pin')?.value || '').trim();
+    const status = el('mb-operator-result');
+    try {
+      const data = await readOperatorResponse(await fetch('/api/operator/pin', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPin, newPin }),
+      }));
+      if (el('mb-operator-current-pin')) el('mb-operator-current-pin').value = '';
+      if (el('mb-operator-new-pin')) el('mb-operator-new-pin').value = '';
+      if (status) status.textContent = data.message || 'PIN updated.';
+    } catch (err) {
+      if (status) status.textContent = err.message;
+    }
+  }
+
+  async function operatorHeartbeat() {
+    if (!STATE.operator?.controller) return refreshOperatorStatus();
+    try {
+      STATE.operator = await readOperatorResponse(await fetch('/api/operator/heartbeat', { method: 'POST' }));
+    } catch (err) {
+      STATE.operator = { ...(err.data || STATE.operator), controller: false, readOnly: true, error: err.message };
+      STATE.operatorPanelOpen = true;
+    }
+    renderOperatorLock();
+  }
+
+  function renderOperatorLock() {
+    const operator = STATE.operator || {};
+    const controller = operator.controller === true;
+    document.body.classList.toggle('operator-read-only', !controller);
+    const strip = el('mb-operator-strip');
+    const button = el('mb-operator-toggle');
+    const panel = el('mb-operator-panel');
+    const claim = el('mb-operator-claim');
+    const release = el('mb-operator-release');
+    const change = el('mb-operator-change');
+    const owner = operator.owner || '';
+    if (strip) strip.dataset.controller = String(controller);
+    if (button) {
+      button.textContent = controller ? `CONTROL: ${owner}` : owner ? `READ ONLY: ${owner} controls` : 'READ ONLY: claim control';
+      button.setAttribute('aria-expanded', String(STATE.operatorPanelOpen || !controller));
+    }
+    if (panel) panel.hidden = controller && !STATE.operatorPanelOpen;
+    if (el('mb-operator-title')) {
+      el('mb-operator-title').textContent = controller
+        ? `Controller: ${owner}`
+        : operator.configured ? 'Claim machine control' : 'Set the device operator PIN';
+    }
+    if (el('mb-operator-hint')) {
+      el('mb-operator-hint').textContent = controller
+        ? 'Only this browser may change machine state. The lease stays active while this page is connected.'
+        : owner
+          ? `${owner} currently controls the machine. This browser is read-only until that 45-second lease expires or is released.`
+          : operator.configured
+            ? 'Enter the device PIN. Only one browser can control the machine at a time.'
+            : 'First setup: connect through the device Setup AP, then choose a unique 6-12 digit PIN. It is stored as a hash and will be required on every controller.';
+    }
+    if (claim) claim.hidden = controller;
+    if (claim) claim.disabled = operator.active === true && !controller;
+    if (release) release.hidden = !controller;
+    if (change) change.hidden = !controller;
+    document.querySelectorAll('[data-operator-claim-field]').forEach((item) => { item.hidden = controller; });
+    document.querySelectorAll('[data-operator-pin-field]').forEach((item) => { item.hidden = !controller; });
   }
 
   function formatRestoreZ(value) {
@@ -1006,8 +1128,28 @@
           <button id="mb-stop" class="machine-danger" type="button" aria-label="Stop Now with M410" title="Abrupt quickstop; position must be verified" data-icon="stop">Stop Now</button>
           <button id="mb-m5" class="machine-danger-dark" type="button" aria-label="Output Off M5; motion continues" title="Router/spindle output off only; motion continues" data-icon="m5">Output Off (M5)</button>
         </div>
+        <div id="mb-operator-strip" class="machine-operator-strip" data-controller="false">
+          <button id="mb-operator-toggle" type="button" data-operator-control aria-expanded="true">READ ONLY: claim control</button>
+        </div>
         <p id="mb-live-marlin" class="machine-live-message" hidden></p>
       </div>
+      <section id="mb-operator-panel" class="machine-operator-panel" aria-live="polite">
+        <h2 id="mb-operator-title">Claim machine control</h2>
+        <p id="mb-operator-hint">Enter the device PIN. Only one browser can control the machine at a time.</p>
+        <label data-operator-claim-field>Controller name<input id="mb-operator-owner" type="text" maxlength="32" autocomplete="nickname" placeholder="Marko phone"></label>
+        <label data-operator-claim-field>Device PIN<input id="mb-operator-pin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="current-password"></label>
+        <div class="machine-operator-actions">
+          <button id="mb-operator-claim" type="button" data-operator-control>Claim Control</button>
+          <button id="mb-operator-release" type="button" data-operator-control hidden>Release Control</button>
+        </div>
+        <details id="mb-operator-change" data-operator-pin-field hidden>
+          <summary>Change device PIN</summary>
+          <label>Current PIN<input id="mb-operator-current-pin" type="password" inputmode="numeric" maxlength="12" autocomplete="current-password"></label>
+          <label>New 6-12 digit PIN<input id="mb-operator-new-pin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="new-password"></label>
+          <button id="mb-operator-pin-save" type="button" data-operator-control>Save New PIN</button>
+        </details>
+        <p id="mb-operator-result" class="compact-status"></p>
+      </section>
       <div id="machine-drawer-overlay" class="machine-drawer-overlay" hidden></div>
       <div id="machine-jog-dock" class="machine-jog-dock" aria-label="Joystick controls">
         <button id="mb-jog-dock-toggle" class="machine-jog-handle" type="button" aria-label="Open joystick" aria-expanded="false">
@@ -1164,6 +1306,13 @@
     else globalThis.addEventListener?.('resize', syncMachineBarHeight);
 
     button('mb-toggle', () => toggleDrawer());
+    button('mb-operator-toggle', () => {
+      STATE.operatorPanelOpen = !STATE.operatorPanelOpen;
+      renderOperatorLock();
+    });
+    button('mb-operator-claim', claimOperatorControl);
+    button('mb-operator-release', releaseOperatorControl);
+    button('mb-operator-pin-save', updateOperatorPin);
     button('mb-close', () => toggleDrawer(false));
     button('machine-drawer-overlay', () => toggleDrawer(false));
     button('mb-jog-dock-toggle', () => toggleJogDock());
@@ -1308,6 +1457,12 @@
       refreshHealth().catch(() => {});
     }
     syncJogDock();
+    if (el('mb-operator-owner')) {
+      el('mb-operator-owner').value = localStorage.getItem('cnc.operator.owner') || '';
+    }
+    renderOperatorLock();
+    refreshOperatorStatus().catch(() => {});
+    operatorTimer = setInterval(operatorHeartbeat, 15000);
     render();
   }
 

@@ -2063,3 +2063,25 @@
   position invalidation, distinct UI wording, and the output-only failure fallback.
 - Verification: full suite passes 39 files / 329 tests. PlatformIO ESP32-CAM build succeeds at
   19.6% RAM and 70.9% flash.
+
+## 2026-07-16 - Single-operator PIN control lease
+
+- Added a firmware-owned operator PIN stored only as a device-salted SHA-256 digest in NVS. Initial
+  PIN setup is accepted only through the device Setup AP; repeated incorrect PIN attempts are
+  rate-limited.
+- Exactly one browser receives an HttpOnly SameSite controller cookie and a 45-second renewable
+  lease. The public status endpoint shows the controller name, lease state, and whether the current
+  browser is controller or read-only; no PIN hash or session token is exposed.
+- Wrapped every state-changing machine, job, jog, work-zero, file, settings, WiFi, and restart route
+  in the firmware authorization boundary. Status, telemetry, file listing, and downloads remain
+  available to read-only clients.
+- Added a persistent machine-bar claim/release and PIN-change panel. Other browsers visibly show
+  who controls the machine; direct machine-bar motion and joystick controls are disabled while
+  read-only, while local preview/navigation controls remain usable for inspection.
+- OTA now additionally requires an idle machine and a separate PIN-confirmed two-minute unlock.
+  Firmware upload consumes that unlock once rather than inheriting ordinary controller access.
+- DEV MOCK mirrors claim, lease, owner visibility, read-only rejection, PIN change, release, and OTA
+  unlock. Browser QA covered first PIN setup, the controller badge, release, and read-only motion
+  blocking. Full automated verification passes 40 files / 334 tests.
+- PlatformIO revalidation passes after correcting the handler callback type. The ESP32-CAM build
+  uses 19.6% RAM (64,236 bytes) and 71.3% flash (1,401,681 bytes).

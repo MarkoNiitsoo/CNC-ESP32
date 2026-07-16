@@ -42,7 +42,7 @@ describe('tool-change device settings', () => {
     expect(app).toContain("method: 'PUT'");
     expect(firmware).toContain('Preferences toolChangePrefs');
     expect(firmware).toContain('server.on("/api/tool-change/settings", HTTP_GET, handleToolChangeSettingsGet)');
-    expect(firmware).toContain('server.on("/api/tool-change/settings", HTTP_PUT, handleToolChangeSettingsPut)');
+    expect(firmware).toContain('operatorRoute("/api/tool-change/settings", HTTP_PUT, handleToolChangeSettingsPut)');
     expect(firmware).toContain('loadToolChangeSettings();');
   });
 });

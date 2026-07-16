@@ -34,6 +34,12 @@ constexpr const char *kMachinePrefsNamespace = "machine";
 constexpr const char *kToolChangePrefsNamespace = "toolchange";
 constexpr const char *kRecoveryPrefsNamespace = "recovery";
 constexpr const char *kRecoveryPrefsActiveJobKey = "activeJob";
+constexpr const char *kOperatorPrefsNamespace = "operator";
+constexpr const char *kOperatorPrefsPinHashKey = "pinHash";
+constexpr uint32_t kOperatorLeaseMs = 45000;
+constexpr uint32_t kOperatorOtaUnlockMs = 120000;
+constexpr uint32_t kOperatorFailedPinWindowMs = 30000;
+constexpr uint8_t kOperatorMaxPinAttempts = 5;
 constexpr const char *kDevicePrefsNamespace = "device";
 constexpr const char *kDevicePrefsHostnameKey = "hostname";
 constexpr const char *kDevicePrefsFriendlyNameKey = "friendlyName";
@@ -345,6 +351,7 @@ Preferences machinePrefs;
 Preferences devicePrefs;
 Preferences toolChangePrefs;
 Preferences recoveryPrefs;
+Preferences operatorPrefs;
 DeviceIdentity deviceIdentity;
 ToolChangeSettings toolChangeSettings;
 String activeWifiMode = "ap";
@@ -355,6 +362,14 @@ bool otaUploadSeen = false;
 bool otaUploadOk = false;
 uint32_t rebootAtMs = 0;
 String otaError;
+String operatorPinHash;
+String operatorSessionToken;
+String operatorSessionOwner;
+uint32_t operatorSessionClaimedAtMs = 0;
+uint32_t operatorSessionLastSeenMs = 0;
+uint32_t operatorOtaUnlockedUntilMs = 0;
+uint32_t operatorFailedPinWindowStartedAtMs = 0;
+uint8_t operatorFailedPinAttempts = 0;
 bool sdMounted = false;
 File uploadFile;
 String uploadError;
@@ -445,6 +460,7 @@ void drainMarlinInput();
 bool sendMarlinControlCommand(const String &cmd, String &response);
 void sendJsonError(int status, const String &message);
 bool enqueueTelemetry(TelemetryChannel channel, const String &data);
+String bytesToHex(const uint8_t *bytes, size_t length);
 
 String marlinMessageLevel(String text) {
   text.toLowerCase();
@@ -3939,7 +3955,8 @@ String htmlPage(const String &title, const String &body) {
   html += title;
   html += "</title><link rel=\"stylesheet\" href=\"/style.css\"></head><body><main class=\"app\">";
   html += body;
-  html += "</main></body></html>";
+  html += "</main><script src=\"/telemetry.js\"></script>";
+  html += "<script src=\"/machine-bar.js\"></script></body></html>";
   return html;
 }
 
@@ -4455,6 +4472,232 @@ void sendJsonError(int status, const String &message) {
   json += jsonEscape(message);
   json += "\"}";
   server.send(status, "application/json", json);
+}
+
+String operatorPinDigest(const String &pin) {
+  const String material = deviceIdentity.deviceId + ":" + pin;
+  uint8_t digest[32];
+  mbedtls_sha256_ret(reinterpret_cast<const unsigned char *>(material.c_str()),
+                     material.length(), digest, 0);
+  return bytesToHex(digest, sizeof(digest));
+}
+
+bool validOperatorPin(const String &pin) {
+  if (pin.length() < 6 || pin.length() > 12) return false;
+  for (size_t i = 0; i < pin.length(); ++i) {
+    if (pin[i] < '0' || pin[i] > '9') return false;
+  }
+  return true;
+}
+
+bool operatorSessionActive() {
+  if (operatorSessionToken.length() == 0) return false;
+  if (millis() - operatorSessionLastSeenMs <= kOperatorLeaseMs) return true;
+  operatorSessionToken = "";
+  operatorSessionOwner = "";
+  operatorOtaUnlockedUntilMs = 0;
+  return false;
+}
+
+String operatorRequestToken() {
+  String cookie = server.header("Cookie");
+  const String marker = "cnc_operator=";
+  int start = cookie.indexOf(marker);
+  if (start < 0) return "";
+  start += marker.length();
+  int end = cookie.indexOf(';', start);
+  if (end < 0) end = cookie.length();
+  String token = cookie.substring(start, end);
+  token.trim();
+  return token;
+}
+
+bool operatorRequestAuthorized(bool refreshLease = true) {
+  if (!operatorSessionActive()) return false;
+  const String token = operatorRequestToken();
+  if (token.length() == 0 || token != operatorSessionToken) return false;
+  if (refreshLease) operatorSessionLastSeenMs = millis();
+  return true;
+}
+
+bool operatorOtaUnlocked() {
+  return operatorRequestAuthorized() && operatorOtaUnlockedUntilMs != 0 &&
+         static_cast<int32_t>(operatorOtaUnlockedUntilMs - millis()) > 0;
+}
+
+String operatorStatusJson(bool assumeController = false) {
+  const bool active = operatorSessionActive();
+  const bool controller = active && (assumeController || operatorRequestToken() == operatorSessionToken);
+  const uint32_t remaining = active ? kOperatorLeaseMs - (millis() - operatorSessionLastSeenMs) : 0;
+  String json = "{\"ok\":true,\"configured\":";
+  json += operatorPinHash.length() > 0 ? "true" : "false";
+  json += ",\"active\":" + String(active ? "true" : "false");
+  json += ",\"controller\":" + String(controller ? "true" : "false");
+  json += ",\"readOnly\":" + String(controller ? "false" : "true");
+  json += ",\"canClaim\":" + String(active ? "false" : "true");
+  json += ",\"owner\":";
+  json += active ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+  json += ",\"leaseRemainingMs\":" + String(remaining);
+  json += ",\"leaseMs\":" + String(kOperatorLeaseMs);
+  const bool otaUnlocked = controller && operatorOtaUnlockedUntilMs != 0 &&
+                           static_cast<int32_t>(operatorOtaUnlockedUntilMs - millis()) > 0;
+  json += ",\"otaUnlocked\":" + String(otaUnlocked ? "true" : "false");
+  json += "}";
+  return json;
+}
+
+void sendOperatorLocked() {
+  String json = operatorStatusJson();
+  json.remove(json.length() - 1);
+  json.replace("{\"ok\":true", "{\"ok\":false");
+  json += ",\"error\":\"Operator control is locked. Claim the controller session with the device PIN.\"}";
+  server.send(423, "application/json", json);
+}
+
+bool requireOperatorControl() {
+  if (operatorRequestAuthorized()) return true;
+  sendOperatorLocked();
+  return false;
+}
+
+bool operatorPinAttemptsAllowed() {
+  const uint32_t now = millis();
+  if (now - operatorFailedPinWindowStartedAtMs > kOperatorFailedPinWindowMs) {
+    operatorFailedPinWindowStartedAtMs = now;
+    operatorFailedPinAttempts = 0;
+  }
+  return operatorFailedPinAttempts < kOperatorMaxPinAttempts;
+}
+
+void noteOperatorPinFailure() {
+  if (operatorFailedPinAttempts == 0) operatorFailedPinWindowStartedAtMs = millis();
+  if (operatorFailedPinAttempts < 255) ++operatorFailedPinAttempts;
+}
+
+bool verifyOperatorPin(const String &pin) {
+  if (!operatorPinAttemptsAllowed()) return false;
+  if (operatorPinHash.length() > 0 && operatorPinDigest(pin) == operatorPinHash) {
+    operatorFailedPinAttempts = 0;
+    return true;
+  }
+  noteOperatorPinFailure();
+  return false;
+}
+
+String newOperatorToken() {
+  char token[41];
+  snprintf(token, sizeof(token), "%08lX%08lX%08lX%08lX%08lX",
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()));
+  return String(token);
+}
+
+void saveOperatorPin(const String &pin) {
+  operatorPinHash = operatorPinDigest(pin);
+  operatorPrefs.begin(kOperatorPrefsNamespace, false);
+  operatorPrefs.putString(kOperatorPrefsPinHashKey, operatorPinHash);
+  operatorPrefs.end();
+}
+
+void loadOperatorSettings() {
+  operatorPrefs.begin(kOperatorPrefsNamespace, true);
+  operatorPinHash = operatorPrefs.getString(kOperatorPrefsPinHashKey, "");
+  operatorPrefs.end();
+}
+
+void handleOperatorStatus() {
+  server.send(200, "application/json", operatorStatusJson());
+}
+
+void handleOperatorClaim() {
+  const String body = server.hasArg("plain") ? server.arg("plain") : "";
+  String owner = extractJsonString(body, "owner");
+  String pin = extractJsonString(body, "pin");
+  owner.trim();
+  pin.trim();
+  if (owner.length() == 0 || owner.length() > 32 || !validOperatorPin(pin)) {
+    sendJsonError(400, "owner and a 6-12 digit PIN are required");
+    return;
+  }
+  if (operatorSessionActive() && !operatorRequestAuthorized(false)) {
+    sendOperatorLocked();
+    return;
+  }
+  if (operatorPinHash.length() == 0) {
+    if (server.client().localIP() != WiFi.softAPIP()) {
+      sendJsonError(403, "initial operator PIN must be set through the device Setup AP at 192.168.4.1");
+      return;
+    }
+    saveOperatorPin(pin);
+  } else if (!verifyOperatorPin(pin)) {
+    sendJsonError(operatorPinAttemptsAllowed() ? 403 : 429,
+                  operatorPinAttemptsAllowed() ? "incorrect operator PIN"
+                                               : "too many PIN attempts; wait 30 seconds");
+    return;
+  }
+  operatorSessionToken = newOperatorToken();
+  operatorSessionOwner = owner;
+  operatorSessionClaimedAtMs = millis();
+  operatorSessionLastSeenMs = operatorSessionClaimedAtMs;
+  operatorOtaUnlockedUntilMs = 0;
+  server.sendHeader("Set-Cookie", "cnc_operator=" + operatorSessionToken +
+                                  "; Path=/; SameSite=Strict; HttpOnly");
+  server.send(200, "application/json", operatorStatusJson(true));
+}
+
+void handleOperatorHeartbeat() {
+  if (!requireOperatorControl()) return;
+  server.send(200, "application/json", operatorStatusJson());
+}
+
+void handleOperatorRelease() {
+  if (!requireOperatorControl()) return;
+  operatorSessionToken = "";
+  operatorSessionOwner = "";
+  operatorOtaUnlockedUntilMs = 0;
+  server.sendHeader("Set-Cookie", "cnc_operator=; Path=/; SameSite=Strict; HttpOnly; Max-Age=0");
+  server.send(200, "application/json", operatorStatusJson());
+}
+
+void handleOperatorPinUpdate() {
+  if (!requireOperatorControl()) return;
+  const String body = server.hasArg("plain") ? server.arg("plain") : "";
+  const String currentPin = extractJsonString(body, "currentPin");
+  const String newPin = extractJsonString(body, "newPin");
+  if (!verifyOperatorPin(currentPin)) {
+    sendJsonError(403, "current operator PIN is incorrect");
+    return;
+  }
+  if (!validOperatorPin(newPin)) {
+    sendJsonError(400, "new PIN must contain 6-12 digits");
+    return;
+  }
+  saveOperatorPin(newPin);
+  operatorOtaUnlockedUntilMs = 0;
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Operator PIN updated.\"}");
+}
+
+void handleOperatorOtaUnlock() {
+  if (!requireOperatorControl()) return;
+  if (jobIsActive() || jobWaitingForOk || jogIsActive() || priorityCommandCount > 0) {
+    sendJsonError(409, "OTA unlock is allowed only while the machine is idle");
+    return;
+  }
+  const String pin = extractJsonString(server.hasArg("plain") ? server.arg("plain") : "", "pin");
+  if (!verifyOperatorPin(pin)) {
+    sendJsonError(403, "operator PIN is incorrect");
+    return;
+  }
+  operatorOtaUnlockedUntilMs = millis() + kOperatorOtaUnlockMs;
+  server.send(200, "application/json",
+              "{\"ok\":true,\"message\":\"OTA unlocked for 2 minutes.\"}");
+}
+
+void operatorRoute(const char *uri, HTTPMethod method, void (*handler)()) {
+  server.on(uri, method, [handler]() {
+    if (requireOperatorControl()) handler();
+  });
 }
 
 String contentTypeForPath(const String &path) {
@@ -6639,11 +6882,21 @@ void handleUpdatePage() {
   body += ")</p></header>";
   body += "<section class=\"panel maintenance-panel\">";
   body += "<p class=\"warning\">Do not update while the CNC is moving or cutting.</p>";
+  body += "<label for=\"ota-pin\">Operator PIN</label>";
+  body += "<input id=\"ota-pin\" type=\"password\" inputmode=\"numeric\" autocomplete=\"current-password\">";
+  body += "<button id=\"ota-unlock\" type=\"button\">Unlock OTA for 2 minutes</button>";
+  body += "<p id=\"ota-unlock-status\" class=\"form-hint\">OTA upload stays locked until the active operator confirms the PIN.</p>";
   body += "<form method=\"post\" action=\"/api/update\" enctype=\"multipart/form-data\">";
   body += "<input type=\"file\" name=\"firmware\" accept=\".bin\" required>";
   body += "<button type=\"submit\">Upload Firmware</button>";
   body += "</form>";
   body += "<a class=\"maintenance-link\" href=\"/\">Back to pendant</a>";
+  body += "<script>document.querySelector('#ota-unlock').addEventListener('click',async()=>{";
+  body += "const status=document.querySelector('#ota-unlock-status');";
+  body += "const pin=document.querySelector('#ota-pin').value;";
+  body += "try{const response=await fetch('/api/operator/ota-unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin})});";
+  body += "const data=await response.json();if(!response.ok)throw new Error(data.error||'Unlock failed');status.textContent=data.message;}";
+  body += "catch(error){status.textContent=error.message;}}</script>";
   body += "</section>";
 
   server.send(200, "text/html", htmlPage("Firmware Update", body));
@@ -6763,7 +7016,11 @@ void handleUpdateUpload() {
     resetOtaState();
     otaUploadSeen = true;
 
-    // TODO: Protect OTA before exposing this device outside the local/private network.
+    if (!operatorOtaUnlocked()) {
+      otaError = "OTA is locked. Confirm the operator PIN on the update page.";
+      return;
+    }
+    operatorOtaUnlockedUntilMs = 0;
     if (upload.filename.length() == 0) {
       otaError = "No firmware file was provided.";
       return;
@@ -6908,61 +7165,73 @@ void startMdns() {
 }
 
 void startHttpServer() {
+  const char *collectedHeaders[] = {"Cookie"};
+  server.collectHeaders(collectedHeaders, 1);
   server.on("/", HTTP_GET, handleIndex);
   server.on("/index.html", HTTP_GET, handleIndex);
   server.on("/files", HTTP_GET, handleFilesPage);
   server.on("/app.js", HTTP_GET, handleAppJs);
   server.on("/files.js", HTTP_GET, handleFilesJs);
   server.on("/style.css", HTTP_GET, handleStyleCss);
+  server.on("/api/operator/status", HTTP_GET, handleOperatorStatus);
+  server.on("/api/operator/claim", HTTP_POST, handleOperatorClaim);
+  server.on("/api/operator/heartbeat", HTTP_POST, handleOperatorHeartbeat);
+  server.on("/api/operator/release", HTTP_POST, handleOperatorRelease);
+  server.on("/api/operator/pin", HTTP_PUT, handleOperatorPinUpdate);
+  server.on("/api/operator/ota-unlock", HTTP_POST, handleOperatorOtaUnlock);
   server.on("/api/health", HTTP_GET, handleHealth);
   server.on("/api/tool-change/settings", HTTP_GET, handleToolChangeSettingsGet);
-  server.on("/api/tool-change/settings", HTTP_PUT, handleToolChangeSettingsPut);
+  operatorRoute("/api/tool-change/settings", HTTP_PUT, handleToolChangeSettingsPut);
   server.on("/api/device", HTTP_GET, handleDeviceInfo);
-  server.on("/api/device", HTTP_PATCH, handleDeviceUpdate);
-  server.on("/api/system/restart", HTTP_POST, handleSystemRestart);
+  operatorRoute("/api/device", HTTP_PATCH, handleDeviceUpdate);
+  operatorRoute("/api/system/restart", HTTP_POST, handleSystemRestart);
   server.on("/api/machine/info", HTTP_GET, handleMachineInfo);
-  server.on("/api/machine/refresh", HTTP_POST, handleMachineRefresh);
-  server.on("/api/machine/apply", HTTP_POST, handleMachineApply);
-  server.on("/api/machine/save", HTTP_POST, handleMachineSave);
+  operatorRoute("/api/machine/refresh", HTTP_POST, handleMachineRefresh);
+  operatorRoute("/api/machine/apply", HTTP_POST, handleMachineApply);
+  operatorRoute("/api/machine/save", HTTP_POST, handleMachineSave);
   server.on("/api/machine/frame", HTTP_GET, handleMachineFrame);
-  server.on("/api/machine/home", HTTP_POST, handleMachineHome);
-  server.on("/api/machine/manual-frame", HTTP_POST, handleManualMachineFrame);
+  operatorRoute("/api/machine/home", HTTP_POST, handleMachineHome);
+  operatorRoute("/api/machine/manual-frame", HTTP_POST, handleManualMachineFrame);
   server.on("/api/marlin/log", HTTP_GET, handleMarlinLog);
-  server.on("/api/cmd", HTTP_POST, handleCommand);
+  operatorRoute("/api/cmd", HTTP_POST, handleCommand);
   server.on("/api/ui/status", HTTP_GET, handleUiStatus);
   server.on("/api/sd/status", HTTP_GET, handleSdStatus);
   server.on("/api/files", HTTP_GET, handleFilesList);
   server.on("/api/download", HTTP_GET, handleDownload);
-  server.on("/api/upload", HTTP_POST, handleUploadComplete, handleUploadData);
-  server.on("/api/delete", HTTP_POST, handleDelete);
-  server.on("/api/mkdir", HTTP_POST, handleMkdir);
-  server.on("/api/rename", HTTP_POST, handleRename);
-  server.on("/api/job/start", HTTP_POST, handleJobStart);
+  server.on("/api/upload", HTTP_POST,
+            []() { if (requireOperatorControl()) handleUploadComplete(); },
+            []() { if (operatorRequestAuthorized()) handleUploadData(); });
+  operatorRoute("/api/delete", HTTP_POST, handleDelete);
+  operatorRoute("/api/mkdir", HTTP_POST, handleMkdir);
+  operatorRoute("/api/rename", HTTP_POST, handleRename);
+  operatorRoute("/api/job/start", HTTP_POST, handleJobStart);
   server.on("/api/job/status", HTTP_GET, handleJobStatus);
-  server.on("/api/test-motion/start", HTTP_POST, handleTestMotionStart);
-  server.on("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
+  operatorRoute("/api/test-motion/start", HTTP_POST, handleTestMotionStart);
+  operatorRoute("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
   server.on("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet);
-  server.on("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
-  server.on("/api/job/pause", HTTP_POST, handleJobPause);
-  server.on("/api/job/resume", HTTP_POST, handleJobResume);
-  server.on("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete);
-  server.on("/api/job/stop", HTTP_POST, handleJobStop);
-  server.on("/api/job/feed-override", HTTP_POST, handleJobFeedOverride);
-  server.on("/api/jog/start", HTTP_POST, handleJogStart);
-  server.on("/api/jog/update", HTTP_POST, handleJogUpdate);
-  server.on("/api/jog/stop", HTTP_POST, handleJogStop);
-  server.on("/api/jog/restore-z", HTTP_POST, handleJogRestoreZ);
+  operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
+  operatorRoute("/api/job/pause", HTTP_POST, handleJobPause);
+  operatorRoute("/api/job/resume", HTTP_POST, handleJobResume);
+  operatorRoute("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete);
+  operatorRoute("/api/job/stop", HTTP_POST, handleJobStop);
+  operatorRoute("/api/job/feed-override", HTTP_POST, handleJobFeedOverride);
+  operatorRoute("/api/jog/start", HTTP_POST, handleJogStart);
+  operatorRoute("/api/jog/update", HTTP_POST, handleJogUpdate);
+  operatorRoute("/api/jog/stop", HTTP_POST, handleJogStop);
+  operatorRoute("/api/jog/restore-z", HTTP_POST, handleJogRestoreZ);
   server.on("/api/jog/status", HTTP_GET, handleJogStatus);
-  server.on("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
-  server.on("/api/work-zero/set", HTTP_POST, handleSetWorkZero);
-  server.on("/api/work-zero/set-z", HTTP_POST, handleSetZZero);
-  server.on("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero);
-  server.on("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero);
+  operatorRoute("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
+  operatorRoute("/api/work-zero/set", HTTP_POST, handleSetWorkZero);
+  operatorRoute("/api/work-zero/set-z", HTTP_POST, handleSetZZero);
+  operatorRoute("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero);
+  operatorRoute("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero);
   server.on("/update", HTTP_GET, handleUpdatePage);
-  server.on("/api/update", HTTP_POST, handleUpdateComplete, handleUpdateUpload);
+  server.on("/api/update", HTTP_POST,
+            []() { if (requireOperatorControl()) handleUpdateComplete(); },
+            []() { if (operatorRequestAuthorized()) handleUpdateUpload(); });
   server.on("/wifi", HTTP_GET, handleWifiPage);
-  server.on("/api/wifi/save", HTTP_POST, handleWifiSave);
-  server.on("/api/wifi/forget", HTTP_POST, handleWifiForget);
+  operatorRoute("/api/wifi/save", HTTP_POST, handleWifiSave);
+  operatorRoute("/api/wifi/forget", HTTP_POST, handleWifiForget);
   server.onNotFound(handleNotFound);
   server.begin();
   telemetryQueue = xQueueCreate(12, sizeof(TelemetryPacket *));
@@ -7002,6 +7271,7 @@ void setup() {
 
   SPIFFS.begin(true);
   loadDeviceIdentity();
+  loadOperatorSettings();
   startWifi();
   startMdns();
   startHttpServer();

@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createMockServer } from '../../dev/mock-server.mjs';
 
 const instances = [];
-async function start() {
+async function start(config = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'cnc-mock-http-'));
-  const instance = await createMockServer({ mockRoot: root, config: { lineDelayMs: 1 } });
+  const instance = await createMockServer({
+    mockRoot: root, config: { lineDelayMs: 1, operatorLockEnabled: false, ...config },
+  });
   await new Promise((resolve) => instance.server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${instance.server.address().port}`;
   instances.push({ ...instance, root });
@@ -22,6 +24,38 @@ afterEach(async () => {
 });
 
 describe('mock HTTP API', () => {
+  it('allows one PIN-authenticated controller while other clients stay read-only', async () => {
+    const { base } = await start({ operatorLockEnabled: true });
+    const locked = await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'M5' }),
+    });
+    expect(locked.status).toBe(423);
+    expect(await fetch(`${base}/api/health`).then((res) => res.json())).toMatchObject({ mockMode: true });
+
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Marko phone', pin: '741852' }),
+    });
+    expect(claim.ok).toBe(true);
+    const cookie = claim.headers.get('set-cookie').split(';')[0];
+    expect(await claim.json()).toMatchObject({ configured: true, controller: true, owner: 'Marko phone' });
+    expect(await fetch(`${base}/api/operator/status`).then((res) => res.json()))
+      .toMatchObject({ controller: false, readOnly: true, owner: 'Marko phone' });
+    expect((await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Workshop laptop', pin: '741852' }),
+    })).status).toBe(423);
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ cmd: 'M5' }),
+    })).ok).toBe(true);
+    expect((await fetch(`${base}/api/operator/ota-unlock`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ pin: '741852' }),
+    })).ok).toBe(true);
+    expect((await fetch(`${base}/api/operator/release`, { method: 'POST', headers: { Cookie: cookie } })).ok).toBe(true);
+  });
+
   it('locks only active/recovery job artifacts against upload, delete, and rename', async () => {
     const { base, env } = await start();
     const gcodePath = '/gcode/locked.gc';

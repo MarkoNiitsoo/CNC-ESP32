@@ -74,7 +74,7 @@ describe('local device discovery', () => {
   });
 
   it('persists identity updates to NVS before optional SD config and requires restart', () => {
-    expect(source).toContain('server.on("/api/device", HTTP_PATCH, handleDeviceUpdate)');
+    expect(source).toContain('operatorRoute("/api/device", HTTP_PATCH, handleDeviceUpdate)');
     const update = source.slice(source.indexOf('void handleDeviceUpdate()'), source.indexOf('void handleSystemRestart()'));
     expect(update).toContain('jobIsActive()');
     expect(update.indexOf('saveDeviceIdentityToNvs(hostname, friendlyName)')).toBeLessThan(update.indexOf('writeDeviceConfigToSd(hostname, friendlyName'));
@@ -87,7 +87,7 @@ describe('local device discovery', () => {
   });
 
   it('allows restart only when all machine control paths are idle', () => {
-    expect(source).toContain('server.on("/api/system/restart", HTTP_POST, handleSystemRestart)');
+    expect(source).toContain('operatorRoute("/api/system/restart", HTTP_POST, handleSystemRestart)');
     const restart = source.slice(source.indexOf('void handleSystemRestart()'), source.indexOf('void handleHealth()'));
     expect(restart).toMatch(/jobIsActive\(\)[\s\S]*jobWaitingForOk[\s\S]*jogIsActive\(\)[\s\S]*otaActive[\s\S]*priorityCommandCount/);
     expect(restart).toContain('rebootAtMs = millis() + 1000');

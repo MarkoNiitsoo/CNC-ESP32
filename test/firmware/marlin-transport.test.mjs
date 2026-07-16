@@ -122,7 +122,7 @@ describe('Marlin transport safety', () => {
   });
 
   it('owns validated Aircut and Toolless streams in firmware', () => {
-    expect(source).toContain('server.on("/api/test-motion/start", HTTP_POST, handleTestMotionStart)');
+    expect(source).toContain('operatorRoute("/api/test-motion/start", HTTP_POST, handleTestMotionStart)');
     expect(source).toContain('validateTestMotionFile(path, mode, safeZ');
     expect(source).toContain('firstCommand != "M5"');
     expect(source).toContain('lastCommand != "M400"');
@@ -132,7 +132,7 @@ describe('Marlin transport safety', () => {
   });
 
   it('restores saved zeros through an explicit Safe-Z-first machine-coordinate endpoint', () => {
-    expect(source).toContain('server.on("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero)');
+    expect(source).toContain('operatorRoute("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero)');
     const restore = source.slice(source.indexOf('void handleRestoreWorkZero()'), source.indexOf('void handleUpdatePage()'));
     expect(restore).toMatch(/M5[\s\S]*G53 G0 Z[\s\S]*M400[\s\S]*G53 G0 X[\s\S]*M400[\s\S]*moveToZ[\s\S]*G53 G0 Z[\s\S]*G54[\s\S]*zeroCommand[\s\S]*M114/);
     expect(restore).toContain('zeroCommand += " Z0"');
@@ -140,7 +140,7 @@ describe('Marlin transport safety', () => {
   });
 
   it('owns guarded Production Resume Phase 2 in the firmware runner', () => {
-    expect(source).toContain('server.on("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart)');
+    expect(source).toContain('operatorRoute("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart)');
     expect(source).toContain('validateProductionResumeFile(path, commandCount, validationError)');
     expect(source).toContain('loadProductionResumeIdentity(jobPath, eventId, identity, identityError)');
     expect(source).toContain('validateProductionResumeIdentity(identity, path, activeRunPath, activeRunMode');

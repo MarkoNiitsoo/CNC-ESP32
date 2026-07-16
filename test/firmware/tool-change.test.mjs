@@ -21,7 +21,7 @@ describe('firmware-owned M6 tool change', () => {
     expect(source).toContain('routerReady true is required after verifying the router or spindle state');
     expect(source).toContain('jobStatus.toolChangePhase = "RESUMING"');
     expect(source).toContain('set Z zero manually or with the configured touch plate before continuing');
-    expect(source).toContain('server.on("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete)');
+    expect(source).toContain('operatorRoute("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete)');
   });
 
   it('offers guarded manual and touch-plate Z-zero transactions during the M6 stop', () => {
@@ -30,6 +30,6 @@ describe('firmware-owned M6 tool change', () => {
     expect(source).toContain('toolChangeSettings.touchPlateThickness');
     expect(source).toContain('jobStatus.toolChangeZZeroCompleted = true');
     expect(source).toContain('jobStatus.toolChangePhase = "READY_TO_CONTINUE"');
-    expect(source).toContain('server.on("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero)');
+    expect(source).toContain('operatorRoute("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero)');
   });
 });

@@ -1919,3 +1919,23 @@ No firmware upload is required.
   mark the run stopped or send M400 as a substitute for M410.
 - Deploy firmware together with `machine-bar.js`, `preview.html`, and `preview.js`. Full verification
   passes 39 files / 329 tests; firmware build is 19.6% RAM / 70.9% flash.
+
+## 2026-07-16 single-operator lock handoff
+
+- A new or erased device has no operator PIN and rejects all state-changing requests. Connect to the
+  device Setup AP at `192.168.4.1`, enter a controller name, and choose a unique 6-12 digit PIN. NVS
+  stores only `SHA-256(deviceId + ":" + PIN)`.
+- The controller cookie is HttpOnly and SameSite=Strict. Its firmware-side lease expires 45 seconds
+  after the last authorized request/heartbeat; sleeping or disconnected browsers therefore do not
+  lock out the machine indefinitely. A new client can claim only after release/expiry and still
+  needs the PIN.
+- All mutating HTTP routes are firmware-guarded. Read-only clients retain health, job status,
+  telemetry, file lists/downloads, and preview exploration, but cannot send commands or mutate SD,
+  settings, coordinate frames, jobs, jog state, WiFi, or restart state.
+- OTA is not enabled merely by owning the controller lease. The Update page requires the PIN again,
+  the firmware verifies that job/jog/priority motion is idle, and one upload may begin within the
+  two-minute unlock window.
+- Deploy firmware and at least `machine-bar.js` plus `style.css` together. An updated UI connected to
+  older firmware fails closed as read-only because `/api/operator/status` is absent.
+- Automated verification passes 40 files / 334 tests, browser QA passes, and the ESP32-CAM
+  PlatformIO build succeeds at 19.6% RAM (64,236 bytes) and 71.3% flash (1,401,681 bytes).

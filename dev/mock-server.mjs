@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MockJobRunner } from './mock-job-runner.mjs';
@@ -25,8 +26,8 @@ function send(res, status, body, contentType = 'application/json; charset=utf-8'
   res.end(data);
 }
 
-function json(res, status, value) {
-  send(res, status, JSON.stringify(value));
+function json(res, status, value, headers = {}) {
+  send(res, status, JSON.stringify(value), 'application/json; charset=utf-8', headers);
 }
 
 function errorStatus(message) {
@@ -153,14 +154,43 @@ export async function createMockEnvironment(options = {}) {
     available: false, requiresReview: false, bootInterrupted: false,
     requiresHoming: false, resetReason: '', checkpoint: null,
   };
+  const operator = {
+    configured: false, pin: '', token: '', owner: '', lastSeenAt: 0,
+    leaseMs: 45000, otaUnlockedUntil: 0,
+  };
   return {
     projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device,
-    toolChangeSettings, recoveryCheckpoint, startedAt: Date.now(),
+    toolChangeSettings, recoveryCheckpoint, operator, startedAt: Date.now(),
   };
 }
 
 export async function createMockServer(options = {}) {
   const env = await createMockEnvironment(options);
+  const operatorLockEnabled = env.config.operatorLockEnabled !== false;
+  const requestToken = (req) => String(req.headers.cookie || '').split(';')
+    .map((part) => part.trim()).find((part) => part.startsWith('cnc_operator='))?.slice(13) || '';
+  const operatorActive = () => {
+    if (!env.operator.token) return false;
+    if (Date.now() - env.operator.lastSeenAt <= env.operator.leaseMs) return true;
+    Object.assign(env.operator, { token: '', owner: '', lastSeenAt: 0, otaUnlockedUntil: 0 });
+    return false;
+  };
+  const operatorAuthorized = (req, refresh = true) => {
+    const valid = operatorActive() && requestToken(req) === env.operator.token;
+    if (valid && refresh) env.operator.lastSeenAt = Date.now();
+    return valid;
+  };
+  const operatorStatus = (req) => {
+    const active = operatorActive();
+    const controller = active && requestToken(req) === env.operator.token;
+    return {
+      ok: true, configured: env.operator.configured, active, controller, readOnly: !controller,
+      canClaim: !active, owner: active ? env.operator.owner : null,
+      leaseRemainingMs: active ? Math.max(0, env.operator.leaseMs - (Date.now() - env.operator.lastSeenAt)) : 0,
+      leaseMs: env.operator.leaseMs,
+      otaUnlocked: controller && Date.now() < env.operator.otaUnlockedUntil,
+    };
+  };
   const mutationTouchesLockedFile = (candidate) => {
     if (!env.runner.isActive() && !env.recoveryCheckpoint.requiresReview) return false;
     const normalized = String(candidate || '').replace(/\/$/, '');
@@ -175,6 +205,60 @@ export async function createMockServer(options = {}) {
     try {
       const url = new URL(req.url || '/', 'http://localhost');
       const pathname = url.pathname;
+
+      if (req.method === 'GET' && pathname === '/api/operator/status') {
+        return json(res, 200, operatorStatus(req));
+      }
+      if (req.method === 'POST' && pathname === '/api/operator/claim') {
+        const body = await readJson(req);
+        const owner = String(body.owner || '').trim();
+        const pin = String(body.pin || '').trim();
+        if (!owner || owner.length > 32 || !/^\d{6,12}$/.test(pin)) {
+          return json(res, 400, { ok: false, error: 'owner and a 6-12 digit PIN are required' });
+        }
+        if (operatorActive() && !operatorAuthorized(req, false)) {
+          return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        }
+        if (env.operator.configured && pin !== env.operator.pin) {
+          return json(res, 403, { ok: false, error: 'incorrect operator PIN' });
+        }
+        Object.assign(env.operator, {
+          configured: true, pin, token: randomBytes(20).toString('hex'), owner,
+          lastSeenAt: Date.now(), otaUnlockedUntil: 0,
+        });
+        const cookie = `cnc_operator=${env.operator.token}`;
+        return json(res, 200, operatorStatus({ headers: { cookie } }), {
+          'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly`,
+        });
+      }
+      if (req.method === 'POST' && pathname === '/api/operator/heartbeat') {
+        if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        return json(res, 200, operatorStatus(req));
+      }
+      if (req.method === 'POST' && pathname === '/api/operator/release') {
+        if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        Object.assign(env.operator, { token: '', owner: '', lastSeenAt: 0, otaUnlockedUntil: 0 });
+        return json(res, 200, operatorStatus(req), { 'Set-Cookie': 'cnc_operator=; Path=/; Max-Age=0' });
+      }
+      if (req.method === 'PUT' && pathname === '/api/operator/pin') {
+        if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        const body = await readJson(req);
+        if (body.currentPin !== env.operator.pin) return json(res, 403, { ok: false, error: 'current operator PIN is incorrect' });
+        if (!/^\d{6,12}$/.test(String(body.newPin || ''))) return json(res, 400, { ok: false, error: 'new PIN must contain 6-12 digits' });
+        env.operator.pin = String(body.newPin);
+        env.operator.otaUnlockedUntil = 0;
+        return json(res, 200, { ok: true, message: 'Operator PIN updated.' });
+      }
+      if (req.method === 'POST' && pathname === '/api/operator/ota-unlock') {
+        if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'OTA unlock is allowed only while the machine is idle' });
+        if ((await readJson(req)).pin !== env.operator.pin) return json(res, 403, { ok: false, error: 'operator PIN is incorrect' });
+        env.operator.otaUnlockedUntil = Date.now() + 120000;
+        return json(res, 200, { ok: true, message: 'OTA unlocked for 2 minutes.' });
+      }
+      if (operatorLockEnabled && req.method !== 'GET' && !operatorAuthorized(req)) {
+        return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked. Claim the controller session with the device PIN.' });
+      }
 
       if (req.method === 'GET' && pathname === '/api/health') {
         return json(res, 200, {
@@ -734,7 +818,7 @@ export async function startMockServer(options = {}) {
       .map((item) => item.address)
       .filter((address, index, all) => all.indexOf(address) === index);
     for (const address of addresses) console.log(`LAN: http://${address}:${actualPort}`);
-    console.log('LAN access has no authentication. Use only on a trusted private network.');
+    console.log('LAN control requires the single-operator PIN lease; read-only views remain public.');
   }
   console.log(`Mock SD: ${path.relative(instance.env.projectRoot, instance.env.sd.rootPath)}`);
   console.log('Mode: DEV MOCK - NO REAL MACHINE');
