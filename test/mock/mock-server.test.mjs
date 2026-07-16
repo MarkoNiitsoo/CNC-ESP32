@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -21,6 +22,67 @@ afterEach(async () => {
 });
 
 describe('mock HTTP API', () => {
+  it('locks only active/recovery job artifacts against upload, delete, and rename', async () => {
+    const { base, env } = await start();
+    const gcodePath = '/gcode/locked.gc';
+    const jobPath = '/jobs/locked.job.json';
+    await env.sd.writeText(gcodePath, 'G21\n');
+    await env.sd.writeText(jobPath, '{}');
+    await env.sd.writeText('/gcode/free.gc', 'G90\n');
+    Object.assign(env.runner.status, {
+      state: 'RUNNING', gcodePath, jobPath, authorizationActiveRunPath: gcodePath,
+    });
+
+    const form = new FormData();
+    form.append('path', '/gcode');
+    form.append('file', new Blob(['M3\n']), 'locked.gc');
+    expect((await fetch(`${base}/api/upload?overwrite=true`, { method: 'POST', body: form })).status).toBe(423);
+    expect(await env.sd.readText(gcodePath)).toBe('G21\n');
+    expect((await fetch(`${base}/api/delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: jobPath }),
+    })).status).toBe(423);
+    expect((await fetch(`${base}/api/rename`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: gcodePath, to: '/gcode/moved.gc' }),
+    })).status).toBe(423);
+
+    const unrelated = await fetch(`${base}/api/rename`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: '/gcode/free.gc', to: '/gcode/free-moved.gc' }),
+    });
+    expect(unrelated.ok).toBe(true);
+
+    env.runner.status.state = 'ERROR';
+    env.recoveryCheckpoint.requiresReview = true;
+    env.recoveryCheckpoint.checkpoint = { gcodePath, jobPath, authorizationActiveRunPath: gcodePath };
+    expect((await fetch(`${base}/api/delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: gcodePath }),
+    })).status).toBe(423);
+  });
+
+  it('blocks new motion until persistent recovery evidence is acknowledged', async () => {
+    const { base, env } = await start();
+    env.recoveryCheckpoint.available = true;
+    env.recoveryCheckpoint.requiresReview = true;
+    env.recoveryCheckpoint.bootInterrupted = true;
+    env.recoveryCheckpoint.requiresHoming = true;
+    env.recoveryCheckpoint.resetReason = 'BROWNOUT';
+    env.recoveryCheckpoint.checkpoint = {
+      state: 'RUNNING', gcodePath: '/gcode/sample.gc', jobPath: '/jobs/sample.job.json',
+      lastAcknowledgedByteOffset: 120, lastAcknowledgedLineNumber: 8,
+    };
+
+    const checkpoint = await fetch(`${base}/api/recovery/checkpoint`).then((res) => res.json());
+    expect(checkpoint).toMatchObject({ available: true, requiresReview: true, resetReason: 'BROWNOUT' });
+    expect((await fetch(`${base}/api/job/start`, { method: 'POST' })).status).toBe(409);
+    expect((await fetch(`${base}/api/recovery/checkpoint/acknowledge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: false }),
+    })).status).toBe(400);
+    const acknowledged = await fetch(`${base}/api/recovery/checkpoint/acknowledge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }),
+    });
+    expect(await acknowledged.json()).toMatchObject({ ok: true });
+    expect(env.recoveryCheckpoint).toMatchObject({ available: false, requiresReview: false, checkpoint: null });
+  });
+
   it('serves UI, health, command, list, upload, download, and rename APIs', async () => {
     const { base } = await start();
     expect(await fetch(`${base}/`).then((res) => res.text())).toContain('G-code CNC');
@@ -64,8 +126,10 @@ describe('mock HTTP API', () => {
     const { base, env } = await start();
     const gcodePath = '/gcode/api-job.gc';
     const jobPath = '/jobs/api-job.job.json';
-    const fingerprint = 'api-test';
-    await env.sd.writeText(gcodePath, 'G21\nG90\nG0 Z15\nG1 X10 Y10\n');
+    const gcode = 'G21\nG90\nG0 Z15\nG1 X10 Y10\n';
+    const sizeBytes = Buffer.byteLength(gcode);
+    const fingerprint = createHash('sha256').update(Buffer.from(gcode)).digest('hex');
+    await env.sd.writeText(gcodePath, gcode);
     await fetch(`${base}/api/machine/home`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }),
     });
@@ -76,14 +140,22 @@ describe('mock HTTP API', () => {
     const startLogIndex = env.marlin.log.length;
     await env.sd.writeText(jobPath, JSON.stringify({
       gcodePath, sourceGcodePath: gcodePath, placement: { rotationDeg: 0 },
-      activeRun: { mode: 'source', path: gcodePath, sourceFingerprint: fingerprint },
+      activeRun: { mode: 'source', path: gcodePath, sizeBytes, sourceFingerprint: fingerprint },
       schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED',
+      activeWorkZeroId: 'zero-api',
+      startAuthorization: {
+        state: 'authorized', activeRunMode: 'source', activeRunPath: gcodePath,
+        activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes, workZeroId: 'zero-api',
+        homingEpoch: zeroFrame.frame.homingEpoch, homingSessionId: zeroFrame.frame.homingSessionId,
+      },
+      arm: { state: 'ARMED', activeRunMode: 'source', activeRunPath: gcodePath, activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes },
+      verificationDecision: { result: 'complete', type: 'bounds', activeRunPath: gcodePath, activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes },
       feedOverride: { startPercent: 100, resetTo100AfterJob: true },
     }));
     const startResponse = await fetch(`${base}/api/job/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
+        gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
         startMode: 'use_active_work_zero', workZeroId: 'zero-api', homingEpoch: zeroFrame.frame.homingEpoch,
         homingSessionId: zeroFrame.frame.homingSessionId,
         workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
@@ -318,14 +390,18 @@ describe('mock HTTP API', () => {
     const eventId = 'production-resume-1';
     const runId = 'run-interrupted-1';
     const fingerprint = 'fp-recovery';
+    const streamText = 'G21\nG90\nG54\nG0 Z5 F400\nG1 Z-2 F300\nG2 X10 Y10 I5 J0 F600\nM400\n';
+    const streamSizeBytes = Buffer.byteLength(streamText);
+    const streamFingerprint = createHash('sha256').update(Buffer.from(streamText)).digest('hex');
     await env.sd.writeText(activeRunPath, 'G21\nG90\nG1 X10 Y10 F600\n');
-    await env.sd.writeText(streamPath, 'G21\nG90\nG54\nG0 Z5 F400\nG1 Z-2 F300\nG2 X10 Y10 I5 J0 F600\nM400\n');
+    await env.sd.writeText(streamPath, streamText);
     await env.sd.writeText(jobPath, JSON.stringify({
       activeRun: { mode: 'source', path: activeRunPath, sourceFingerprint: fingerprint },
       feedOverride: { startPercent: 100, resetTo100AfterJob: true },
       productionResumeAuthorization: {
         authorized: true, eventId, interruptedRunId: runId, activeRunPath,
         activeRunMode: 'source', activeRunFingerprint: fingerprint, streamPath,
+        streamFingerprint, streamSizeBytes,
       },
       recoveryHistory: [{
         id: eventId, type: 'production-resume', state: 'started', runId,
@@ -340,6 +416,7 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({
         path: streamPath, jobPath, activeRunPath, activeRunMode: 'source',
         activeRunFingerprint: fingerprint, eventId, interruptedRunId: runId,
+        streamFingerprint, streamSizeBytes,
       }),
     });
     expect(response.ok).toBe(true);

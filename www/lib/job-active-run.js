@@ -8,11 +8,12 @@ function nowIso() {
 
 function safeFingerprint(text = '') {
   let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
+  const bytes = new TextEncoder().encode(text);
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash ^= bytes[i];
     hash = Math.imul(hash, 0x01000193);
   }
-  return `size:${new TextEncoder().encode(text).length}:fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  return `size:${bytes.length}:fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 export function fingerprintParts(value = '') {

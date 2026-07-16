@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MockJobRunner } from '../../dev/mock-job-runner.mjs';
 import { MockMarlin } from '../../dev/mock-marlin.mjs';
@@ -17,15 +18,31 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
   await sd.writeText(gcodePath, gcode || 'G21\nG90\nG0 Z15\nG1 X20 Y20\n');
   const sourcePath = mode === 'source' ? gcodePath : '/gcode/source.gc';
   if (mode === 'generated') await sd.writeText(sourcePath, 'G21\nG90\n');
-  const fingerprint = 'test-fingerprint';
+  const activeText = await sd.readText(gcodePath);
+  const sizeBytes = Buffer.byteLength(activeText);
+  const fingerprint = createHash('sha256').update(Buffer.from(activeText)).digest('hex');
   const job = {
     gcodePath: sourcePath,
     sourceGcodePath: sourcePath,
     placement: mode === 'generated' ? { rotationDeg: 90, generatedRunPath: gcodePath, dirty: validation !== 'valid' } : { rotationDeg: 0 },
-    activeRun: { mode, path: gcodePath, generatedFingerprint: mode === 'generated' ? fingerprint : '', sourceFingerprint: mode === 'source' ? fingerprint : '', transformFingerprint: 'transform' },
+    activeRun: { mode, path: gcodePath, sizeBytes, generatedFingerprint: mode === 'generated' ? fingerprint : '', sourceFingerprint: mode === 'source' ? fingerprint : '', transformFingerprint: 'transform' },
     generatedValidation: mode === 'generated' ? { status: validation, generatedFingerprint: fingerprint, transformFingerprint: 'transform' } : null,
     schemaVersion: 3,
     startAuthorizationToken: 'AUTHORIZED',
+    activeWorkZeroId: 'zero-test',
+    startAuthorization: {
+      state: 'authorized', activeRunMode: mode, activeRunPath: gcodePath,
+      activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+      workZeroId: 'zero-test', homingEpoch: 1, homingSessionId: '',
+    },
+    arm: {
+      state: 'ARMED', activeRunMode: mode, activeRunPath: gcodePath,
+      activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+    },
+    verificationDecision: {
+      result: 'complete', type: 'bounds', activeRunPath: gcodePath,
+      activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+    },
     feedOverride: { startPercent: 100, resetTo100AfterJob: true },
   };
   const jobPath = '/jobs/job.job.json';
@@ -37,7 +54,7 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
     toolChangeSettings: toolChangeSettings || { handling: 'pause', zZeroMethod: 'manual' },
   });
   return { sd, marlin, runner, job, jobPath, gcodePath, request: {
-    gcodePath, jobPath, activeRunMode: mode, activeRunFingerprint: fingerprint,
+    gcodePath, jobPath, activeRunMode: mode, activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
     startMode: 'use_active_work_zero', workZeroId: 'zero-test', homingEpoch: 1,
     workZeroMachineX: 0, workZeroMachineY: 0, workZeroMachineZ: 0,
   } };
@@ -124,6 +141,13 @@ describe('MockJobRunner', () => {
     expect(ctx.runner.status.state).toBe('STOPPED');
     expect(ctx.runner.status.sentLineCount).toBe(stoppedAt);
     expect(ctx.marlin.spindleOff).toBe(true);
+  });
+
+  it('rejects a same-size active file changed after authorization', async () => {
+    const ctx = await fixture({ gcode: 'G21\nG90\nG1 X10 Y10\n' });
+    await ctx.sd.writeText(ctx.gcodePath, 'G21\nG90\nG1 X20 Y20\n', { overwrite: true });
+    await expect(ctx.runner.start(ctx.request)).rejects.toThrow(/identity/i);
+    expect(ctx.marlin.log).toHaveLength(0);
   });
 
   it('intercepts T/M6, waits for Z zero and confirmation, then continues without sending M6 to Marlin', async () => {

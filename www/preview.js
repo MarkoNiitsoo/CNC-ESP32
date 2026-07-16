@@ -60,6 +60,8 @@ const recoveryTrustButton = document.querySelector('#recovery-trust-position');
 const recoveryUntrustButton = document.querySelector('#recovery-untrust-position');
 const recoveryOverlayInput = document.querySelector('#show-recovery-overlay');
 const recoverySummaryEl = document.querySelector('#recovery-summary');
+const firmwareRecoveryCheckpointEl = document.querySelector('#firmware-recovery-checkpoint');
+const firmwareRecoveryDismissButton = document.querySelector('#firmware-recovery-dismiss');
 const workZeroRestoreSummaryEl = document.querySelector('#work-zero-restore-summary');
 const restoreSavedWorkZeroButton = document.querySelector('#restore-saved-work-zero');
 const fitResumePointButton = document.querySelector('#fit-resume-point');
@@ -198,6 +200,8 @@ let jobStatusFirmwareUptimeMs = 0;
 let redirectingToFiles = false;
 let recoveryPlan = null;
 let recoveryOverlayVisible = true;
+let firmwareRecoveryCheckpoint = null;
+let firmwareRecoveryImported = false;
 let positionTrust = { trusted: false, fullHoming: false, source: '', confirmedAt: null, bootUptimeMs: null, firmwareVersion: '' };
 let toollessResumePlan = null;
 let toollessResumeRunning = false;
@@ -622,8 +626,9 @@ async function computeGcodeHash(text) {
 
 function fnv1a32(text) {
   let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
+  const bytes = new TextEncoder().encode(text);
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash ^= bytes[i];
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
@@ -864,6 +869,7 @@ function newJobState() {
     activeRun: {
       mode: 'source',
       path: filePath,
+      sizeBytes: 0,
       selectedAt: createdAt,
       selectedBy: 'default',
       sourceFingerprint: '',
@@ -1344,12 +1350,13 @@ function renderRunPanel() {
     stopJobButton.disabled = stopping;
 
     if (runOperatorSummaryEl) {
+      const visibleState = jobRunStatus?.errorCode === 'COMMUNICATION_LOST' ? 'COMMUNICATION LOST' : state;
       const bounds = generatedBounds() || parsed?.bounds;
       const width = bounds ? Number(bounds.xMax) - Number(bounds.xMin) : null;
       const height = bounds ? Number(bounds.yMax) - Number(bounds.yMin) : null;
       if (active || state === 'COMPLETED' || state === 'ERROR' || state === 'STOPPED') {
         runOperatorSummaryEl.innerHTML = `
-          <div class="operator-run-state"><strong>${html(state)}</strong><span>${Number(jobRunStatus?.progressPercent || 0).toFixed(1)}%</span></div>
+          <div class="operator-run-state"><strong>${html(visibleState)}</strong><span>${Number(jobRunStatus?.progressPercent || 0).toFixed(1)}%</span></div>
           <p>${html(basename(currentRunPath()) || 'Active job')} · Feed ${feedStatusPercent()}%</p>
         `;
       } else if (preparationBlockers.length) {
@@ -1379,6 +1386,7 @@ function renderRunPanel() {
         <dt>Planned tool changes</dt><dd>${toolpathModel?.toolChanges?.length || 0}</dd>
         <dt>Progress</dt><dd>${jobRunStatus ? Number(jobRunStatus.progressPercent || 0).toFixed(1) : '0.0'}%</dd>
         <dt>Byte offset</dt><dd>${runStatusValue('currentByteOffset')} / ${runStatusValue('fileSize')}</dd>
+        <dt>Last confirmed offset</dt><dd>${runStatusValue('lastAcknowledgedByteOffset')}</dd>
         <dt>Sent lines</dt><dd>${runStatusValue('sentLineCount')}</dd>
         <dt>Acknowledged lines</dt><dd>${runStatusValue('acknowledgedLineCount')}</dd>
         <dt>Priority</dt><dd>${runStatusValue('lastPriorityCommand')} ${runStatusValue('priorityCommandInProgress') === true ? '(in progress)' : ''}</dd>
@@ -1386,6 +1394,7 @@ function renderRunPanel() {
         <dt>Last command</dt><dd>${runStatusValue('lastCommand')}</dd>
         <dt>Last response</dt><dd>${runStatusValue('lastResponse')}</dd>
         <dt>Last error</dt><dd>${runStatusValue('lastError')}</dd>
+        <dt>Error code</dt><dd>${runStatusValue('errorCode')}</dd>
       </dl>
     `;
     if (preparationBlockers.length) {
@@ -1656,8 +1665,13 @@ async function startJobRun() {
   job.startMode = workflow.frame.mode === 'manual-unhomed' ? 'use_manual_work_frame' : 'use_active_work_zero';
   job.startAuthorization = {
     state: 'authorized',
+    activeRunMode: runMode,
     activeRunPath: runPath,
     activeRunFingerprint: gcodeFingerprint,
+    activeRunSizeBytes: Number(job.activeRun?.sizeBytes) || new TextEncoder().encode(activeRunText).length,
+    workZeroId: zeroReference.id,
+    homingEpoch: Number(zeroReference.homingEpoch) || 0,
+    homingSessionId: zeroReference.homingSessionId || '',
     frameMode: workflow.frame.mode,
     verificationType: workflow.verification.type,
     checklist: runChecklistState(),
@@ -1684,6 +1698,7 @@ async function startJobRun() {
       travelFeedMmMin: automaticTravelFeed(),
       activeRunMode: runMode,
       activeRunFingerprint: gcodeFingerprint,
+      activeRunSizeBytes: Number(job.activeRun?.sizeBytes) || new TextEncoder().encode(activeRunText).length,
       sourceFingerprint: job.activeRun?.sourceFingerprint || '',
       generatedFingerprint: job.activeRun?.generatedFingerprint || '',
       transformFingerprint: job.activeRun?.transformFingerprint || '',
@@ -2263,7 +2278,137 @@ async function restoreInterruptedWorkZero() {
   draw();
 }
 
+function firmwareCheckpointId(checkpoint = {}) {
+  return [
+    checkpoint.bootSessionId || 'unknown-boot',
+    checkpoint.gcodePath || 'unknown-file',
+    checkpoint.lastAcknowledgedByteOffset ?? 0,
+  ].join(':');
+}
+
+function firmwareCheckpointMatchesCurrentJob(checkpoint = {}) {
+  return Boolean(checkpoint.jobPath) && checkpoint.jobPath === jobPathFor(filePath);
+}
+
+function renderFirmwareRecoveryCheckpoint() {
+  if (!firmwareRecoveryCheckpointEl || !firmwareRecoveryDismissButton) return;
+  const response = firmwareRecoveryCheckpoint;
+  const checkpoint = response?.checkpoint;
+  const pending = response?.available === true && response?.requiresReview === true && checkpoint;
+  firmwareRecoveryCheckpointEl.hidden = !pending && !firmwareRecoveryImported;
+  firmwareRecoveryDismissButton.hidden = !pending;
+  if (!pending) {
+    if (firmwareRecoveryImported) {
+      firmwareRecoveryCheckpointEl.innerHTML = '<p class="ok-text">Firmware interruption record was saved into this job history. Home All before trusting machine position.</p>';
+    }
+    return;
+  }
+
+  const matches = firmwareCheckpointMatchesCurrentJob(checkpoint);
+  const position = checkpoint.workPosition;
+  firmwareRecoveryCheckpointEl.innerHTML = `
+    <p class="eyebrow">FIRMWARE RECOVERY RECORD</p>
+    <strong>${matches ? 'Interrupted run found for this job' : 'Interrupted run belongs to another job'}</strong>
+    <p class="warning">${matches
+      ? 'The firmware checkpoint must be copied into job history before new motion is allowed.'
+      : `Open ${html(checkpoint.jobPath || checkpoint.gcodePath || 'the recorded job')} to import it, or deliberately dismiss this record.`}</p>
+    <dl>
+      <dt>Run file</dt><dd>${html(checkpoint.gcodePath || '-')}</dd>
+      <dt>Firmware state</dt><dd>${html(checkpoint.state || '-')}</dd>
+      <dt>Last acknowledged</dt><dd>line ${checkpoint.lastAcknowledgedLineNumber ?? '-'}, byte ${checkpoint.lastAcknowledgedByteOffset ?? '-'}</dd>
+      <dt>Last known work position</dt><dd>${position ? `X${fmtValue(position.x)} Y${fmtValue(position.y)} Z${fmtValue(position.z)}` : 'unavailable'}</dd>
+      <dt>Restart reason</dt><dd>${html(response.resetReason || checkpoint.reason || '-')}</dd>
+    </dl>
+    <p class="warning">Machine position is untrusted. No automatic resume or movement was performed.</p>
+  `;
+  firmwareRecoveryDismissButton.textContent = matches
+    ? 'Dismiss Without Importing'
+    : 'Dismiss Firmware Recovery Record';
+}
+
+async function acknowledgeFirmwareRecoveryCheckpoint() {
+  const res = await fetch('/api/recovery/checkpoint/acknowledge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed: true }),
+  });
+  const data = await readJsonOrThrow(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Firmware recovery acknowledgement failed.');
+  return data;
+}
+
+async function loadFirmwareRecoveryCheckpoint() {
+  const res = await fetch('/api/recovery/checkpoint');
+  const response = await readJsonOrThrow(res);
+  if (!res.ok) throw new Error(response.error || 'Firmware recovery checkpoint request failed.');
+  firmwareRecoveryCheckpoint = response;
+  renderFirmwareRecoveryCheckpoint();
+  const checkpoint = response?.checkpoint;
+  if (!response?.available || !response?.requiresReview || !checkpoint) return;
+  if (!firmwareCheckpointMatchesCurrentJob(checkpoint)) return;
+
+  const history = await jobHistoryPromise;
+  const job = ensureJobState();
+  const checkpointId = firmwareCheckpointId(checkpoint);
+  let run = job.runHistory.find((item) => item.firmwareCheckpointId === checkpointId);
+  if (!run) {
+    const latest = history.latestRun(job);
+    run = latest && !latest.endedAt && latest.activeRunPath === checkpoint.gcodePath
+      ? latest
+      : history.startRunHistory(job, {
+        gcodePath: checkpoint.gcodePath,
+        jobPath: checkpoint.jobPath,
+        feedOverridePercent: checkpoint.feedOverridePercent,
+        currentLineNumber: checkpoint.currentLineNumber,
+        sentLineCount: checkpoint.sentLineCount,
+        acknowledgedLineCount: checkpoint.acknowledgedLineCount,
+        lastCommand: checkpoint.lastCommand,
+        lastResponse: checkpoint.lastResponse,
+      });
+  }
+  run.firmwareCheckpointId = checkpointId;
+  run.firmwareCheckpoint = structuredClone(checkpoint);
+  run.activeRunMode = checkpoint.activeRunMode || run.activeRunMode;
+  run.activeRunPath = checkpoint.gcodePath || run.activeRunPath;
+  run.activeRunFingerprint = checkpoint.activeRunFingerprint || run.activeRunFingerprint;
+  run.lastAcknowledgedByteOffset = checkpoint.lastAcknowledgedByteOffset ?? null;
+  run.currentByteOffset = checkpoint.currentByteOffset ?? null;
+  history.updateRunHistoryFromStatus(job, {
+    state: 'PAUSED',
+    currentLineNumber: checkpoint.currentLineNumber,
+    sentLineCount: checkpoint.sentLineCount,
+    acknowledgedLineCount: checkpoint.lastAcknowledgedLineNumber ?? checkpoint.acknowledgedLineCount,
+    feedOverridePercent: checkpoint.feedOverridePercent,
+    lastKnownPosition: checkpoint.workPosition,
+    lastCommand: checkpoint.lastCommand,
+    lastResponse: checkpoint.lastResponse,
+    lastError: checkpoint.lastError || checkpoint.reason || `Firmware detected an interrupted run after ${response.resetReason || 'restart'}.`,
+  });
+
+  // Durable job history is written before firmware evidence is cleared.
+  await saveJobQuietly();
+  renderHistoryPanels();
+  refreshRecoveryPlan();
+  await acknowledgeFirmwareRecoveryCheckpoint();
+  firmwareRecoveryImported = true;
+  firmwareRecoveryCheckpoint = { available: false, requiresReview: false, checkpoint: null };
+  appendRecoveryLog(`Imported firmware checkpoint at acknowledged byte ${checkpoint.lastAcknowledgedByteOffset ?? 0}. Home All before recovery motion.`);
+  renderFirmwareRecoveryCheckpoint();
+}
+
+async function dismissFirmwareRecoveryCheckpoint() {
+  if (!firmwareRecoveryCheckpoint?.requiresReview) return;
+  if (!confirm('Dismiss this firmware recovery record without importing it into a job? This cannot be undone. Machine position will remain untrusted.')) return;
+  await acknowledgeFirmwareRecoveryCheckpoint();
+  firmwareRecoveryImported = false;
+  firmwareRecoveryCheckpoint = { available: false, requiresReview: false, checkpoint: null };
+  setPositionTrust(false, 'firmware-recovery-dismissed');
+  appendRecoveryLog('Firmware recovery record deliberately dismissed. Home All before motion.');
+  renderFirmwareRecoveryCheckpoint();
+}
+
 function renderRecoveryPanel() {
+  renderFirmwareRecoveryCheckpoint();
   renderWorkZeroRestore();
   if (recoveryTrustEl) {
     recoveryTrustEl.textContent = positionTrust.trusted ? 'POSITION TRUSTED' : 'POSITION UNTRUSTED';
@@ -2590,6 +2735,9 @@ async function syncProductionResumeFromStatus(status) {
 
 async function startProductionResumeStream(commands) {
   const path = testMotionPath('production-resume');
+  const streamText = `${commands.join('\n')}\n`;
+  const streamFingerprint = await computeGcodeFingerprint(streamText);
+  const streamSizeBytes = new TextEncoder().encode(streamText).length;
   const history = await jobHistoryPromise;
   const { toolpath } = await toolpathModulesPromise;
   recoveryMotionSegments = toolpath.parseGCodeToToolpath(`${commands.join('\n')}\n`, {
@@ -2606,10 +2754,12 @@ async function startProductionResumeStream(commands) {
     activeRunMode: productionHistoryEvent.activeRunMode,
     activeRunFingerprint: productionHistoryEvent.activeRunFingerprint,
     streamPath: path,
+    streamFingerprint: streamFingerprint.value,
+    streamSizeBytes,
     authorizedAt: nowIso(),
   };
+  await uploadGeneratedRun(path, streamText);
   await saveJobQuietly();
-  await uploadGeneratedRun(path, `${commands.join('\n')}\n`);
 
   const res = await fetch('/api/recovery/production/start', {
     method: 'POST',
@@ -2620,6 +2770,8 @@ async function startProductionResumeStream(commands) {
       activeRunPath: productionHistoryEvent.activeRunPath,
       activeRunMode: productionHistoryEvent.activeRunMode,
       activeRunFingerprint: productionHistoryEvent.activeRunFingerprint,
+      streamFingerprint: streamFingerprint.value,
+      streamSizeBytes,
       eventId: productionHistoryEvent.id,
       interruptedRunId: productionHistoryEvent.runId,
     }),
@@ -3709,6 +3861,7 @@ async function loadExistingJobJson() {
 
 async function parseRunText(text, path, mode) {
   const fingerprint = await computeGcodeFingerprint(text);
+  const sizeBytes = new TextEncoder().encode(text).length;
   const { toolpath, adapter } = await toolpathModulesPromise;
   const model = toolpath.parseGCodeToToolpath(text, {
     feedOverridePercent: currentFeedOverride().startPercent,
@@ -3717,6 +3870,7 @@ async function parseRunText(text, path, mode) {
     path,
     mode,
     text,
+    sizeBytes,
     fingerprint,
     model,
     parsed: adapter.adaptToolpathForPreview(model),
@@ -3739,6 +3893,7 @@ function applyActiveRunParse(run, options = {}) {
   if (updateActive && jobState?.activeRun) {
     jobState.activeRun.path = run.path;
     jobState.activeRun.mode = run.mode;
+    jobState.activeRun.sizeBytes = run.sizeBytes;
     if (run.mode === 'source') jobState.activeRun.sourceFingerprint = run.fingerprint.value;
     else jobState.activeRun.generatedFingerprint = run.fingerprint.value;
   }
@@ -3999,6 +4154,7 @@ async function armJob(options = {}) {
     activeRunMode: currentRunMode(),
     activeRunPath: currentRunPath(),
     activeRunFingerprint: gcodeFingerprint,
+    activeRunSizeBytes: Number(job.activeRun?.sizeBytes) || new TextEncoder().encode(activeRunText).length,
     sourceFingerprint: job.activeRun?.sourceFingerprint || job.placement?.sourceFingerprint || '',
     generatedFingerprint: job.activeRun?.generatedFingerprint || job.generatedValidation?.generatedFingerprint || '',
     transformFingerprint: job.activeRun?.transformFingerprint || job.placement?.transformFingerprint || '',
@@ -5755,6 +5911,9 @@ recoveryTrustButton?.addEventListener('click', () => {
   setPositionTrust(true, 'operator-confirmed-home-all', true);
 });
 recoveryUntrustButton?.addEventListener('click', () => setPositionTrust(false, 'operator-marked-untrusted'));
+firmwareRecoveryDismissButton?.addEventListener('click', () => {
+  dismissFirmwareRecoveryCheckpoint().catch((err) => appendRecoveryLog(`Recovery record dismiss failed: ${err.message}`));
+});
 restoreSavedWorkZeroButton?.addEventListener('click', () => {
   restoreInterruptedWorkZero().catch((err) => {
     appendRecoveryLog(`Work zero restore blocked: ${err.message}`);
@@ -5906,7 +6065,9 @@ jobRecoveryPromise.then(refreshRecoveryPlan).catch((err) => appendRecoveryLog(`R
 jobReadinessPromise.then(renderReadiness).catch((err) => {
   if (readinessSummaryEl) readinessSummaryEl.textContent = `Readiness unavailable: ${err.message}`;
 });
-loadPreview().catch(() => redirectToFiles(filePath));
+loadPreview()
+  .then(() => loadFirmwareRecoveryCheckpoint().catch((err) => appendRecoveryLog(`Firmware recovery record unavailable: ${err.message}`)))
+  .catch(() => redirectToFiles(filePath));
 window.CncTelemetry?.subscribe('job', (data) => {
   applyJobRunStatus(data).catch((err) => appendRunLog(`Status update failed: ${err.message}`));
   if (String(data?.state || '').toUpperCase() === 'RUNNING' && data?.lastCommand) {

@@ -1,4 +1,5 @@
-import { assertCanUseActiveRunForExecution, getActiveRun } from '../www/lib/job-active-run.js';
+import { createHash } from 'node:crypto';
+import { assertCanUseActiveRunForExecution, getActiveRun, getActiveRunFingerprint } from '../www/lib/job-active-run.js';
 
 const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
 
@@ -38,8 +39,10 @@ export class MockJobRunner {
     return {
       state: 'IDLE', gcodePath: '', jobPath: '', startMode: '', safeStartZ: 15,
       streamMode: 'job',
-      allowedWorkspaceCommands: false, fileSize: 0, currentByteOffset: 0, progressPercent: 0,
+      allowedWorkspaceCommands: false, fileSize: 0, currentByteOffset: 0,
+      lastAcknowledgedByteOffset: 0, progressPercent: 0,
       sentLineCount: 0, acknowledgedLineCount: 0, currentLineNumber: 0,
+      lastAcknowledgedLineNumber: 0,
       pauseRequested: false, stopRequested: false, priorityCommandInProgress: false,
       feedOverridePercent: this?.marlin?.feedOverride || 100,
       toolChangePending: false, toolChangeReady: false, toolChangeZZeroCompleted: false,
@@ -48,6 +51,8 @@ export class MockJobRunner {
       toolChangeZZeroMethod: 'manual', toolChangeReturnPositionCaptured: false,
       toolChangeReturnPosition: null,
       lastCommand: '', lastSentCommand: '', lastResponse: '', lastMarlinResponse: '', lastError: '',
+      errorCode: '', ackWatchdog: { waiting: false, timeoutMs: 0, hardTimeoutMs: 0, elapsedMs: 0 },
+      communicationLoss: null,
       lastPriorityCommand: '', lastPriorityResponse: '', lastPriorityError: '',
       lastFeedOverrideCommand: '', lastFeedOverrideResponse: '', lastFeedOverrideError: '',
       streamingPausedReason: '', uptimeMs: 0,
@@ -135,6 +140,27 @@ export class MockJobRunner {
 
     const text = await this.sd.readText(active.path);
     const bytes = Buffer.byteLength(text);
+    const fingerprint = getActiveRunFingerprint(job);
+    const actualHash = createHash('sha256').update(Buffer.from(text)).digest('hex');
+    const identityMatches = active.sizeBytes === bytes && request.activeRunSizeBytes === bytes &&
+      request.activeRunFingerprint === fingerprint && fingerprint === actualHash;
+    const start = job.startAuthorization || {};
+    const arm = job.arm || {};
+    const verification = job.verificationDecision || {};
+    if (!identityMatches || start.state !== 'authorized' || start.activeRunMode !== active.mode ||
+        start.activeRunPath !== active.path || start.activeRunFingerprint !== fingerprint || start.activeRunSizeBytes !== bytes ||
+        arm.state !== 'ARMED' || arm.activeRunMode !== active.mode || arm.activeRunPath !== active.path ||
+        arm.activeRunFingerprint !== fingerprint || arm.activeRunSizeBytes !== bytes ||
+        verification.result !== 'complete' || !['bounds', 'aircut', 'skipped'].includes(verification.type) ||
+        verification.activeRunPath !== active.path || verification.activeRunFingerprint !== fingerprint ||
+        verification.activeRunSizeBytes !== bytes) {
+      throw new Error('requested file does not match the authorized active run identity');
+    }
+    if (job.activeWorkZeroId !== request.workZeroId || start.workZeroId !== request.workZeroId ||
+        Number(start.homingEpoch || 0) !== Number(request.homingEpoch || 0) ||
+        String(start.homingSessionId || '') !== String(request.homingSessionId || '')) {
+      throw new Error('authorized work-zero or homing identity changed');
+    }
     const startMode = request.startMode || job.startMode || 'use_active_work_zero';
     if (!['use_active_work_zero', 'use_manual_work_frame'].includes(startMode)) throw new Error('invalid start mode');
     if (startMode === 'use_manual_work_frame') {
@@ -239,6 +265,12 @@ export class MockJobRunner {
     }
 
     const text = await this.sd.readText(path);
+    const streamSizeBytes = Buffer.byteLength(text);
+    const streamFingerprint = createHash('sha256').update(Buffer.from(text)).digest('hex');
+    if (authorization.streamSizeBytes !== streamSizeBytes || request.streamSizeBytes !== streamSizeBytes ||
+        authorization.streamFingerprint !== streamFingerprint || request.streamFingerprint !== streamFingerprint) {
+      throw new Error('Production Resume stream identity changed after authorization');
+    }
     const commands = text.split(/\r?\n/).map(cleanLine).filter(Boolean);
     if (commands.length < 5 || commands.length > 20000 ||
         commands[0].toUpperCase() !== 'G21' || commands[1].toUpperCase() !== 'G90' ||
@@ -293,8 +325,11 @@ export class MockJobRunner {
       const lineBytes = Buffer.byteLength(original) + (index < lines.length - 1 ? 1 : 0);
       offset += lineBytes;
       this.status.currentByteOffset = Math.min(offset, this.status.fileSize);
-      this.status.progressPercent = this.status.fileSize ? this.status.currentByteOffset * 100 / this.status.fileSize : 0;
-      if (!command) continue;
+      if (!command) {
+        this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
+        this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
+        continue;
+      }
       commandLineNumber += 1;
       this.status.currentLineNumber = commandLineNumber;
 
@@ -311,6 +346,9 @@ export class MockJobRunner {
       if (isStandaloneToolSelect(command)) {
         this.status.selectedToolNumber = toolNumberFromCommand(command) ?? -1;
         this.status.lastCommand = command;
+        this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
+        this.status.lastAcknowledgedLineNumber = this.status.currentLineNumber;
+        this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
         continue;
       }
       const result = this.runCommand(command);
@@ -320,10 +358,15 @@ export class MockJobRunner {
         return;
       }
       this.status.acknowledgedLineCount += 1;
+      this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
+      this.status.lastAcknowledgedLineNumber = this.status.currentLineNumber;
+      this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
       if (this.lineDelayMs) await sleep(this.lineDelayMs);
     }
     if (token !== this.runToken) return;
     this.status.currentByteOffset = this.status.fileSize;
+    this.status.lastAcknowledgedByteOffset = this.status.fileSize;
+    this.status.lastAcknowledgedLineNumber = this.status.currentLineNumber;
     this.status.progressPercent = 100;
     this.status.state = 'COMPLETED';
     if (resetFeed) this.setFeedOverride(100, { allowDuringTransition: true });
@@ -389,6 +432,9 @@ export class MockJobRunner {
     this.status.toolChangeReady = false;
     this.status.pauseRequested = false;
     this.status.streamingPausedReason = '';
+    this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
+    this.status.lastAcknowledgedLineNumber = this.status.currentLineNumber;
+    this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
     this.status.state = 'RUNNING';
     return this.snapshot('Tool change confirmed. Resume requested.');
   }

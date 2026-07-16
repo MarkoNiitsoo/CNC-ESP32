@@ -114,6 +114,13 @@ describe('compact machine drawer', () => {
     expect(machineBar).toContain("setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending)");
   });
 
+  it('makes a runner communication loss visible without treating it as resumable', () => {
+    expect(machineBar).toContain("STATE.job?.errorCode === 'COMMUNICATION_LOST' ? 'COMM LOST' : state");
+    expect(preview).toContain("jobRunStatus?.errorCode === 'COMMUNICATION_LOST' ? 'COMMUNICATION LOST' : state");
+    expect(preview).toContain('<dt>Last confirmed offset</dt>');
+    expect(preview).toContain('<dt>Error code</dt>');
+  });
+
   it('keeps feed presets, homing, terminal, and the joystick edge dock compact and present', () => {
     expect(machineBar).toMatch(/machine-feed-adjust[\s\S]*machine-feed-presets/);
     expect(machineBar).toMatch(/machine-homing-axis-row[\s\S]*machine-homing-action-row/);

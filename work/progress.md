@@ -1,5 +1,82 @@
 # Progress
 
+## 2026-07-16 - Active and interrupted job file locks
+
+- Added firmware-owned path locks for the currently streamed G-code/Production Resume file, its job
+  JSON, and the bound original active run. The same artifacts remain locked while interrupted-job
+  evidence is waiting for review.
+- Upload overwrite, delete, and rename now return HTTP 423 for locked artifacts. Renaming or deleting
+  a directory containing a locked artifact is also rejected, while unrelated SD files remain fully
+  manageable during a job.
+- Production Resume records its original active-run path in the checkpoint, so both the temporary
+  recovery stream and the source/generated provenance file remain protected across restart.
+- Fixed upload-abort cleanup to remove a target only if this request actually opened it; rejecting or
+  aborting an upload can no longer delete a pre-existing active file.
+- DEV MOCK mirrors the same selective locking and regression coverage verifies unchanged file content
+  after a rejected overwrite.
+- Verification passed: 38 test files / 325 tests, `git diff --check`, and the ESP32-CAM PlatformIO
+  build (RAM 19.6%, flash 70.6%).
+
+## 2026-07-16 - Firmware-owned exact active-run identity
+
+- Replaced normal job and Production Resume job-JSON token searches with ArduinoJson filtered
+  deserialization, so field scope and object ownership are parsed instead of inferred from text.
+- Active source/generated runs now carry an explicit byte size. Firmware requires the request,
+  `activeRun`, one-time start authorization, arm record, and physical-verification record to agree on
+  mode, exact path, size, and fingerprint before any start preamble or movement can begin.
+- Work-zero ID plus homing epoch/session are also bound into the one-time authorization and compared
+  with both job metadata and the current firmware-owned machine frame.
+- Firmware streams the selected file through SHA-256 verification when Web Crypto supplied a SHA;
+  the offline fallback uses byte-based size + FNV-1a. A same-size modified file is rejected.
+- Production Resume now hashes and sizes its generated Phase 2 stream separately, stores that
+  identity in the authorization, and firmware validates the parsed recovery event, authorization,
+  request, and actual file before streaming.
+- The whole-file fingerprint inherently covers all T/M6 commands and tool comments, so a changed
+  tool plan also invalidates arm/start authorization without requiring the full G-code in RAM.
+- DEV MOCK mirrors the strict normal-start and Production Resume identity checks.
+- Verification passed: 37 test files / 321 tests, JavaScript syntax checks, `git diff --check`, and
+  the ESP32-CAM PlatformIO build (RAM 19.6%, flash 70.5%).
+
+## 2026-07-16 - Persistent interrupted-job checkpoint and browser-independent recovery
+
+- Added a small streaming-safe SD checkpoint at `/logs/active-job.json` plus an NVS active-job
+  marker. The marker and initial checkpoint are written before normal cut, test-motion, or Production
+  Resume movement can begin.
+- While a stream is active, firmware checkpoints state transitions and acknowledged progress at most
+  every 2 seconds or 4096 acknowledged bytes. The record includes run identity, acknowledged
+  byte/line, work-zero and homing identity, tool-change state, feed override, and last known positions.
+- Clean completion removes the checkpoint. Stop, runner error, communication loss, brownout, or
+  reboot preserve an interrupted record that blocks new motion until it is reviewed.
+- Boot with an active marker sends immediate `M5`, invalidates the coordinate frame, requires Home
+  All before position can be trusted again, and deliberately does not seek or resume the file.
+- Added recovery checkpoint GET/acknowledge endpoints and matching DEV MOCK behavior. Preview imports
+  a checkpoint belonging to the open job into durable run history before acknowledging firmware;
+  mismatched records remain visible and require opening the correct job or an explicit destructive
+  dismiss. Machine Bar shows `RECOVERY` while review is pending without disabling homing/setup.
+- Added focused firmware, UI, and mock API regression coverage.
+- Verification passed: 36 test files / 317 tests, JavaScript syntax checks, `git diff --check`, and
+  the ESP32-CAM PlatformIO build (RAM 19.6%, flash 69.3%).
+
+## 2026-07-16 - Job runner ACK watchdog and communication-loss fail-safe
+
+- Confirmed that the local runner already had a basic 5-second acknowledgement timeout, then
+  hardened it with command-specific 180-second windows for `M400`, homing/probing, and M6 sequences.
+- Every streamed and priority command now has both a liveness deadline and an absolute hard deadline,
+  so repeated `busy:` messages cannot keep a command alive forever.
+- An ACK timeout now attempts an immediate queue-bypassing `M5`, closes the stream, and reports
+  `ERROR` with `errorCode: COMMUNICATION_LOST`. Automatic `M410` remains deliberately disabled
+  because its abrupt position-losing stop requires a separate operator safety policy.
+- Status now distinguishes bytes/lines merely read or sent from the last acknowledged stream boundary,
+  and progress is based on the acknowledged offset. Communication-loss evidence freezes the failed
+  command, sent/acknowledged offsets, and last trusted work/machine positions and records them in the
+  SD job log.
+- Unsupported Marlin `Resend:` and explicit command rejection now also attempt immediate `M5` and
+  expose stable error codes without replaying uncertain motion.
+- DEV MOCK mirrors the new acknowledged-offset/status contract, while Preview and Machine Bar show a
+  distinct communication-loss state and the last confirmed offset.
+- Verification passed: 34 test files / 309 tests, JavaScript syntax checks, `git diff --check`, and
+  the ESP32-CAM PlatformIO build (RAM 19.5%, flash 68.8%).
+
 ## 2026-07-14 - Firmware-owned manual M6 tool changes
 
 - The streaming job runner now consumes standalone `Tn` selections and exact `M6` commands itself;

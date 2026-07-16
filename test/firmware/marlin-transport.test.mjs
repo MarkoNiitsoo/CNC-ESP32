@@ -31,18 +31,15 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('<header class=\\"panel maintenance-header\\"><h1>WiFi Settings</h1>');
   });
 
-  it('checks start authorization and generated metadata across the complete streamed job JSON', () => {
-    const armedStart = source.indexOf('bool jobJsonIsArmed');
-    const armedEnd = source.indexOf('String readJobJsonSnippet', armedStart);
-    const armed = source.slice(armedStart, armedEnd);
-    expect(armed).toContain('jobFileContainsText(jobPath, "\\\"startAuthorizationToken\\\":\\\"AUTHORIZED\\\"")');
-    expect(armed).not.toContain('8192');
-    const generatedStart = source.indexOf('bool jobJsonAllowsActiveGeneratedRun');
-    const generatedEnd = source.indexOf('bool jobJsonAllowsProductionResume', generatedStart);
-    const generated = source.slice(generatedStart, generatedEnd);
-    expect(generated).toContain('jobFileContainsText(jobPath, activeRunNeedle)');
-    expect(generated).toContain('jobFileContainsText(jobPath, "\\\"generatedValidation\\\":{\\\"status\\\":\\\"valid\\\"")');
-    expect(generated).not.toContain('readJobJsonSnippet');
+  it('parses and verifies exact start authorization and generated metadata', () => {
+    const loaderStart = source.indexOf('bool loadJobExecutionAuthorization');
+    const loaderEnd = source.indexOf('bool isHexSha256', loaderStart);
+    const loader = source.slice(loaderStart, loaderEnd);
+    expect(loader).toContain('deserializeJson(doc, file, DeserializationOption::Filter(filter))');
+    expect(loader).toContain('filter["startAuthorization"]');
+    expect(loader).toContain('filter["generatedValidation"]');
+    expect(source).toContain('validateJobExecutionAuthorization(authorization, gcodePath, activeRunMode');
+    expect(source).not.toContain('jobFileContainsText');
   });
 
   it('ends synchronous reads on complete terminal response lines', () => {
@@ -61,19 +58,47 @@ describe('Marlin transport safety', () => {
 
   it('guards preamble and stream acknowledgements without replaying uncertain motion', () => {
     expect(source).toContain('constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000');
-    expect(source).toContain('constexpr uint32_t kMarlinPauseDrainAckTimeoutMs = 30000');
+    expect(source).toContain('constexpr uint32_t kMarlinMotionDrainAckTimeoutMs = 180000');
+    expect(source).toContain('constexpr uint32_t kMarlinHomingAckTimeoutMs = 180000');
+    expect(source).toContain('constexpr uint32_t kMarlinToolChangeAckTimeoutMs = 180000');
     expect(source).toContain('responseContainsToken(receivedChunk, "busy:")');
     expect(source.match(/responseContainsToken\(receivedChunk, "busy:"\)/g)).toHaveLength(2);
     expect(source).toContain('Marlin acknowledgement timed out; command was not resent: ');
+    expect(source).toContain('setJobCommunicationLost(');
+    expect(source).toContain('jobStatus.errorCode = "COMMUNICATION_LOST"');
+    expect(source).toContain('sendImmediateJobSafetyM5("communication lost; M410 not requested")');
     const runner = source.slice(source.indexOf('void processJobRunner()'), source.indexOf('String htmlPage'));
     expect(runner.match(/Serial\.print\(line\)/g)).toHaveLength(1);
   });
 
-  it('allows extra drain time before pause marks the stream as failed', () => {
+  it('uses command-specific soft and hard ACK deadlines', () => {
+    expect(source).toContain('uint32_t marlinAckTimeoutForCommand(');
+    expect(source).toContain('code == "M400"');
+    expect(source).toContain('code == "G28" || code == "G29" || code.startsWith("G38.")');
+    expect(source).toContain('bool marlinAckWatchdogExpired(');
+    expect(source).toContain('timeoutMs * kMarlinAckHardLimitMultiplier');
     expect(source).toContain('uint32_t priorityAckTimeoutMs()');
-    expect(source).toContain('jobStatus.state == JobRunnerState::Pausing && jobStatus.lastPriorityCommand == "M400"');
-    expect(source).toContain('return kMarlinPauseDrainAckTimeoutMs;');
-    expect(source).toContain('millis() - priorityCommandLivenessAtMs > priorityAckTimeoutMs()');
+    expect(source).toContain('priorityCommandAckTimeoutMs = marlinAckTimeoutForCommand(cmd, jobStatus.toolChangePending)');
+    expect(source).toContain('jobCommandAckTimeoutMs = marlinAckTimeoutForCommand(line)');
+    expect(source).toMatch(/marlinAckWatchdogExpired\(priorityCommandStartedAtMs, priorityCommandLivenessAtMs,[\s\S]*priorityAckTimeoutMs\(\)\)/);
+  });
+
+  it('reports the last confirmed stream boundary and freezes communication-loss evidence', () => {
+    expect(source).toContain('lastAcknowledgedByteOffset');
+    expect(source).toContain('lastAcknowledgedLineNumber');
+    expect(source).toContain('\\"ackWatchdog\\"');
+    expect(source).toContain('\\"communicationLoss\\"');
+    expect(source).toContain('communication_lost command=');
+    expect(source).toContain('jobStatus.communicationLostMachinePositionValid = true');
+    expect(source).toContain('jobStatus.communicationLostWorkPositionValid = true');
+    expect(source).toMatch(/progress = jobStatus\.fileSize > 0[\s\S]*jobStatus\.lastAcknowledgedByteOffset/);
+  });
+
+  it('fails unsupported Resend safely without replaying uncertain motion', () => {
+    expect(source).toContain('jobStatus.errorCode = "RESEND_UNSUPPORTED"');
+    expect(source).toContain('sendImmediateJobSafetyM5("Marlin requested unsupported Resend")');
+    expect(source).toContain('line-numbered replay is not supported');
+    expect(source).not.toContain('TODO: add line-numbered resend support');
   });
 
   it('keeps M5 on the priority path before the busy transport rejection', () => {
@@ -104,9 +129,9 @@ describe('Marlin transport safety', () => {
   it('owns guarded Production Resume Phase 2 in the firmware runner', () => {
     expect(source).toContain('server.on("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart)');
     expect(source).toContain('validateProductionResumeFile(path, commandCount, validationError)');
-    expect(source).toContain('jobJsonAllowsProductionResume(jobPath, activeRunPath, activeRunMode, eventId');
-    expect(source).toContain('jobFileContainsText(jobPath, "\\\"productionResumeAuthorization\\\":{")');
-    expect(source).toContain('jobFileContainsText(jobPath, "\\\"authorized\\\":true")');
+    expect(source).toContain('loadProductionResumeIdentity(jobPath, eventId, identity, identityError)');
+    expect(source).toContain('validateProductionResumeIdentity(identity, path, activeRunPath, activeRunMode');
+    expect(source).toContain('identity.streamFingerprint != streamFingerprint');
     expect(source).toContain('first[0] != "G21"');
     expect(source).toContain('first[1] != "G90"');
     expect(source).toContain('first[2] != "G54"');

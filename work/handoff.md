@@ -1,5 +1,92 @@
 # Handoff
 
+## 2026-07-16 - Active and interrupted job file locks
+
+- `mutationPathTouchesLockedFile()` is the single firmware guard used by upload, delete, and rename.
+  It checks active runner paths plus checkpoint paths and treats a parent directory mutation as
+  touching every locked descendant.
+- Locked paths are `jobStatus.gcodePath`, `jobStatus.jobPath`, and
+  `jobStatus.authorizationActiveRunPath`; interrupted equivalents are loaded from
+  `/logs/active-job.json` at boot. Production Resume therefore locks both its Phase 2 stream and the
+  original active run used as provenance.
+- Locks apply while the runner/checkpoint is active and while recovery review is pending. Clearing
+  the checkpoint through the explicit acknowledgement endpoint releases interrupted locks.
+- Mutation endpoints return HTTP 423 with a clear JSON error. Unrelated files intentionally remain
+  editable; this is not a global SD read-only mode.
+- `uploadTargetOpened` distinguishes a target actually created/opened by this upload from a rejected
+  existing target. Keep this guard around empty/aborted cleanup to avoid deleting user files.
+- There is no separate tool-plan file today; T/M6/tool comments are inside the locked and hashed
+  G-code. If an external tool-plan artifact is added, include its path in both checkpoint identity and
+  `mutationPathTouchesLockedFile()`.
+- Validation passed: 38 test files / 325 tests, `git diff --check`, and the ESP32-CAM firmware build
+  (RAM 19.6%, flash 70.6%).
+
+## 2026-07-16 - Firmware-owned exact active-run identity
+
+- `platformio.ini` now pins ArduinoJson 7.x. `loadJobExecutionAuthorization()` uses filtered
+  deserialization from the SD `File`; do not replace it with whole-file `String` loading or token
+  searches.
+- Normal start requires matching `mode/path/size/fingerprint` across `activeRun`, `arm`,
+  `verificationDecision`, `startAuthorization`, and the request. It also binds `activeWorkZeroId`,
+  authorization work-zero ID, homing epoch, and homing session.
+- `activeRunFileMatches()` reads the file in 512-byte chunks. It verifies SHA-256 via mbedTLS or the
+  byte-based size/FNV-1a offline fallback, preserving streaming execution and bounded memory use.
+- Browser `activeRun.sizeBytes`, arm, verification, and start authorization are now part of schema-v3
+  data in practice. Older saved jobs naturally become stale and must be reopened, reverified, and
+  re-armed; there is no permissive legacy fallback.
+- Production Resume authorization now includes `streamPath`, `streamSizeBytes`, and
+  `streamFingerprint`. The generated file is uploaded before the authorization-bearing job JSON is
+  saved, and firmware parses the matching recovery event before hashing the actual stream.
+- The strict file fingerprint covers tool commands/tool comments as part of the exact file. A future
+  separately editable tool-plan artifact must receive its own locked path and fingerprint.
+- Next step is active-file mutation locking in upload/delete/rename handlers; identity checking
+  already prevents changed content from starting but does not yet reject all mutation attempts while
+  a stream is active.
+- Validation passed: 37 test files / 321 tests, JS syntax checks, `git diff --check`, and the
+  ESP32-CAM firmware build (RAM 19.6%, flash 70.5%).
+
+## 2026-07-16 - Persistent interrupted-job checkpoint and browser-independent recovery
+
+- Firmware writes `/logs/active-job.json` through `/logs/active-job.tmp` and separately stores the
+  `recovery/activeJob` NVS marker. `beginPersistentJobCheckpoint()` is called before any of the three
+  streaming start paths can issue movement.
+- `processPersistentJobCheckpoint()` persists acknowledged progress every 2 s / 4096 bytes and on
+  state changes. `COMPLETED` clears evidence; `STOPPED` and `ERROR` finalize it as interrupted.
+- On boot, an active NVS marker or active checkpoint triggers immediate raw `M5`, clears the machine
+  frame and position validity, and sets the review gate. There is intentionally no automatic file
+  open, seek, homing, or resume.
+- `GET /api/recovery/checkpoint` exposes the full evidence. `POST
+  /api/recovery/checkpoint/acknowledge` requires `{ "confirmed": true }`, an idle runner, and is the
+  only path that clears interrupted evidence.
+- All new stream starts reject while `recoveryCheckpointRequiresReview` is true. Homing and setup
+  controls remain usable so the operator can re-establish a trustworthy frame.
+- Preview matches checkpoint ownership by non-empty `jobPath`, maps firmware state to an interrupted
+  run-history entry, persists the job JSON, and only then acknowledges firmware. Its explicit dismiss
+  path is destructive and keeps position untrusted. Empty-job test-motion records cannot auto-import.
+- The next planned hardening step is exact active-run identity binding (path plus fingerprint and
+  stream mode) throughout start/recovery validation; do not turn the current checkpoint into an
+  automatic resume mechanism.
+- Validation passed: 36 test files / 317 tests, JS syntax checks, `git diff --check`, and the
+  ESP32-CAM firmware build (RAM 19.6%, flash 69.3%).
+
+## 2026-07-16 - Job runner ACK watchdog and communication-loss fail-safe
+
+- `marlinAckTimeoutForCommand()` assigns the normal 5-second ACK window or the longer 180-second
+  `M400`, homing/probe, and tool-change window. `marlinAckWatchdogExpired()` also enforces a hard
+  deadline at twice that value even while Marlin keeps sending `busy:`.
+- Both streamed commands and priority sequences route timeout failures through
+  `setJobCommunicationLost()`. It snapshots the failed command, last acknowledged byte/line and last
+  trusted positions, sends raw `M5` without waiting for the failed transport, then enters `ERROR` with
+  `COMMUNICATION_LOST`.
+- Do not automatically add `M410` to this path without an explicit setting and operator decision: it
+  changes the failure from graceful spindle shutdown to an abrupt planner stop and invalidates position.
+- `currentByteOffset` remains the reader/sent boundary; `lastAcknowledgedByteOffset` is the safe
+  confirmed boundary and now drives progress. M6 advances it only after guarded tool confirmation.
+- `Resend:` remains intentionally unsupported until numbered/checksummed streaming plus a bounded
+  replay buffer is implemented; it now fails with `RESEND_UNSUPPORTED` and immediate `M5`.
+- Validation passed: 34 test files / 309 tests, JS syntax checks, `git diff --check`, and the
+  ESP32-CAM firmware build (RAM 19.5%, flash 68.8%).
+
 ## 2026-07-14 - Firmware-owned manual M6 tool changes
 
 - `src/main.cpp` now owns the `Tn`/`M6` stream boundary. The minimum behavior is always a firmware

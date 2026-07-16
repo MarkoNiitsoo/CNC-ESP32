@@ -132,14 +132,28 @@ export async function createMockEnvironment(options = {}) {
     bluetooth: { enabled: true, advertiseName: true, started: true, name: 'CNC cnc.local' },
     configSource: 'mock',
   };
+  const recoveryCheckpoint = {
+    available: false, requiresReview: false, bootInterrupted: false,
+    requiresHoming: false, resetReason: '', checkpoint: null,
+  };
   return {
     projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device,
-    toolChangeSettings, startedAt: Date.now(),
+    toolChangeSettings, recoveryCheckpoint, startedAt: Date.now(),
   };
 }
 
 export async function createMockServer(options = {}) {
   const env = await createMockEnvironment(options);
+  const mutationTouchesLockedFile = (candidate) => {
+    if (!env.runner.isActive() && !env.recoveryCheckpoint.requiresReview) return false;
+    const normalized = String(candidate || '').replace(/\/$/, '');
+    const locked = [
+      env.runner.status.gcodePath, env.runner.status.jobPath, env.runner.status.authorizationActiveRunPath,
+      env.recoveryCheckpoint.checkpoint?.gcodePath, env.recoveryCheckpoint.checkpoint?.jobPath,
+      env.recoveryCheckpoint.checkpoint?.authorizationActiveRunPath,
+    ].filter(Boolean);
+    return locked.some((item) => item === normalized || item.startsWith(`${normalized}/`));
+  };
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', 'http://localhost');
@@ -200,11 +214,14 @@ export async function createMockServer(options = {}) {
         const file = parts.find((part) => part.name === 'file' && part.filename);
         if (!file || !file.data.length) throw new Error('no file provided or empty upload');
         const target = `${dir.replace(/\/$/, '')}/${safeUploadName(file.filename)}`;
+        if (mutationTouchesLockedFile(target)) return json(res, 423, { ok: false, error: `file is locked by the active or interrupted job: ${target}` });
         await env.sd.write(target, file.data, { overwrite: url.searchParams.get('overwrite') === 'true' });
         return json(res, 200, { ok: true, path: target });
       }
       if (req.method === 'POST' && pathname === '/api/delete') {
-        await env.sd.delete((await readJson(req)).path);
+        const target = (await readJson(req)).path;
+        if (mutationTouchesLockedFile(target)) return json(res, 423, { ok: false, error: `file is locked by the active or interrupted job: ${target}` });
+        await env.sd.delete(target);
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && pathname === '/api/mkdir') {
@@ -213,6 +230,9 @@ export async function createMockServer(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/api/rename') {
         const body = await readJson(req);
+        if (mutationTouchesLockedFile(body.from) || mutationTouchesLockedFile(body.to)) {
+          return json(res, 423, { ok: false, error: 'file is locked by the active or interrupted job' });
+        }
         await env.sd.rename(body.from, body.to);
         return json(res, 200, { ok: true });
       }
@@ -231,10 +251,46 @@ export async function createMockServer(options = {}) {
         if (result.ok && env.frame.trusted) syncMockFrame(env);
         return json(res, result.ok ? 200 : 400, result);
       }
-      if (req.method === 'GET' && pathname === '/api/job/status') return json(res, 200, env.runner.snapshot());
-      if (req.method === 'POST' && pathname === '/api/job/start') return json(res, 200, await env.runner.start(await readJson(req)));
-      if (req.method === 'POST' && pathname === '/api/test-motion/start') return json(res, 200, await env.runner.startTestMotion(await readJson(req)));
-      if (req.method === 'POST' && pathname === '/api/recovery/production/start') return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
+      if (req.method === 'GET' && pathname === '/api/job/status') {
+        return json(res, 200, {
+          ...env.runner.snapshot(),
+          recoveryCheckpoint: {
+            requiresReview: env.recoveryCheckpoint.requiresReview,
+            bootInterrupted: env.recoveryCheckpoint.bootInterrupted,
+            gcodePath: env.recoveryCheckpoint.checkpoint?.gcodePath || '',
+            jobPath: env.recoveryCheckpoint.checkpoint?.jobPath || '',
+            resetReason: env.recoveryCheckpoint.resetReason,
+          },
+        });
+      }
+      if (req.method === 'GET' && pathname === '/api/recovery/checkpoint') return json(res, 200, env.recoveryCheckpoint);
+      if (req.method === 'POST' && pathname === '/api/recovery/checkpoint/acknowledge') {
+        const body = await readJson(req);
+        if (body.confirmed !== true) return json(res, 400, { ok: false, error: 'confirmed true is required' });
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'cannot clear recovery evidence while a job is active' });
+        Object.assign(env.recoveryCheckpoint, {
+          available: false, requiresReview: false, bootInterrupted: false,
+          requiresHoming: false, resetReason: '', checkpoint: null,
+        });
+        return json(res, 200, { ok: true, message: 'Recovery checkpoint cleared. Machine position remains untrusted until Home All.' });
+      }
+      const requireReviewedCheckpoint = () => {
+        if (!env.recoveryCheckpoint.requiresReview) return false;
+        json(res, 409, { ok: false, error: 'review and import or dismiss the interrupted-job checkpoint before starting motion' });
+        return true;
+      };
+      if (req.method === 'POST' && pathname === '/api/job/start') {
+        if (requireReviewedCheckpoint()) return;
+        return json(res, 200, await env.runner.start(await readJson(req)));
+      }
+      if (req.method === 'POST' && pathname === '/api/test-motion/start') {
+        if (requireReviewedCheckpoint()) return;
+        return json(res, 200, await env.runner.startTestMotion(await readJson(req)));
+      }
+      if (req.method === 'POST' && pathname === '/api/recovery/production/start') {
+        if (requireReviewedCheckpoint()) return;
+        return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
+      }
       if (req.method === 'POST' && pathname === '/api/job/pause') return json(res, 200, env.runner.pause());
       if (req.method === 'POST' && pathname === '/api/job/resume') return json(res, 200, env.runner.resume());
       if (req.method === 'POST' && pathname === '/api/job/tool-change/complete') {

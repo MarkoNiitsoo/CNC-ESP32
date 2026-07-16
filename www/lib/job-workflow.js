@@ -19,6 +19,7 @@ export function emptyWorkflow() {
       result: 'pending',
       activeRunPath: '',
       activeRunFingerprint: '',
+      activeRunSizeBytes: 0,
       transformFingerprint: '',
       workZeroToken: '',
       safeZ: null,
@@ -29,6 +30,7 @@ export function emptyWorkflow() {
       state: 'pending',
       activeRunPath: '',
       activeRunFingerprint: '',
+      activeRunSizeBytes: 0,
       frameMode: '',
       verificationType: '',
       checklist: {},
@@ -59,6 +61,7 @@ export function activeRunIdentity(job = {}) {
   return {
     path: active.path || job.sourceGcodePath || job.gcodePath || '',
     fingerprint,
+    sizeBytes: Number(active.sizeBytes) || 0,
     transformFingerprint: active.transformFingerprint || job.placement?.transformFingerprint || '',
   };
 }
@@ -106,7 +109,8 @@ export function verificationStatus(job = {}, context = {}) {
   if (decision.result !== 'complete' || !validType) {
     return { ok: false, type: 'pending', reason: 'missing', label: 'Choose a physical verification method' };
   }
-  if (decision.activeRunPath !== identity.path || decision.activeRunFingerprint !== identity.fingerprint) {
+  if (decision.activeRunPath !== identity.path || decision.activeRunFingerprint !== identity.fingerprint ||
+      Number(decision.activeRunSizeBytes) !== identity.sizeBytes) {
     return { ok: false, type: 'pending', reason: 'run-changed', label: 'Active run changed after physical verification' };
   }
   if (decision.transformFingerprint !== identity.transformFingerprint) {
@@ -146,6 +150,7 @@ export function createVerificationDecision(job = {}, options = {}) {
     result: 'complete',
     activeRunPath: identity.path,
     activeRunFingerprint: identity.fingerprint,
+    activeRunSizeBytes: identity.sizeBytes,
     transformFingerprint: identity.transformFingerprint,
     workZeroToken: workZeroToken(job),
     safeZ: Number.isFinite(Number(options.safeZ)) ? Number(options.safeZ) : null,

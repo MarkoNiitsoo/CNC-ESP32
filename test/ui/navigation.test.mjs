@@ -9,7 +9,7 @@ describe('files-first navigation', () => {
     expect(preview).toContain("window.location.replace('/#files')");
     expect(preview).toMatch(/if \(!filePath\)[\s\S]*redirectToFiles\(\)/);
     expect(preview).toMatch(/if \(!res\.ok\)[\s\S]*redirectToFiles\(filePath\)/);
-    expect(preview).toContain('loadPreview().catch(() => redirectToFiles(filePath))');
+    expect(preview).toMatch(/loadPreview\(\)[\s\S]*loadFirmwareRecoveryCheckpoint\(\)[\s\S]*redirectToFiles\(filePath\)/);
   });
 
   it('does not expose an empty Job section and clears stale file pointers', () => {

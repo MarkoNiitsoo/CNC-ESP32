@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #ifndef ESP32CNC_ENABLE_BLE
 #define ESP32CNC_ENABLE_BLE 1
 #endif
@@ -14,6 +15,8 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <WiFi.h>
+#include <esp_system.h>
+#include <mbedtls/sha256.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
@@ -29,6 +32,8 @@ constexpr const char *kWifiPrefsSsidKey = "ssid";
 constexpr const char *kWifiPrefsPassKey = "pass";
 constexpr const char *kMachinePrefsNamespace = "machine";
 constexpr const char *kToolChangePrefsNamespace = "toolchange";
+constexpr const char *kRecoveryPrefsNamespace = "recovery";
+constexpr const char *kRecoveryPrefsActiveJobKey = "activeJob";
 constexpr const char *kDevicePrefsNamespace = "device";
 constexpr const char *kDevicePrefsHostnameKey = "hostname";
 constexpr const char *kDevicePrefsFriendlyNameKey = "friendlyName";
@@ -48,12 +53,20 @@ constexpr const char *kSdRootUpdateBinPath = "/firmware.bin";
 constexpr const char *kSdRootDoneBinPath = "/firmware.done.bin";
 constexpr const char *kSdUpdateLogPath = "/logs/update.log";
 constexpr const char *kSdJobLogPath = "/logs/job.log";
+constexpr const char *kSdActiveJobCheckpointPath = "/logs/active-job.json";
+constexpr const char *kSdActiveJobCheckpointTempPath = "/logs/active-job.tmp";
+constexpr size_t kMaxJobCheckpointBytes = 8192;
+constexpr uint32_t kJobCheckpointIntervalMs = 2000;
+constexpr size_t kJobCheckpointByteInterval = 4096;
 constexpr const char *kSdRoots[] = {"/gcode", "/www", "/firmware", "/jobs", "/logs",
                                     "/esp32-cnc"};
 constexpr uint32_t kMarlinBaudrate = 250000;
 constexpr uint32_t kMarlinTimeoutMs = 1500;
 constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000;
-constexpr uint32_t kMarlinPauseDrainAckTimeoutMs = 30000;
+constexpr uint32_t kMarlinMotionDrainAckTimeoutMs = 180000;
+constexpr uint32_t kMarlinHomingAckTimeoutMs = 180000;
+constexpr uint32_t kMarlinToolChangeAckTimeoutMs = 180000;
+constexpr uint8_t kMarlinAckHardLimitMultiplier = 2;
 constexpr uint16_t kTelemetryWebSocketPort = 81;
 constexpr uint32_t kTelemetryMinBroadcastMs = 100;
 constexpr uint32_t kJobProgressBroadcastMs = 500;
@@ -98,6 +111,12 @@ struct JobRunnerStatus {
   JobRunnerState state = JobRunnerState::Idle;
   String gcodePath;
   String jobPath;
+  String activeRunMode;
+  String activeRunFingerprint;
+  String authorizationActiveRunPath;
+  String workZeroId;
+  String homingSessionId;
+  uint32_t homingEpoch = 0;
   String startMode = "use_active_work_zero";
   String streamMode = "job";
   bool allowedWorkspaceCommands = false;
@@ -105,9 +124,11 @@ struct JobRunnerStatus {
   float travelFeedMmMin = kDefaultTravelFeed;
   size_t fileSize = 0;
   size_t currentByteOffset = 0;
+  size_t lastAcknowledgedByteOffset = 0;
   uint32_t sentLineCount = 0;
   uint32_t acknowledgedLineCount = 0;
   uint32_t currentLineNumber = 0;
+  uint32_t lastAcknowledgedLineNumber = 0;
   bool pauseRequested = false;
   bool stopRequested = false;
   bool priorityCommandInProgress = false;
@@ -130,6 +151,17 @@ struct JobRunnerStatus {
   String lastCommand;
   String lastResponse;
   String lastError;
+  String errorCode;
+  uint32_t communicationLostAtMs = 0;
+  String communicationLostCommand;
+  bool communicationLostWorkPositionValid = false;
+  float communicationLostWorkX = 0.0f;
+  float communicationLostWorkY = 0.0f;
+  float communicationLostWorkZ = 0.0f;
+  bool communicationLostMachinePositionValid = false;
+  float communicationLostMachineX = 0.0f;
+  float communicationLostMachineY = 0.0f;
+  float communicationLostMachineZ = 0.0f;
   String lastPriorityCommand;
   String lastPriorityResponse;
   String lastPriorityError;
@@ -308,6 +340,7 @@ Preferences wifiPrefs;
 Preferences machinePrefs;
 Preferences devicePrefs;
 Preferences toolChangePrefs;
+Preferences recoveryPrefs;
 DeviceIdentity deviceIdentity;
 ToolChangeSettings toolChangeSettings;
 String activeWifiMode = "ap";
@@ -324,12 +357,14 @@ String uploadError;
 String uploadTargetPath;
 bool uploadSeen = false;
 bool uploadOk = false;
+bool uploadTargetOpened = false;
 File jobFile;
 JobRunnerStatus jobStatus;
 bool jobWaitingForOk = false;
 String jobResponseBuffer;
 uint32_t jobCommandStartedAtMs = 0;
 uint32_t jobCommandLivenessAtMs = 0;
+uint32_t jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
 JogStatus jogStatus;
 constexpr uint8_t kMaxPriorityCommands = 12;
 String priorityCommands[kMaxPriorityCommands];
@@ -338,6 +373,7 @@ uint8_t priorityCommandIndex = 0;
 String priorityResponseBuffer;
 uint32_t priorityCommandStartedAtMs = 0;
 uint32_t priorityCommandLivenessAtMs = 0;
+uint32_t priorityCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
 MarlinLogEntry marlinLog[kMarlinLogSize];
 size_t marlinLogNext = 0;
 size_t marlinLogCount = 0;
@@ -366,15 +402,23 @@ String streamMotionMode = "G0";
 PositionTelemetry marlinPosition;
 MachineFrameState machineFrame;
 String bootSessionId;
+bool jobCheckpointTracking = false;
+bool jobCheckpointDirty = false;
+bool recoveryCheckpointRequiresReview = false;
+bool bootInterruptedJobDetected = false;
+String recoveryCheckpointGcodePath;
+String recoveryCheckpointJobPath;
+String recoveryCheckpointActiveRunPath;
+String recoveryCheckpointResetReason;
+uint32_t jobCheckpointLastWriteMs = 0;
+size_t jobCheckpointLastAcknowledgedOffset = 0;
+JobRunnerState jobCheckpointLastState = JobRunnerState::Idle;
 MachineProfile machineProfile;
 MachineDiscoveryState machineDiscoveryState = MachineDiscoveryState::Idle;
 String machineDiscoveryResponse;
 uint32_t machineDiscoveryStartedAtMs = 0;
 bool machineDiscoveryPending = true;
 
-String readJobJsonSnippet(const String &jobPath);
-bool jobFileContainsText(const String &jobPath, const String &needle);
-bool jobJsonAllowsWorkspaceCommands(const String &jobPath);
 String extractWorkspaceCommand(const String &line);
 bool handleWorkspaceCommand(const String &line);
 bool runJobStartPreamble();
@@ -383,7 +427,12 @@ bool extractGcodeIntegerWord(const String &line, char wanted, int &value);
 bool gcodeHasM6(const String &line);
 bool gcodeIsStandaloneToolSelect(const String &line, int &toolNumber);
 bool beginToolChange(const String &line);
-void setJobError(const String &message);
+void setJobError(const String &message, bool resetFeedOverride = true);
+void setJobCommunicationLost(const String &message);
+void sendImmediateJobSafetyM5(const String &reason);
+bool beginPersistentJobCheckpoint();
+void processPersistentJobCheckpoint();
+void clearPersistentJobCheckpoint();
 void resetFeedOverrideAfterJobIfNeeded();
 void updatePositionFromMarlinResponse(const String &response);
 String machineFrameJson();
@@ -1097,11 +1146,13 @@ bool jobIsActive() {
 void touchJobStatus() {
   jobStatus.updatedAtMs = millis();
   telemetryJobDirty = true;
+  if (jobCheckpointTracking) jobCheckpointDirty = true;
 }
 
 void touchJobProgress() {
   const uint32_t now = millis();
   jobStatus.updatedAtMs = now;
+  if (jobCheckpointTracking) jobCheckpointDirty = true;
   if (now - telemetryLastJobProgressMs >= kJobProgressBroadcastMs) {
     telemetryJobDirty = true;
     telemetryLastJobProgressMs = now;
@@ -1159,9 +1210,204 @@ void logJobEvent(const String &event) {
   logFile.close();
 }
 
+const char *resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+  case ESP_RST_POWERON: return "POWER_ON";
+  case ESP_RST_EXT: return "EXTERNAL";
+  case ESP_RST_SW: return "SOFTWARE";
+  case ESP_RST_PANIC: return "PANIC";
+  case ESP_RST_INT_WDT: return "INTERRUPT_WATCHDOG";
+  case ESP_RST_TASK_WDT: return "TASK_WATCHDOG";
+  case ESP_RST_WDT: return "OTHER_WATCHDOG";
+  case ESP_RST_DEEPSLEEP: return "DEEP_SLEEP";
+  case ESP_RST_BROWNOUT: return "BROWNOUT";
+  case ESP_RST_SDIO: return "SDIO";
+  default: return "UNKNOWN";
+  }
+}
+
+void setPersistentActiveJobMarker(bool active) {
+  recoveryPrefs.begin(kRecoveryPrefsNamespace, false);
+  recoveryPrefs.putBool(kRecoveryPrefsActiveJobKey, active);
+  recoveryPrefs.end();
+}
+
+bool persistentActiveJobMarker() {
+  recoveryPrefs.begin(kRecoveryPrefsNamespace, true);
+  const bool active = recoveryPrefs.getBool(kRecoveryPrefsActiveJobKey, false);
+  recoveryPrefs.end();
+  return active;
+}
+
+bool readPersistentJobCheckpoint(String &body) {
+  body = "";
+  if (!sdMounted || !SD_MMC.exists(kSdActiveJobCheckpointPath)) return false;
+  File file = SD_MMC.open(kSdActiveJobCheckpointPath, FILE_READ);
+  if (!file || file.isDirectory() || file.size() == 0 || file.size() > kMaxJobCheckpointBytes) {
+    if (file) file.close();
+    return false;
+  }
+  body.reserve(file.size() + 1);
+  while (file.available()) body += static_cast<char>(file.read());
+  file.close();
+  return body.length() > 0;
+}
+
+void updateRecoveryCheckpointMetadata(const String &body) {
+  recoveryCheckpointGcodePath = normalizeSdPath(extractJsonString(body, "gcodePath"));
+  recoveryCheckpointJobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  recoveryCheckpointActiveRunPath = normalizeSdPath(extractJsonString(body, "authorizationActiveRunPath"));
+}
+
+bool writePersistentJobCheckpoint(bool activeJob, bool interrupted, const String &reason) {
+  if (!sdMounted) return false;
+  SD_MMC.mkdir("/logs");
+  SD_MMC.remove(kSdActiveJobCheckpointTempPath);
+  File file = SD_MMC.open(kSdActiveJobCheckpointTempPath, FILE_WRITE);
+  if (!file) return false;
+
+  file.print("{\"schemaVersion\":1,\"activeJob\":");
+  file.print(activeJob ? "true" : "false");
+  file.print(",\"interrupted\":");
+  file.print(interrupted ? "true" : "false");
+  file.print(",\"state\":\""); file.print(jobStateName(jobStatus.state)); file.print("\"");
+  file.print(",\"reason\":\""); file.print(jsonEscape(reason)); file.print("\"");
+  file.print(",\"bootSessionId\":\""); file.print(jsonEscape(bootSessionId)); file.print("\"");
+  file.print(",\"updatedAtMs\":"); file.print(millis());
+  file.print(",\"gcodePath\":\""); file.print(jsonEscape(jobStatus.gcodePath)); file.print("\"");
+  file.print(",\"jobPath\":\""); file.print(jsonEscape(jobStatus.jobPath)); file.print("\"");
+  file.print(",\"activeRunMode\":\""); file.print(jsonEscape(jobStatus.activeRunMode)); file.print("\"");
+  file.print(",\"activeRunFingerprint\":\""); file.print(jsonEscape(jobStatus.activeRunFingerprint)); file.print("\"");
+  file.print(",\"authorizationActiveRunPath\":\""); file.print(jsonEscape(jobStatus.authorizationActiveRunPath)); file.print("\"");
+  file.print(",\"streamMode\":\""); file.print(jsonEscape(jobStatus.streamMode)); file.print("\"");
+  file.print(",\"startMode\":\""); file.print(jsonEscape(jobStatus.startMode)); file.print("\"");
+  file.print(",\"fileSize\":"); file.print(jobStatus.fileSize);
+  file.print(",\"currentByteOffset\":"); file.print(jobStatus.currentByteOffset);
+  file.print(",\"lastAcknowledgedByteOffset\":"); file.print(jobStatus.lastAcknowledgedByteOffset);
+  file.print(",\"currentLineNumber\":"); file.print(jobStatus.currentLineNumber);
+  file.print(",\"lastAcknowledgedLineNumber\":"); file.print(jobStatus.lastAcknowledgedLineNumber);
+  file.print(",\"sentLineCount\":"); file.print(jobStatus.sentLineCount);
+  file.print(",\"acknowledgedLineCount\":"); file.print(jobStatus.acknowledgedLineCount);
+  file.print(",\"lastCommand\":\""); file.print(jsonEscape(jobStatus.lastCommand)); file.print("\"");
+  file.print(",\"lastResponse\":\""); file.print(jsonEscape(jobStatus.lastResponse)); file.print("\"");
+  file.print(",\"lastError\":\""); file.print(jsonEscape(jobStatus.lastError)); file.print("\"");
+  file.print(",\"errorCode\":\""); file.print(jsonEscape(jobStatus.errorCode)); file.print("\"");
+  file.print(",\"feedOverridePercent\":"); file.print(jobStatus.feedOverridePercent);
+  file.print(",\"workZeroId\":\""); file.print(jsonEscape(jobStatus.workZeroId)); file.print("\"");
+  file.print(",\"homingEpoch\":"); file.print(jobStatus.homingEpoch);
+  file.print(",\"homingSessionId\":\""); file.print(jsonEscape(jobStatus.homingSessionId)); file.print("\"");
+  file.print(",\"selectedToolNumber\":"); file.print(jobStatus.selectedToolNumber);
+  file.print(",\"activeToolNumber\":"); file.print(jobStatus.activeToolNumber);
+  file.print(",\"toolChange\":{\"pending\":"); file.print(jobStatus.toolChangePending ? "true" : "false");
+  file.print(",\"ready\":"); file.print(jobStatus.toolChangeReady ? "true" : "false");
+  file.print(",\"zZeroCompleted\":"); file.print(jobStatus.toolChangeZZeroCompleted ? "true" : "false");
+  file.print(",\"toolNumber\":"); file.print(jobStatus.toolChangeToolNumber);
+  file.print(",\"line\":"); file.print(jobStatus.toolChangeLine); file.print("}");
+  file.print(",\"workPosition\":");
+  if (marlinPosition.valid) {
+    file.print("{\"x\":"); file.print(marlinPosition.x, 3);
+    file.print(",\"y\":"); file.print(marlinPosition.y, 3);
+    file.print(",\"z\":"); file.print(marlinPosition.z, 3); file.print("}");
+  } else {
+    file.print("null");
+  }
+  file.print(",\"machinePosition\":");
+  if (machineFrame.machineValid) {
+    file.print("{\"x\":"); file.print(machineFrame.machineX, 3);
+    file.print(",\"y\":"); file.print(machineFrame.machineY, 3);
+    file.print(",\"z\":"); file.print(machineFrame.machineZ, 3); file.print("}");
+  } else {
+    file.print("null");
+  }
+  file.print("}");
+  file.close();
+
+  SD_MMC.remove(kSdActiveJobCheckpointPath);
+  if (!SD_MMC.rename(kSdActiveJobCheckpointTempPath, kSdActiveJobCheckpointPath)) return false;
+  jobCheckpointLastWriteMs = millis();
+  jobCheckpointLastAcknowledgedOffset = jobStatus.lastAcknowledgedByteOffset;
+  jobCheckpointLastState = jobStatus.state;
+  jobCheckpointDirty = false;
+  recoveryCheckpointGcodePath = jobStatus.gcodePath;
+  recoveryCheckpointJobPath = jobStatus.jobPath;
+  if (interrupted) recoveryCheckpointRequiresReview = true;
+  return true;
+}
+
+bool beginPersistentJobCheckpoint() {
+  setPersistentActiveJobMarker(true);
+  jobCheckpointTracking = true;
+  jobCheckpointDirty = true;
+  if (writePersistentJobCheckpoint(true, false, "")) return true;
+  jobCheckpointTracking = false;
+  setPersistentActiveJobMarker(false);
+  return false;
+}
+
+void clearPersistentJobCheckpoint() {
+  setPersistentActiveJobMarker(false);
+  if (sdMounted) {
+    SD_MMC.remove(kSdActiveJobCheckpointTempPath);
+    SD_MMC.remove(kSdActiveJobCheckpointPath);
+  }
+  jobCheckpointTracking = false;
+  jobCheckpointDirty = false;
+  recoveryCheckpointRequiresReview = false;
+  bootInterruptedJobDetected = false;
+  recoveryCheckpointGcodePath = "";
+  recoveryCheckpointJobPath = "";
+  recoveryCheckpointActiveRunPath = "";
+  recoveryCheckpointResetReason = "";
+}
+
+void processPersistentJobCheckpoint() {
+  if (!jobCheckpointTracking) return;
+  if (jobStatus.state == JobRunnerState::Completed) {
+    clearPersistentJobCheckpoint();
+    return;
+  }
+  if (jobStatus.state == JobRunnerState::Stopped || jobStatus.state == JobRunnerState::Error) {
+    const String reason = jobStatus.lastError.length() > 0 ? jobStatus.lastError : jobStatus.streamingPausedReason;
+    if (writePersistentJobCheckpoint(false, true, reason)) {
+      setPersistentActiveJobMarker(false);
+      jobCheckpointTracking = false;
+    }
+    return;
+  }
+  if (!jobIsActive() || !jobCheckpointDirty) return;
+  const bool stateChanged = jobStatus.state != jobCheckpointLastState;
+  const bool intervalElapsed = millis() - jobCheckpointLastWriteMs >= kJobCheckpointIntervalMs;
+  const bool bytesAdvanced = jobStatus.lastAcknowledgedByteOffset >= jobCheckpointLastAcknowledgedOffset +
+                                                                  kJobCheckpointByteInterval;
+  if (stateChanged || intervalElapsed || bytesAdvanced) {
+    writePersistentJobCheckpoint(true, false, "");
+  }
+}
+
+void loadPersistentJobCheckpointAtBoot() {
+  String body;
+  const bool checkpointAvailable = readPersistentJobCheckpoint(body);
+  const bool activeMarker = persistentActiveJobMarker();
+  const bool checkpointActive = checkpointAvailable && extractJsonBool(body, "activeJob", false);
+  const bool checkpointInterrupted = checkpointAvailable && extractJsonBool(body, "interrupted", false);
+  if (checkpointAvailable) updateRecoveryCheckpointMetadata(body);
+  recoveryCheckpointRequiresReview = checkpointInterrupted || activeMarker || checkpointActive;
+  if (!activeMarker && !checkpointActive) return;
+
+  bootInterruptedJobDetected = true;
+  recoveryCheckpointResetReason = resetReasonName(esp_reset_reason());
+  machineFrame = MachineFrameState();
+  marlinPosition.valid = false;
+  telemetryPositionDirty = true;
+  sendImmediateJobSafetyM5("active job marker found during boot; position invalidated");
+  logJobEvent("boot interrupted job: reset=" + recoveryCheckpointResetReason +
+              " gcode=" + recoveryCheckpointGcodePath +
+              " acknowledgedOffset=" + String(extractJsonInt(body, "lastAcknowledgedByteOffset", 0)));
+}
+
 String jobStatusJson() {
   const float progress = jobStatus.fileSize > 0
-                             ? (static_cast<float>(jobStatus.currentByteOffset) * 100.0f) /
+                             ? (static_cast<float>(jobStatus.lastAcknowledgedByteOffset) * 100.0f) /
                                    static_cast<float>(jobStatus.fileSize)
                              : 0.0f;
   String json = "{";
@@ -1171,7 +1417,16 @@ String jobStatusJson() {
   json += jsonEscape(jobStatus.gcodePath);
   json += "\",\"jobPath\":\"";
   json += jsonEscape(jobStatus.jobPath);
-  json += "\",\"startMode\":\"";
+  json += "\",\"activeRunMode\":\"";
+  json += jsonEscape(jobStatus.activeRunMode);
+  json += "\",\"activeRunFingerprint\":\"";
+  json += jsonEscape(jobStatus.activeRunFingerprint);
+  json += "\",\"workZeroId\":\"";
+  json += jsonEscape(jobStatus.workZeroId);
+  json += "\",\"homingSessionId\":\"";
+  json += jsonEscape(jobStatus.homingSessionId);
+  json += "\",\"homingEpoch\":" + String(jobStatus.homingEpoch);
+  json += ",\"startMode\":\"";
   json += jsonEscape(jobStatus.startMode);
   json += "\",\"streamMode\":\"";
   json += jsonEscape(jobStatus.streamMode);
@@ -1185,6 +1440,8 @@ String jobStatusJson() {
   json += String(jobStatus.fileSize);
   json += ",\"currentByteOffset\":";
   json += String(jobStatus.currentByteOffset);
+  json += ",\"lastAcknowledgedByteOffset\":";
+  json += String(jobStatus.lastAcknowledgedByteOffset);
   json += ",\"progressPercent\":";
   json += String(progress, 1);
   json += ",\"sentLineCount\":";
@@ -1193,6 +1450,8 @@ String jobStatusJson() {
   json += String(jobStatus.acknowledgedLineCount);
   json += ",\"currentLineNumber\":";
   json += String(jobStatus.currentLineNumber);
+  json += ",\"lastAcknowledgedLineNumber\":";
+  json += String(jobStatus.lastAcknowledgedLineNumber);
   json += ",\"pauseRequested\":";
   json += jobStatus.pauseRequested ? "true" : "false";
   json += ",\"stopRequested\":";
@@ -1234,7 +1493,55 @@ String jobStatusJson() {
   json += jsonEscape(jobStatus.lastResponse);
   json += "\",\"lastError\":\"";
   json += jsonEscape(jobStatus.lastError);
-  json += "\",\"lastPriorityCommand\":\"";
+  json += "\",\"errorCode\":\"";
+  json += jsonEscape(jobStatus.errorCode);
+  const bool waitingForMarlinAck = jobWaitingForOk || jobStatus.priorityCommandInProgress;
+  const uint32_t activeAckStartedAtMs = jobStatus.priorityCommandInProgress
+                                            ? priorityCommandStartedAtMs
+                                            : (jobWaitingForOk ? jobCommandStartedAtMs : 0);
+  const uint32_t activeAckTimeoutMs = jobStatus.priorityCommandInProgress
+                                         ? priorityCommandAckTimeoutMs
+                                         : (jobWaitingForOk ? jobCommandAckTimeoutMs : 0);
+  json += "\",\"ackWatchdog\":{\"waiting\":";
+  json += waitingForMarlinAck ? "true" : "false";
+  json += ",\"timeoutMs\":" + String(activeAckTimeoutMs);
+  json += ",\"hardTimeoutMs\":" + String(activeAckTimeoutMs * kMarlinAckHardLimitMultiplier);
+  json += ",\"elapsedMs\":" + String(activeAckStartedAtMs > 0 ? millis() - activeAckStartedAtMs : 0);
+  json += "}";
+  json += ",\"communicationLoss\":";
+  if (jobStatus.communicationLostAtMs > 0) {
+    json += "{\"atMs\":" + String(jobStatus.communicationLostAtMs);
+    json += ",\"command\":\"" + jsonEscape(jobStatus.communicationLostCommand) + "\"";
+    json += ",\"sentByteOffset\":" + String(jobStatus.currentByteOffset);
+    json += ",\"acknowledgedByteOffset\":" + String(jobStatus.lastAcknowledgedByteOffset);
+    json += ",\"workPosition\":";
+    if (jobStatus.communicationLostWorkPositionValid) {
+      json += "{\"x\":" + String(jobStatus.communicationLostWorkX, 3) +
+              ",\"y\":" + String(jobStatus.communicationLostWorkY, 3) +
+              ",\"z\":" + String(jobStatus.communicationLostWorkZ, 3) + "}";
+    } else {
+      json += "null";
+    }
+    json += ",\"machinePosition\":";
+    if (jobStatus.communicationLostMachinePositionValid) {
+      json += "{\"x\":" + String(jobStatus.communicationLostMachineX, 3) +
+              ",\"y\":" + String(jobStatus.communicationLostMachineY, 3) +
+              ",\"z\":" + String(jobStatus.communicationLostMachineZ, 3) + "}";
+    } else {
+      json += "null";
+    }
+    json += "}";
+  } else {
+    json += "null";
+  }
+  json += ",\"recoveryCheckpoint\":{\"requiresReview\":";
+  json += recoveryCheckpointRequiresReview ? "true" : "false";
+  json += ",\"bootInterrupted\":";
+  json += bootInterruptedJobDetected ? "true" : "false";
+  json += ",\"gcodePath\":\"" + jsonEscape(recoveryCheckpointGcodePath) + "\"";
+  json += ",\"jobPath\":\"" + jsonEscape(recoveryCheckpointJobPath) + "\"";
+  json += ",\"resetReason\":\"" + jsonEscape(recoveryCheckpointResetReason) + "\"}";
+  json += ",\"lastPriorityCommand\":\"";
   json += jsonEscape(jobStatus.lastPriorityCommand);
   json += "\",\"lastPriorityResponse\":\"";
   json += jsonEscape(jobStatus.lastPriorityResponse);
@@ -2028,12 +2335,34 @@ bool sendFeedOverrideImmediate(int percent) {
   return true;
 }
 
+uint32_t marlinAckTimeoutForCommand(const String &command, bool toolChangeSequence = false) {
+  String upper = command;
+  upper.toUpperCase();
+  upper.trim();
+  const int separator = upper.indexOf(' ');
+  const String code = separator >= 0 ? upper.substring(0, separator) : upper;
+  if (code == "M400") {
+    return toolChangeSequence ? kMarlinToolChangeAckTimeoutMs : kMarlinMotionDrainAckTimeoutMs;
+  }
+  if (code == "G28" || code == "G29" || code.startsWith("G38.")) {
+    return kMarlinHomingAckTimeoutMs;
+  }
+  return kMarlinCommandAckTimeoutMs;
+}
+
+bool marlinAckWatchdogExpired(uint32_t startedAtMs, uint32_t livenessAtMs, uint32_t timeoutMs) {
+  const uint32_t now = millis();
+  return now - livenessAtMs > timeoutMs ||
+         now - startedAtMs > timeoutMs * kMarlinAckHardLimitMultiplier;
+}
+
 void clearPriorityCommands() {
   priorityCommandCount = 0;
   priorityCommandIndex = 0;
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = 0;
   priorityCommandLivenessAtMs = 0;
+  priorityCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
   jobStatus.priorityCommandInProgress = false;
 }
 
@@ -2086,14 +2415,12 @@ void startNextPriorityCommand() {
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = millis();
   priorityCommandLivenessAtMs = priorityCommandStartedAtMs;
+  priorityCommandAckTimeoutMs = marlinAckTimeoutForCommand(cmd, jobStatus.toolChangePending);
   logJobEvent("priority: " + cmd);
 }
 
 uint32_t priorityAckTimeoutMs() {
-  if (jobStatus.state == JobRunnerState::Pausing && jobStatus.lastPriorityCommand == "M400") {
-    return kMarlinPauseDrainAckTimeoutMs;
-  }
-  return kMarlinCommandAckTimeoutMs;
+  return priorityCommandAckTimeoutMs;
 }
 
 void finishPrioritySequence() {
@@ -2186,21 +2513,14 @@ void processPriorityCommands() {
   }
 
   if (!responseContainsToken(priorityResponseBuffer, "ok")) {
-    if (millis() - priorityCommandLivenessAtMs > priorityAckTimeoutMs()) {
+    if (marlinAckWatchdogExpired(priorityCommandStartedAtMs, priorityCommandLivenessAtMs,
+                                 priorityAckTimeoutMs())) {
       jobStatus.lastPriorityResponse = priorityResponseBuffer;
-      jobStatus.lastPriorityError = "Priority command timed out";
+      jobStatus.lastPriorityError = "Priority command acknowledgement timed out";
       addMarlinLog("rx", true, priorityResponseBuffer.length() > 0 ? priorityResponseBuffer : "timeout", "error");
       noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer, jobStatus.lastPriorityError);
-      clearPriorityCommands();
-      if (jobStatus.state == JobRunnerState::Preparing || jobStatus.state == JobRunnerState::Pausing ||
-          jobStatus.state == JobRunnerState::Stopping) {
-        jobStatus.state = JobRunnerState::Error;
-        jobStatus.lastError = jobStatus.lastPriorityError;
-        jobRunning = false;
-        if (jobFile) jobFile.close();
-      }
-      touchJobStatus();
-      logJobEvent("priority timeout");
+      setJobCommunicationLost("Marlin acknowledgement timed out for priority command: " +
+                              jobStatus.lastPriorityCommand);
     }
     return;
   }
@@ -3172,15 +3492,18 @@ bool validateProductionResumeFile(const String &path, uint32_t &commandCount, St
   return true;
 }
 
-void setJobError(const String &message) {
+void setJobError(const String &message, bool resetFeedOverride) {
   if (jobFile) {
     jobFile.close();
   }
-  resetFeedOverrideAfterJobIfNeeded();
+  if (resetFeedOverride) {
+    resetFeedOverrideAfterJobIfNeeded();
+  }
   clearPriorityCommands();
   jobWaitingForOk = false;
   jobCommandStartedAtMs = 0;
   jobCommandLivenessAtMs = 0;
+  jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
@@ -3190,6 +3513,58 @@ void setJobError(const String &message) {
   jobStatus.lastError = message;
   touchJobStatus();
   logJobEvent("error: " + message);
+}
+
+void sendImmediateJobSafetyM5(const String &reason) {
+  // This intentionally bypasses the normal queue: the pending command may never
+  // acknowledge, but spindle shutdown must still be attempted immediately.
+  addMarlinLog("tx", true, "M5");
+  Serial.print("M5\n");
+  logJobEvent("immediate M5: " + reason);
+}
+
+void setJobCommunicationLost(const String &message) {
+  const String failedCommand = jobStatus.priorityCommandInProgress
+                                   ? jobStatus.lastPriorityCommand
+                                   : jobStatus.lastCommand;
+  jobStatus.errorCode = "COMMUNICATION_LOST";
+  jobStatus.communicationLostAtMs = millis();
+  jobStatus.communicationLostCommand = failedCommand;
+  if (marlinPosition.valid) {
+    jobStatus.communicationLostWorkPositionValid = true;
+    jobStatus.communicationLostWorkX = marlinPosition.x;
+    jobStatus.communicationLostWorkY = marlinPosition.y;
+    jobStatus.communicationLostWorkZ = marlinPosition.z;
+  }
+  if (machineFrame.machineValid) {
+    jobStatus.communicationLostMachinePositionValid = true;
+    jobStatus.communicationLostMachineX = machineFrame.machineX;
+    jobStatus.communicationLostMachineY = machineFrame.machineY;
+    jobStatus.communicationLostMachineZ = machineFrame.machineZ;
+  }
+
+  String checkpoint = "communication_lost command=" + failedCommand;
+  checkpoint += " sentOffset=" + String(jobStatus.currentByteOffset);
+  checkpoint += " acknowledgedOffset=" + String(jobStatus.lastAcknowledgedByteOffset);
+  checkpoint += " line=" + String(jobStatus.currentLineNumber);
+  checkpoint += " acknowledgedLine=" + String(jobStatus.lastAcknowledgedLineNumber);
+  if (jobStatus.communicationLostMachinePositionValid) {
+    checkpoint += " machine=" + String(jobStatus.communicationLostMachineX, 3) + "," +
+                  String(jobStatus.communicationLostMachineY, 3) + "," +
+                  String(jobStatus.communicationLostMachineZ, 3);
+  }
+  if (jobStatus.communicationLostWorkPositionValid) {
+    checkpoint += " work=" + String(jobStatus.communicationLostWorkX, 3) + "," +
+                  String(jobStatus.communicationLostWorkY, 3) + "," +
+                  String(jobStatus.communicationLostWorkZ, 3);
+  }
+  logJobEvent(checkpoint);
+
+  // Do not wait for another acknowledgement on a transport that just timed out.
+  // M410 is deliberately not automatic: an abrupt planner stop requires an explicit
+  // operator policy because it can lose position and stress the machine.
+  sendImmediateJobSafetyM5("communication lost; M410 not requested");
+  setJobError(message, false);
 }
 
 bool openJobFileAtOffset() {
@@ -3260,6 +3635,9 @@ void completeJob() {
   jobWaitingForOk = false;
   jobCommandStartedAtMs = 0;
   jobCommandLivenessAtMs = 0;
+  jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+  jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
+  jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
@@ -3268,6 +3646,7 @@ void completeJob() {
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Completed;
   jobStatus.completedAtMs = millis();
+  clearPersistentJobCheckpoint();
   touchJobStatus();
   logJobEvent("completed: " + jobStatus.gcodePath);
 }
@@ -3315,20 +3694,26 @@ void processJobRunner() {
     if (responseContainsToken(jobResponseBuffer, "Error:")) {
       jobStatus.lastResponse = jobResponseBuffer;
       addMarlinLog("rx", false, jobResponseBuffer);
-      setJobError("Marlin reported Error");
+      jobStatus.errorCode = "MARLIN_COMMAND_REJECTED";
+      sendImmediateJobSafetyM5("Marlin rejected streamed command");
+      setJobError("Marlin reported Error", false);
       return;
     }
     if (responseContainsToken(jobResponseBuffer, "Resend:")) {
       jobStatus.lastResponse = jobResponseBuffer;
       addMarlinLog("rx", false, jobResponseBuffer);
-      setJobError("Marlin requested Resend; TODO: add line-numbered resend support");
+      jobStatus.errorCode = "RESEND_UNSUPPORTED";
+      sendImmediateJobSafetyM5("Marlin requested unsupported Resend");
+      setJobError("Marlin requested Resend; line-numbered replay is not supported", false);
       return;
     }
     if (!responseContainsToken(jobResponseBuffer, "ok")) {
-      if (millis() - jobCommandLivenessAtMs > kMarlinCommandAckTimeoutMs) {
+      if (marlinAckWatchdogExpired(jobCommandStartedAtMs, jobCommandLivenessAtMs,
+                                   jobCommandAckTimeoutMs)) {
         jobStatus.lastResponse = jobResponseBuffer;
         addMarlinLog("rx", false, jobResponseBuffer.length() > 0 ? jobResponseBuffer : "timeout", "error");
-        setJobError("Marlin acknowledgement timed out; command was not resent: " + jobStatus.lastCommand);
+        setJobCommunicationLost("Marlin acknowledgement timed out; command was not resent: " +
+                                jobStatus.lastCommand);
       }
       return;
     }
@@ -3341,6 +3726,9 @@ void processJobRunner() {
     jobWaitingForOk = false;
     jobCommandStartedAtMs = 0;
     jobCommandLivenessAtMs = 0;
+    jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+    jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
+    jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
     touchJobProgress();
   }
 
@@ -3388,6 +3776,8 @@ void processJobRunner() {
     if (gcodeIsStandaloneToolSelect(line, toolNumber)) {
       jobStatus.selectedToolNumber = toolNumber;
       jobStatus.currentLineNumber += 1;
+      jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
+      jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
       jobStatus.lastCommand = line;
       logJobEvent("tool selected by G-code: T" + String(toolNumber));
       touchJobProgress();
@@ -3406,6 +3796,7 @@ void processJobRunner() {
   jobWaitingForOk = true;
   jobCommandStartedAtMs = millis();
   jobCommandLivenessAtMs = jobCommandStartedAtMs;
+  jobCommandAckTimeoutMs = marlinAckTimeoutForCommand(line);
   touchJobProgress();
 }
 
@@ -4116,6 +4507,25 @@ void handleDownload() {
   file.close();
 }
 
+bool mutationPathTouchesLockedFile(const String &path) {
+  if (!(jobIsActive() || jobCheckpointTracking || recoveryCheckpointRequiresReview)) return false;
+  const String normalized = normalizeSdPath(path);
+  const String lockedPaths[] = {
+      jobStatus.gcodePath, jobStatus.jobPath, jobStatus.authorizationActiveRunPath,
+      recoveryCheckpointGcodePath, recoveryCheckpointJobPath, recoveryCheckpointActiveRunPath,
+  };
+  for (const String &lockedRaw : lockedPaths) {
+    const String locked = normalizeSdPath(lockedRaw);
+    if (locked.length() == 0 || locked == "/") continue;
+    if (normalized == locked || locked.startsWith(normalized + "/")) return true;
+  }
+  return false;
+}
+
+void rejectLockedFileMutation(const String &path) {
+  sendJsonError(423, "file is locked by the active or interrupted job: " + path);
+}
+
 void resetUploadState() {
   if (uploadFile) {
     uploadFile.close();
@@ -4124,6 +4534,7 @@ void resetUploadState() {
   uploadTargetPath = "";
   uploadSeen = false;
   uploadOk = false;
+  uploadTargetOpened = false;
 }
 
 void handleUploadComplete() {
@@ -4133,7 +4544,8 @@ void handleUploadComplete() {
   }
 
   if (!uploadOk) {
-    sendJsonError(400, uploadError.length() > 0 ? uploadError : "upload failed");
+    const int status = uploadError.indexOf("locked") >= 0 ? 423 : 400;
+    sendJsonError(status, uploadError.length() > 0 ? uploadError : "upload failed");
     return;
   }
 
@@ -4177,6 +4589,10 @@ void handleUploadData() {
     }
 
     uploadTargetPath = dir + "/" + upload.filename;
+    if (mutationPathTouchesLockedFile(uploadTargetPath)) {
+      uploadError = "file is locked by the active or interrupted job";
+      return;
+    }
     if (SD_MMC.exists(uploadTargetPath) && server.arg("overwrite") != "true") {
       uploadError = "file exists";
       return;
@@ -4185,6 +4601,8 @@ void handleUploadData() {
     uploadFile = SD_MMC.open(uploadTargetPath, FILE_WRITE);
     if (!uploadFile) {
       uploadError = "could not create file";
+    } else {
+      uploadTargetOpened = true;
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (uploadError.length() > 0 || !uploadFile) {
@@ -4200,7 +4618,7 @@ void handleUploadData() {
     }
 
     if (upload.totalSize == 0 && uploadError.length() == 0) {
-      SD_MMC.remove(uploadTargetPath);
+      if (uploadTargetOpened) SD_MMC.remove(uploadTargetPath);
       uploadError = "empty upload";
       return;
     }
@@ -4210,7 +4628,7 @@ void handleUploadData() {
     if (uploadFile) {
       uploadFile.close();
     }
-    if (uploadTargetPath.length() > 0) {
+    if (uploadTargetOpened && uploadTargetPath.length() > 0) {
       SD_MMC.remove(uploadTargetPath);
     }
     uploadError = "upload aborted";
@@ -4226,6 +4644,10 @@ void handleDelete() {
   const String path = normalizeSdPath(extractJsonString(server.arg("plain"), "path"));
   if (!isSafeSdPath(path) || isRootDirectory(path)) {
     sendJsonError(400, "unsafe path");
+    return;
+  }
+  if (mutationPathTouchesLockedFile(path)) {
+    rejectLockedFileMutation(path);
     return;
   }
 
@@ -4282,6 +4704,10 @@ void handleRename() {
   const String to = normalizeSdPath(extractJsonString(body, "to"));
   if (!isSafeSdPath(from) || !isSafeSdPath(to) || isRootDirectory(from) || isRootDirectory(to)) {
     sendJsonError(400, "unsafe path");
+    return;
+  }
+  if (mutationPathTouchesLockedFile(from) || mutationPathTouchesLockedFile(to)) {
+    rejectLockedFileMutation(mutationPathTouchesLockedFile(from) ? from : to);
     return;
   }
 
@@ -4369,106 +4795,371 @@ void handleCommand() {
   server.send(200, "application/json", json);
 }
 
-bool jobJsonIsArmed(const String &jobPath) {
-  return jobFileContainsText(jobPath, "\"startAuthorizationToken\":\"AUTHORIZED\"");
+struct JobExecutionAuthorization {
+  int schemaVersion = 0;
+  String startAuthorizationToken;
+  String startAuthorizationState;
+  String activeRunMode;
+  String activeRunPath;
+  String activeRunFingerprint;
+  size_t activeRunSizeBytes = 0;
+  String authorizationRunMode;
+  String authorizationRunPath;
+  String authorizationRunFingerprint;
+  size_t authorizationRunSizeBytes = 0;
+  String authorizationWorkZeroId;
+  uint32_t authorizationHomingEpoch = 0;
+  String authorizationHomingSessionId;
+  String activeWorkZeroId;
+  String armState;
+  String armRunMode;
+  String armRunPath;
+  String armRunFingerprint;
+  size_t armRunSizeBytes = 0;
+  String verificationResult;
+  String verificationType;
+  String verificationRunPath;
+  String verificationRunFingerprint;
+  size_t verificationRunSizeBytes = 0;
+  String generatedValidationStatus;
+  bool allowedWorkspaceCommands = false;
+  int feedStartPercent = 100;
+  bool resetFeedAfterJob = true;
+};
+
+String jsonVariantString(JsonVariantConst value) {
+  const char *text = value | "";
+  return String(text);
 }
 
-String readJobJsonSnippet(const String &jobPath) {
-  File file = SD_MMC.open(jobPath, FILE_READ);
-  if (!file || file.isDirectory()) {
-    if (file) {
-      file.close();
-    }
-    return "";
-  }
-
-  String body;
-  while (file.available()) {
-    body += static_cast<char>(file.read());
-    if (body.length() > 16384) {
-      break;
-    }
-  }
-  file.close();
-  return body;
-}
-
-bool jobFileContainsText(const String &jobPath, const String &needle) {
-  if (needle.length() == 0) return false;
+bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorization &authorization,
+                                   String &error) {
   File file = SD_MMC.open(jobPath, FILE_READ);
   if (!file || file.isDirectory()) {
     if (file) file.close();
+    error = "job JSON not found";
     return false;
   }
-  String window;
-  window.reserve(needle.length() + 256);
+
+  JsonDocument filter;
+  filter["schemaVersion"] = true;
+  filter["startAuthorizationToken"] = true;
+  filter["activeWorkZeroId"] = true;
+  filter["allowedWorkspaceCommands"] = true;
+  for (const char *key : {"mode", "path", "sizeBytes", "sourceFingerprint", "generatedFingerprint"}) {
+    filter["activeRun"][key] = true;
+  }
+  for (const char *key : {"state", "activeRunMode", "activeRunPath", "activeRunFingerprint",
+                          "activeRunSizeBytes", "workZeroId", "homingEpoch", "homingSessionId"}) {
+    filter["startAuthorization"][key] = true;
+  }
+  for (const char *key : {"state", "activeRunMode", "activeRunPath", "activeRunFingerprint",
+                          "activeRunSizeBytes"}) {
+    filter["arm"][key] = true;
+  }
+  for (const char *key : {"result", "type", "activeRunPath", "activeRunFingerprint",
+                          "activeRunSizeBytes"}) {
+    filter["verificationDecision"][key] = true;
+  }
+  filter["generatedValidation"]["status"] = true;
+  filter["feedOverride"]["startPercent"] = true;
+  filter["feedOverride"]["resetTo100AfterJob"] = true;
+
+  JsonDocument doc;
+  const DeserializationError parseError =
+      deserializeJson(doc, file, DeserializationOption::Filter(filter));
+  file.close();
+  if (parseError) {
+    error = "invalid job JSON: " + String(parseError.c_str());
+    return false;
+  }
+
+  authorization.schemaVersion = doc["schemaVersion"] | 0;
+  authorization.startAuthorizationToken = jsonVariantString(doc["startAuthorizationToken"]);
+  authorization.activeWorkZeroId = jsonVariantString(doc["activeWorkZeroId"]);
+  authorization.allowedWorkspaceCommands = doc["allowedWorkspaceCommands"] | false;
+
+  JsonObjectConst activeRun = doc["activeRun"];
+  authorization.activeRunMode = jsonVariantString(activeRun["mode"]);
+  authorization.activeRunPath = normalizeSdPath(jsonVariantString(activeRun["path"]));
+  authorization.activeRunSizeBytes = activeRun["sizeBytes"] | 0;
+  authorization.activeRunFingerprint = authorization.activeRunMode == "generated"
+                                           ? jsonVariantString(activeRun["generatedFingerprint"])
+                                           : jsonVariantString(activeRun["sourceFingerprint"]);
+
+  JsonObjectConst start = doc["startAuthorization"];
+  authorization.startAuthorizationState = jsonVariantString(start["state"]);
+  authorization.authorizationRunMode = jsonVariantString(start["activeRunMode"]);
+  authorization.authorizationRunPath = normalizeSdPath(jsonVariantString(start["activeRunPath"]));
+  authorization.authorizationRunFingerprint = jsonVariantString(start["activeRunFingerprint"]);
+  authorization.authorizationRunSizeBytes = start["activeRunSizeBytes"] | 0;
+  authorization.authorizationWorkZeroId = jsonVariantString(start["workZeroId"]);
+  authorization.authorizationHomingEpoch = start["homingEpoch"] | 0;
+  authorization.authorizationHomingSessionId = jsonVariantString(start["homingSessionId"]);
+
+  JsonObjectConst arm = doc["arm"];
+  authorization.armState = jsonVariantString(arm["state"]);
+  authorization.armRunMode = jsonVariantString(arm["activeRunMode"]);
+  authorization.armRunPath = normalizeSdPath(jsonVariantString(arm["activeRunPath"]));
+  authorization.armRunFingerprint = jsonVariantString(arm["activeRunFingerprint"]);
+  authorization.armRunSizeBytes = arm["activeRunSizeBytes"] | 0;
+
+  JsonObjectConst verification = doc["verificationDecision"];
+  authorization.verificationResult = jsonVariantString(verification["result"]);
+  authorization.verificationType = jsonVariantString(verification["type"]);
+  authorization.verificationRunPath = normalizeSdPath(jsonVariantString(verification["activeRunPath"]));
+  authorization.verificationRunFingerprint = jsonVariantString(verification["activeRunFingerprint"]);
+  authorization.verificationRunSizeBytes = verification["activeRunSizeBytes"] | 0;
+  authorization.generatedValidationStatus = jsonVariantString(doc["generatedValidation"]["status"]);
+  authorization.feedStartPercent = doc["feedOverride"]["startPercent"] | 100;
+  authorization.resetFeedAfterJob = doc["feedOverride"]["resetTo100AfterJob"] | true;
+  return true;
+}
+
+bool isHexSha256(const String &value) {
+  if (value.length() != 64) return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char c = value[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
+  }
+  return true;
+}
+
+String bytesToHex(const uint8_t *bytes, size_t length) {
+  static const char hex[] = "0123456789abcdef";
+  String result;
+  result.reserve(length * 2);
+  for (size_t i = 0; i < length; ++i) {
+    result += hex[(bytes[i] >> 4) & 0x0f];
+    result += hex[bytes[i] & 0x0f];
+  }
+  return result;
+}
+
+String fingerprintPart(const String &fingerprint, const String &name) {
+  const String marker = name + ":";
+  const int start = fingerprint.indexOf(marker);
+  if (start < 0) return "";
+  const int valueStart = start + marker.length();
+  const int end = fingerprint.indexOf(':', valueStart);
+  return end < 0 ? fingerprint.substring(valueStart) : fingerprint.substring(valueStart, end);
+}
+
+bool activeRunFileMatches(const String &path, size_t expectedSize, const String &expectedFingerprint,
+                          String &error) {
+  if (expectedSize == 0 || expectedFingerprint.length() == 0) {
+    error = "active run size and fingerprint are required";
+    return false;
+  }
+  File file = SD_MMC.open(path, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    error = "active run file not found";
+    return false;
+  }
+  if (file.size() != expectedSize) {
+    file.close();
+    error = "active run file size changed after authorization";
+    return false;
+  }
+
+  uint8_t buffer[512];
+  if (isHexSha256(expectedFingerprint)) {
+    mbedtls_sha256_context context;
+    uint8_t digest[32];
+    mbedtls_sha256_init(&context);
+    mbedtls_sha256_starts_ret(&context, 0);
+    while (file.available()) {
+      const size_t count = file.read(buffer, sizeof(buffer));
+      if (count > 0) mbedtls_sha256_update_ret(&context, buffer, count);
+    }
+    mbedtls_sha256_finish_ret(&context, digest);
+    mbedtls_sha256_free(&context);
+    file.close();
+    String expected = expectedFingerprint;
+    expected.toLowerCase();
+    if (bytesToHex(digest, sizeof(digest)) != expected) {
+      error = "active run SHA-256 changed after authorization";
+      return false;
+    }
+    return true;
+  }
+
+  const String expectedSizePart = fingerprintPart(expectedFingerprint, "size");
+  const String expectedFnv = fingerprintPart(expectedFingerprint, "fnv1a");
+  if (expectedSizePart.length() == 0 || expectedFnv.length() == 0 ||
+      static_cast<size_t>(strtoull(expectedSizePart.c_str(), nullptr, 10)) != expectedSize) {
+    file.close();
+    error = "unsupported active run fingerprint";
+    return false;
+  }
+  uint32_t hash = 0x811c9dc5u;
   while (file.available()) {
-    for (int i = 0; i < 256 && file.available(); ++i) {
-      const char c = static_cast<char>(file.read());
-      if (c != ' ' && c != '\n' && c != '\r' && c != '\t') window += c;
+    const size_t count = file.read(buffer, sizeof(buffer));
+    for (size_t i = 0; i < count; ++i) {
+      hash ^= buffer[i];
+      hash *= 0x01000193u;
     }
-    if (window.indexOf(needle) >= 0) {
-      file.close();
-      return true;
-    }
-    const size_t keep = min(static_cast<size_t>(window.length()), static_cast<size_t>(needle.length()));
-    window = window.substring(window.length() - keep);
   }
   file.close();
-  return window.indexOf(needle) >= 0;
+  char actualFnv[9];
+  snprintf(actualFnv, sizeof(actualFnv), "%08lx", static_cast<unsigned long>(hash));
+  String expectedFnvLower = expectedFnv;
+  expectedFnvLower.toLowerCase();
+  if (String(actualFnv) != expectedFnvLower) {
+    error = "active run fingerprint changed after authorization";
+    return false;
+  }
+  return true;
 }
 
-bool jobJsonAllowsWorkspaceCommands(const String &jobPath) {
-  return jobFileContainsText(jobPath, "\"allowedWorkspaceCommands\":true");
+bool validateJobExecutionAuthorization(const JobExecutionAuthorization &authorization,
+                                       const String &gcodePath, const String &activeRunMode,
+                                       const String &activeRunFingerprint, size_t activeRunSizeBytes,
+                                       const String &workZeroId, uint32_t homingEpoch,
+                                       const String &homingSessionId, String &error) {
+  if (authorization.schemaVersion != 3 || authorization.startAuthorizationToken != "AUTHORIZED" ||
+      authorization.startAuthorizationState != "authorized") {
+    error = "job JSON has no valid v3 start authorization";
+    return false;
+  }
+  if (activeRunMode != "source" && activeRunMode != "generated") {
+    error = "activeRunMode must be source or generated";
+    return false;
+  }
+  if (authorization.activeRunMode != activeRunMode || authorization.activeRunPath != gcodePath ||
+      authorization.activeRunFingerprint != activeRunFingerprint ||
+      authorization.activeRunSizeBytes != activeRunSizeBytes) {
+    error = "requested file does not match job activeRun identity";
+    return false;
+  }
+  if (authorization.authorizationRunMode != activeRunMode ||
+      authorization.authorizationRunPath != gcodePath ||
+      authorization.authorizationRunFingerprint != activeRunFingerprint ||
+      authorization.authorizationRunSizeBytes != activeRunSizeBytes) {
+    error = "start authorization does not match the active run";
+    return false;
+  }
+  if (authorization.armState != "ARMED" || authorization.armRunMode != activeRunMode ||
+      authorization.armRunPath != gcodePath || authorization.armRunFingerprint != activeRunFingerprint ||
+      authorization.armRunSizeBytes != activeRunSizeBytes) {
+    error = "arm identity is stale or does not match the active run";
+    return false;
+  }
+  const bool verificationTypeValid = authorization.verificationType == "bounds" ||
+                                     authorization.verificationType == "aircut" ||
+                                     authorization.verificationType == "skipped";
+  if (authorization.verificationResult != "complete" || !verificationTypeValid ||
+      authorization.verificationRunPath != gcodePath ||
+      authorization.verificationRunFingerprint != activeRunFingerprint ||
+      authorization.verificationRunSizeBytes != activeRunSizeBytes) {
+    error = "physical verification identity is stale or incomplete";
+    return false;
+  }
+  if (authorization.activeWorkZeroId != workZeroId ||
+      authorization.authorizationWorkZeroId != workZeroId ||
+      authorization.authorizationHomingEpoch != homingEpoch ||
+      authorization.authorizationHomingSessionId != homingSessionId) {
+    error = "authorized work-zero or homing identity changed";
+    return false;
+  }
+  if (activeRunMode == "generated" && authorization.generatedValidationStatus != "valid") {
+    error = "generated active run is not validated";
+    return false;
+  }
+  return activeRunFileMatches(gcodePath, activeRunSizeBytes, activeRunFingerprint, error);
 }
 
-String compactJsonForStringChecks(String body) {
-  body.replace(" ", "");
-  body.replace("\n", "");
-  body.replace("\r", "");
-  body.replace("\t", "");
-  return body;
-}
+struct ProductionResumeIdentity {
+  bool authorized = false;
+  String eventId;
+  String interruptedRunId;
+  String activeRunPath;
+  String activeRunMode;
+  String activeRunFingerprint;
+  String streamPath;
+  String streamFingerprint;
+  size_t streamSizeBytes = 0;
+  bool eventMatches = false;
+  int feedStartPercent = 100;
+  bool resetFeedAfterJob = true;
+};
 
-bool jobJsonAllowsActiveGeneratedRun(const String &jobPath, const String &gcodePath) {
-  const String activeRunNeedle = String("\"activeRun\":{\"mode\":\"generated\",\"path\":\"") +
-                                 gcodePath + "\"";
+bool loadProductionResumeIdentity(const String &jobPath, const String &wantedEventId,
+                                  ProductionResumeIdentity &identity, String &error) {
+  File file = SD_MMC.open(jobPath, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    error = "job JSON not found";
+    return false;
+  }
+  JsonDocument filter;
+  for (const char *key : {"authorized", "eventId", "interruptedRunId", "activeRunPath",
+                          "activeRunMode", "activeRunFingerprint", "streamPath",
+                          "streamFingerprint", "streamSizeBytes"}) {
+    filter["productionResumeAuthorization"][key] = true;
+  }
+  for (const char *key : {"id", "type", "state", "runId", "activeRunPath", "activeRunMode",
+                          "activeRunFingerprint", "phase1CompletedAt", "manualRouterConfirmedAt",
+                          "streamPath"}) {
+    filter["recoveryHistory"][0][key] = true;
+  }
+  filter["feedOverride"]["startPercent"] = true;
+  filter["feedOverride"]["resetTo100AfterJob"] = true;
 
-  // TODO: Replace this minimal provenance check with robust JSON parsing.
-  return jobFileContainsText(jobPath, activeRunNeedle) &&
-         jobFileContainsText(jobPath, "\"generatedValidation\":{\"status\":\"valid\"");
-}
-
-bool jobJsonAllowsProductionResume(const String &jobPath, const String &activeRunPath,
-                                   const String &activeRunMode, const String &eventId,
-                                   const String &interruptedRunId, const String &activeRunFingerprint) {
-  if (eventId.length() == 0 || interruptedRunId.length() == 0 ||
-      activeRunPath.length() == 0 || (activeRunMode != "source" && activeRunMode != "generated")) {
+  JsonDocument doc;
+  const DeserializationError parseError =
+      deserializeJson(doc, file, DeserializationOption::Filter(filter));
+  file.close();
+  if (parseError) {
+    error = "invalid job JSON: " + String(parseError.c_str());
     return false;
   }
 
-  // TODO: Replace these whole-file token checks with a streaming JSON parser.
-  const String pathNeedle = String("\"activeRunPath\":\"") + activeRunPath + "\"";
-  const String modeNeedle = String("\"activeRunMode\":\"") + activeRunMode + "\"";
-  const String eventNeedle = String("\"eventId\":\"") + eventId + "\"";
-  const String runNeedle = String("\"interruptedRunId\":\"") + interruptedRunId + "\"";
-  const String fingerprintNeedle = String("\"activeRunFingerprint\":\"") + activeRunFingerprint + "\"";
-  return jobFileContainsText(jobPath, "\"productionResumeAuthorization\":{") &&
-         jobFileContainsText(jobPath, "\"authorized\":true") &&
-         jobFileContainsText(jobPath, eventNeedle) && jobFileContainsText(jobPath, runNeedle) &&
-         jobFileContainsText(jobPath, pathNeedle) && jobFileContainsText(jobPath, modeNeedle) &&
-         (activeRunFingerprint.length() == 0 || jobFileContainsText(jobPath, fingerprintNeedle));
+  JsonObjectConst auth = doc["productionResumeAuthorization"];
+  identity.authorized = auth["authorized"] | false;
+  identity.eventId = jsonVariantString(auth["eventId"]);
+  identity.interruptedRunId = jsonVariantString(auth["interruptedRunId"]);
+  identity.activeRunPath = normalizeSdPath(jsonVariantString(auth["activeRunPath"]));
+  identity.activeRunMode = jsonVariantString(auth["activeRunMode"]);
+  identity.activeRunFingerprint = jsonVariantString(auth["activeRunFingerprint"]);
+  identity.streamPath = normalizeSdPath(jsonVariantString(auth["streamPath"]));
+  identity.streamFingerprint = jsonVariantString(auth["streamFingerprint"]);
+  identity.streamSizeBytes = auth["streamSizeBytes"] | 0;
+  identity.feedStartPercent = doc["feedOverride"]["startPercent"] | 100;
+  identity.resetFeedAfterJob = doc["feedOverride"]["resetTo100AfterJob"] | true;
+
+  for (JsonObjectConst event : doc["recoveryHistory"].as<JsonArrayConst>()) {
+    if (jsonVariantString(event["id"]) != wantedEventId) continue;
+    identity.eventMatches = jsonVariantString(event["type"]) == "production-resume" &&
+                            jsonVariantString(event["state"]) == "started" &&
+                            jsonVariantString(event["runId"]) == identity.interruptedRunId &&
+                            normalizeSdPath(jsonVariantString(event["activeRunPath"])) == identity.activeRunPath &&
+                            jsonVariantString(event["activeRunMode"]) == identity.activeRunMode &&
+                            jsonVariantString(event["activeRunFingerprint"]) == identity.activeRunFingerprint &&
+                            jsonVariantString(event["phase1CompletedAt"]).length() > 0 &&
+                            jsonVariantString(event["manualRouterConfirmedAt"]).length() > 0 &&
+                            normalizeSdPath(jsonVariantString(event["streamPath"])) == identity.streamPath;
+    break;
+  }
+  return true;
 }
 
-int jobJsonFeedStartPercent(const String &jobPath) {
-  const String body = readJobJsonSnippet(jobPath);
-  const int percent = extractJsonInt(body, "startPercent", 100);
-  return (percent >= 10 && percent <= 200) ? percent : 100;
-}
-
-bool jobJsonResetFeedAfterJob(const String &jobPath) {
-  const String body = readJobJsonSnippet(jobPath);
-  return extractJsonBool(body, "resetTo100AfterJob", true);
+bool validateProductionResumeIdentity(const ProductionResumeIdentity &identity,
+                                      const String &path, const String &activeRunPath,
+                                      const String &activeRunMode, const String &activeRunFingerprint,
+                                      const String &eventId, const String &interruptedRunId,
+                                      const String &streamFingerprint, size_t streamSizeBytes,
+                                      String &error) {
+  if (!identity.authorized || !identity.eventMatches || identity.eventId != eventId ||
+      identity.interruptedRunId != interruptedRunId || identity.activeRunPath != activeRunPath ||
+      identity.activeRunMode != activeRunMode || identity.activeRunFingerprint != activeRunFingerprint ||
+      identity.streamPath != path || identity.streamFingerprint != streamFingerprint ||
+      identity.streamSizeBytes != streamSizeBytes) {
+    error = "Production Resume metadata or stream identity is stale";
+    return false;
+  }
+  return activeRunFileMatches(path, streamSizeBytes, streamFingerprint, error);
 }
 
 void resetFeedOverrideAfterJobIfNeeded() {
@@ -4561,6 +5252,38 @@ void handleJobStatus() {
   server.send(200, "application/json", jobStatusJson());
 }
 
+void handleRecoveryCheckpointGet() {
+  String body;
+  const bool available = readPersistentJobCheckpoint(body);
+  String json = "{\"available\":";
+  json += available ? "true" : "false";
+  json += ",\"requiresReview\":";
+  json += recoveryCheckpointRequiresReview ? "true" : "false";
+  json += ",\"bootInterrupted\":";
+  json += bootInterruptedJobDetected ? "true" : "false";
+  json += ",\"requiresHoming\":";
+  json += bootInterruptedJobDetected ? "true" : "false";
+  json += ",\"resetReason\":\"" + jsonEscape(recoveryCheckpointResetReason) + "\"";
+  json += ",\"checkpoint\":";
+  json += available ? body : "null";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleRecoveryCheckpointAcknowledge() {
+  if (jobIsActive() || jobCheckpointTracking) {
+    sendJsonError(409, "cannot clear recovery evidence while a job or motion stream is active");
+    return;
+  }
+  if (!server.hasArg("plain") || !extractJsonBool(server.arg("plain"), "confirmed", false)) {
+    sendJsonError(400, "confirmed true is required after importing or deliberately dismissing recovery evidence");
+    return;
+  }
+  clearPersistentJobCheckpoint();
+  logJobEvent("recovery checkpoint acknowledged by operator");
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Recovery checkpoint cleared. Machine position remains untrusted until Home All.\"}");
+}
+
 void handleTestMotionStart() {
   if (!sdMounted) {
     sendJsonError(503, "SD card is not mounted");
@@ -4568,6 +5291,10 @@ void handleTestMotionStart() {
   }
   if (jobIsActive()) {
     sendJsonError(409, "another job or motion stream is already active");
+    return;
+  }
+  if (recoveryCheckpointRequiresReview) {
+    sendJsonError(409, "review and import or dismiss the interrupted-job checkpoint before starting motion");
     return;
   }
   if (!server.hasArg("plain")) {
@@ -4607,6 +5334,8 @@ void handleTestMotionStart() {
   clearPriorityCommands();
   jobStatus.state = JobRunnerState::Preparing;
   jobStatus.gcodePath = path;
+  jobStatus.activeRunMode = "generated";
+  jobStatus.authorizationActiveRunPath = path;
   jobStatus.startMode = "validated_test_motion";
   jobStatus.streamMode = mode;
   jobStatus.safeStartZ = safeZ;
@@ -4618,6 +5347,11 @@ void handleTestMotionStart() {
   jobStatus.fileSize = sizeFile ? sizeFile.size() : 0;
   if (sizeFile) sizeFile.close();
   if (!openJobFileAtOffset()) {
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
+  if (!beginPersistentJobCheckpoint()) {
+    setJobError("could not persist the active-job checkpoint");
     sendJsonError(500, jobStatus.lastError);
     return;
   }
@@ -4638,6 +5372,10 @@ void handleProductionResumeStart() {
     sendJsonError(409, "another job or motion stream is already active");
     return;
   }
+  if (recoveryCheckpointRequiresReview) {
+    sendJsonError(409, "import the interrupted-job checkpoint before starting Production Resume");
+    return;
+  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
@@ -4649,6 +5387,8 @@ void handleProductionResumeStart() {
   const String activeRunPath = normalizeSdPath(extractJsonString(body, "activeRunPath"));
   const String activeRunMode = extractJsonString(body, "activeRunMode");
   const String activeRunFingerprint = extractJsonString(body, "activeRunFingerprint");
+  const String streamFingerprint = extractJsonString(body, "streamFingerprint");
+  const int requestedStreamSize = extractJsonInt(body, "streamSizeBytes", -1);
   const String eventId = extractJsonString(body, "eventId");
   const String interruptedRunId = extractJsonString(body, "interruptedRunId");
 
@@ -4660,13 +5400,19 @@ void handleProductionResumeStart() {
     sendJsonError(404, "job JSON not found");
     return;
   }
-  if (!jobJsonAllowsProductionResume(jobPath, activeRunPath, activeRunMode, eventId,
-                                     interruptedRunId, activeRunFingerprint)) {
-    sendJsonError(409, "Production Resume metadata no longer matches the prepared recovery");
+  ProductionResumeIdentity identity;
+  String identityError;
+  if (!loadProductionResumeIdentity(jobPath, eventId, identity, identityError)) {
+    sendJsonError(400, identityError);
     return;
   }
-  if (activeRunMode == "generated" && !jobJsonAllowsActiveGeneratedRun(jobPath, activeRunPath)) {
-    sendJsonError(409, "generated active run is no longer valid");
+  if (requestedStreamSize <= 0 ||
+      !validateProductionResumeIdentity(identity, path, activeRunPath, activeRunMode,
+                                        activeRunFingerprint, eventId, interruptedRunId,
+                                        streamFingerprint, static_cast<size_t>(requestedStreamSize),
+                                        identityError)) {
+    sendJsonError(409, identityError.length() > 0 ? identityError
+                                                  : "Production Resume identity is invalid");
     return;
   }
 
@@ -4685,11 +5431,16 @@ void handleProductionResumeStart() {
   jobStatus.state = JobRunnerState::Preparing;
   jobStatus.gcodePath = path;
   jobStatus.jobPath = jobPath;
+  jobStatus.activeRunMode = activeRunMode;
+  jobStatus.activeRunFingerprint = activeRunFingerprint;
+  jobStatus.authorizationActiveRunPath = activeRunPath;
   jobStatus.startMode = "prepared_production_resume";
   jobStatus.streamMode = "production-resume";
   jobStatus.allowedWorkspaceCommands = false;
-  jobStatus.feedOverridePercent = jobJsonFeedStartPercent(jobPath);
-  jobStatus.resetFeedOverrideAfterJob = jobJsonResetFeedAfterJob(jobPath);
+  jobStatus.feedOverridePercent = identity.feedStartPercent >= 10 && identity.feedStartPercent <= 200
+                                      ? identity.feedStartPercent
+                                      : 100;
+  jobStatus.resetFeedOverrideAfterJob = identity.resetFeedAfterJob;
   jobStatus.startedAtMs = millis();
   touchJobStatus();
 
@@ -4697,6 +5448,11 @@ void handleProductionResumeStart() {
   jobStatus.fileSize = sizeFile ? sizeFile.size() : 0;
   if (sizeFile) sizeFile.close();
   if (!openJobFileAtOffset()) {
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
+  if (!beginPersistentJobCheckpoint()) {
+    setJobError("could not persist the active-job checkpoint");
     sendJsonError(500, jobStatus.lastError);
     return;
   }
@@ -4751,6 +5507,10 @@ void handleJobStart() {
     sendJsonError(409, "another job is already active");
     return;
   }
+  if (recoveryCheckpointRequiresReview) {
+    sendJsonError(409, "review and import or dismiss the interrupted-job checkpoint before starting another job");
+    return;
+  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
@@ -4760,6 +5520,8 @@ void handleJobStart() {
   const String gcodePath = normalizeSdPath(extractJsonString(body, "gcodePath"));
   const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
   const String activeRunMode = extractJsonString(body, "activeRunMode");
+  const String activeRunFingerprint = extractJsonString(body, "activeRunFingerprint");
+  const int requestedActiveRunSize = extractJsonInt(body, "activeRunSizeBytes", -1);
   String startMode = extractJsonString(body, "startMode");
   if (startMode.length() == 0) startMode = "use_active_work_zero";
   if (startMode != "use_active_work_zero" && startMode != "use_manual_work_frame") {
@@ -4813,19 +5575,24 @@ void handleJobStart() {
     sendJsonError(404, "job JSON not found");
     return;
   }
-  if (!jobJsonIsArmed(jobPath)) {
-    sendJsonError(409, "job JSON has no valid start authorization");
+  JobExecutionAuthorization authorization;
+  String authorizationError;
+  if (!loadJobExecutionAuthorization(jobPath, authorization, authorizationError)) {
+    sendJsonError(400, authorizationError);
     return;
   }
-  if (generatedRunPath) {
-    if (activeRunMode != "generated") {
-      sendJsonError(400, "generated run requires activeRunMode generated");
-      return;
-    }
-    if (!jobJsonAllowsActiveGeneratedRun(jobPath, gcodePath)) {
-      sendJsonError(409, "generated run is not the validated active run in job JSON");
-      return;
-    }
+  const uint32_t normalizedHomingEpoch = requestedHomingEpoch >= 0
+                                             ? static_cast<uint32_t>(requestedHomingEpoch)
+                                             : 0;
+  if (requestedActiveRunSize <= 0 ||
+      !validateJobExecutionAuthorization(authorization, gcodePath, activeRunMode,
+                                         activeRunFingerprint,
+                                         static_cast<size_t>(requestedActiveRunSize),
+                                         requestedWorkZeroId, normalizedHomingEpoch,
+                                         requestedHomingSessionId, authorizationError)) {
+    sendJsonError(409, authorizationError.length() > 0 ? authorizationError
+                                                       : "active run authorization is invalid");
+    return;
   }
 
   jobStatus = JobRunnerStatus();
@@ -4837,12 +5604,20 @@ void handleJobStart() {
   jobStatus.state = JobRunnerState::Preparing;
   jobStatus.gcodePath = gcodePath;
   jobStatus.jobPath = jobPath;
+  jobStatus.activeRunMode = activeRunMode;
+  jobStatus.activeRunFingerprint = activeRunFingerprint;
+  jobStatus.authorizationActiveRunPath = gcodePath;
+  jobStatus.workZeroId = requestedWorkZeroId;
+  jobStatus.homingEpoch = normalizedHomingEpoch;
+  jobStatus.homingSessionId = requestedHomingSessionId;
   jobStatus.startMode = startMode;
   jobStatus.safeStartZ = safeStartZ;
   jobStatus.travelFeedMmMin = travelFeedMmMin;
-  jobStatus.allowedWorkspaceCommands = jobJsonAllowsWorkspaceCommands(jobPath);
-  jobStatus.feedOverridePercent = jobJsonFeedStartPercent(jobPath);
-  jobStatus.resetFeedOverrideAfterJob = jobJsonResetFeedAfterJob(jobPath);
+  jobStatus.allowedWorkspaceCommands = authorization.allowedWorkspaceCommands;
+  jobStatus.feedOverridePercent = authorization.feedStartPercent >= 10 && authorization.feedStartPercent <= 200
+                                      ? authorization.feedStartPercent
+                                      : 100;
+  jobStatus.resetFeedOverrideAfterJob = authorization.resetFeedAfterJob;
   jobStatus.startedAtMs = millis();
   touchJobStatus();
 
@@ -4859,6 +5634,11 @@ void handleJobStart() {
   sizeFile.close();
 
   if (!openJobFileAtOffset()) {
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
+  if (!beginPersistentJobCheckpoint()) {
+    setJobError("could not persist the active-job checkpoint");
     sendJsonError(500, jobStatus.lastError);
     return;
   }
@@ -4943,7 +5723,6 @@ void handleToolChangeComplete() {
     sendJsonError(500, jobStatus.lastError);
     return;
   }
-
   if (jobStatus.toolChangeHandling == "park") {
     if (!jobStatus.toolChangeReturnPositionCaptured || !machineFrame.absoluteFromHome) {
       sendJsonError(409, "the pre-park return position is unavailable; stop and recover the job manually");
@@ -4981,6 +5760,8 @@ void handleToolChangeComplete() {
   jobStatus.state = JobRunnerState::Resuming;
   jobResponseBuffer = "";
   jobWaitingForOk = false;
+  jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
+  jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
   touchJobStatus();
   logJobEvent("tool change confirmed: T" + String(jobStatus.activeToolNumber));
   server.send(200, "application/json", jobStatusJsonWithMessage("Tool change confirmed. Resume requested."));
@@ -5965,6 +6746,8 @@ void startHttpServer() {
   server.on("/api/job/status", HTTP_GET, handleJobStatus);
   server.on("/api/test-motion/start", HTTP_POST, handleTestMotionStart);
   server.on("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
+  server.on("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet);
+  server.on("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
   server.on("/api/job/pause", HTTP_POST, handleJobPause);
   server.on("/api/job/resume", HTTP_POST, handleJobResume);
   server.on("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete);
@@ -6020,6 +6803,8 @@ void setup() {
     ESP.restart();
   }
 
+  loadPersistentJobCheckpointAtBoot();
+
   SPIFFS.begin(true);
   loadDeviceIdentity();
   startWifi();
@@ -6033,6 +6818,7 @@ void loop() {
   processTelemetrySocket();
   processMachineDiscovery();
   processJobRunner();
+  processPersistentJobCheckpoint();
   processJogRunner();
   processMarlinAutoreportControl();
   processIdleMarlinAutoreport();

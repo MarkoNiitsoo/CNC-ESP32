@@ -798,6 +798,11 @@
 
   function render() {
     const state = visibleJobState();
+    const recoveryPending = STATE.job?.recoveryCheckpoint?.requiresReview === true;
+    const stateLabel = STATE.job?.errorCode === 'COMMUNICATION_LOST' ? 'COMM LOST' : state;
+    const displayedStateLabel = recoveryPending && stateLabel === state && SETUP_STATES.has(state)
+      ? 'RECOVERY'
+      : stateLabel;
     const running = state === 'RUNNING';
     const busy = BUSY_STATES.has(state);
     const paused = PAUSED_STATES.has(state);
@@ -826,8 +831,13 @@
     const lastEntry = entries.length ? entries[entries.length - 1] : null;
 
     if (stateEl) {
-      stateEl.textContent = state;
+      stateEl.textContent = displayedStateLabel;
       stateEl.dataset.state = state.toLowerCase();
+      stateEl.title = STATE.job?.errorCode === 'COMMUNICATION_LOST'
+        ? (STATE.job?.lastError || 'Marlin communication lost')
+        : recoveryPending
+          ? 'Interrupted-job evidence requires review before new motion'
+          : '';
     }
     if (mockBadgeEl) {
       mockBadgeEl.hidden = !STATE.health?.mockMode;
