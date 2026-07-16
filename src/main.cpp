@@ -1858,7 +1858,7 @@ void processTelemetrySocket() {
   if (telemetryJogDirty) {
     telemetryJogDirty = !enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson());
   }
-  if (telemetryPositionDirty && marlinPosition.valid) {
+  if (telemetryPositionDirty) {
     telemetryPositionDirty = !enqueueTelemetry(TelemetryChannel::Position, machineFrameJson());
   }
   broadcastPendingMotionEvents();
@@ -2552,7 +2552,8 @@ void finishPrioritySequence() {
         return;
       }
     } else {
-      jobStatus.streamingPausedReason = "Pause requested. Streaming stopped.";
+      jobStatus.streamingPausedReason =
+          "Paused safely after Marlin completed buffered motion. Router/spindle output is off.";
       logJobEvent("paused: " + jobStatus.gcodePath);
     }
   } else if (jobStatus.state == JobRunnerState::Stopping) {
@@ -2562,10 +2563,17 @@ void finishPrioritySequence() {
     jobWaitingForOk = false;
     jobResponseBuffer = "";
     jobRunning = false;
+    const uint32_t invalidatedRevision = machineFrame.revision + 1;
+    machineFrame = MachineFrameState();
+    machineFrame.revision = invalidatedRevision;
+    machineFrame.updatedAtMs = millis();
+    marlinPosition = PositionTelemetry();
+    telemetryPositionDirty = true;
     jobStatus.state = JobRunnerState::Stopped;
     jobStatus.pauseRequested = false;
     jobStatus.stopRequested = false;
-    jobStatus.streamingPausedReason = "Stop requested. Streaming stopped.";
+    jobStatus.streamingPausedReason =
+        "Stopped now with M410 quickstop. Home All and verify recovery before further motion.";
     resetFeedOverrideAfterJobIfNeeded();
     logJobEvent("stopped: " + jobStatus.gcodePath);
   }
@@ -2823,6 +2831,7 @@ String machineFrameJson() {
   String json = "{\"x\":" + String(marlinPosition.x, 3) +
                 ",\"y\":" + String(marlinPosition.y, 3) +
                 ",\"z\":" + String(marlinPosition.z, 3);
+  json += ",\"positionValid\":" + String(marlinPosition.valid ? "true" : "false");
   json += ",\"work\":{\"x\":" + String(marlinPosition.x, 3) +
           ",\"y\":" + String(marlinPosition.y, 3) +
           ",\"z\":" + String(marlinPosition.z, 3) + "}";
@@ -4897,7 +4906,7 @@ void handleCommand() {
     queueManualM5Priority();
     logJobEvent("priority manual: M5");
     server.send(200, "application/json",
-                "{\"ok\":true,\"response\":\"M5 priority requested. This is not a physical emergency stop.\"}");
+                "{\"ok\":true,\"response\":\"M5 output-off requested. Motion is not stopped; this is not a physical emergency stop.\"}");
     return;
   }
 
@@ -5807,11 +5816,14 @@ void handleJobPause() {
   jobStatus.pauseRequested = true;
   jobStatus.stopRequested = false;
   jobStatus.state = JobRunnerState::Pausing;
-  jobStatus.streamingPausedReason = "Pause requested. Streaming stopped.";
+  jobStatus.streamingPausedReason =
+      "Pause safely requested. No new G-code will be sent; Marlin is finishing buffered motion after M5.";
   queuePriorityCommands("M5", "M400");
   touchJobStatus();
   logJobEvent("pause requested: " + jobStatus.gcodePath);
-  server.send(200, "application/json", jobStatusJsonWithMessage("Pause requested. Streaming stopped."));
+  server.send(200, "application/json",
+              jobStatusJsonWithMessage(
+                  "Pause safely requested. Buffered motion will finish before the machine is paused."));
 }
 
 void handleJobResume() {
@@ -5926,7 +5938,8 @@ void handleToolChangeComplete() {
 
 void handleJobStop() {
   if (jobStatus.state == JobRunnerState::Stopping) {
-    server.send(200, "application/json", jobStatusJsonWithMessage("Stop already requested. Streaming stopped."));
+    server.send(200, "application/json",
+                jobStatusJsonWithMessage("Stop now already requested. M410 quickstop is in progress."));
     return;
   }
   if (jobStatus.state != JobRunnerState::Preparing && jobStatus.state != JobRunnerState::Running &&
@@ -5952,11 +5965,14 @@ void handleJobStop() {
   jobStatus.toolChangeRouterReadyConfirmed = false;
   jobStatus.toolChangePhase = "NONE";
   jobStatus.state = JobRunnerState::Stopping;
-  jobStatus.streamingPausedReason = "Stop requested. Streaming stopped.";
+  jobStatus.streamingPausedReason =
+      "Stop now requested. M5 output shutdown and M410 quickstop are in progress; position will be invalidated.";
   queuePriorityCommands("M5", "M410");
   touchJobStatus();
   logJobEvent("stop requested: " + jobStatus.gcodePath);
-  server.send(200, "application/json", jobStatusJsonWithMessage("Stop requested. Streaming stopped."));
+  server.send(200, "application/json",
+              jobStatusJsonWithMessage(
+                  "Stop now requested. Position and recovery must be verified after M410 quickstop."));
 }
 
 void handleJogStatus() {

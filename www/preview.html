@@ -287,7 +287,7 @@
         <p class="form-hint">When Aircut is ON, the XY toolpath is sent at Safe Z and spindle/laser start commands are suppressed. Identical stepdown passes at different Z levels run once.</p>
         <div class="job-actions">
           <button id="send-dry-run" type="button" disabled>Send Box Trace</button>
-          <button id="stop-m5" type="button" aria-label="Stop spindle or laser M5" data-icon="m5">Stop spindle/laser M5</button>
+          <button id="stop-m5" type="button" aria-label="Output Off M5; motion continues" title="Router/spindle output off only; motion continues" data-icon="m5">Output Off (M5)</button>
         </div>
         <p id="dry-run-status" class="form-hint"></p>
         <p class="form-hint dry-run-warning">This is not an emergency stop. Keep the physical emergency stop within reach.</p>
@@ -319,12 +319,12 @@
         </fieldset>
         <div class="job-actions">
           <button id="start-job" class="hold-to-confirm" type="button" aria-label="Hold to Start Cut" data-icon="start">Hold to Start Cut</button>
-          <button id="pause-job" type="button" aria-label="Pause Job" data-icon="pause">Pause Job</button>
+          <button id="pause-job" type="button" aria-label="Pause Safely" title="Finish buffered motion, then pause" data-icon="pause">Pause Safely</button>
           <button id="resume-job" type="button">Resume Job</button>
-          <button id="stop-job" type="button" aria-label="Stop job" data-icon="stop">Stop Job</button>
+          <button id="stop-job" type="button" aria-label="Stop Now with M410" title="Abrupt quickstop; position must be verified" data-icon="stop">Stop Now</button>
         </div>
         </details>
-        <p class="form-hint">Hold to start. Pause, Stop, and M5 remain available in the machine bar.</p>
+        <p class="form-hint"><strong>Pause Safely</strong> finishes buffered motion. <strong>Stop Now</strong> uses abrupt M410 and requires Home All plus recovery review. <strong>Output Off (M5)</strong> does not stop motion.</p>
         <details class="operator-diagnostics">
           <summary>Advanced run details</summary>
           <p>Start uses the saved active work zero and lifts to Safe start Z before streaming.</p>

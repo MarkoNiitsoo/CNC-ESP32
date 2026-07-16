@@ -101,6 +101,7 @@ function updateMockSafeZ(env) {
 }
 
 function syncMockFrame(env) {
+  env.frame.positionValid = true;
   env.frame.machine = { ...env.marlin.machinePosition };
   env.frame.work = { ...env.marlin.position };
   updateMockSafeZ(env);
@@ -126,7 +127,7 @@ export async function createMockEnvironment(options = {}) {
   await sd.seedSamples();
   const marlin = new MockMarlin(config);
   const frame = {
-    machine: null, work: { ...marlin.position }, workZeroMachine: null,
+    machine: null, work: { ...marlin.position }, positionValid: true, workZeroMachine: null,
     homedAxes: { x: false, y: false, z: false }, homingEpoch: 0, homingSessionId: '',
     bootSessionId: `mock-boot-${Date.now()}`, absoluteFromHome: false, manualWorkFrameValid: false,
     workZeroValid: false, frameMode: 'untrusted', homeReference: null, revision: 0, trusted: false,

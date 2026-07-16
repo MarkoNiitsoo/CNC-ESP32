@@ -413,11 +413,11 @@ export class MockJobRunner {
     if (this.status.state !== 'RUNNING') throw new Error('job is not running');
     this.status.state = 'PAUSING';
     this.status.pauseRequested = true;
-    this.status.streamingPausedReason = 'Pause requested. Streaming stopped.';
+    this.status.streamingPausedReason = 'Pause safely requested. No new G-code will be sent; Marlin is finishing buffered motion after M5.';
     this.runCommand('M5', { priority: true });
     this.runCommand('M400', { priority: true });
     this.status.state = 'PAUSED';
-    return this.snapshot('Pause requested. Streaming stopped.');
+    return this.snapshot('Pause safely requested. Buffered motion will finish before the machine is paused.');
   }
 
   resume() {
@@ -491,12 +491,19 @@ export class MockJobRunner {
     this.status.toolChangeToolConfirmed = false;
     this.status.toolChangeRouterReadyConfirmed = false;
     this.status.toolChangePhase = 'NONE';
-    this.status.streamingPausedReason = 'Stop requested. Streaming stopped.';
+    this.status.streamingPausedReason = 'Stop now requested. M5 output shutdown and M410 quickstop are in progress; position will be invalidated.';
     this.runToken += 1;
     this.runCommand('M5', { priority: true });
     this.runCommand('M410', { priority: true });
+    Object.assign(this.frame, {
+      machine: null, work: { x: 0, y: 0, z: 0 }, positionValid: false, workZeroMachine: null,
+      homedAxes: { x: false, y: false, z: false }, absoluteFromHome: false,
+      manualWorkFrameValid: false, workZeroValid: false, frameMode: 'untrusted',
+      homeReference: null, trusted: false, revision: Number(this.frame.revision || 0) + 1,
+    });
     this.status.state = 'STOPPED';
-    return this.snapshot('Stop requested. Streaming stopped.');
+    this.status.streamingPausedReason = 'Stopped now with M410 quickstop. Home All and verify recovery before further motion.';
+    return this.snapshot('Stop now completed. Position and recovery must be verified after M410 quickstop.');
   }
 
   setFeedOverride(percent, { allowDuringTransition = false } = {}) {

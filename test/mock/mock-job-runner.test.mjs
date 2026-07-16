@@ -141,6 +141,12 @@ describe('MockJobRunner', () => {
     expect(ctx.runner.status.state).toBe('STOPPED');
     expect(ctx.runner.status.sentLineCount).toBe(stoppedAt);
     expect(ctx.marlin.spindleOff).toBe(true);
+    expect(ctx.runner.frame).toMatchObject({
+      trusted: false, absoluteFromHome: false, positionValid: false,
+      workZeroValid: false, frameMode: 'untrusted',
+    });
+    expect(ctx.marlin.log.filter((entry) => entry.direction === 'tx').slice(-2).map((entry) => entry.text))
+      .toEqual(['M5', 'M410']);
   });
 
   it('rejects a same-size active file changed after authorization', async () => {

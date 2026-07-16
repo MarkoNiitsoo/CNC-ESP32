@@ -1904,3 +1904,18 @@ No firmware upload is required.
 - Deploy firmware, `preview.html`, and `preview.js` together because older UI code does not send the
   new required confirmation field.
 - Full verification passes 39 files / 328 tests; firmware build is 19.6% RAM / 70.8% flash.
+
+## 2026-07-16 Pause / Stop / M5 safety handoff
+
+- Pause Safely is intentionally not immediate: firmware closes the stream, sends priority M5, then
+  waits on M400 while Marlin completes movement already in its planner. Normal Resume remains valid.
+- Stop Now is the abrupt path: firmware sends M5 followed by M410. Once both are acknowledged, the
+  current machine/work position, homing frame, and active work zero are invalidated. The next motion
+  requires Home All and the existing recovery review; no automatic coordinate restoration occurs.
+- `/api/machine/frame` now includes `positionValid`. A false value updates frame trust without
+  replacing the last operator-visible coordinate readout with zeroes.
+- Output Off (M5) only controls router/spindle output and explicitly does not claim to stop motion.
+  If `/api/job/stop` fails, both browser surfaces make only this best-effort M5 attempt and do not
+  mark the run stopped or send M400 as a substitute for M410.
+- Deploy firmware together with `machine-bar.js`, `preview.html`, and `preview.js`. Full verification
+  passes 39 files / 329 tests; firmware build is 19.6% RAM / 70.9% flash.

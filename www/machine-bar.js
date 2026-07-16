@@ -100,6 +100,13 @@
 
   function applyFrame(frame, source = 'FRAME') {
     if (!frame) return false;
+    if (frame.positionValid === false) {
+      STATE.frame = { ...STATE.frame, ...frame };
+      syncSafeZControl();
+      publishPosition(source);
+      window.dispatchEvent(new CustomEvent('cnc-machine-frame', { detail: STATE.frame }));
+      return true;
+    }
     const work = frame.work || frame;
     if (![work?.x, work?.y, work?.z].every(Number.isFinite)) return false;
     const previousRevision = STATE.frame?.revision;
@@ -271,7 +278,7 @@
 
   async function pauseJob() {
     await criticalJobPost('/api/job/pause');
-    setMessage('Pause requested');
+    setMessage('Pause Safely requested; buffered motion will finish first');
     STATE.job = { ...(STATE.job || {}), state: 'PAUSING' };
     render();
     await refreshJobStatus();
@@ -297,21 +304,21 @@
   }
 
   async function stopJob() {
-    dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
     const state = visibleJobState();
     if (state === 'STOPPING') {
-      setMessage('Stop already requested');
+      setMessage('Stop Now already requested');
       return;
     }
+    if (!confirm('STOP NOW sends M5 and the abrupt M410 quickstop. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
+    dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
     try {
       await criticalJobPost('/api/job/stop');
-      setMessage('Stop Job requested');
+      setMessage('Stop Now requested; position will require verification');
       STATE.job = { ...(STATE.job || {}), state: 'STOPPING' };
       render();
     } catch (err) {
-      setMessage(`Stop endpoint failed; sending M5/M400 fallback. ${err.message}`);
+      setMessage(`Stop Now endpoint failed. Sending output-off M5 only; motion may continue. Use the physical emergency stop if needed. ${err.message}`);
       await sendCmd('M5').catch(() => {});
-      await sendCmd('M400').catch(() => {});
     }
     await refreshJobStatus();
   }
@@ -916,12 +923,15 @@
     }
 
     const toolChangePending = paused && STATE.job?.toolChangePending === true;
-    const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause';
+    const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause Safely';
     [pauseResumeEl].forEach((item) => {
       if (!item) return;
       const label = item.querySelector('.machine-button-label');
       if (label && label.textContent !== pauseLabel) label.textContent = pauseLabel;
       item.setAttribute('aria-label', `${pauseLabel} job`);
+      item.title = paused
+        ? 'Resume streaming after a safe pause'
+        : 'Stop sending new G-code and finish motion already buffered by Marlin';
       const icon = paused && !toolChangePending ? 'start' : 'pause';
       if (item.dataset.icon !== icon) {
         item.dataset.icon = icon;
@@ -992,9 +1002,9 @@
           <small id="mb-mock-badge" class="machine-mock-badge" title="DEV MOCK - NO REAL MACHINE" hidden>DEV MOCK</small>
         </button>
         <div class="machine-actions">
-          <button id="mb-pause" class="machine-warn" type="button" aria-label="Pause job" data-icon="pause"><span class="machine-button-label">Pause</span></button>
-          <button id="mb-stop" class="machine-danger" type="button" aria-label="Stop job" data-icon="stop">Stop</button>
-          <button id="mb-m5" class="machine-danger-dark" type="button" aria-label="Spindle or laser off M5" data-icon="m5">M5</button>
+          <button id="mb-pause" class="machine-warn" type="button" aria-label="Pause Safely job" title="Finish buffered motion, then pause" data-icon="pause"><span class="machine-button-label">Pause Safely</span></button>
+          <button id="mb-stop" class="machine-danger" type="button" aria-label="Stop Now with M410" title="Abrupt quickstop; position must be verified" data-icon="stop">Stop Now</button>
+          <button id="mb-m5" class="machine-danger-dark" type="button" aria-label="Output Off M5; motion continues" title="Router/spindle output off only; motion continues" data-icon="m5">Output Off (M5)</button>
         </div>
         <p id="mb-live-marlin" class="machine-live-message" hidden></p>
       </div>
@@ -1058,7 +1068,8 @@
         <div class="machine-drawer-card">
           <h2>Job Safety</h2>
           <p class="warning">Software stop is not a physical emergency stop.</p>
-          <p>Use the physical emergency stop for real emergencies. Pause, Stop, and M5 remain visible in the machine bar above this drawer.</p>
+          <p><strong>Pause Safely</strong> finishes Marlin's buffered motion. <strong>Stop Now</strong> uses abrupt M410 and requires Home All plus recovery review. <strong>Output Off (M5)</strong> switches the router/spindle output off but does not stop motion.</p>
+          <p>Use the physical emergency stop for real emergencies. All three controls remain visible in the machine bar above this drawer.</p>
         </div>
         <div class="machine-drawer-card">
           <h2>Feed Override</h2>
@@ -1168,6 +1179,7 @@
     button('mb-stop', stopJob);
     button('mb-m5', () => {
       dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'm5' } }));
+      setMessage('Output Off (M5) requested; machine motion is not stopped');
       return sendCmd('M5');
     });
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {

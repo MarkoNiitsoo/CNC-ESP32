@@ -108,6 +108,19 @@ describe('Marlin transport safety', () => {
     expect(busy).toBeGreaterThan(m5);
   });
 
+  it('drains buffered motion for Pause Safely but invalidates position after Stop Now', () => {
+    const pause = source.slice(source.indexOf('void handleJobPause()'), source.indexOf('void handleJobResume()'));
+    const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
+    const finish = source.slice(source.indexOf('void finishPrioritySequence()'), source.indexOf('void processPriorityCommands()'));
+    expect(pause).toContain('queuePriorityCommands("M5", "M400")');
+    expect(pause).toContain('Buffered motion will finish');
+    expect(stop).toContain('queuePriorityCommands("M5", "M410")');
+    expect(stop).toContain('position will be invalidated');
+    expect(finish).toMatch(/JobRunnerState::Stopping[\s\S]*machineFrame = MachineFrameState\(\)[\s\S]*marlinPosition = PositionTelemetry\(\)/);
+    expect(source).toContain('\\"positionValid\\":');
+    expect(source).toContain('M5 output-off requested. Motion is not stopped');
+  });
+
   it('owns validated Aircut and Toolless streams in firmware', () => {
     expect(source).toContain('server.on("/api/test-motion/start", HTTP_POST, handleTestMotionStart)');
     expect(source).toContain('validateTestMotionFile(path, mode, safeZ');

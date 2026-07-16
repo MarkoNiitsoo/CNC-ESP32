@@ -1416,10 +1416,10 @@ function renderRunPanel() {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Status could not be parsed. Stop remains available.</div></div>';
     }
     if (pausing) {
-      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Pausing: file streaming is stopped while firmware sends priority M5/M400.</div></div>';
+      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Pause Safely: no new G-code is sent; M5 turns output off and M400 lets Marlin finish buffered motion.</div></div>';
     }
     if (stopping) {
-      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stopping: file streaming is stopped while firmware sends priority M5/M410.</div></div>';
+      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stop Now: M5 turns output off and M410 abruptly clears motion. Home All and recovery review are required afterward.</div></div>';
     }
     renderToolChangeOperator();
     renderLiveFeedOverride();
@@ -1536,7 +1536,7 @@ function optimisticCriticalStatus(url) {
     return {
       ...(jobRunStatus || {}),
       state: 'PAUSING',
-      streamingPausedReason: 'Pause requested. Streaming stopped.',
+      streamingPausedReason: 'Pause Safely requested; buffered motion will finish first.',
       lastError: 'Firmware returned malformed JSON after Pause.',
     };
   }
@@ -1551,7 +1551,7 @@ function optimisticCriticalStatus(url) {
     return {
       ...(jobRunStatus || {}),
       state: 'STOPPING',
-      streamingPausedReason: 'Stop requested. Streaming stopped.',
+      streamingPausedReason: 'Stop Now requested; M410 quickstop and position invalidation are in progress.',
       lastError: 'Firmware returned malformed JSON after Stop.',
     };
   }
@@ -1747,17 +1747,17 @@ async function resumeJobRun() {
 }
 
 async function stopJobRun() {
-  appendRunLog('Stop requested. This is not a physical emergency stop.');
+  if (!confirm('STOP NOW sends M5 and the abrupt M410 quickstop. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
+  appendRunLog('Stop Now requested. This is not a physical emergency stop.');
   try {
     const data = await postCriticalJobAction('/api/job/stop');
     appendRunLog(data.message || 'Stop command accepted by firmware.');
     await markLatestRunStopped(data, data.message || 'Operator stop requested');
   } catch (err) {
     runLogError('Stop endpoint failed', err);
-    appendRunLog('Trying best-effort M5 and M400 fallback through /api/cmd.');
+    appendRunLog('Sending best-effort output-off M5 only. Motion may continue; use the physical emergency stop if needed.');
     await sendCmdBestEffort('M5');
-    await sendCmdBestEffort('M400');
-    await markLatestRunStopped(null, `Stop fallback used after error: ${err.message}`);
+    await refreshJobStatus().catch(() => {});
   }
 }
 

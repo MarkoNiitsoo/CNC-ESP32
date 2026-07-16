@@ -71,7 +71,7 @@ describe('compact machine drawer', () => {
     expect(previewHtml).toContain('id="send-dry-run"');
     expect(previewHtml).toContain('id="dry-run-aircut"');
     expect(previewHtml).toContain('id="stop-m5"');
-    expect(previewHtml).toContain('Stop spindle/laser M5');
+    expect(previewHtml).toContain('Output Off (M5)');
     expect(previewHtml).not.toContain('Generate Bounding Box Commands');
     expect(previewHtml).not.toContain('Generate Aircut Commands');
     expect(previewHtml).not.toContain('Copy Commands');
@@ -104,14 +104,25 @@ describe('compact machine drawer', () => {
     expect(stateMarkup).not.toContain('DEV MOCK - NO REAL MACHINE</strong>');
   });
 
-  it('keeps guarded Pause/Resume, Stop, and M5 in one compact action row', () => {
+  it('makes safe pause, quickstop, and output-only M5 distinct in one compact action row', () => {
     expect(machineBar).not.toContain('id="mb-drawer-pause-resume"');
     expect(machineBar).not.toContain('id="mb-drawer-stop"');
     expect(machineBar).not.toContain('id="mb-drawer-m5"');
     expect(machineBar).toContain("style.setProperty('--machine-bar-height'");
     expect(machineBar).toContain("const toolChangePending = paused && STATE.job?.toolChangePending === true");
-    expect(machineBar).toContain("const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause'");
+    expect(machineBar).toContain("const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause Safely'");
     expect(machineBar).toContain("setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending)");
+    expect(machineBar).toContain('Stop Now with M410');
+    expect(machineBar).toContain('Output Off M5; motion continues');
+    expect(previewHtml).toContain('<strong>Pause Safely</strong> finishes buffered motion.');
+    const machineStop = machineBar.slice(machineBar.indexOf('async function stopJob()'), machineBar.indexOf('async function refreshPosition()'));
+    expect(machineStop).toContain('abrupt M410 quickstop');
+    expect(machineStop).toContain("await sendCmd('M5').catch(() => {})");
+    expect(machineStop).not.toContain("sendCmd('M400')");
+    const previewStop = preview.slice(preview.indexOf('async function stopJobRun()'), preview.indexOf('async function markLatestRunStopped'));
+    expect(previewStop).toContain('Motion may continue');
+    expect(previewStop).not.toContain("sendCmdBestEffort('M400')");
+    expect(machineBar).toMatch(/frame\.positionValid === false[\s\S]*cnc-machine-frame/);
   });
 
   it('makes a runner communication loss visible without treating it as resumable', () => {

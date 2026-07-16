@@ -2048,3 +2048,18 @@
 - DEV MOCK and focused firmware/UI tests mirror the phase and confirmation contract.
 - Verification: full suite passes 39 files / 328 tests. PlatformIO ESP32-CAM build succeeds at
   19.6% RAM and 70.8% flash.
+
+## 2026-07-16 - Explicit Pause Safely, Stop Now, and Output Off semantics
+
+- Renamed and explained the three operator controls consistently in the machine bar and Run panel:
+  Pause Safely stops new streaming and waits for buffered movement with `M5` then `M400`; Stop Now
+  sends `M5` then abrupt `M410`; Output Off sends only `M5` and does not stop motion.
+- Stop Now now requires an explicit warning confirmation. After Marlin acknowledges the quickstop,
+  firmware invalidates homing, work-zero, and position trust and publishes `positionValid: false`.
+  The UI retains the last visible coordinates instead of presenting an invented zero position.
+- Removed the misleading Stop failure fallback that sent `M5/M400` and marked the run stopped. A
+  failed Stop endpoint now attempts only M5, warns that motion may continue, and refreshes status.
+- DEV MOCK mirrors the M410 position invalidation. Added coverage for exact Pause/Stop command order,
+  position invalidation, distinct UI wording, and the output-only failure fallback.
+- Verification: full suite passes 39 files / 329 tests. PlatformIO ESP32-CAM build succeeds at
+  19.6% RAM and 70.9% flash.
