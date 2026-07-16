@@ -100,6 +100,40 @@
           <button id="read-marlin-limits" type="button">Read Limits from Marlin (M503)</button>
           <p id="travel-speed-status" class="form-hint">Used for bounding box and other automatic XY travel moves. Z safety moves remain slower.</p>
         </section>
+        <section class="panel tool-change-settings-panel">
+          <h2>Tool Change</h2>
+          <p class="form-hint">M6 always pauses the firmware-owned job stream. These settings choose what happens after that pause.</p>
+          <form id="tool-change-settings-form" class="device-settings-form">
+            <label for="tool-change-handling">At M6
+              <select id="tool-change-handling" name="handling">
+                <option value="pause">Pause at current position</option>
+                <option value="park">Move to configured change position</option>
+              </select>
+            </label>
+            <div id="tool-change-park-fields" class="machine-config-group">
+              <div><strong>Change position</strong><small>Absolute machine coordinates used only after the preceding move has finished.</small></div>
+              <label>X <input name="parkMachineX" type="number" step="0.1" required></label>
+              <label>Y <input name="parkMachineY" type="number" step="0.1" required></label>
+              <label>Safe Z <input name="parkMachineZ" type="number" step="0.1" required></label>
+            </div>
+            <label for="tool-change-z-method">Default Z-zero method
+              <select id="tool-change-z-method" name="zZeroMethod">
+                <option value="manual">Manual Set Z Zero</option>
+                <option value="touchplate">Touch plate</option>
+              </select>
+            </label>
+            <label class="recovery-overlay-toggle"><input id="touch-plate-enabled" name="touchPlateEnabled" type="checkbox"> Touch plate is installed and configured</label>
+            <div id="touch-plate-fields" class="machine-config-group">
+              <div><strong>Touch plate</strong><small>Marlin must have a working probe input and G38.2 support.</small></div>
+              <label>Plate thickness <input name="touchPlateThickness" type="number" min="0.01" max="100" step="0.01" required></label>
+              <label>Maximum probe distance <input name="touchPlateProbeDistance" type="number" min="0.1" max="200" step="0.1" required></label>
+              <label>Probe feed <input name="touchPlateProbeFeed" type="number" min="1" max="1000" step="1" required></label>
+              <label>Retract after contact <input name="touchPlateRetractDistance" type="number" min="0.1" max="20" step="0.1" required></label>
+            </div>
+            <button type="submit">Save Tool Change Settings</button>
+          </form>
+          <p id="tool-change-settings-result" class="form-hint">Loading tool-change settings...</p>
+        </section>
         <section class="panel machine-config-panel">
           <div class="panel-title-row">
             <div><h2>Marlin Motion Configuration</h2><p class="form-hint">Apply changes to Marlin RAM first. Save to EEPROM only after reviewing them.</p></div>

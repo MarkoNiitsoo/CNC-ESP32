@@ -11,6 +11,7 @@
     marlinLog: { entries: [], lastCritical: null },
     jog: { state: 'IDLE', zLiftedForJog: false, heartbeatAgeMs: 0, lastCommand: '', lastError: '' },
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
+    toolChangeSettings: null,
   };
   let jogTimer = null;
   let jogUpdatePending = false;
@@ -24,6 +25,7 @@
     travelSpeedMmS = module.loadMotionSettings().travelSpeedMmS;
     return module;
   }).catch(() => null);
+  const toolChangeSettingsPromise = import('/lib/tool-change-settings.js').catch(() => null);
 
   const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
@@ -251,6 +253,10 @@
   }
 
   async function pauseOrResumeJob() {
+    if (visibleJobState() === 'PAUSED' && STATE.job?.toolChangePending === true) {
+      setMessage('Complete the pending tool change in the job panel.');
+      return;
+    }
     if (visibleJobState() === 'PAUSED') return resumeJob();
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'pause' } }));
     return pauseJob();
@@ -622,6 +628,27 @@
     setMessage('Z zero set and frame synchronized');
   }
 
+  async function touchPlateZZero() {
+    if (!canSetZ()) return;
+    const settings = STATE.toolChangeSettings;
+    if (!settings?.touchPlateEnabled) throw new Error('Touch plate is not enabled in Settings.');
+    if (!confirmUnknown('probing Z zero')) return;
+    if (!confirm(`Probe downward up to ${settings.touchPlateProbeDistance.toFixed(1)} mm at ${settings.touchPlateProbeFeed.toFixed(0)} mm/min?\n\nPlate thickness: ${settings.touchPlateThickness.toFixed(2)} mm. Verify the probe lead is connected.`)) return;
+    const data = await apiPost('/api/work-zero/touch-plate', {});
+    applyFrame(data.frame, 'TOUCH_PLATE_Z_ZERO');
+    window.dispatchEvent(new CustomEvent('cnc-z-zero-set', { detail: data }));
+    setMessage('Touch-plate Z zero set and frame synchronized');
+  }
+
+  async function loadToolChangeSettings() {
+    const [res, module] = await Promise.all([fetch('/api/tool-change/settings', { cache: 'no-store' }), toolChangeSettingsPromise]);
+    if (!module) return;
+    const data = await readJson(res);
+    if (!res.ok || data.ok === false) throw new Error(data.error || 'Tool-change settings unavailable');
+    STATE.toolChangeSettings = module.normalizeToolChangeSettings(data.settings || data);
+    render();
+  }
+
   async function captureAndSetWorkZero() {
     await setWorkZero();
   }
@@ -840,13 +867,14 @@
       marlinLogEl.scrollTop = marlinLogEl.scrollHeight;
     }
 
-    const pauseLabel = paused ? 'Resume' : 'Pause';
+    const toolChangePending = paused && STATE.job?.toolChangePending === true;
+    const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause';
     [pauseResumeEl].forEach((item) => {
       if (!item) return;
       const label = item.querySelector('.machine-button-label');
       if (label && label.textContent !== pauseLabel) label.textContent = pauseLabel;
       item.setAttribute('aria-label', `${pauseLabel} job`);
-      const icon = paused ? 'start' : 'pause';
+      const icon = paused && !toolChangePending ? 'start' : 'pause';
       if (item.dataset.icon !== icon) {
         item.dataset.icon = icon;
         window.CncSkin?.applyIcons?.(item);
@@ -878,7 +906,7 @@
     }
     syncJogDock();
 
-    setDisabled('mb-pause', !(running || paused || isUnknown()));
+    setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending);
     setDisabled('mb-stop', state === 'STOPPING');
 
     const disableZero = busy;
@@ -886,6 +914,9 @@
     setDisabled('mb-set-z-zero', !canSetZ());
     setDisabled('mb-capture-work-zero', disableZero || !canSetup());
     setDisabled('mb-capture-z-zero', !canSetZ());
+    const touchPlateButton = el('mb-touch-plate-z-zero');
+    if (touchPlateButton) touchPlateButton.hidden = !STATE.toolChangeSettings?.touchPlateEnabled;
+    setDisabled('mb-touch-plate-z-zero', !canSetZ());
 
     const disableHoming = !canSetup();
     setDisabled('mb-m119', disableHoming);
@@ -1011,6 +1042,7 @@
             <button id="mb-capture-position" type="button">Capture Current Position</button>
             <button id="mb-set-work-zero" type="button" data-icon="workZero">Set Work Zero XYZ</button>
             <button id="mb-set-z-zero" type="button" data-icon="zZero">Set Z Zero Only</button>
+            <button id="mb-touch-plate-z-zero" type="button" hidden>Touch Plate Z Zero</button>
             <button id="mb-capture-work-zero" type="button">Capture + Set Work Zero</button>
             <button id="mb-capture-z-zero" type="button">Capture + Set Z Zero</button>
           </div>
@@ -1118,6 +1150,7 @@
     button('mb-capture-position', refreshPosition);
     button('mb-set-work-zero', setWorkZero);
     button('mb-set-z-zero', setZZero);
+    button('mb-touch-plate-z-zero', touchPlateZZero);
     button('mb-capture-work-zero', captureAndSetWorkZero);
     button('mb-capture-z-zero', captureAndSetZZero);
     button('mb-m119', () => sendCmd('M119'));
@@ -1193,6 +1226,7 @@
       };
       renderMarlinReadouts();
     });
+    loadToolChangeSettings().catch((err) => setMessage(err.message));
     window.CncTelemetry?.subscribe('jog', (data) => {
       STATE.jog = data;
       applyCommandedJogPosition(data);

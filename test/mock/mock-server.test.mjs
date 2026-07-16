@@ -119,6 +119,29 @@ describe('mock HTTP API', () => {
     expect(result.frame.workZeroMachine.x).toBe(100);
   });
 
+  it('persists tool-change and touch-plate settings in the mock device', async () => {
+    const { base, env } = await start();
+    expect(await fetch(`${base}/api/tool-change/settings`).then((res) => res.json())).toMatchObject({
+      settings: { handling: 'pause', zZeroMethod: 'manual', touchPlateEnabled: false },
+    });
+    const response = await fetch(`${base}/api/tool-change/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        handling: 'park', parkMachineX: 12, parkMachineY: 34, parkMachineZ: 70,
+        zZeroMethod: 'touchplate', touchPlateEnabled: true, touchPlateThickness: 12.7,
+        touchPlateProbeDistance: 25, touchPlateProbeFeed: 80, touchPlateRetractDistance: 2,
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      settings: { handling: 'park', zZeroMethod: 'touchplate', touchPlateThickness: 12.7 },
+    });
+    env.runner.status.state = 'PAUSED';
+    expect((await fetch(`${base}/api/tool-change/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })).status).toBe(409);
+  });
+
   it('supports a manual unhomed frame without inventing machine coordinates', async () => {
     const { base } = await start();
     const confirmed = await fetch(`${base}/api/machine/manual-frame`, {

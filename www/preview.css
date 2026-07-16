@@ -702,6 +702,28 @@
   margin: 0;
 }
 
+.tool-change-operator {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 2px solid #d89b35;
+  border-radius: 10px;
+  background: rgba(66, 43, 8, 0.72);
+}
+
+.tool-change-operator[hidden] {
+  display: none;
+}
+
+.tool-change-operator h3,
+.tool-change-operator p {
+  margin: 0;
+}
+
+.tool-change-operator .job-summary {
+  background: rgba(10, 17, 22, 0.58);
+}
+
 .final-start-checklist {
   gap: 10px;
   border-color: rgba(63, 196, 117, 0.45);

@@ -104,12 +104,14 @@ describe('compact machine drawer', () => {
     expect(stateMarkup).not.toContain('DEV MOCK - NO REAL MACHINE</strong>');
   });
 
-  it('keeps Pause/Resume, Stop, and M5 in one compact action row', () => {
+  it('keeps guarded Pause/Resume, Stop, and M5 in one compact action row', () => {
     expect(machineBar).not.toContain('id="mb-drawer-pause-resume"');
     expect(machineBar).not.toContain('id="mb-drawer-stop"');
     expect(machineBar).not.toContain('id="mb-drawer-m5"');
     expect(machineBar).toContain("style.setProperty('--machine-bar-height'");
-    expect(machineBar).toContain("const pauseLabel = paused ? 'Resume' : 'Pause'");
+    expect(machineBar).toContain("const toolChangePending = paused && STATE.job?.toolChangePending === true");
+    expect(machineBar).toContain("const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause'");
+    expect(machineBar).toContain("setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending)");
   });
 
   it('keeps feed presets, homing, terminal, and the joystick edge dock compact and present', () => {

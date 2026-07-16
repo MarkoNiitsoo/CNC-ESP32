@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   buildPreviewMetadata,
   estimateToolpathTime,
+  extractToolChangePlan,
   getToolpathWarnings,
   mergePreviewMetadata,
   parseGCodeToToolpath,
@@ -14,6 +15,25 @@ import {
 const fixture = (name) => readFileSync(join('test', 'fixtures', name), 'utf8');
 
 describe('ToolpathModel parser basics', () => {
+  it('extracts M6 tool number, comment details, diameter, and following spindle speed', () => {
+    const source = [
+      'G21',
+      '(T2 D=6.35 CR=0 - FLAT END MILL)',
+      'T2',
+      'M6',
+      'S18000 M3',
+      'G0 X10',
+    ].join('\n');
+    expect(extractToolChangePlan(source)).toEqual({
+      tools: [{ toolNumber: 2, description: 'T2 D=6.35 CR=0 - FLAT END MILL', diameterMm: 6.35 }],
+      changes: [{
+        lineNumber: 4, commandNumber: 3, toolNumber: 2, command: 'M6',
+        description: 'T2 D=6.35 CR=0 - FLAT END MILL', diameterMm: 6.35, spindleRpm: 18000,
+      }],
+    });
+    expect(parseGCodeToToolpath(source).toolChanges[0]).toMatchObject({ toolNumber: 2, diameterMm: 6.35 });
+  });
+
   it('parses G21/G90/G17/G54, G0/G1/F, line numbers, and comments', () => {
     const model = parseGCodeToToolpath(fixture('freecad-g54.gc'));
 

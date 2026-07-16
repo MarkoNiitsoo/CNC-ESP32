@@ -9,7 +9,7 @@ import { MockSD } from '../../dev/mock-sd.mjs';
 const roots = [];
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', validation = 'valid', delay = 1 } = {}) {
+async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', validation = 'valid', delay = 1, toolChangeSettings = null } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'cnc-mock-runner-'));
   roots.push(root);
   const sd = new MockSD(root);
@@ -31,8 +31,11 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
   const jobPath = '/jobs/job.job.json';
   await sd.writeText(jobPath, JSON.stringify(job));
   const marlin = new MockMarlin();
-  const frame = { trusted: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
-  const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: delay });
+  const frame = { trusted: true, absoluteFromHome: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
+  const runner = new MockJobRunner({
+    sd, marlin, frame, lineDelayMs: delay,
+    toolChangeSettings: toolChangeSettings || { handling: 'pause', zZeroMethod: 'manual' },
+  });
   return { sd, marlin, runner, job, jobPath, gcodePath, request: {
     gcodePath, jobPath, activeRunMode: mode, activeRunFingerprint: fingerprint,
     startMode: 'use_active_work_zero', workZeroId: 'zero-test', homingEpoch: 1,
@@ -121,6 +124,49 @@ describe('MockJobRunner', () => {
     expect(ctx.runner.status.state).toBe('STOPPED');
     expect(ctx.runner.status.sentLineCount).toBe(stoppedAt);
     expect(ctx.marlin.spindleOff).toBe(true);
+  });
+
+  it('intercepts T/M6, waits for Z zero and confirmation, then continues without sending M6 to Marlin', async () => {
+    const ctx = await fixture({
+      gcode: 'G21\nG90\nG0 X10 Y20 Z15\nT2\nM6\nS18000 M3\nG1 X20 Y20 F600\n',
+      delay: 2,
+    });
+    await ctx.runner.start(ctx.request);
+    expect(await waitForState(ctx.runner, 'PAUSED')).toBe('PAUSED');
+    expect(ctx.runner.status).toMatchObject({
+      toolChangePending: true, toolChangeReady: true, toolChangeToolNumber: 2,
+      toolChangeZZeroCompleted: false,
+    });
+    const sent = ctx.marlin.log.filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    expect(sent).not.toContain('T2');
+    expect(sent).not.toContain('M6');
+    const stopIndex = sent.lastIndexOf('M5');
+    expect(sent[stopIndex - 1]).toBe('M400');
+    expect(() => ctx.runner.resume()).toThrow(/complete.*tool change/i);
+    expect(() => ctx.runner.completeToolChange({ confirmed: true })).toThrow(/set Z zero/i);
+    ctx.runner.markToolChangeZZero('manual');
+    ctx.runner.completeToolChange({ confirmed: true });
+    expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
+    expect(ctx.runner.status.activeToolNumber).toBe(2);
+  });
+
+  it('parks in machine coordinates and returns to the captured work position after M6 confirmation', async () => {
+    const settings = {
+      handling: 'park', parkMachineX: 100, parkMachineY: 200, parkMachineZ: 70,
+      zZeroMethod: 'manual',
+    };
+    const ctx = await fixture({
+      gcode: 'G21\nG90\nG0 X10 Y20 Z15\nT3 M6\nG1 X30 Y20 F600\n',
+      toolChangeSettings: settings,
+    });
+    await ctx.runner.start(ctx.request);
+    expect(await waitForState(ctx.runner, 'PAUSED')).toBe('PAUSED');
+    expect(ctx.runner.status.toolChangeReturnPosition).toEqual({ x: 10, y: 20, z: 15 });
+    expect(ctx.marlin.machinePosition).toMatchObject({ x: 100, y: 200, z: 70 });
+    ctx.runner.markToolChangeZZero('manual');
+    ctx.runner.completeToolChange({ confirmed: true });
+    expect(ctx.marlin.position).toMatchObject({ x: 10, y: 20, z: 15 });
+    expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
   });
 
   it('supports priority M5 and live feed override while running', async () => {

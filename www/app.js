@@ -34,6 +34,13 @@ const deviceUrlPreview = document.querySelector('#device-url-preview');
 const deviceSettingsResult = document.querySelector('#device-settings-result');
 const saveDeviceSettingsButton = document.querySelector('#save-device-settings');
 const restartDeviceButton = document.querySelector('#restart-device');
+const toolChangeSettingsForm = document.querySelector('#tool-change-settings-form');
+const toolChangeHandlingInput = document.querySelector('#tool-change-handling');
+const toolChangeZMethodInput = document.querySelector('#tool-change-z-method');
+const toolChangeParkFields = document.querySelector('#tool-change-park-fields');
+const touchPlateEnabledInput = document.querySelector('#touch-plate-enabled');
+const touchPlateFields = document.querySelector('#touch-plate-fields');
+const toolChangeSettingsResult = document.querySelector('#tool-change-settings-result');
 
 const currentJobKey = 'lowrider.currentJob';
 const FILE_LONG_PRESS_MS = 450;
@@ -62,6 +69,7 @@ const machineConfigPromise = import('/lib/machine-config.js').then((module) => {
 });
 const deviceSettingsPromise = import('/lib/device-settings.js');
 const uploadThumbnailPromise = import('/lib/upload-thumbnail.js');
+const toolChangeSettingsPromise = import('/lib/tool-change-settings.js');
 
 const toolpathModulePromise = import('/lib/toolpath-model.js').catch((err) => {
   console.warn('ToolpathModel unavailable', err);
@@ -133,6 +141,60 @@ function saveTravelSpeed(value) {
   const settings = motionSettingsModule.saveMotionSettings({ travelSpeedMmS: value });
   showTravelSpeed(settings.travelSpeedMmS, settings);
   dispatchEvent(new CustomEvent('cnc-motion-settings-change', { detail: settings }));
+}
+
+function updateToolChangeSettingsVisibility() {
+  if (toolChangeParkFields) toolChangeParkFields.hidden = toolChangeHandlingInput?.value !== 'park';
+  if (touchPlateFields) touchPlateFields.hidden = !touchPlateEnabledInput?.checked;
+  if (toolChangeZMethodInput) {
+    const touchOption = toolChangeZMethodInput.querySelector('option[value="touchplate"]');
+    if (touchOption) touchOption.disabled = !touchPlateEnabledInput?.checked;
+    if (!touchPlateEnabledInput?.checked && toolChangeZMethodInput.value === 'touchplate') {
+      toolChangeZMethodInput.value = 'manual';
+    }
+  }
+}
+
+function renderToolChangeSettings(settings) {
+  if (!toolChangeSettingsForm) return;
+  for (const [name, value] of Object.entries(settings || {})) {
+    const input = toolChangeSettingsForm.elements.namedItem(name);
+    if (!input) continue;
+    if (input.type === 'checkbox') input.checked = value === true;
+    else input.value = value;
+  }
+  updateToolChangeSettingsVisibility();
+}
+
+async function loadToolChangeSettings() {
+  if (!toolChangeSettingsForm) return null;
+  const [res, module] = await Promise.all([
+    fetch('/api/tool-change/settings', { cache: 'no-store' }),
+    toolChangeSettingsPromise,
+  ]);
+  const data = await readJson(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Tool-change settings unavailable');
+  const settings = module.normalizeToolChangeSettings(data.settings || data);
+  renderToolChangeSettings(settings);
+  if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = 'Tool-change settings loaded from this CNC device.';
+  return settings;
+}
+
+async function saveToolChangeSettings(event) {
+  event.preventDefault();
+  const module = await toolChangeSettingsPromise;
+  const values = Object.fromEntries(new FormData(toolChangeSettingsForm).entries());
+  values.touchPlateEnabled = touchPlateEnabledInput?.checked === true;
+  const settings = module.normalizeToolChangeSettings(values);
+  const res = await fetch('/api/tool-change/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  const data = await readJson(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Tool-change settings were not saved');
+  renderToolChangeSettings(data.settings || settings);
+  if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = 'Tool-change and touch-plate settings saved on the CNC device.';
 }
 
 function basename(path) {
@@ -1219,6 +1281,13 @@ saveMarlinEepromButton?.addEventListener('click', async () => {
     saveMarlinEepromButton.disabled = false;
   }
 });
+toolChangeHandlingInput?.addEventListener('change', updateToolChangeSettingsVisibility);
+touchPlateEnabledInput?.addEventListener('change', updateToolChangeSettingsVisibility);
+toolChangeSettingsForm?.addEventListener('submit', (event) => {
+  saveToolChangeSettings(event).catch((err) => {
+    if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = err.message;
+  });
+});
 deviceHostnameInput?.addEventListener('input', updateDeviceUrlPreview);
 deviceSettingsForm?.addEventListener('submit', saveDeviceSettings);
 restartDeviceButton?.addEventListener('click', restartDevice);
@@ -1276,6 +1345,9 @@ async function ensureViewData(viewName) {
   }
   if (viewName === 'settings') {
     await refreshHealth();
+    await loadToolChangeSettings().catch((err) => {
+      if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = err.message;
+    });
     return;
   }
   if (viewName === 'logs' && !logsLoadedOnce) {

@@ -96,6 +96,7 @@ const toolZeroSummaryEl = document.querySelector('#tool-zero-summary');
 const toolZeroResultEl = document.querySelector('#tool-zero-result');
 const toolCapturePositionButton = document.querySelector('#tool-capture-position');
 const setZZeroButton = document.querySelector('#set-z-zero');
+const touchPlateZZeroButton = document.querySelector('#touch-plate-z-zero');
 const captureSetZZeroButton = document.querySelector('#capture-set-z-zero');
 const saveToolZeroButton = document.querySelector('#save-tool-zero');
 const zeroHistorySummaryEl = document.querySelector('#zero-history-summary');
@@ -105,6 +106,14 @@ const feedStartPercentInput = document.querySelector('#feed-start-percent');
 const feedStartButtons = [...document.querySelectorAll('[data-feed-start]')];
 const runPanel = document.querySelector('#run-panel');
 const runOperatorSummaryEl = document.querySelector('#run-operator-summary');
+const toolChangeOperatorEl = document.querySelector('#tool-change-operator');
+const toolChangeTitleEl = document.querySelector('#tool-change-title');
+const toolChangeInfoEl = document.querySelector('#tool-change-info');
+const toolChangeInstructionEl = document.querySelector('#tool-change-instruction');
+const toolChangeManualZButton = document.querySelector('#tool-change-manual-z');
+const toolChangeTouchPlateButton = document.querySelector('#tool-change-touch-plate');
+const toolChangeCompleteButton = document.querySelector('#tool-change-complete');
+const toolChangeResultEl = document.querySelector('#tool-change-result');
 const runFinalChecklistEl = document.querySelector('#run-final-checklist');
 const runSummaryEl = document.querySelector('#run-summary');
 const runLogEl = document.querySelector('#run-log');
@@ -205,6 +214,7 @@ let productionHoldTimer = null;
 let productionHoldProgressTimer = null;
 let motionSettingsModule = null;
 let motionSettings = { travelSpeedMmS: 50 };
+let toolChangeDeviceSettings = null;
 
 function redirectToFiles(failedPath = '') {
   if (redirectingToFiles) return;
@@ -1254,6 +1264,56 @@ function renderLiveFeedOverride() {
   }
 }
 
+function pendingToolChangeInfo() {
+  const changes = toolpathModel?.toolChanges || [];
+  const commandNumber = Number(jobRunStatus?.toolChangeLine);
+  const toolNumber = Number(jobRunStatus?.toolChangeToolNumber);
+  return changes.find((change) => Number(change.commandNumber) === commandNumber) ||
+    changes.find((change) => Number(change.toolNumber) === toolNumber) || null;
+}
+
+function renderToolChangeOperator() {
+  if (!toolChangeOperatorEl) return;
+  const pending = jobRunStatus?.toolChangePending === true;
+  toolChangeOperatorEl.hidden = !pending;
+  if (!pending) return;
+
+  const ready = jobRunStatus?.toolChangeReady === true;
+  const zeroComplete = jobRunStatus?.toolChangeZZeroCompleted === true;
+  const number = Number(jobRunStatus?.toolChangeToolNumber);
+  const toolLabel = Number.isInteger(number) && number >= 0 ? `T${number}` : 'requested tool';
+  const info = pendingToolChangeInfo();
+  if (toolChangeTitleEl) toolChangeTitleEl.textContent = `Install ${toolLabel}`;
+  if (toolChangeInfoEl) {
+    toolChangeInfoEl.innerHTML = `
+      <dl>
+        <dt>Tool</dt><dd>${html(toolLabel)}</dd>
+        <dt>G-code info</dt><dd>${html(info?.description || jobRunStatus?.toolChangeCommand || 'No tool description in the G-code')}</dd>
+        <dt>Diameter</dt><dd>${Number.isFinite(info?.diameterMm) ? `${info.diameterMm.toFixed(3)} mm` : '-'}</dd>
+        <dt>Requested RPM</dt><dd>${Number.isFinite(info?.spindleRpm) ? info.spindleRpm : '-'}</dd>
+        <dt>Change position</dt><dd>${jobRunStatus?.toolChangeHandling === 'park' ? 'Configured machine-coordinate park' : 'Current position'}</dd>
+        <dt>Z-zero method</dt><dd>${jobRunStatus?.toolChangeZZeroMethod === 'touchplate' ? 'Touch plate' : 'Manual'}</dd>
+      </dl>
+    `;
+  }
+  if (toolChangeInstructionEl) {
+    toolChangeInstructionEl.textContent = !ready
+      ? 'Finishing queued motion and stopping the spindle. Wait before touching the tool.'
+      : !zeroComplete
+        ? `Install ${toolLabel}, secure it, then set Z zero manually or with the touch plate.`
+        : 'Z zero is recorded. Verify the tool is secure, then confirm to return and continue.';
+  }
+  if (toolChangeManualZButton) toolChangeManualZButton.disabled = !ready || zeroComplete;
+  if (toolChangeTouchPlateButton) {
+    toolChangeTouchPlateButton.hidden = !toolChangeDeviceSettings?.touchPlateEnabled;
+    toolChangeTouchPlateButton.disabled = !ready || zeroComplete;
+  }
+  if (toolChangeCompleteButton) toolChangeCompleteButton.disabled = !ready || !zeroComplete;
+  if (zeroComplete && toolChangeResultEl && !toolChangeResultEl.textContent) {
+    toolChangeResultEl.textContent = 'Z zero saved. Confirm the installed tool to continue.';
+  }
+}
+
 function renderRunPanel() {
   try {
     if (!runPanel || !runSummaryEl || !startJobButton || !pauseJobButton || !resumeJobButton || !stopJobButton) return;
@@ -1267,6 +1327,7 @@ function renderRunPanel() {
     const paused = state === 'PAUSED';
     const resuming = state === 'RESUMING';
     const stopping = state === 'STOPPING';
+    const toolChangePending = jobRunStatus?.toolChangePending === true;
     const active = running || preparing || pausing || paused || resuming || stopping;
     const statusUnknown = !jobStatusHealthy || state === 'UNKNOWN';
     const startAllowed = preparationBlockers.length === 0 && !active && !toollessResumeRunning && !productionResumeRunning;
@@ -1277,10 +1338,10 @@ function renderRunPanel() {
     startJobButton.textContent = startAllowed ? 'Hold to Start Cut' : 'Complete Preparation First';
     if (runFinalChecklistEl) runFinalChecklistEl.hidden = !startAllowed;
     pauseJobButton.hidden = !(running || pausing || statusUnknown);
-    resumeJobButton.hidden = !paused;
+    resumeJobButton.hidden = !paused || toolChangePending;
     stopJobButton.hidden = !(active || statusUnknown);
     pauseJobButton.disabled = !(running || statusUnknown);
-    resumeJobButton.disabled = !paused;
+    resumeJobButton.disabled = !paused || toolChangePending;
     stopJobButton.disabled = stopping;
 
     if (runOperatorSummaryEl) {
@@ -1316,6 +1377,7 @@ function renderRunPanel() {
         <dt>Start mode</dt><dd>use saved active work zero</dd>
         <dt>Safe start Z</dt><dd>${Number(jobState?.safeStartZ ?? runSafeStartZInput?.value ?? 15).toFixed(1)} mm</dd>
         <dt>Workspace commands</dt><dd>${jobState?.allowedWorkspaceCommands ? 'G55+ allowed by job JSON' : 'Only G54 allowed by default'}</dd>
+        <dt>Planned tool changes</dt><dd>${toolpathModel?.toolChanges?.length || 0}</dd>
         <dt>Progress</dt><dd>${jobRunStatus ? Number(jobRunStatus.progressPercent || 0).toFixed(1) : '0.0'}%</dd>
         <dt>Byte offset</dt><dd>${runStatusValue('currentByteOffset')} / ${runStatusValue('fileSize')}</dd>
         <dt>Sent lines</dt><dd>${runStatusValue('sentLineCount')}</dd>
@@ -1341,6 +1403,7 @@ function renderRunPanel() {
     if (stopping) {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stopping: file streaming is stopped while firmware sends priority M5/M410.</div></div>';
     }
+    renderToolChangeOperator();
     renderLiveFeedOverride();
     renderReadiness();
   } catch (err) {
@@ -3682,6 +3745,7 @@ function applyActiveRunParse(run, options = {}) {
   }
   pathEl.textContent = `${filePath} | Active: ${run.path}`;
   renderWorkbenchStatus();
+  renderRunPanel();
 }
 
 async function validateGeneratedRunFromPath(path = jobState?.placement?.generatedRunPath || jobState?.generatedRunPath) {
@@ -4144,8 +4208,8 @@ async function captureToolPosition() {
 }
 
 async function setZZeroWithCapture(transaction = null, options = {}) {
-  if (!(await canChangeZZero())) return;
-  if (!transaction && options.confirm === true && !confirm('This will set only the current Z position as work Z0. X/Y work zero will not be changed.')) return;
+  if (!transaction && !(await canChangeZZero())) return false;
+  if (!transaction && options.confirm === true && !confirm('This will set only the current Z position as work Z0. X/Y work zero will not be changed.')) return false;
 
   const toolZero = ensureToolZeroState();
   let data = transaction;
@@ -4158,8 +4222,9 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
   }
   const before = parseM114(data.before || '');
   const after = parseM114(data.after || '');
+  const method = options.method || (data.method === 'touchplate' ? 'Touch plate + G92 Z thickness' : 'G92 Z0');
   currentMachineFrame = data.frame || currentMachineFrame;
-  toolZero.method = 'G92 Z0';
+  toolZero.method = method;
   toolZero.capturedAt = nowIso();
   toolZero.beforeG92Z = before;
   toolZero.afterG92Z = after;
@@ -4180,6 +4245,7 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
   const history = await jobHistoryPromise;
   const zMachinePosition = data.frame?.workZeroMachine;
   history.appendZZeroHistory(ensureJobState(), {
+    method,
     before,
     after,
     capturedAt: toolZero.capturedAt,
@@ -4202,6 +4268,38 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
   refreshRecoveryPlan();
   await saveJobQuietly();
   renderZeroOriginPanel();
+  return true;
+}
+
+async function probeTouchPlateZZero() {
+  if (!(await canChangeZZero())) return;
+  const settings = toolChangeDeviceSettings || await loadToolChangeDeviceSettings();
+  if (!settings?.touchPlateEnabled) throw new Error('Touch plate is not enabled in Settings.');
+  if (!confirm(`Probe downward up to ${settings.touchPlateProbeDistance.toFixed(1)} mm at ${settings.touchPlateProbeFeed.toFixed(0)} mm/min?\n\nPlate thickness: ${settings.touchPlateThickness.toFixed(2)} mm. Verify the probe lead is connected before continuing.`)) return;
+  const res = await fetch('/api/work-zero/touch-plate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  const data = await readJsonOrThrow(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Touch-plate Z zero failed');
+  await setZZeroWithCapture(data, { method: `Touch plate ${settings.touchPlateThickness.toFixed(3)} mm` });
+  if (toolChangeResultEl && jobRunStatus?.toolChangePending) {
+    toolChangeResultEl.textContent = 'Touch plate completed. Verify the tool, then continue.';
+  }
+  await refreshJobStatus();
+}
+
+async function setToolChangeManualZ() {
+  if (!(await setZZeroWithCapture(null, { confirm: true }))) return;
+  if (toolChangeResultEl) toolChangeResultEl.textContent = 'Manual Z zero saved. Verify the tool, then continue.';
+  await refreshJobStatus();
+}
+
+async function completeToolChange() {
+  const number = Number(jobRunStatus?.toolChangeToolNumber);
+  const toolLabel = Number.isInteger(number) && number >= 0 ? `T${number}` : 'the requested tool';
+  if (!confirm(`Confirm that ${toolLabel} is installed securely and the new Z zero is correct.\n\nThe machine may return from the change position and the firmware will continue streaming the job.`)) return;
+  if (toolChangeResultEl) toolChangeResultEl.textContent = 'Returning to the toolpath and continuing...';
+  await postCriticalJobAction('/api/job/tool-change/complete', { confirmed: true });
 }
 
 async function saveToolZeroToJob() {
@@ -5436,6 +5534,20 @@ setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 
 readinessHomeAllButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
 });
+const toolChangeSettingsPromise = import('/lib/tool-change-settings.js');
+
+async function loadToolChangeDeviceSettings() {
+  const [res, module] = await Promise.all([
+    fetch('/api/tool-change/settings', { cache: 'no-store' }),
+    toolChangeSettingsPromise,
+  ]);
+  const data = await readJsonOrThrow(res);
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Tool-change settings unavailable');
+  toolChangeDeviceSettings = module.normalizeToolChangeSettings(data.settings || data);
+  if (touchPlateZZeroButton) touchPlateZZeroButton.hidden = !toolChangeDeviceSettings.touchPlateEnabled;
+  renderRunPanel();
+  return toolChangeDeviceSettings;
+}
 homeMachineZeroButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
 });
@@ -5471,6 +5583,7 @@ downloadArmedJobButton?.addEventListener('click', downloadJobJson);
 armChecklistInputs.forEach((input) => input.addEventListener('change', renderArmPanel));
 toolCapturePositionButton?.addEventListener('click', () => captureToolPosition().catch((err) => setToolZeroResult(err.message, true)));
 setZZeroButton?.addEventListener('click', () => setZZeroWithCapture(null, { confirm: false }).catch((err) => setJobResult(operatorZeroError(err), true)));
+touchPlateZZeroButton?.addEventListener('click', () => probeTouchPlateZZero().catch((err) => setJobResult(err.message, true)));
 captureSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture().catch((err) => setToolZeroResult(err.message, true)));
 saveToolZeroButton?.addEventListener('click', () => saveToolZeroToJob().catch((err) => setToolZeroResult(err.message, true)));
 workbenchUiPromise.then((ui) => {
@@ -5478,6 +5591,15 @@ workbenchUiPromise.then((ui) => {
 });
 pauseJobButton?.addEventListener('click', guardedRunClick('Pause', pauseJobRun));
 resumeJobButton?.addEventListener('click', guardedRunClick('Resume', resumeJobRun));
+toolChangeManualZButton?.addEventListener('click', () => setToolChangeManualZ().catch((err) => {
+  if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
+}));
+toolChangeTouchPlateButton?.addEventListener('click', () => probeTouchPlateZZero().catch((err) => {
+  if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
+}));
+toolChangeCompleteButton?.addEventListener('click', () => completeToolChange().catch((err) => {
+  if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
+}));
 stopJobButton?.addEventListener('click', guardedRunClick('Stop', stopJobRun));
 refreshJobStatusButton?.addEventListener('click', guardedRunClick('Status', refreshJobStatus));
 feedLiveButtons.forEach((button) => {

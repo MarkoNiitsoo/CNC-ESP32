@@ -21,6 +21,83 @@ export function stripGCodeComments(line) {
     .trim();
 }
 
+function gcodeComments(line) {
+  const raw = String(line || '');
+  const comments = [...raw.matchAll(/\(([^)]*)\)/g)].map((match) => match[1].trim()).filter(Boolean);
+  const semicolon = raw.indexOf(';');
+  if (semicolon >= 0) {
+    const comment = raw.slice(semicolon + 1).trim();
+    if (comment) comments.push(comment);
+  }
+  return comments;
+}
+
+function toolCommentDetails(comment, units = 'mm') {
+  const text = String(comment || '').trim();
+  const toolMatch = text.match(/(?:^|\s)T(?:OOL)?\s*#?\s*(\d+)\b/i);
+  const diameterMatch = text.match(/(?:\bD(?:IA(?:METER)?)?\s*[:=]?\s*|Ø\s*)(\d+(?:\.\d+)?)\s*(MM|IN(?:CH(?:ES)?)?)?/i);
+  const diameter = diameterMatch ? Number(diameterMatch[1]) : null;
+  const diameterUnit = diameterMatch?.[2]?.toLowerCase().startsWith('in') ? 'inch' : units;
+  return {
+    toolNumber: toolMatch ? Number(toolMatch[1]) : null,
+    description: text || null,
+    diameterMm: Number.isFinite(diameter) ? diameter * (diameterUnit === 'inch' ? 25.4 : 1) : null,
+  };
+}
+
+export function extractToolChangePlan(sourceText = '') {
+  const lines = String(sourceText || '').split(/\r?\n/);
+  const tools = new Map();
+  const changes = [];
+  let selectedTool = null;
+  let units = 'mm';
+  let commandNumber = 0;
+  let lastComment = null;
+  let currentChange = null;
+
+  lines.forEach((rawLine, index) => {
+    const comments = gcodeComments(rawLine);
+    for (const comment of comments) {
+      lastComment = comment;
+      const details = toolCommentDetails(comment, units);
+      if (details.toolNumber !== null) tools.set(details.toolNumber, { ...tools.get(details.toolNumber), ...details });
+    }
+
+    const cleaned = stripGCodeComments(rawLine).toUpperCase();
+    if (!cleaned) return;
+    commandNumber += 1;
+    if (/(?:^|\s)G20(?=\s|$)/.test(cleaned)) units = 'inch';
+    if (/(?:^|\s)G21(?=\s|$)/.test(cleaned)) units = 'mm';
+    const toolMatch = cleaned.match(/(?:^|\s)T\s*(\d+)(?=\s|$|M)/);
+    if (toolMatch) selectedTool = Number(toolMatch[1]);
+
+    if (/(?:^|\s)M0*6(?=\s|$)/.test(cleaned)) {
+      const known = selectedTool === null ? null : tools.get(selectedTool);
+      currentChange = {
+        lineNumber: index + 1,
+        commandNumber,
+        toolNumber: selectedTool,
+        command: cleaned,
+        description: known?.description || lastComment || null,
+        diameterMm: known?.diameterMm ?? null,
+        spindleRpm: null,
+      };
+      changes.push(currentChange);
+      if (selectedTool !== null && !tools.has(selectedTool)) {
+        tools.set(selectedTool, { toolNumber: selectedTool, description: lastComment, diameterMm: null });
+      }
+      return;
+    }
+
+    if (currentChange && currentChange.spindleRpm === null) {
+      const spindleMatch = cleaned.match(/(?:^|\s)S\s*(\d+(?:\.\d+)?)(?=\s|$)/);
+      if (spindleMatch) currentChange.spindleRpm = Number(spindleMatch[1]);
+    }
+  });
+
+  return { tools: [...tools.values()].sort((a, b) => a.toolNumber - b.toolNumber), changes };
+}
+
 function cloneBounds(bounds) {
   return { ...bounds };
 }
@@ -252,11 +329,16 @@ function defaultModel() {
       lineCount: 0,
       originalText: '',
     },
+    tools: [],
+    toolChanges: [],
   };
 }
 
 export function parseGCodeToToolpath(sourceText, options = {}) {
   const model = defaultModel();
+  const toolPlan = extractToolChangePlan(sourceText);
+  model.tools = toolPlan.tools;
+  model.toolChanges = toolPlan.changes;
   const rawBounds = createMutableBounds();
   const cutBounds = createMutableBounds();
   const lines = String(sourceText || '').split(/\r?\n/);

@@ -7,6 +7,7 @@ import { MockJobRunner } from './mock-job-runner.mjs';
 import { MockMarlin } from './mock-marlin.mjs';
 import { MockSD } from './mock-sd.mjs';
 import { deviceIdentityLocked, localUrlForHostname, sanitizeHostnameInput } from '../www/lib/device-settings.js';
+import { DEFAULT_TOOL_CHANGE_SETTINGS, normalizeToolChangeSettings } from '../www/lib/tool-change-settings.js';
 
 const DEV_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_ROOT = path.resolve(DEV_DIR, '..');
@@ -116,7 +117,8 @@ export async function createMockEnvironment(options = {}) {
     bootSessionId: `mock-boot-${Date.now()}`, absoluteFromHome: false, manualWorkFrameValid: false,
     workZeroValid: false, frameMode: 'untrusted', homeReference: null, revision: 0, trusted: false,
   };
-  const runner = new MockJobRunner({ sd, marlin, frame, lineDelayMs: config.lineDelayMs });
+  const toolChangeSettings = { ...DEFAULT_TOOL_CHANGE_SETTINGS };
+  const runner = new MockJobRunner({ sd, marlin, frame, toolChangeSettings, lineDelayMs: config.lineDelayMs });
   const jog = {
     state: 'IDLE', safeJog: true, zLiftedForJog: false, safeLiftZ: 70,
     zRestoreAvailable: false, originalZ: null, safeLiftWorkZ: null, zChangedDuringJog: false,
@@ -130,7 +132,10 @@ export async function createMockEnvironment(options = {}) {
     bluetooth: { enabled: true, advertiseName: true, started: true, name: 'CNC cnc.local' },
     configSource: 'mock',
   };
-  return { projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device, startedAt: Date.now() };
+  return {
+    projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device,
+    toolChangeSettings, startedAt: Date.now(),
+  };
 }
 
 export async function createMockServer(options = {}) {
@@ -232,6 +237,9 @@ export async function createMockServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/recovery/production/start') return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
       if (req.method === 'POST' && pathname === '/api/job/pause') return json(res, 200, env.runner.pause());
       if (req.method === 'POST' && pathname === '/api/job/resume') return json(res, 200, env.runner.resume());
+      if (req.method === 'POST' && pathname === '/api/job/tool-change/complete') {
+        return json(res, 200, env.runner.completeToolChange(await readJson(req)));
+      }
       if (req.method === 'POST' && pathname === '/api/job/stop') return json(res, 200, env.runner.stop());
       if (req.method === 'POST' && pathname === '/api/job/feed-override') {
         return json(res, 200, env.runner.setFeedOverride((await readJson(req)).percent));
@@ -347,15 +355,49 @@ export async function createMockServer(options = {}) {
         return json(res, 200, { ok: true, axes, before, after, frame: env.frame });
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/set-z') {
-        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || !env.frame.workZeroValid || env.runner.isActive()) {
+        const toolChangeWindow = env.runner.status.state === 'PAUSED' && env.runner.status.toolChangePending && env.runner.status.toolChangeReady;
+        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || !env.frame.workZeroValid ||
+            (env.runner.isActive() && !toolChangeWindow)) {
           return json(res, 409, { ok: false, error: 'Home All and an active work frame are required before setting Z zero' });
         }
         const before = env.marlin.execute('M114').response;
         env.marlin.execute('G92 Z0');
         const after = env.marlin.execute('M114').response;
         syncMockFrame(env);
-        env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        env.runner.markToolChangeZZero('manual');
         return json(res, 200, { ok: true, before, after, frame: env.frame });
+      }
+      if (req.method === 'POST' && pathname === '/api/work-zero/touch-plate') {
+        const toolChangeWindow = env.runner.status.state === 'PAUSED' && env.runner.status.toolChangePending && env.runner.status.toolChangeReady;
+        if (!env.toolChangeSettings.touchPlateEnabled) throw new Error('touch plate is not enabled in Tool Change settings');
+        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || !env.frame.workZeroValid ||
+            (env.runner.isActive() && !toolChangeWindow)) {
+          throw new Error('an active work frame and idle transport or a ready M6 stop are required before probing Z zero');
+        }
+        const settings = env.toolChangeSettings;
+        const before = env.marlin.execute('M114').response;
+        const probeCommand = `G38.2 Z-${settings.touchPlateProbeDistance.toFixed(3)} F${settings.touchPlateProbeFeed.toFixed(1)}`;
+        const commands = ['M5', 'M400', 'G21', 'G90', 'G54', 'G91', probeCommand, 'G90', 'M400', 'M114'];
+        let result;
+        for (const command of commands) {
+          result = env.marlin.execute(command, { priority: true });
+          if (!result.ok) throw new Error(result.error);
+        }
+        const contact = result.response;
+        const contactMachineZ = env.marlin.machinePosition.z;
+        for (const command of [
+          `G92 Z${settings.touchPlateThickness.toFixed(3)}`,
+          `G0 Z${(settings.touchPlateThickness + settings.touchPlateRetractDistance).toFixed(3)} F${settings.touchPlateProbeFeed.toFixed(1)}`,
+          'M400', 'M114',
+        ]) {
+          result = env.marlin.execute(command, { priority: true });
+          if (!result.ok) throw new Error(result.error);
+        }
+        syncMockFrame(env);
+        if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = contactMachineZ - settings.touchPlateThickness;
+        env.runner.markToolChangeZZero('touchplate');
+        return json(res, 200, { ok: true, method: 'touchplate', probeCommand, before, contact, after: result.response, frame: env.frame });
       }
       if (req.method === 'GET' && pathname === '/api/machine/info') {
         const m = env.marlin.machine;
@@ -366,6 +408,25 @@ export async function createMockServer(options = {}) {
           capabilities: { emergencyParser: true, arcs: true, autoreportPosition: true, eeprom: true, sdCard: true, motionModes: true },
           refreshedAtMs: Date.now() - env.startedAt, lastError: '',
         });
+      }
+      if (req.method === 'GET' && pathname === '/api/tool-change/settings') {
+        return json(res, 200, { ok: true, settings: env.toolChangeSettings });
+      }
+      if (req.method === 'PUT' && pathname === '/api/tool-change/settings') {
+        if (env.runner.isActive()) throw new Error('Tool-change settings can be changed only when the machine is idle.');
+        const body = await readJson(req);
+        const settings = normalizeToolChangeSettings(body);
+        const machine = env.marlin.machine;
+        if (settings.zZeroMethod === 'touchplate' && !settings.touchPlateEnabled) {
+          throw new Error('touchplate Z zero requires an enabled touch plate');
+        }
+        if (settings.parkMachineX < machine.xMin || settings.parkMachineX > machine.xMax ||
+            settings.parkMachineY < machine.yMin || settings.parkMachineY > machine.yMax ||
+            settings.parkMachineZ < machine.zMin || settings.parkMachineZ > machine.zMax) {
+          throw new Error('tool-change position is outside configured machine limits');
+        }
+        Object.assign(env.toolChangeSettings, settings);
+        return json(res, 200, { ok: true, settings });
       }
       if (req.method === 'POST' && pathname === '/api/machine/refresh') {
         env.marlin.execute('M115');
@@ -439,7 +500,9 @@ export async function createMockServer(options = {}) {
         return json(res, 200, { ...env.jog, heartbeatAgeMs: age, uptimeMs: Date.now() - env.startedAt });
       }
       if (req.method === 'POST' && pathname === '/api/jog/start') {
-        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'jog rejected while job is active' });
+        if (env.runner.isActive() && env.runner.status.state !== 'PAUSED') {
+          return json(res, 409, { ok: false, error: 'jog rejected while job is active' });
+        }
         const body = await readJson(req);
         const continuePendingRestore = env.jog.zRestoreAvailable && Number.isFinite(env.jog.originalZ) && body.safeJog !== false;
         const pendingOriginalZ = env.jog.originalZ;

@@ -155,6 +155,7 @@
           <button id="set-zero-x" type="button">Set Zero X</button>
           <button id="set-zero-y" type="button">Set Zero Y</button>
           <button id="set-z-zero" type="button" data-icon="zZero">Set Zero Z</button>
+          <button id="touch-plate-z-zero" type="button" hidden>Touch Plate Z Zero</button>
           <button id="open-zero-history" type="button">History</button>
         </div>
         <div id="job-result" class="job-result" role="status"></div>
@@ -291,6 +292,18 @@
       <section id="run-panel" class="panel run-panel preview-tab-panel" data-preview-tab="run">
         <h2>Review &amp; Start Cutting</h2>
         <div id="run-operator-summary" class="operator-start-summary"></div>
+        <section id="tool-change-operator" class="tool-change-operator" hidden aria-live="assertive">
+          <p class="eyebrow">TOOL CHANGE REQUIRED</p>
+          <h3 id="tool-change-title">Install the requested tool</h3>
+          <div id="tool-change-info" class="job-summary"></div>
+          <p id="tool-change-instruction" class="warning"></p>
+          <div class="job-actions">
+            <button id="tool-change-manual-z" type="button">Set Current Z Zero</button>
+            <button id="tool-change-touch-plate" type="button" hidden>Probe Touch Plate</button>
+            <button id="tool-change-complete" class="hold-to-confirm" type="button">Confirm Tool &amp; Continue</button>
+          </div>
+          <p id="tool-change-result" class="form-hint"></p>
+        </section>
         <fieldset id="run-final-checklist" class="arm-checklist final-start-checklist">
           <legend>Final check</legend>
           <label><input type="checkbox" data-run-check="materialAndPathClear"> Material and clamps are secure; the toolpath is clear.</label>

@@ -6,15 +6,29 @@ function cleanLine(line) {
   return String(line || '').replace(/\([^)]*\)/g, '').replace(/;.*/, '').trim();
 }
 
+function toolNumberFromCommand(command) {
+  const match = String(command || '').toUpperCase().match(/(?:^|\s)T\s*(\d+)(?=\s|$|M)/);
+  return match ? Number(match[1]) : null;
+}
+
+function isM6(command) {
+  return /(?:^|\s)M0*6(?=\s|$)/i.test(String(command || ''));
+}
+
+function isStandaloneToolSelect(command) {
+  return /^T\s*\d+$/i.test(String(command || '').trim());
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class MockJobRunner {
-  constructor({ sd, marlin, frame, lineDelayMs = 20 } = {}) {
+  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20 } = {}) {
     this.sd = sd;
     this.marlin = marlin;
     this.frame = frame;
+    this.toolChangeSettings = toolChangeSettings || {};
     this.lineDelayMs = Math.max(0, Number(lineDelayMs) || 0);
     this.runToken = 0;
     this.status = this.emptyStatus();
@@ -28,6 +42,11 @@ export class MockJobRunner {
       sentLineCount: 0, acknowledgedLineCount: 0, currentLineNumber: 0,
       pauseRequested: false, stopRequested: false, priorityCommandInProgress: false,
       feedOverridePercent: this?.marlin?.feedOverride || 100,
+      toolChangePending: false, toolChangeReady: false, toolChangeZZeroCompleted: false,
+      selectedToolNumber: -1, activeToolNumber: -1, toolChangeToolNumber: -1,
+      toolChangeLine: 0, toolChangeCommand: '', toolChangeHandling: 'pause',
+      toolChangeZZeroMethod: 'manual', toolChangeReturnPositionCaptured: false,
+      toolChangeReturnPosition: null,
       lastCommand: '', lastSentCommand: '', lastResponse: '', lastMarlinResponse: '', lastError: '',
       lastPriorityCommand: '', lastPriorityResponse: '', lastPriorityError: '',
       lastFeedOverrideCommand: '', lastFeedOverrideResponse: '', lastFeedOverrideError: '',
@@ -45,8 +64,8 @@ export class MockJobRunner {
     return ACTIVE_STATES.has(this.status.state);
   }
 
-  runCommand(command, { priority = false } = {}) {
-    const result = this.marlin.execute(command, { priority });
+  runCommand(command, { priority = false, allowMachineCoordinates = false } = {}) {
+    const result = this.marlin.execute(command, { priority, allowMachineCoordinates });
     if (priority) {
       this.status.lastPriorityCommand = command;
       this.status.lastPriorityResponse = result.response || '';
@@ -58,6 +77,50 @@ export class MockJobRunner {
       this.status.lastMarlinResponse = result.response || '';
     }
     return result;
+  }
+
+  handleToolChange(command) {
+    const requested = toolNumberFromCommand(command);
+    if (requested !== null) this.status.selectedToolNumber = requested;
+    this.status.toolChangePending = true;
+    this.status.toolChangeReady = false;
+    this.status.toolChangeZZeroCompleted = false;
+    this.status.toolChangeToolNumber = this.status.selectedToolNumber;
+    this.status.toolChangeLine = this.status.currentLineNumber;
+    this.status.toolChangeCommand = command;
+    this.status.toolChangeHandling = this.toolChangeSettings.handling === 'park' ? 'park' : 'pause';
+    this.status.toolChangeZZeroMethod = this.toolChangeSettings.zZeroMethod === 'touchplate' ? 'touchplate' : 'manual';
+    this.status.state = 'PAUSING';
+    this.status.pauseRequested = true;
+    this.status.streamingPausedReason = 'M6 received. Finishing queued motion before tool change.';
+    for (const priorityCommand of ['M400', 'M5']) {
+      const result = this.runCommand(priorityCommand, { priority: true });
+      if (!result.ok) return this.fail(result.error);
+    }
+    if (this.status.toolChangeHandling === 'park') {
+      if (!this.frame.absoluteFromHome) {
+        this.status.toolChangeHandling = 'pause';
+      } else {
+        this.status.toolChangeReturnPosition = { ...this.marlin.position };
+        this.status.toolChangeReturnPositionCaptured = true;
+        const settings = this.toolChangeSettings;
+        const commands = [
+          'M114', 'G21', 'G90', `G53 G0 Z${Number(settings.parkMachineZ).toFixed(3)} F400`, 'M400',
+          `G53 G0 X${Number(settings.parkMachineX).toFixed(3)} Y${Number(settings.parkMachineY).toFixed(3)} F3000`,
+          'M400', 'G54',
+        ];
+        for (const priorityCommand of commands) {
+          const result = this.runCommand(priorityCommand, { priority: true, allowMachineCoordinates: true });
+          if (!result.ok) return this.fail(result.error);
+        }
+      }
+    }
+    this.status.state = 'PAUSED';
+    this.status.toolChangeReady = true;
+    this.status.pauseRequested = false;
+    const tool = this.status.toolChangeToolNumber >= 0 ? `T${this.status.toolChangeToolNumber}` : 'the requested tool';
+    this.status.streamingPausedReason = `M6 tool change: install ${tool}, set Z zero, then confirm the change.`;
+    return this.snapshot();
   }
 
   async start(request = {}) {
@@ -240,6 +303,16 @@ export class MockJobRunner {
         this.fail('Non-default workspace command found. This may conflict with captured work zero.');
         return;
       }
+      if (isM6(command)) {
+        this.status.lastCommand = command;
+        this.handleToolChange(command);
+        continue;
+      }
+      if (isStandaloneToolSelect(command)) {
+        this.status.selectedToolNumber = toolNumberFromCommand(command) ?? -1;
+        this.status.lastCommand = command;
+        continue;
+      }
       const result = this.runCommand(command);
       this.status.sentLineCount += 1;
       if (!result.ok) {
@@ -276,6 +349,7 @@ export class MockJobRunner {
 
   resume() {
     if (this.status.state !== 'PAUSED') throw new Error('job is not paused');
+    if (this.status.toolChangePending) throw new Error('complete the pending tool change before resuming');
     this.status.state = 'RESUMING';
     this.status.pauseRequested = false;
     this.status.streamingPausedReason = '';
@@ -283,11 +357,49 @@ export class MockJobRunner {
     return this.snapshot('Resume requested.');
   }
 
+  markToolChangeZZero(method = 'manual') {
+    if (this.status.state === 'PAUSED' && this.status.toolChangePending && this.status.toolChangeReady) {
+      this.status.toolChangeZZeroCompleted = true;
+      this.status.toolChangeZZeroMethod = method === 'touchplate' ? 'touchplate' : 'manual';
+    }
+  }
+
+  completeToolChange({ confirmed = false } = {}) {
+    if (this.status.state !== 'PAUSED' || !this.status.toolChangePending || !this.status.toolChangeReady) {
+      throw new Error('no completed M6 stop is waiting for confirmation');
+    }
+    if (!confirmed) throw new Error('confirmed true is required after the tool has been installed');
+    if (!this.status.toolChangeZZeroCompleted) throw new Error('set Z zero manually or with the configured touch plate before continuing');
+    if (this.status.toolChangeHandling === 'park') {
+      const target = this.status.toolChangeReturnPosition;
+      if (!target || !this.frame.absoluteFromHome) throw new Error('the pre-park return position is unavailable');
+      const settings = this.toolChangeSettings;
+      const commands = [
+        'G21', 'G90', `G53 G0 Z${Number(settings.parkMachineZ).toFixed(3)} F400`, 'M400', 'G54',
+        `G0 X${target.x.toFixed(3)} Y${target.y.toFixed(3)} F3000`, 'M400',
+        `G0 Z${target.z.toFixed(3)} F400`, 'M400', 'M114',
+      ];
+      for (const command of commands) {
+        const result = this.runCommand(command, { priority: true, allowMachineCoordinates: true });
+        if (!result.ok) throw new Error(result.error);
+      }
+    }
+    this.status.activeToolNumber = this.status.toolChangeToolNumber;
+    this.status.toolChangePending = false;
+    this.status.toolChangeReady = false;
+    this.status.pauseRequested = false;
+    this.status.streamingPausedReason = '';
+    this.status.state = 'RUNNING';
+    return this.snapshot('Tool change confirmed. Resume requested.');
+  }
+
   stop() {
     if (!this.isActive()) throw new Error('job is not active');
     this.status.state = 'STOPPING';
     this.status.stopRequested = true;
     this.status.pauseRequested = false;
+    this.status.toolChangePending = false;
+    this.status.toolChangeReady = false;
     this.status.streamingPausedReason = 'Stop requested. Streaming stopped.';
     this.runToken += 1;
     this.runCommand('M5', { priority: true });

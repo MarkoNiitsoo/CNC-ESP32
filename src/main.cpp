@@ -28,6 +28,7 @@ constexpr const char *kWifiPrefsNamespace = "wifi";
 constexpr const char *kWifiPrefsSsidKey = "ssid";
 constexpr const char *kWifiPrefsPassKey = "pass";
 constexpr const char *kMachinePrefsNamespace = "machine";
+constexpr const char *kToolChangePrefsNamespace = "toolchange";
 constexpr const char *kDevicePrefsNamespace = "device";
 constexpr const char *kDevicePrefsHostnameKey = "hostname";
 constexpr const char *kDevicePrefsFriendlyNameKey = "friendlyName";
@@ -112,6 +113,20 @@ struct JobRunnerStatus {
   bool priorityCommandInProgress = false;
   int feedOverridePercent = 100;
   bool resetFeedOverrideAfterJob = true;
+  bool toolChangePending = false;
+  bool toolChangeReady = false;
+  bool toolChangeZZeroCompleted = false;
+  int selectedToolNumber = -1;
+  int activeToolNumber = -1;
+  int toolChangeToolNumber = -1;
+  uint32_t toolChangeLine = 0;
+  bool toolChangeReturnPositionCaptured = false;
+  float toolChangeReturnWorkX = 0.0f;
+  float toolChangeReturnWorkY = 0.0f;
+  float toolChangeReturnWorkZ = 0.0f;
+  String toolChangeCommand;
+  String toolChangeHandling = "pause";
+  String toolChangeZZeroMethod = "manual";
   String lastCommand;
   String lastResponse;
   String lastError;
@@ -274,12 +289,27 @@ struct DeviceIdentity {
   String bluetoothName;
 };
 
+struct ToolChangeSettings {
+  String handling = "pause";
+  float parkMachineX = 0.0f;
+  float parkMachineY = 0.0f;
+  float parkMachineZ = kMachineZMaxMm;
+  String zZeroMethod = "manual";
+  bool touchPlateEnabled = false;
+  float touchPlateThickness = 15.0f;
+  float touchPlateProbeDistance = 30.0f;
+  float touchPlateProbeFeed = 100.0f;
+  float touchPlateRetractDistance = 3.0f;
+};
+
 WebServer server(80);
 WebSocketsServer telemetrySocket(kTelemetryWebSocketPort);
 Preferences wifiPrefs;
 Preferences machinePrefs;
 Preferences devicePrefs;
+Preferences toolChangePrefs;
 DeviceIdentity deviceIdentity;
+ToolChangeSettings toolChangeSettings;
 String activeWifiMode = "ap";
 String activeWifiSsid = kSetupApSsid;
 bool jobRunning = false; // TODO: Replace with real Marlin job state tracking.
@@ -349,6 +379,11 @@ String extractWorkspaceCommand(const String &line);
 bool handleWorkspaceCommand(const String &line);
 bool runJobStartPreamble();
 bool responseContainsToken(const String &response, const char *token);
+bool extractGcodeIntegerWord(const String &line, char wanted, int &value);
+bool gcodeHasM6(const String &line);
+bool gcodeIsStandaloneToolSelect(const String &line, int &toolNumber);
+bool beginToolChange(const String &line);
+void setJobError(const String &message);
 void resetFeedOverrideAfterJobIfNeeded();
 void updatePositionFromMarlinResponse(const String &response);
 String machineFrameJson();
@@ -1166,6 +1201,29 @@ String jobStatusJson() {
   json += jobStatus.priorityCommandInProgress ? "true" : "false";
   json += ",\"feedOverridePercent\":";
   json += String(jobStatus.feedOverridePercent);
+  json += ",\"toolChangePending\":";
+  json += jobStatus.toolChangePending ? "true" : "false";
+  json += ",\"toolChangeReady\":";
+  json += jobStatus.toolChangeReady ? "true" : "false";
+  json += ",\"toolChangeZZeroCompleted\":";
+  json += jobStatus.toolChangeZZeroCompleted ? "true" : "false";
+  json += ",\"selectedToolNumber\":" + String(jobStatus.selectedToolNumber);
+  json += ",\"activeToolNumber\":" + String(jobStatus.activeToolNumber);
+  json += ",\"toolChangeToolNumber\":" + String(jobStatus.toolChangeToolNumber);
+  json += ",\"toolChangeLine\":" + String(jobStatus.toolChangeLine);
+  json += ",\"toolChangeReturnPositionCaptured\":";
+  json += jobStatus.toolChangeReturnPositionCaptured ? "true" : "false";
+  json += ",\"toolChangeReturnPosition\":";
+  if (jobStatus.toolChangeReturnPositionCaptured) {
+    json += "{\"x\":" + String(jobStatus.toolChangeReturnWorkX, 3) +
+            ",\"y\":" + String(jobStatus.toolChangeReturnWorkY, 3) +
+            ",\"z\":" + String(jobStatus.toolChangeReturnWorkZ, 3) + "}";
+  } else {
+    json += "null";
+  }
+  json += ",\"toolChangeCommand\":\"" + jsonEscape(jobStatus.toolChangeCommand) + "\"";
+  json += ",\"toolChangeHandling\":\"" + jsonEscape(jobStatus.toolChangeHandling) + "\"";
+  json += ",\"toolChangeZZeroMethod\":\"" + jsonEscape(jobStatus.toolChangeZZeroMethod) + "\"";
   json += ",\"lastCommand\":\"";
   json += jsonEscape(jobStatus.lastCommand);
   json += "\",\"lastSentCommand\":\"";
@@ -1761,6 +1819,56 @@ void loadMachineProfile() {
   machineProfile.capMotionModes = caps & 32;
 }
 
+String toolChangeSettingsJson() {
+  String json = "{\"handling\":\"" + jsonEscape(toolChangeSettings.handling) + "\"";
+  json += ",\"parkMachineX\":" + String(toolChangeSettings.parkMachineX, 3);
+  json += ",\"parkMachineY\":" + String(toolChangeSettings.parkMachineY, 3);
+  json += ",\"parkMachineZ\":" + String(toolChangeSettings.parkMachineZ, 3);
+  json += ",\"zZeroMethod\":\"" + jsonEscape(toolChangeSettings.zZeroMethod) + "\"";
+  json += ",\"touchPlateEnabled\":";
+  json += toolChangeSettings.touchPlateEnabled ? "true" : "false";
+  json += ",\"touchPlateThickness\":" + String(toolChangeSettings.touchPlateThickness, 3);
+  json += ",\"touchPlateProbeDistance\":" + String(toolChangeSettings.touchPlateProbeDistance, 3);
+  json += ",\"touchPlateProbeFeed\":" + String(toolChangeSettings.touchPlateProbeFeed, 1);
+  json += ",\"touchPlateRetractDistance\":" + String(toolChangeSettings.touchPlateRetractDistance, 3);
+  json += "}";
+  return json;
+}
+
+void saveToolChangeSettings() {
+  toolChangePrefs.begin(kToolChangePrefsNamespace, false);
+  toolChangePrefs.putString("handling", toolChangeSettings.handling);
+  toolChangePrefs.putFloat("parkX", toolChangeSettings.parkMachineX);
+  toolChangePrefs.putFloat("parkY", toolChangeSettings.parkMachineY);
+  toolChangePrefs.putFloat("parkZ", toolChangeSettings.parkMachineZ);
+  toolChangePrefs.putString("zMethod", toolChangeSettings.zZeroMethod);
+  toolChangePrefs.putBool("tpEnabled", toolChangeSettings.touchPlateEnabled);
+  toolChangePrefs.putFloat("tpThick", toolChangeSettings.touchPlateThickness);
+  toolChangePrefs.putFloat("tpDist", toolChangeSettings.touchPlateProbeDistance);
+  toolChangePrefs.putFloat("tpFeed", toolChangeSettings.touchPlateProbeFeed);
+  toolChangePrefs.putFloat("tpRetract", toolChangeSettings.touchPlateRetractDistance);
+  toolChangePrefs.end();
+}
+
+void loadToolChangeSettings() {
+  toolChangePrefs.begin(kToolChangePrefsNamespace, true);
+  toolChangeSettings.handling = toolChangePrefs.getString("handling", "pause");
+  toolChangeSettings.parkMachineX = toolChangePrefs.getFloat("parkX", 0.0f);
+  toolChangeSettings.parkMachineY = toolChangePrefs.getFloat("parkY", 0.0f);
+  toolChangeSettings.parkMachineZ = toolChangePrefs.getFloat("parkZ", kMachineZMaxMm);
+  toolChangeSettings.zZeroMethod = toolChangePrefs.getString("zMethod", "manual");
+  toolChangeSettings.touchPlateEnabled = toolChangePrefs.getBool("tpEnabled", false);
+  toolChangeSettings.touchPlateThickness = toolChangePrefs.getFloat("tpThick", 15.0f);
+  toolChangeSettings.touchPlateProbeDistance = toolChangePrefs.getFloat("tpDist", 30.0f);
+  toolChangeSettings.touchPlateProbeFeed = toolChangePrefs.getFloat("tpFeed", 100.0f);
+  toolChangeSettings.touchPlateRetractDistance = toolChangePrefs.getFloat("tpRetract", 3.0f);
+  toolChangePrefs.end();
+  if (toolChangeSettings.handling != "park") toolChangeSettings.handling = "pause";
+  if (toolChangeSettings.zZeroMethod != "touchplate" || !toolChangeSettings.touchPlateEnabled) {
+    toolChangeSettings.zZeroMethod = "manual";
+  }
+}
+
 bool parseMachineProfile(const String &response) {
   machineProfile.firmwareName = responseField(response, "FIRMWARE_NAME", "SOURCE_CODE_URL");
   machineProfile.sourceCodeUrl = responseField(response, "SOURCE_CODE_URL", "PROTOCOL_VERSION");
@@ -1996,6 +2104,11 @@ void finishPrioritySequence() {
     jobStatus.state = JobRunnerState::Running;
     logJobEvent("start preamble complete: " + jobStatus.gcodePath);
   } else if (jobStatus.state == JobRunnerState::Pausing) {
+    if (jobStatus.toolChangePending && jobStatus.toolChangeHandling == "park" &&
+        !jobStatus.toolChangeReturnPositionCaptured) {
+      setJobError("Tool-change position was not captured before parking; automatic resume is blocked");
+      return;
+    }
     if (jobFile) {
       jobFile.close();
     }
@@ -2004,8 +2117,18 @@ void finishPrioritySequence() {
     jobStatus.state = JobRunnerState::Paused;
     jobStatus.pauseRequested = false;
     jobStatus.pausedAtMs = millis();
-    jobStatus.streamingPausedReason = "Pause requested. Streaming stopped.";
-    logJobEvent("paused: " + jobStatus.gcodePath);
+    if (jobStatus.toolChangePending) {
+      jobStatus.toolChangeReady = true;
+      const String toolLabel = jobStatus.toolChangeToolNumber >= 0
+                                   ? "T" + String(jobStatus.toolChangeToolNumber)
+                                   : "the requested tool";
+      jobStatus.streamingPausedReason = "M6 tool change: install " + toolLabel +
+                                        ", set Z zero, then confirm the change.";
+      logJobEvent("tool change ready: " + toolLabel + " line=" + String(jobStatus.toolChangeLine));
+    } else {
+      jobStatus.streamingPausedReason = "Pause requested. Streaming stopped.";
+      logJobEvent("paused: " + jobStatus.gcodePath);
+    }
   } else if (jobStatus.state == JobRunnerState::Stopping) {
     if (jobFile) {
       jobFile.close();
@@ -2084,6 +2207,15 @@ void processPriorityCommands() {
 
   jobStatus.lastPriorityResponse = priorityResponseBuffer;
   addMarlinLog("rx", true, priorityResponseBuffer);
+  updatePositionFromMarlinResponse(priorityResponseBuffer);
+  if (jobStatus.toolChangePending && jobStatus.toolChangeHandling == "park" &&
+      jobStatus.lastPriorityCommand == "M114" && marlinPosition.valid &&
+      !jobStatus.toolChangeReturnPositionCaptured) {
+    jobStatus.toolChangeReturnPositionCaptured = true;
+    jobStatus.toolChangeReturnWorkX = marlinPosition.x;
+    jobStatus.toolChangeReturnWorkY = marlinPosition.y;
+    jobStatus.toolChangeReturnWorkZ = marlinPosition.z;
+  }
   noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer);
   priorityCommandIndex += 1;
   jobStatus.priorityCommandInProgress = false;
@@ -3052,6 +3184,8 @@ void setJobError(const String &message) {
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
+  jobStatus.toolChangePending = false;
+  jobStatus.toolChangeReady = false;
   jobStatus.state = JobRunnerState::Error;
   jobStatus.lastError = message;
   touchJobStatus();
@@ -3129,6 +3263,8 @@ void completeJob() {
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
+  jobStatus.toolChangePending = false;
+  jobStatus.toolChangeReady = false;
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Completed;
   jobStatus.completedAtMs = millis();
@@ -3139,6 +3275,7 @@ void completeJob() {
 void processJobRunner() {
   if (priorityCommandCount > 0) {
     processPriorityCommands();
+    if (priorityCommandCount > 0) return;
   }
 
   if (jobStatus.state == JobRunnerState::Pausing || jobStatus.state == JobRunnerState::Stopping) {
@@ -3235,6 +3372,25 @@ void processJobRunner() {
                            : validateTestMotionCommand(line, jobStatus.streamMode, jobStatus.safeStartZ, validationError);
     if (!valid) {
       setJobError(validationError);
+      return;
+    }
+  }
+
+  if (jobStatus.streamMode == "job") {
+    int toolNumber = -1;
+    if (gcodeHasM6(line)) {
+      jobStatus.currentLineNumber += 1;
+      jobStatus.lastCommand = line;
+      touchJobProgress();
+      beginToolChange(line);
+      return;
+    }
+    if (gcodeIsStandaloneToolSelect(line, toolNumber)) {
+      jobStatus.selectedToolNumber = toolNumber;
+      jobStatus.currentLineNumber += 1;
+      jobStatus.lastCommand = line;
+      logJobEvent("tool selected by G-code: T" + String(toolNumber));
+      touchJobProgress();
       return;
     }
   }
@@ -3463,6 +3619,175 @@ void handleHealth() {
   json += "}";
 
   server.send(200, "application/json", json);
+}
+
+bool extractGcodeIntegerWord(const String &line, char wanted, int &value) {
+  String upper = line;
+  upper.toUpperCase();
+  for (int i = 0; i < upper.length(); ++i) {
+    if (upper[i] != wanted) continue;
+    if (i > 0 && upper[i - 1] >= 'A' && upper[i - 1] <= 'Z') continue;
+    int cursor = i + 1;
+    while (cursor < upper.length() && upper[cursor] == ' ') ++cursor;
+    const int numberStart = cursor;
+    while (cursor < upper.length() && upper[cursor] >= '0' && upper[cursor] <= '9') ++cursor;
+    if (cursor == numberStart) continue;
+    if (cursor < upper.length() && (upper[cursor] == '.' || upper[cursor] == '+' || upper[cursor] == '-')) continue;
+    value = upper.substring(numberStart, cursor).toInt();
+    return true;
+  }
+  return false;
+}
+
+bool gcodeHasM6(const String &line) {
+  String upper = line;
+  upper.toUpperCase();
+  for (int i = 0; i < upper.length(); ++i) {
+    if (upper[i] != 'M') continue;
+    int cursor = i + 1;
+    while (cursor < upper.length() && upper[cursor] == ' ') ++cursor;
+    const int numberStart = cursor;
+    while (cursor < upper.length() && upper[cursor] >= '0' && upper[cursor] <= '9') ++cursor;
+    if (cursor == numberStart) continue;
+    if (cursor < upper.length() && upper[cursor] == '.') continue;
+    if (upper.substring(numberStart, cursor).toInt() == 6) return true;
+  }
+  return false;
+}
+
+bool gcodeIsStandaloneToolSelect(const String &line, int &toolNumber) {
+  String upper = line;
+  upper.trim();
+  upper.toUpperCase();
+  if (!upper.startsWith("T") || !extractGcodeIntegerWord(upper, 'T', toolNumber)) return false;
+  int cursor = 1;
+  while (cursor < upper.length() && upper[cursor] == ' ') ++cursor;
+  while (cursor < upper.length() && upper[cursor] >= '0' && upper[cursor] <= '9') ++cursor;
+  while (cursor < upper.length() && upper[cursor] == ' ') ++cursor;
+  return cursor == upper.length();
+}
+
+bool beginToolChange(const String &line) {
+  int requestedTool = jobStatus.selectedToolNumber;
+  extractGcodeIntegerWord(line, 'T', requestedTool);
+  jobStatus.selectedToolNumber = requestedTool;
+  jobStatus.toolChangeToolNumber = requestedTool;
+  jobStatus.toolChangePending = true;
+  jobStatus.toolChangeReady = false;
+  jobStatus.toolChangeZZeroCompleted = false;
+  jobStatus.toolChangeReturnPositionCaptured = false;
+  jobStatus.toolChangeLine = jobStatus.currentLineNumber;
+  jobStatus.toolChangeCommand = line;
+  jobStatus.toolChangeHandling = toolChangeSettings.handling;
+  jobStatus.toolChangeZZeroMethod = toolChangeSettings.zZeroMethod;
+  jobStatus.pauseRequested = true;
+  jobStatus.stopRequested = false;
+  jobStatus.state = JobRunnerState::Pausing;
+  jobStatus.streamingPausedReason = "M6 received. Finishing queued motion before tool change.";
+  if (jobFile) jobFile.close();
+  jobWaitingForOk = false;
+  jobResponseBuffer = "";
+
+  clearPriorityCommands();
+  if (!appendPriorityCommand("M400") || !appendPriorityCommand("M5")) {
+    setJobError("Tool-change stop sequence is too large for priority queue");
+    return false;
+  }
+
+  if (toolChangeSettings.handling == "park") {
+    if (!machineFrame.absoluteFromHome || !machineFrame.machineValid) {
+      jobStatus.toolChangeHandling = "pause";
+      logJobEvent("tool change park skipped: absolute machine frame is unavailable");
+    } else {
+      const String parkCommands[] = {
+          "M114", "G21", "G90",
+          "G53 G0 Z" + String(toolChangeSettings.parkMachineZ, 3) + " F" + String(kJobStartZFeed, 0),
+          "M400",
+          "G53 G0 X" + String(toolChangeSettings.parkMachineX, 3) +
+              " Y" + String(toolChangeSettings.parkMachineY, 3) +
+              " F" + String(jobStatus.travelFeedMmMin, 0),
+          "M400", "G54",
+      };
+      for (const String &command : parkCommands) {
+        if (!appendPriorityCommand(command)) {
+          setJobError("Tool-change park sequence is too large for priority queue");
+          return false;
+        }
+      }
+    }
+  }
+  jobStatus.lastPriorityCommand = "";
+  jobStatus.lastPriorityResponse = "";
+  jobStatus.lastPriorityError = "";
+  logJobEvent("tool change requested: " + line + " line=" + String(jobStatus.toolChangeLine));
+  touchJobStatus();
+  return true;
+}
+
+void handleToolChangeSettingsGet() {
+  server.send(200, "application/json", "{\"ok\":true,\"settings\":" + toolChangeSettingsJson() + "}");
+}
+
+void handleToolChangeSettingsPut() {
+  if (jobIsActive() || jobWaitingForOk || jogIsActive() || priorityCommandCount > 0) {
+    sendJsonError(409, "Tool-change settings can be changed only when the machine is idle.");
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+  const String body = server.arg("plain");
+  String handling = extractJsonString(body, "handling");
+  String zZeroMethod = extractJsonString(body, "zZeroMethod");
+  handling.toLowerCase();
+  zZeroMethod.toLowerCase();
+  const bool touchPlateEnabled = extractJsonBool(body, "touchPlateEnabled", false);
+  const float parkX = extractJsonFloat(body, "parkMachineX", NAN);
+  const float parkY = extractJsonFloat(body, "parkMachineY", NAN);
+  const float parkZ = extractJsonFloat(body, "parkMachineZ", NAN);
+  const float plateThickness = extractJsonFloat(body, "touchPlateThickness", NAN);
+  const float probeDistance = extractJsonFloat(body, "touchPlateProbeDistance", NAN);
+  const float probeFeed = extractJsonFloat(body, "touchPlateProbeFeed", NAN);
+  const float retractDistance = extractJsonFloat(body, "touchPlateRetractDistance", NAN);
+  if (handling != "pause" && handling != "park") {
+    sendJsonError(400, "handling must be pause or park");
+    return;
+  }
+  if (zZeroMethod != "manual" && zZeroMethod != "touchplate") {
+    sendJsonError(400, "zZeroMethod must be manual or touchplate");
+    return;
+  }
+  if (zZeroMethod == "touchplate" && !touchPlateEnabled) {
+    sendJsonError(400, "touchplate Z zero requires an enabled touch plate");
+    return;
+  }
+  if (!isfinite(parkX) || !isfinite(parkY) || !isfinite(parkZ) ||
+      parkX < machineXMin() || parkX > machineXMax() ||
+      parkY < machineYMin() || parkY > machineYMax() ||
+      parkZ < machineZMin() || parkZ > machineZMax()) {
+    sendJsonError(400, "tool-change position is outside configured machine limits");
+    return;
+  }
+  if (!isfinite(plateThickness) || plateThickness < 0.01f || plateThickness > 100.0f ||
+      !isfinite(probeDistance) || probeDistance < 0.1f || probeDistance > 200.0f ||
+      !isfinite(probeFeed) || probeFeed < 1.0f || probeFeed > 1000.0f ||
+      !isfinite(retractDistance) || retractDistance < 0.1f || retractDistance > 20.0f) {
+    sendJsonError(400, "touch-plate values are outside allowed limits");
+    return;
+  }
+  toolChangeSettings.handling = handling;
+  toolChangeSettings.parkMachineX = parkX;
+  toolChangeSettings.parkMachineY = parkY;
+  toolChangeSettings.parkMachineZ = parkZ;
+  toolChangeSettings.zZeroMethod = zZeroMethod;
+  toolChangeSettings.touchPlateEnabled = touchPlateEnabled;
+  toolChangeSettings.touchPlateThickness = plateThickness;
+  toolChangeSettings.touchPlateProbeDistance = probeDistance;
+  toolChangeSettings.touchPlateProbeFeed = probeFeed;
+  toolChangeSettings.touchPlateRetractDistance = retractDistance;
+  saveToolChangeSettings();
+  server.send(200, "application/json", "{\"ok\":true,\"settings\":" + toolChangeSettingsJson() + "}");
 }
 
 void handleMachineInfo() {
@@ -4577,6 +4902,10 @@ void handleJobResume() {
     sendJsonError(409, "job stop has been requested");
     return;
   }
+  if (jobStatus.toolChangePending) {
+    sendJsonError(409, "complete the pending tool change before resuming");
+    return;
+  }
   if (!openJobFileAtOffset()) {
     sendJsonError(500, jobStatus.lastError);
     return;
@@ -4590,6 +4919,71 @@ void handleJobResume() {
   touchJobStatus();
   logJobEvent("resume: " + jobStatus.gcodePath);
   server.send(200, "application/json", jobStatusJsonWithMessage("Resume requested."));
+}
+
+void handleToolChangeComplete() {
+  if (jobStatus.state != JobRunnerState::Paused || !jobStatus.toolChangePending ||
+      !jobStatus.toolChangeReady) {
+    sendJsonError(409, "no completed M6 stop is waiting for confirmation");
+    return;
+  }
+  if (!server.hasArg("plain") || !extractJsonBool(server.arg("plain"), "confirmed", false)) {
+    sendJsonError(400, "confirmed true is required after the tool has been installed");
+    return;
+  }
+  if (jogIsActive() || priorityCommandCount > 0 || jobStatus.priorityCommandInProgress) {
+    sendJsonError(409, "stop jog motion before completing the tool change");
+    return;
+  }
+  if (!jobStatus.toolChangeZZeroCompleted) {
+    sendJsonError(409, "set Z zero manually or with the configured touch plate before continuing");
+    return;
+  }
+  if (!openJobFileAtOffset()) {
+    sendJsonError(500, jobStatus.lastError);
+    return;
+  }
+
+  if (jobStatus.toolChangeHandling == "park") {
+    if (!jobStatus.toolChangeReturnPositionCaptured || !machineFrame.absoluteFromHome) {
+      sendJsonError(409, "the pre-park return position is unavailable; stop and recover the job manually");
+      return;
+    }
+    clearPriorityCommands();
+    const String returnCommands[] = {
+        "G21", "G90",
+        "G53 G0 Z" + String(toolChangeSettings.parkMachineZ, 3) + " F" + String(kJobStartZFeed, 0),
+        "M400", "G54",
+        "G0 X" + String(jobStatus.toolChangeReturnWorkX, 3) +
+            " Y" + String(jobStatus.toolChangeReturnWorkY, 3) +
+            " F" + String(jobStatus.travelFeedMmMin, 0),
+        "M400",
+        "G0 Z" + String(jobStatus.toolChangeReturnWorkZ, 3) + " F" + String(kJobStartZFeed, 0),
+        "M400", "M114",
+    };
+    for (const String &command : returnCommands) {
+      if (!appendPriorityCommand(command)) {
+        setJobError("Tool-change return sequence is too large for priority queue");
+        sendJsonError(500, jobStatus.lastError);
+        return;
+      }
+    }
+    jobStatus.lastPriorityCommand = "";
+    jobStatus.lastPriorityResponse = "";
+    jobStatus.lastPriorityError = "";
+  }
+
+  jobStatus.activeToolNumber = jobStatus.toolChangeToolNumber;
+  jobStatus.toolChangePending = false;
+  jobStatus.toolChangeReady = false;
+  jobStatus.pauseRequested = false;
+  jobStatus.streamingPausedReason = "";
+  jobStatus.state = JobRunnerState::Resuming;
+  jobResponseBuffer = "";
+  jobWaitingForOk = false;
+  touchJobStatus();
+  logJobEvent("tool change confirmed: T" + String(jobStatus.activeToolNumber));
+  server.send(200, "application/json", jobStatusJsonWithMessage("Tool change confirmed. Resume requested."));
 }
 
 void handleJobStop() {
@@ -4612,6 +5006,9 @@ void handleJobStop() {
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = true;
+  jobStatus.toolChangePending = false;
+  jobStatus.toolChangeReady = false;
+  jobStatus.toolChangeZZeroCompleted = false;
   jobStatus.state = JobRunnerState::Stopping;
   jobStatus.streamingPausedReason = "Stop requested. Streaming stopped.";
   queuePriorityCommands("M5", "M410");
@@ -4741,6 +5138,13 @@ bool runFrameCommand(const String &command, String &response, uint32_t timeoutMs
 
 void handleMachineFrame() {
   server.send(200, "application/json", machineFrameJson());
+}
+
+bool toolChangeZZeroWindowOpen() {
+  return jobStatus.state == JobRunnerState::Paused && jobStatus.toolChangePending &&
+         jobStatus.toolChangeReady && !jogIsActive() && priorityCommandCount == 0 &&
+         !jobStatus.priorityCommandInProgress && machineDiscoveryState == MachineDiscoveryState::Idle &&
+         !otaActive;
 }
 
 void handleManualMachineFrame() {
@@ -4954,7 +5358,8 @@ void handleSetWorkZero() {
 }
 
 void handleSetZZero() {
-  if (machineFrameControlBusy()) {
+  const bool toolChangeZZero = toolChangeZZeroWindowOpen();
+  if (machineFrameControlBusy() && !toolChangeZZero) {
     sendJsonError(409, "setting Z zero requires idle Marlin transport");
     return;
   }
@@ -4980,8 +5385,86 @@ void handleSetZZero() {
   marlinPosition.z = 0;
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
+  if (toolChangeZZero) {
+    jobStatus.toolChangeZZeroCompleted = true;
+    jobStatus.toolChangeZZeroMethod = "manual";
+    touchJobStatus();
+    logJobEvent("tool change Z zero completed manually");
+  }
   telemetryPositionDirty = true;
   String json = "{\"ok\":true,\"before\":\"" + jsonEscape(before) + "\",\"after\":\"" +
+                jsonEscape(after) + "\",\"frame\":" + machineFrameJson() + "}";
+  server.send(200, "application/json", json);
+}
+
+void handleTouchPlateZZero() {
+  const bool toolChangeZZero = toolChangeZZeroWindowOpen();
+  if (machineFrameControlBusy() && !toolChangeZZero) {
+    sendJsonError(409, "touch-plate Z zero requires idle Marlin transport or a ready M6 stop");
+    return;
+  }
+  if (!toolChangeSettings.touchPlateEnabled) {
+    sendJsonError(409, "touch plate is not enabled in Tool Change settings");
+    return;
+  }
+  if ((!machineFrame.machineValid && !machineFrame.manualWorkFrameValid) || !machineFrame.workZeroValid) {
+    sendJsonError(409, "an active homed or manually confirmed work frame is required before probing Z zero");
+    return;
+  }
+
+  String before;
+  String response;
+  String contact;
+  String after;
+  auto failProbe = [&](const String &message) {
+    String restoreResponse;
+    runFrameCommand("G90", restoreResponse);
+    sendJsonError(502, message + ": " + response);
+  };
+  if (!runFrameCommand("M5", response) || !runFrameCommand("M400", response, 120000) ||
+      !runFrameCommand("G21", response) || !runFrameCommand("G90", response) ||
+      !runFrameCommand("G54", response) || !runFrameCommand("M114", before)) {
+    failProbe("Marlin did not prepare touch-plate probing");
+    return;
+  }
+  if (!runFrameCommand("G91", response)) {
+    failProbe("Marlin did not enter relative mode for touch-plate probing");
+    return;
+  }
+  const String probeCommand = "G38.2 Z-" + String(toolChangeSettings.touchPlateProbeDistance, 3) +
+                              " F" + String(toolChangeSettings.touchPlateProbeFeed, 1);
+  if (!runFrameCommand(probeCommand, response, 120000) || !runFrameCommand("G90", response) ||
+      !runFrameCommand("M400", response, 120000) || !runFrameCommand("M114", contact)) {
+    failProbe("Touch plate was not reached within the configured probe distance");
+    return;
+  }
+  const float contactMachineZ = machineFrame.machineZ;
+  const String zeroCommand = "G92 Z" + String(toolChangeSettings.touchPlateThickness, 3);
+  const float retractTarget = toolChangeSettings.touchPlateThickness + toolChangeSettings.touchPlateRetractDistance;
+  const String retractCommand = "G0 Z" + String(retractTarget, 3) + " F" +
+                                String(toolChangeSettings.touchPlateProbeFeed, 1);
+  if (!runFrameCommand(zeroCommand, response) || !runFrameCommand(retractCommand, response, 120000) ||
+      !runFrameCommand("M400", response, 120000) || !runFrameCommand("M114", after)) {
+    failProbe("Touch-plate Z zero or retract failed");
+    return;
+  }
+
+  if (machineFrame.absoluteFromHome) {
+    machineFrame.workZeroMachineZ = contactMachineZ - toolChangeSettings.touchPlateThickness;
+  }
+  machineFrame.workZeroValid = true;
+  machineFrame.updatedAtMs = millis();
+  ++machineFrame.revision;
+  if (toolChangeZZero) {
+    jobStatus.toolChangeZZeroCompleted = true;
+    jobStatus.toolChangeZZeroMethod = "touchplate";
+    touchJobStatus();
+    logJobEvent("tool change Z zero completed with touch plate");
+  }
+  telemetryPositionDirty = true;
+  String json = "{\"ok\":true,\"method\":\"touchplate\",\"probeCommand\":\"" +
+                jsonEscape(probeCommand) + "\",\"before\":\"" + jsonEscape(before) +
+                "\",\"contact\":\"" + jsonEscape(contact) + "\",\"after\":\"" +
                 jsonEscape(after) + "\",\"frame\":" + machineFrameJson() + "}";
   server.send(200, "application/json", json);
 }
@@ -5456,6 +5939,8 @@ void startHttpServer() {
   server.on("/files.js", HTTP_GET, handleFilesJs);
   server.on("/style.css", HTTP_GET, handleStyleCss);
   server.on("/api/health", HTTP_GET, handleHealth);
+  server.on("/api/tool-change/settings", HTTP_GET, handleToolChangeSettingsGet);
+  server.on("/api/tool-change/settings", HTTP_PUT, handleToolChangeSettingsPut);
   server.on("/api/device", HTTP_GET, handleDeviceInfo);
   server.on("/api/device", HTTP_PATCH, handleDeviceUpdate);
   server.on("/api/system/restart", HTTP_POST, handleSystemRestart);
@@ -5482,6 +5967,7 @@ void startHttpServer() {
   server.on("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
   server.on("/api/job/pause", HTTP_POST, handleJobPause);
   server.on("/api/job/resume", HTTP_POST, handleJobResume);
+  server.on("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete);
   server.on("/api/job/stop", HTTP_POST, handleJobStop);
   server.on("/api/job/feed-override", HTTP_POST, handleJobFeedOverride);
   server.on("/api/jog/start", HTTP_POST, handleJogStart);
@@ -5492,6 +5978,7 @@ void startHttpServer() {
   server.on("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
   server.on("/api/work-zero/set", HTTP_POST, handleSetWorkZero);
   server.on("/api/work-zero/set-z", HTTP_POST, handleSetZZero);
+  server.on("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero);
   server.on("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero);
   server.on("/update", HTTP_GET, handleUpdatePage);
   server.on("/api/update", HTTP_POST, handleUpdateComplete, handleUpdateUpload);
@@ -5520,6 +6007,7 @@ void setup() {
            static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
   bootSessionId = bootSession;
   loadMachineProfile();
+  loadToolChangeSettings();
 
   bool sdFirmwareUpdated = false;
   if (checkForSdRescueUpdate()) {

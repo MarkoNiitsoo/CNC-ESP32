@@ -167,6 +167,16 @@ export class MockMarlin {
       }
       return this.response('ok');
     }
+    if (/\bG38\.2\b/.test(upper)) {
+      if (!Number.isFinite(args.Z) || args.Z >= 0) return this.error('Mock G38.2 requires a negative Z probe distance');
+      const maximumTravel = Math.abs(args.Z) * (this.units === 'inch' ? 25.4 : 1);
+      const contactTravel = Math.min(maximumTravel, 1);
+      const contactZ = this.machinePosition.z - contactTravel;
+      if (contactZ < this.machine.zMin) return this.error('Mock probe target is outside Z limits');
+      this.machinePosition.z = contactZ;
+      if (Number.isFinite(args.F)) this.feed = args.F;
+      return this.response('echo:Mock touch plate triggered\nok');
+    }
     if (/\bG0?0\b|\bG0?1\b/.test(upper)) {
       const scale = this.units === 'inch' ? 25.4 : 1;
       const target = { ...this.machinePosition };
