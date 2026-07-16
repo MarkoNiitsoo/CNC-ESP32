@@ -1,5 +1,17 @@
 # Progress
 
+## 2026-07-16 - Configurable 2D/3D thumbnail view
+
+- Added an Appearance setting for choosing 2D top-view or fixed orthographic 3D thumbnail PNGs;
+  2D remains the default and the browser preference is stored locally.
+- Applied the choice to thumbnail generation on the main upload surface, SD Files upload surface,
+  and first-preview fallback without changing streaming job execution or loading behavior.
+- Extended the shared canvas renderer to project X/Y/Z geometry for 3D thumbnails while preserving
+  the existing 2D output when no option is supplied.
+- Existing stored thumbnail PNGs are intentionally not rewritten merely by changing the setting;
+  the selected mode applies the next time a thumbnail is generated.
+- Verification passes the full suite: 41 files / 337 tests and `git diff --check`.
+
 ## 2026-07-16 - Active and interrupted job file locks
 
 - Added firmware-owned path locks for the currently streamed G-code/Production Resume file, its job

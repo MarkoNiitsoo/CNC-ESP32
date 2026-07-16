@@ -70,6 +70,9 @@ const machineConfigPromise = import('/lib/machine-config.js').then((module) => {
 const deviceSettingsPromise = import('/lib/device-settings.js');
 const uploadThumbnailPromise = import('/lib/upload-thumbnail.js');
 const toolChangeSettingsPromise = import('/lib/tool-change-settings.js');
+const thumbnailSettingsPromise = import('/lib/thumbnail-settings.js');
+const thumbnailViewMode = document.querySelector('#thumbnail-view-mode');
+const thumbnailViewStatus = document.querySelector('#thumbnail-view-status');
 
 const toolpathModulePromise = import('/lib/toolpath-model.js').catch((err) => {
   console.warn('ToolpathModel unavailable', err);
@@ -1148,6 +1151,7 @@ async function analyzeSelectedUploadFile() {
     mod.renderToolpathToCanvas(model, canvas, {
       width: thumbnail.THUMBNAIL_SIZE,
       height: thumbnail.THUMBNAIL_SIZE,
+      viewMode: (await thumbnailSettingsPromise).loadThumbnailViewMode(),
     });
     const pngBlob = await canvasPngBlob(canvas);
     if (token !== uploadAnalysisToken) return;
@@ -1288,6 +1292,14 @@ toolChangeSettingsForm?.addEventListener('submit', (event) => {
     if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = err.message;
   });
 });
+thumbnailViewMode?.addEventListener('change', async () => {
+  const settings = await thumbnailSettingsPromise;
+  const mode = settings.saveThumbnailViewMode(thumbnailViewMode.value);
+  thumbnailViewMode.value = mode;
+  if (thumbnailViewStatus) {
+    thumbnailViewStatus.textContent = `${mode.toUpperCase()} will be used for newly generated thumbnails. Existing stored PNGs are unchanged.`;
+  }
+});
 deviceHostnameInput?.addEventListener('input', updateDeviceUrlPreview);
 deviceSettingsForm?.addEventListener('submit', saveDeviceSettings);
 restartDeviceButton?.addEventListener('click', restartDevice);
@@ -1318,6 +1330,7 @@ async function init() {
   showView(initialView);
   const motion = await motionSettingsPromise;
   const savedMotion = motion.loadMotionSettings();
+  if (thumbnailViewMode) thumbnailViewMode.value = (await thumbnailSettingsPromise).loadThumbnailViewMode();
   showTravelSpeed(savedMotion.travelSpeedMmS, savedMotion);
   window.CncTelemetry?.subscribe('health', applyHealth);
   window.CncTelemetry?.subscribe('job', (data) => {

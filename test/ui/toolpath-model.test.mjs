@@ -186,6 +186,23 @@ describe('ToolpathModel thumbnails and metadata', () => {
     expect(model.source.originalText).toBe(source);
   });
 
+  it('supports fixed orthographic 3D thumbnails while keeping 2D as the default', () => {
+    const model = parseGCodeToToolpath(fixture('simple-square.gc'));
+    const render = (viewMode) => {
+      const calls = [];
+      const context = new Proxy({}, {
+        get: (target, key) => target[key] || ((...args) => calls.push([key, ...args])),
+        set: (target, key, value) => { target[key] = value; return true; },
+      });
+      const canvas = { width: 128, height: 128, getContext: () => context };
+      renderToolpathToCanvas(model, canvas, viewMode ? { viewMode } : {});
+      return calls.filter(([name]) => name === 'lineTo');
+    };
+
+    expect(render()).toEqual(render('2d'));
+    expect(render('3d')).not.toEqual(render('2d'));
+  });
+
   it('returns false for empty thumbnail input after painting the fixed background', () => {
     const model = parseGCodeToToolpath('');
     const context = { clearRect() {}, fillRect() {} };

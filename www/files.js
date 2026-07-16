@@ -189,12 +189,14 @@ async function generateSelectedThumbnail() {
   uploadSubmit.disabled = true;
   try {
     const [toolpath] = await thumbnailModulesPromise;
+    const thumbnailSettings = await import('/lib/thumbnail-settings.js');
     const text = await file.text();
     if (token !== thumbnailGeneration) return;
     const model = toolpath.parseGCodeToToolpath(text);
     toolpath.renderToolpathToCanvas(model, uploadThumbnailCanvas, {
       width: thumbnail.THUMBNAIL_SIZE,
       height: thumbnail.THUMBNAIL_SIZE,
+      viewMode: thumbnailSettings.loadThumbnailViewMode(),
     });
     const blob = await canvasPngBlob(uploadThumbnailCanvas);
     if (token !== thumbnailGeneration) return;

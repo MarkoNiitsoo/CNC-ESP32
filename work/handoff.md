@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-07-16 - Configurable thumbnail projection handoff
+
+- Settings -> Appearance owns `#thumbnail-view-mode`. The preference is browser-local under
+  `lowrider.thumbnail.view-mode.v1`; missing or invalid values normalize to `2d`.
+- `renderToolpathToCanvas()` accepts `options.viewMode`. Omitting it retains the previous 2D
+  behavior; `3d` applies the same 35-degree yaw / 30-degree pitch orthographic projection used by
+  the full workbench.
+- `app.js`, `files.js`, and the missing-thumbnail path in `preview.js` load the preference at
+  generation time. Stored `/jobs/thumbs/*.png` files are not bulk-regenerated on a setting change.
+- This is web-only and does not alter G-code, preview size warnings, firmware RAM use, or the
+  SD-streaming execution path.
+- Full automated verification passes 41 files / 337 tests.
+
 ## 2026-07-16 - Active and interrupted job file locks
 
 - `mutationPathTouchesLockedFile()` is the single firmware guard used by upload, delete, and rename.

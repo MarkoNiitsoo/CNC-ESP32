@@ -542,23 +542,58 @@ export function renderToolpathToCanvas(model, canvas, options = {}) {
   ctx.fillRect(0, 0, width, height);
   if (!boundsAvailable(bounds) || !model.segments?.length) return false;
 
+  const viewMode = options.viewMode === '3d' ? '3d' : '2d';
+  const project = viewMode === '3d'
+    ? (point) => {
+        const yaw = 35 * Math.PI / 180;
+        const pitch = 30 * Math.PI / 180;
+        const x = Number(point.x) || 0;
+        const y = Number(point.y) || 0;
+        const z = Number(point.z) || 0;
+        const depth = x * Math.sin(yaw) + y * Math.cos(yaw);
+        return {
+          x: x * Math.cos(yaw) - y * Math.sin(yaw),
+          y: depth * Math.sin(pitch) + z * Math.cos(pitch),
+        };
+      }
+    : (point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 });
+  const projectedBounds = viewMode === '2d'
+    ? { xMin: bounds.xMin, xMax: bounds.xMax, yMin: bounds.yMin, yMax: bounds.yMax }
+    : { xMin: Infinity, xMax: -Infinity, yMin: Infinity, yMax: -Infinity };
+  if (viewMode === '3d') {
+    const include = (point) => {
+      const projected = project(point);
+      projectedBounds.xMin = Math.min(projectedBounds.xMin, projected.x);
+      projectedBounds.xMax = Math.max(projectedBounds.xMax, projected.x);
+      projectedBounds.yMin = Math.min(projectedBounds.yMin, projected.y);
+      projectedBounds.yMax = Math.max(projectedBounds.yMax, projected.y);
+    };
+    for (const segment of model.segments) {
+      include(segment.from);
+      for (const point of segment.points?.length ? segment.points : [segment.to]) include(point);
+    }
+  }
   const pad = Number(options.padding ?? 7);
-  const spanX = Math.max(0.001, bounds.xMax - bounds.xMin);
-  const spanY = Math.max(0.001, bounds.yMax - bounds.yMin);
+  const spanX = Math.max(0.001, projectedBounds.xMax - projectedBounds.xMin);
+  const spanY = Math.max(0.001, projectedBounds.yMax - projectedBounds.yMin);
   const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
   const contentWidth = spanX * scale;
   const contentHeight = spanY * scale;
   const offsetX = (width - contentWidth) / 2;
   const offsetY = (height - contentHeight) / 2;
-  const px = (value) => offsetX + (value - bounds.xMin) * scale;
-  const py = (value) => height - offsetY - (value - bounds.yMin) * scale;
+  const px = (value) => offsetX + (value - projectedBounds.xMin) * scale;
+  const py = (value) => height - offsetY - (value - projectedBounds.yMin) * scale;
 
   const drawSegments = (segments, strokeStyle, lineWidth) => {
     ctx.beginPath();
     for (const segment of segments) {
-      ctx.moveTo(px(segment.from.x), py(segment.from.y));
+      const from = project(segment.from);
+      ctx.moveTo(px(from.x), py(from.y));
       const points = segment.points?.length ? segment.points : [segment.to];
-      for (const point of points) ctx.lineTo(px(point.x), py(point.y));
+      for (const point of points) {
+        const projected = project(point);
+        ctx.lineTo(px(projected.x), py(projected.y));
+      }
     }
     ctx.strokeStyle = strokeStyle;
     ctx.lineWidth = lineWidth;

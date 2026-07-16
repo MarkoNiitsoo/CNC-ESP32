@@ -240,6 +240,7 @@ const toolpathModulesPromise = Promise.all([
   import('/lib/preview-data-adapter.js'),
 ]).then(([toolpath, adapter]) => ({ toolpath, adapter }));
 const thumbnailModulePromise = import('/lib/upload-thumbnail.js');
+const thumbnailSettingsPromise = import('/lib/thumbnail-settings.js');
 const jobHistoryPromise = import('/lib/job-history.js');
 const toolpathTransformPromise = import('/lib/toolpath-transform.js');
 let jobActiveRunModule = null;
@@ -4108,7 +4109,11 @@ async function storedThumbnailExists(path) {
 
 async function createMissingPreviewThumbnail(existingPath = '') {
   if (await storedThumbnailExists(existingPath)) return existingPath;
-  const [{ toolpath }, thumbnail] = await Promise.all([toolpathModulesPromise, thumbnailModulePromise]);
+  const [{ toolpath }, thumbnail, thumbnailSettings] = await Promise.all([
+    toolpathModulesPromise,
+    thumbnailModulePromise,
+    thumbnailSettingsPromise,
+  ]);
   const model = sourceToolpathModel || toolpathModel;
   if (!model) return existingPath || '';
   const canvas = document.createElement('canvas');
@@ -4117,6 +4122,7 @@ async function createMissingPreviewThumbnail(existingPath = '') {
   if (!toolpath.renderToolpathToCanvas(model, canvas, {
     width: thumbnail.THUMBNAIL_SIZE,
     height: thumbnail.THUMBNAIL_SIZE,
+    viewMode: thumbnailSettings.loadThumbnailViewMode(),
   })) return existingPath || '';
 
   const blob = await previewCanvasPngBlob(canvas);
