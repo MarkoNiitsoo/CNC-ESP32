@@ -760,8 +760,7 @@ function canvasWorkZeroPosition() {
 }
 
 function canvasTablePosition(position) {
-  if (position?.isMachine) return position;
-  return workbenchUiModule?.translatePosition(position, canvasWorkZeroPosition()) || position;
+  return workbenchUiModule?.workspaceToolPosition(position, canvasWorkZeroPosition()) || position;
 }
 
 function canvasTableBounds(bounds) {
@@ -4645,6 +4644,7 @@ function fitBounds(bounds) {
   const height = Math.max(1, bounds.yMax - bounds.yMin);
   const pad = Math.max(width, height) * 0.06 || 10;
   return {
+    ...bounds,
     xMin: bounds.xMin - pad,
     xMax: bounds.xMax + pad,
     yMin: bounds.yMin - pad,
@@ -4655,12 +4655,15 @@ function fitBounds(bounds) {
 function unionBounds(...items) {
   const valid = items.filter(hasBounds);
   if (!valid.length) return null;
-  return valid.reduce((out, item) => ({
-    xMin: Math.min(out.xMin, item.xMin),
-    xMax: Math.max(out.xMax, item.xMax),
-    yMin: Math.min(out.yMin, item.yMin),
-    yMax: Math.max(out.yMax, item.yMax),
-  }), { ...valid[0] });
+  const finiteZ = valid.flatMap((item) => [item.zMin, item.zMax]).filter(Number.isFinite);
+  return {
+    xMin: Math.min(...valid.map((item) => item.xMin)),
+    xMax: Math.max(...valid.map((item) => item.xMax)),
+    yMin: Math.min(...valid.map((item) => item.yMin)),
+    yMax: Math.max(...valid.map((item) => item.yMax)),
+    zMin: finiteZ.length ? Math.min(...finiteZ) : 0,
+    zMax: finiteZ.length ? Math.max(...finiteZ) : 0,
+  };
 }
 
 function recoveryOverlayBounds() {
@@ -4676,11 +4679,13 @@ function recoveryOverlayBounds() {
     xMax: Math.max(...points.map((point) => point.x)),
     yMin: Math.min(...points.map((point) => point.y)),
     yMax: Math.max(...points.map((point) => point.y)),
+    zMin: Math.min(...points.map((point) => Number.isFinite(point.z) ? point.z : 0)),
+    zMax: Math.max(...points.map((point) => Number.isFinite(point.z) ? point.z : 0)),
   };
 }
 
 function workbenchViewBounds(mode) {
-  if (mode === 'table') return MACHINE;
+  if (mode === 'table') return RECOVERY_LIMITS;
   if (mode === 'job') return canvasTableBounds(sourceParsed?.bounds || parsed?.bounds);
   if (mode === 'zero') {
     const active = canvasTableBounds(parsed?.bounds);
@@ -4688,7 +4693,14 @@ function workbenchViewBounds(mode) {
     const span = active && hasBounds(active)
       ? Math.max(40, Math.min(400, Math.max(active.xMax - active.xMin, active.yMax - active.yMin) * 0.35))
       : 100;
-    return { xMin: zero.x - span / 2, xMax: zero.x + span / 2, yMin: zero.y - span / 2, yMax: zero.y + span / 2 };
+    return {
+      xMin: zero.x - span / 2,
+      xMax: zero.x + span / 2,
+      yMin: zero.y - span / 2,
+      yMax: zero.y + span / 2,
+      zMin: Number.isFinite(active?.zMin) ? active.zMin : 0,
+      zMax: Number.isFinite(active?.zMax) ? active.zMax : 0,
+    };
   }
   if (mode === 'recovery') {
     const bounds = canvasTableBounds(recoveryOverlayBounds());
@@ -4699,6 +4711,8 @@ function workbenchViewBounds(mode) {
         xMax: bounds.xMax + span * 0.25,
         yMin: bounds.yMin - span * 0.25,
         yMax: bounds.yMax + span * 0.25,
+        zMin: bounds.zMin,
+        zMax: bounds.zMax,
       };
     }
   }
@@ -4706,24 +4720,39 @@ function workbenchViewBounds(mode) {
     canvasTableBounds(parsed?.bounds);
 }
 
-function strokeBounds(ctx2d, bounds, px, py, color, dash = []) {
+function strokeBounds(ctx2d, bounds, project, color, dash = []) {
   if (!hasBounds(bounds)) return;
+  const z = Number.isFinite(bounds.zMin) ? bounds.zMin : 0;
+  const corners = [
+    project({ x: bounds.xMin, y: bounds.yMin, z }),
+    project({ x: bounds.xMax, y: bounds.yMin, z }),
+    project({ x: bounds.xMax, y: bounds.yMax, z }),
+    project({ x: bounds.xMin, y: bounds.yMax, z }),
+  ];
   ctx2d.save();
   ctx2d.strokeStyle = color;
   ctx2d.lineWidth = 1;
   ctx2d.setLineDash(dash);
-  ctx2d.strokeRect(px(bounds.xMin), py(bounds.yMax), px(bounds.xMax) - px(bounds.xMin), py(bounds.yMin) - py(bounds.yMax));
+  ctx2d.beginPath();
+  ctx2d.moveTo(corners[0].x, corners[0].y);
+  corners.slice(1).forEach((point) => ctx2d.lineTo(point.x, point.y));
+  ctx2d.closePath();
+  ctx2d.stroke();
   ctx2d.restore();
 }
 
-function drawSegments(segments, px, py, options = {}) {
+function drawSegments(segments, project, options = {}) {
   (segments || []).forEach((segment) => {
     const rapid = segment.rapid || segment.type === 'rapid' || segment.type === 'retract';
     if (rapid && options.showTravel === false) return;
+    const from = project(segment.from);
     ctx.beginPath();
-    ctx.moveTo(px(segment.from.x), py(segment.from.y));
+    ctx.moveTo(from.x, from.y);
     const points = segment.points?.length ? segment.points : [segment.to];
-    points.forEach((point) => ctx.lineTo(px(point.x), py(point.y)));
+    points.forEach((point) => {
+      const projected = project(point);
+      ctx.lineTo(projected.x, projected.y);
+    });
     ctx.strokeStyle = rapid ? (options.travelColor || '#59707d') : (options.cutColor || '#65d28e');
     ctx.globalAlpha = options.alpha ?? 1;
     ctx.lineWidth = rapid ? (options.travelWidth || 0.9) : (options.cutWidth || 1.7);
@@ -4806,6 +4835,71 @@ function drawMachineGrid(ctx2d, options) {
   ctx2d.restore();
 }
 
+function drawOrthographicMachineGrid(ctx2d, options) {
+  const { project, scale, color, textColor } = options;
+  let step = workbenchUiModule?.adaptiveGridStep(scale, 74) || 100;
+  const spanX = MACHINE.xMax - MACHINE.xMin;
+  const spanY = MACHINE.yMax - MACHINE.yMin;
+  while ((spanX + spanY) / step > 140) step *= 2;
+
+  ctx2d.save();
+  ctx2d.strokeStyle = color;
+  ctx2d.lineWidth = 1;
+  ctx2d.setLineDash([]);
+  ctx2d.beginPath();
+  for (let x = Math.ceil(MACHINE.xMin / step) * step; x <= MACHINE.xMax; x += step) {
+    const from = project({ x, y: MACHINE.yMin, z: 0 });
+    const to = project({ x, y: MACHINE.yMax, z: 0 });
+    ctx2d.moveTo(from.x, from.y);
+    ctx2d.lineTo(to.x, to.y);
+  }
+  for (let y = Math.ceil(MACHINE.yMin / step) * step; y <= MACHINE.yMax; y += step) {
+    const from = project({ x: MACHINE.xMin, y, z: 0 });
+    const to = project({ x: MACHINE.xMax, y, z: 0 });
+    ctx2d.moveTo(from.x, from.y);
+    ctx2d.lineTo(to.x, to.y);
+  }
+  ctx2d.stroke();
+
+  ctx2d.strokeStyle = textColor;
+  ctx2d.setLineDash([4, 4]);
+  const verticalCorners = [
+    [MACHINE.xMin, MACHINE.yMin],
+    [MACHINE.xMax, MACHINE.yMin],
+    [MACHINE.xMax, MACHINE.yMax],
+    [MACHINE.xMin, MACHINE.yMax],
+  ];
+  ctx2d.beginPath();
+  verticalCorners.forEach(([x, y]) => {
+    const low = project({ x, y, z: RECOVERY_LIMITS.zMin });
+    const high = project({ x, y, z: RECOVERY_LIMITS.zMax });
+    ctx2d.moveTo(low.x, low.y);
+    ctx2d.lineTo(high.x, high.y);
+  });
+  ctx2d.stroke();
+  ctx2d.restore();
+
+  const origin = project({ x: MACHINE.xMin, y: MACHINE.yMin, z: 0 });
+  const axes = [
+    { label: 'X', point: project({ x: MACHINE.xMin + Math.min(300, spanX * 0.2), y: MACHINE.yMin, z: 0 }) },
+    { label: 'Y', point: project({ x: MACHINE.xMin, y: MACHINE.yMin + Math.min(300, spanY * 0.2), z: 0 }) },
+    { label: 'Z', point: project({ x: MACHINE.xMin, y: MACHINE.yMin, z: RECOVERY_LIMITS.zMax }) },
+  ];
+  ctx2d.save();
+  ctx2d.strokeStyle = textColor;
+  ctx2d.fillStyle = textColor;
+  ctx2d.lineWidth = 1.5;
+  ctx2d.font = '700 11px system-ui, sans-serif';
+  axes.forEach((axis) => {
+    ctx2d.beginPath();
+    ctx2d.moveTo(origin.x, origin.y);
+    ctx2d.lineTo(axis.point.x, axis.point.y);
+    ctx2d.stroke();
+    ctx2d.fillText(axis.label, axis.point.x + 4, axis.point.y - 4);
+  });
+  ctx2d.restore();
+}
+
 function hasBounds(bounds) {
   return bounds && Number.isFinite(bounds.xMin) && Number.isFinite(bounds.xMax) &&
     Number.isFinite(bounds.yMin) && Number.isFinite(bounds.yMax);
@@ -4838,31 +4932,49 @@ function draw() {
   ctx.fillStyle = '#080b0d';
   ctx.fillRect(0, 0, w, h);
 
-  const workbenchView = workbenchController?.getView() || { zoom: 1, panX: 0, panY: 0, fitMode: 'active' };
+  const workbenchView = workbenchController?.getView() || {
+    zoom: 1, panX: 0, panY: 0, fitMode: 'active', projection: '2d',
+  };
   const layers = workbenchController?.getLayers() || {
     path: true, bounds: true, zero: true, travel: true, source: true, generated: true, table: true,
   };
   const viewBounds = workbenchViewBounds(workbenchView.fitMode) || parsed.bounds;
   const view = fitBounds(viewBounds);
-  const sx = w / (view.xMax - view.xMin);
-  const sy = h / (view.yMax - view.yMin);
-  const scale = Math.min(sx, sy) * workbenchView.zoom;
-  const projection = workbenchUiModule?.createCanvasProjection({
+  const workspaceProjection = workbenchUiModule?.createWorkspaceProjection({
     width: w,
     height: h,
     bounds: view,
-    scale,
+    mode: workbenchView.projection,
+    zoom: workbenchView.zoom,
     panX: workbenchView.panX,
     panY: workbenchView.panY,
+  });
+  const sx = w / (view.xMax - view.xMin);
+  const sy = h / (view.yMax - view.yMin);
+  const fallbackScale = Math.min(sx, sy) * workbenchView.zoom;
+  const fallbackProjection = workbenchUiModule?.createCanvasProjection({
+    width: w, height: h, bounds: view, scale: fallbackScale,
+    panX: workbenchView.panX, panY: workbenchView.panY,
   }) || {
-    x: (x) => (w - (view.xMax - view.xMin) * scale) / 2 + (x - view.xMin) * scale + workbenchView.panX,
-    y: (y) => h - ((h - (view.yMax - view.yMin) * scale) / 2 + (y - view.yMin) * scale) + workbenchView.panY,
+    x: (x) => (w - (view.xMax - view.xMin) * fallbackScale) / 2 +
+      (x - view.xMin) * fallbackScale + workbenchView.panX,
+    y: (y) => h - ((h - (view.yMax - view.yMin) * fallbackScale) / 2 +
+      (y - view.yMin) * fallbackScale) + workbenchView.panY,
   };
-  const px = projection.x;
-  const py = projection.y;
+  const projection = workspaceProjection || {
+    mode: '2d',
+    scale: fallbackScale,
+    x: fallbackProjection.x,
+    y: fallbackProjection.y,
+    point: (point) => ({ x: fallbackProjection.x(point.x), y: fallbackProjection.y(point.y) }),
+  };
+  const project = projection.point;
   const workZero = canvasWorkZeroPosition();
-  const jobPx = (x) => px(x + (workZero?.x || 0));
-  const jobPy = (y) => py(y + (workZero?.y || 0));
+  const jobProject = (point) => project({
+    ...point,
+    x: Number(point?.x || 0) + (workZero?.x || 0),
+    y: Number(point?.y || 0) + (workZero?.y || 0),
+  });
 
   const colors = {
     accent: themeColor('--cnc-accent', '#2d80c7'),
@@ -4879,22 +4991,34 @@ function draw() {
     gridText: themeColor('--cnc-table-grid-text', 'rgba(185, 207, 220, 0.72)'),
   };
   if (layers.table) {
-    drawMachineGrid(ctx, {
-      px, py, scale, view,
-      panX: workbenchView.panX,
-      panY: workbenchView.panY,
-      width: w,
-      height: h,
-      color: colors.grid,
-      textColor: colors.gridText,
-      workZero,
-    });
-    strokeBounds(ctx, MACHINE, px, py, colors.accent);
+    if (projection.mode === '3d') {
+      drawOrthographicMachineGrid(ctx, {
+        project,
+        scale: projection.scale,
+        color: colors.grid,
+        textColor: colors.gridText,
+      });
+    } else {
+      drawMachineGrid(ctx, {
+        px: projection.x,
+        py: projection.y,
+        scale: projection.scale,
+        view,
+        panX: workbenchView.panX,
+        panY: workbenchView.panY,
+        width: w,
+        height: h,
+        color: colors.grid,
+        textColor: colors.gridText,
+        workZero,
+      });
+    }
+    strokeBounds(ctx, { ...MACHINE, zMin: 0, zMax: 0 }, project, colors.accent);
   }
   if (layers.bounds) {
-    strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, jobPx, jobPy, colors.rawBounds, [7, 5]);
-    strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, jobPx, jobPy, colors.cutBounds, [3, 3]);
-    strokeBounds(ctx, transformedPreview?.generatedRunBounds, jobPx, jobPy, colors.placementBounds, [8, 4]);
+    strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, jobProject, colors.rawBounds, [7, 5]);
+    strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, jobProject, colors.cutBounds, [3, 3]);
+    strokeBounds(ctx, transformedPreview?.generatedRunBounds, jobProject, colors.placementBounds, [8, 4]);
     const verification = jobState?.verificationDecision || {};
     if (verification.result === 'complete' && ['bounds', 'aircut'].includes(verification.type)) {
       const margin = Number(verification.margin || 0);
@@ -4905,12 +5029,14 @@ function draw() {
           xMax: active.xMax + margin,
           yMin: active.yMin - margin,
           yMax: active.yMax + margin,
-        }, jobPx, jobPy, colors.placementBounds, [10, 4]);
+          zMin: active.zMin,
+          zMax: active.zMax,
+        }, jobProject, colors.placementBounds, [10, 4]);
       }
     }
   }
   if (layers.source && sourceParsed?.segments?.length) {
-    drawSegments(sourceParsed.segments, jobPx, jobPy, {
+    drawSegments(sourceParsed.segments, jobProject, {
       showTravel: layers.travel,
       cutColor: colors.source,
       travelColor: colors.rawBounds,
@@ -4919,14 +5045,14 @@ function draw() {
     });
   }
   if (layers.path) {
-    drawSegments(parsed.segments, jobPx, jobPy, {
+    drawSegments(parsed.segments, jobProject, {
       showTravel: layers.travel,
       cutColor: currentRunMode() === 'generated' ? colors.generated : colors.cut,
       travelColor: colors.travel,
     });
   }
   if (layers.generated && transformedPreview?.segments?.length) {
-    drawSegments(transformedPreview.segments, jobPx, jobPy, {
+    drawSegments(transformedPreview.segments, jobProject, {
       showTravel: layers.travel,
       cutColor: colors.generated,
       travelColor: colors.travel,
@@ -4936,10 +5062,10 @@ function draw() {
   }
   if (recoveryOverlayVisible && recoveryPlan?.visual) {
     const visual = recoveryPlan.visual;
-    drawSegments(visual.completedSegments, jobPx, jobPy, {
+    drawSegments(visual.completedSegments, jobProject, {
       showTravel: true, cutColor: '#9aa4ac', travelColor: '#77828a', alpha: 0.38, cutWidth: 1.2,
     });
-    drawSegments(visual.remainingSegments, jobPx, jobPy, {
+    drawSegments(visual.remainingSegments, jobProject, {
       showTravel: true, cutColor: colors.cut, travelColor: colors.travel, alpha: 0.9, cutWidth: 2,
     });
     const travel = visual.recoveryTravelPath || [];
@@ -4949,15 +5075,20 @@ function draw() {
       ctx.lineWidth = 2;
       ctx.setLineDash([8, 5]);
       ctx.beginPath();
-      ctx.moveTo(jobPx(travel[0].x), jobPy(travel[0].y));
-      for (let index = 1; index < travel.length; index += 1) ctx.lineTo(jobPx(travel[index].x), jobPy(travel[index].y));
+      const first = jobProject(travel[0]);
+      ctx.moveTo(first.x, first.y);
+      for (let index = 1; index < travel.length; index += 1) {
+        const point = jobProject(travel[index]);
+        ctx.lineTo(point.x, point.y);
+      }
       ctx.stroke();
       ctx.restore();
     }
     const drawRecoveryMarker = (point, color, label) => {
       if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
-      const x = jobPx(point.x);
-      const y = jobPy(point.y);
+      const marker = jobProject(point);
+      const x = marker.x;
+      const y = marker.y;
       ctx.save();
       ctx.fillStyle = color;
       ctx.strokeStyle = '#081015';
@@ -4984,18 +5115,20 @@ function draw() {
   if (layers.zero) {
     ctx.save();
     if (layers.table) {
+      const machineOrigin = project({ x: 0, y: 0, z: 0 });
       ctx.strokeStyle = colors.accent;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(px(0) - 6, py(0));
-      ctx.lineTo(px(0) + 6, py(0));
-      ctx.moveTo(px(0), py(0) - 6);
-      ctx.lineTo(px(0), py(0) + 6);
+      ctx.moveTo(machineOrigin.x - 6, machineOrigin.y);
+      ctx.lineTo(machineOrigin.x + 6, machineOrigin.y);
+      ctx.moveTo(machineOrigin.x, machineOrigin.y - 6);
+      ctx.lineTo(machineOrigin.x, machineOrigin.y + 6);
       ctx.stroke();
     }
     if (workZero) {
-      const zeroX = px(workZero.x);
-      const zeroY = py(workZero.y);
+      const projectedZero = project({ x: workZero.x, y: workZero.y, z: 0 });
+      const zeroX = projectedZero.x;
+      const zeroY = projectedZero.y;
       ctx.strokeStyle = colors.zero;
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -5014,8 +5147,9 @@ function draw() {
     ctx.restore();
   }
   if (Number.isFinite(visibleToolPosition?.x) && Number.isFinite(visibleToolPosition?.y)) {
-    const toolX = px(visibleToolPosition.x);
-    const toolY = py(visibleToolPosition.y);
+    const projectedTool = project(visibleToolPosition);
+    const toolX = projectedTool.x;
+    const toolY = projectedTool.y;
     ctx.save();
     ctx.fillStyle = colors.position;
     ctx.beginPath();
@@ -5767,6 +5901,7 @@ renderPreflight();
 renderDryRunPanel();
 renderArmPanel();
 renderRecoveryPanel();
+loadToolChangeDeviceSettings().catch((err) => appendRunLog(`Tool-change settings unavailable: ${err.message}`));
 jobRecoveryPromise.then(refreshRecoveryPlan).catch((err) => appendRecoveryLog(`Recovery planner unavailable: ${err.message}`));
 jobReadinessPromise.then(renderReadiness).catch((err) => {
   if (readinessSummaryEl) readinessSummaryEl.textContent = `Readiness unavailable: ${err.message}`;

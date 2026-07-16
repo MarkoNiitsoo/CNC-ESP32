@@ -1109,6 +1109,29 @@ body.workbench-page {
   font-size: 0.75rem;
 }
 
+.canvas-view-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  padding: 2px;
+  border: 1px solid rgba(159, 177, 191, 0.24);
+  border-radius: 7px;
+  background: rgba(8, 16, 21, 0.55);
+}
+
+.canvas-view-toggle button {
+  min-width: 42px;
+  min-height: 38px;
+  padding-inline: 9px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.canvas-view-toggle button.active {
+  border-color: color-mix(in srgb, var(--cnc-accent) 78%, white 10%);
+  background: color-mix(in srgb, var(--cnc-accent) 76%, transparent);
+  box-shadow: 0 0 0 1px rgba(98, 176, 255, 0.16) inset;
+}
+
 .canvas-layer-toggles {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

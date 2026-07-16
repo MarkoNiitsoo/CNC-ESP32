@@ -3,6 +3,23 @@ import { createWorkbenchState, reduceWorkbenchState, zoomPanForGesture } from '.
 const LEFT_TABS = new Set(['preview']);
 const RIGHT_TABS = new Set(['setup', 'dry-run', 'preflight', 'recovery', 'arm', 'run']);
 export const LAYER_STORAGE_KEY = 'lowrider.workbench.layers.v1';
+export const VIEW_MODE_STORAGE_KEY = 'lowrider.workbench.view-mode.v1';
+
+export function loadViewMode(storage) {
+  try {
+    return storage?.getItem(VIEW_MODE_STORAGE_KEY) === '3d' ? '3d' : '2d';
+  } catch (_) {
+    return '2d';
+  }
+}
+
+export function saveViewMode(storage, mode) {
+  try {
+    storage?.setItem(VIEW_MODE_STORAGE_KEY, mode === '3d' ? '3d' : '2d');
+  } catch (_) {
+    // Storage can be unavailable; the selected view still works for this page load.
+  }
+}
 
 export function loadLayerPreferences(storage, defaults) {
   try {
@@ -38,7 +55,13 @@ export function installWorkbench(options = {}) {
   const canvas = options.canvas;
   let state = createWorkbenchState(window.innerWidth);
   state.layers = loadLayerPreferences(window.localStorage, state.layers);
-  const view = { zoom: 1, panX: 0, panY: 0, fitMode: 'active' };
+  const view = {
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    fitMode: 'active',
+    projection: loadViewMode(window.localStorage),
+  };
   const pointers = new Map();
   let dragStart = null;
   let pinchStart = null;
@@ -85,6 +108,11 @@ export function installWorkbench(options = {}) {
     canvas?.classList.toggle('select-mode', state.interactionMode === 'select');
     const modeButton = byId('canvas-mode');
     if (modeButton) modeButton.textContent = state.interactionMode === 'pan' ? 'Pan' : 'Select';
+    document.querySelectorAll('[data-workspace-view]').forEach((button) => {
+      const active = button.dataset.workspaceView === view.projection;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
     document.querySelectorAll('[data-canvas-layer]').forEach((input) => {
       input.checked = state.layers[input.dataset.canvasLayer] !== false;
     });
@@ -116,6 +144,15 @@ export function installWorkbench(options = {}) {
     view.panX = 0;
     view.panY = 0;
     notify();
+  }
+
+  function setProjection(mode) {
+    view.projection = mode === '3d' ? '3d' : '2d';
+    view.zoom = 1;
+    view.panX = 0;
+    view.panY = 0;
+    saveViewMode(window.localStorage, view.projection);
+    renderState();
   }
 
   function zoomBy(factor, center = null) {
@@ -282,6 +319,9 @@ export function installWorkbench(options = {}) {
   document.querySelectorAll('[data-canvas-zoom]').forEach((button) => {
     button.addEventListener('click', () => zoomBy(button.dataset.canvasZoom === 'in' ? 1.2 : 0.83));
   });
+  document.querySelectorAll('[data-workspace-view]').forEach((button) => {
+    button.addEventListener('click', () => setProjection(button.dataset.workspaceView));
+  });
   document.querySelectorAll('[data-canvas-layer]').forEach((input) => {
     input.addEventListener('change', () => dispatch({ type: 'toggle-layer', layer: input.dataset.canvasLayer }));
   });
@@ -300,6 +340,7 @@ export function installWorkbench(options = {}) {
     getView: () => ({ ...view }),
     openDrawer,
     openForTab,
+    setProjection,
     zoomBy,
   };
 }

@@ -35,6 +35,83 @@ export function createCanvasProjection(options = {}) {
   };
 }
 
+export function orthographicPoint(position = {}) {
+  const x = Number(position.x) || 0;
+  const y = Number(position.y) || 0;
+  const z = Number(position.z) || 0;
+  const yaw = 35 * Math.PI / 180;
+  const pitch = 30 * Math.PI / 180;
+  const horizontal = x * Math.cos(yaw) - y * Math.sin(yaw);
+  const depth = x * Math.sin(yaw) + y * Math.cos(yaw);
+  return {
+    x: horizontal,
+    y: depth * Math.sin(pitch) + z * Math.cos(pitch),
+  };
+}
+
+export function projectedVolumeBounds(bounds = {}, mode = '2d') {
+  const xMin = Number.isFinite(bounds.xMin) ? bounds.xMin : 0;
+  const xMax = Number.isFinite(bounds.xMax) ? bounds.xMax : xMin + 1;
+  const yMin = Number.isFinite(bounds.yMin) ? bounds.yMin : 0;
+  const yMax = Number.isFinite(bounds.yMax) ? bounds.yMax : yMin + 1;
+  const zMin = Number.isFinite(bounds.zMin) ? bounds.zMin : 0;
+  const zMax = Number.isFinite(bounds.zMax) ? bounds.zMax : zMin;
+  const project = mode === '3d'
+    ? orthographicPoint
+    : (point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 });
+  const points = [];
+  [xMin, xMax].forEach((x) => {
+    [yMin, yMax].forEach((y) => {
+      [zMin, zMax].forEach((z) => points.push(project({ x, y, z })));
+    });
+  });
+  return {
+    xMin: Math.min(...points.map((point) => point.x)),
+    xMax: Math.max(...points.map((point) => point.x)),
+    yMin: Math.min(...points.map((point) => point.y)),
+    yMax: Math.max(...points.map((point) => point.y)),
+  };
+}
+
+export function createWorkspaceProjection(options = {}) {
+  const {
+    width = 0,
+    height = 0,
+    bounds = { xMin: 0, xMax: 1, yMin: 0, yMax: 1, zMin: 0, zMax: 0 },
+    mode = '2d',
+    zoom = 1,
+    panX = 0,
+    panY = 0,
+  } = options;
+  const projectionMode = mode === '3d' ? '3d' : '2d';
+  const rawPoint = projectionMode === '3d'
+    ? orthographicPoint
+    : (point) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 });
+  const projectedBounds = projectedVolumeBounds(bounds, projectionMode);
+  const projectedWidth = Math.max(1, projectedBounds.xMax - projectedBounds.xMin);
+  const projectedHeight = Math.max(1, projectedBounds.yMax - projectedBounds.yMin);
+  const scale = Math.min(width / projectedWidth, height / projectedHeight) * Math.max(0.01, Number(zoom) || 1);
+  const canvasProjection = createCanvasProjection({
+    width,
+    height,
+    bounds: projectedBounds,
+    scale,
+    panX,
+    panY,
+  });
+  return {
+    mode: projectionMode,
+    scale,
+    projectedBounds,
+    point: (point) => {
+      const projected = rawPoint(point);
+      return { x: canvasProjection.x(projected.x), y: canvasProjection.y(projected.y) };
+    },
+    x: canvasProjection.x,
+    y: canvasProjection.y,
+  };
+}
+
 export function zoomPanForGesture(options = {}) {
   const {
     panX = 0,
@@ -143,6 +220,17 @@ export function translatePosition(position, offset) {
     ...position,
     x: Number(position.x) + (Number(offset?.x) || 0),
     y: Number(position.y) + (Number(offset?.y) || 0),
+  };
+}
+
+export function workspaceToolPosition(position, workZero) {
+  if (!Number.isFinite(Number(position?.x)) || !Number.isFinite(Number(position?.y))) return null;
+  if (!position.isMachine) return translatePosition(position, workZero);
+  const machineZ = Number(position.z);
+  const zeroZ = Number(workZero?.z);
+  return {
+    ...position,
+    z: Number.isFinite(machineZ) && Number.isFinite(zeroZ) ? machineZ - zeroZ : position.z,
   };
 }
 

@@ -8,23 +8,30 @@ import {
   commandedPositionAtLine,
   commandedPositionAtCommand,
   createCanvasProjection,
+  createWorkspaceProjection,
   createWorkbenchState,
   layoutModeForWidth,
   interpolateMotionSegment,
   motionDurationMs,
+  orthographicPoint,
+  projectedVolumeBounds,
   reduceWorkbenchState,
   segmentAtCommand,
   segmentsBetweenCommands,
   translateBounds,
   translatePosition,
   workCoordinateAtMachine,
+  workspaceToolPosition,
   workZeroTablePosition,
   zoomPanForGesture,
 } from '../../www/lib/workbench-ui.js';
 import {
   LAYER_STORAGE_KEY,
+  VIEW_MODE_STORAGE_KEY,
   loadLayerPreferences,
+  loadViewMode,
   saveLayerPreferences,
+  saveViewMode,
 } from '../../www/lib/workbench-controller.js';
 
 const controllerSource = await readFile(new URL('../../www/lib/workbench-controller.js', import.meta.url), 'utf8');
@@ -71,6 +78,10 @@ describe('canvas workbench responsive state', () => {
     expect(translateBounds({ xMin: 0, xMax: 20, yMin: -5, yMax: 10 }, zero)).toMatchObject({
       xMin: 120, xMax: 140, yMin: 335, yMax: 350,
     });
+    expect(workspaceToolPosition({ x: 125, y: 338, z: 15, isMachine: true }, zero))
+      .toMatchObject({ x: 125, y: 338, z: 3, isMachine: true });
+    expect(workspaceToolPosition({ x: 5, y: -2, z: 3 }, zero))
+      .toMatchObject({ x: 125, y: 338, z: 3 });
   });
 
   it('keeps grid lines in machine space while ruler values use work zero', () => {
@@ -242,6 +253,48 @@ describe('canvas workbench control policy', () => {
     expect(middleArc.y).toBeCloseTo(Math.SQRT1_2 * 10);
     expect(motionDurationMs(line, { feedOverridePercent: 100 })).toBe(1000);
     expect(motionDurationMs({ ...line, length: 3000, feed: 3000 }, { feedOverridePercent: 100 })).toBe(30000);
+  });
+
+  it('projects the workspace orthographically without depth-dependent scaling', () => {
+    const origin = orthographicPoint({ x: 0, y: 0, z: 0 });
+    const xAtFront = orthographicPoint({ x: 100, y: 0, z: 0 });
+    const xAtBack = orthographicPoint({ x: 100, y: 200, z: 0 });
+    const backOrigin = orthographicPoint({ x: 0, y: 200, z: 0 });
+    expect(xAtFront.x - origin.x).toBeCloseTo(xAtBack.x - backOrigin.x, 8);
+    expect(xAtFront.y - origin.y).toBeCloseTo(xAtBack.y - backOrigin.y, 8);
+
+    const volume = projectedVolumeBounds({ xMin: 0, xMax: 100, yMin: 0, yMax: 200, zMin: -5, zMax: 20 }, '3d');
+    expect(volume.xMax).toBeGreaterThan(volume.xMin);
+    expect(volume.yMax).toBeGreaterThan(volume.yMin);
+  });
+
+  it('switches between top-down 2D and fixed orthographic 3D projections', () => {
+    const options = {
+      width: 500,
+      height: 320,
+      bounds: { xMin: 0, xMax: 100, yMin: 0, yMax: 200, zMin: 0, zMax: 40 },
+    };
+    const top = createWorkspaceProjection({ ...options, mode: '2d' });
+    const ortho = createWorkspaceProjection({ ...options, mode: '3d' });
+    expect(top.point({ x: 20, y: 30, z: 0 })).toEqual(top.point({ x: 20, y: 30, z: 40 }));
+    expect(ortho.point({ x: 20, y: 30, z: 40 }).y).toBeLessThan(ortho.point({ x: 20, y: 30, z: 0 }).y);
+    expect(ortho.mode).toBe('3d');
+  });
+
+  it('exposes an accessible persistent 2D/3D workspace toggle', () => {
+    expect(previewHtml).toContain('data-workspace-view="2d"');
+    expect(previewHtml).toContain('data-workspace-view="3d"');
+    expect(previewHtml).toContain('aria-label="Workspace view"');
+    expect(controllerSource).toContain("button.setAttribute('aria-pressed', String(active))");
+
+    const values = new Map([[VIEW_MODE_STORAGE_KEY, '3d']]);
+    const storage = {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, value),
+    };
+    expect(loadViewMode(storage)).toBe('3d');
+    saveViewMode(storage, '2d');
+    expect(values.get(VIEW_MODE_STORAGE_KEY)).toBe('2d');
   });
 
   it('reconstructs omitted compact telemetry events from preview command numbers', () => {
