@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-07-18 - Remembered controller and lazy viewer identification
+
+- Made the HttpOnly controller cookie persistent for one year and retained the last controller
+  token after its renewable 45-second lease becomes idle. The same browser can renew its lease on
+  its next authorized action without entering the PIN again.
+- Preserved single-controller takeover behavior: once the idle lease is claimed by another browser,
+  the old token no longer matches and cannot regain control without the PIN.
+- Kept the operator panel closed during initial read-only viewing, heartbeat/network failures, and
+  explicit release. Machine-control interaction or a rejected mutating request opens it on demand;
+  status, files, telemetry, and preview viewing remain passive.
+- Updated the development mock and added focused firmware/mock coverage for persistent cookies,
+  expired-lease recognition, automatic renewal, and takeover-safe status behavior.
+- Verification: full suite passes 41 files / 339 tests; PlatformIO ESP32-CAM build succeeds at
+  19.6% RAM and 71.3% flash.
+
 ## 2026-07-16 - Configurable 2D/3D thumbnail view
 
 - Added an Appearance setting for choosing 2D top-view or fixed orthographic 3D thumbnail PNGs;

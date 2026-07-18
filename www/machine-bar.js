@@ -23,6 +23,7 @@
   let motionSettingsModule = null;
   let travelSpeedMmS = 50;
   let operatorTimer = null;
+  let operatorFetchMonitorInstalled = false;
   const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
     motionSettingsModule = module;
     travelSpeedMmS = module.loadMotionSettings().travelSpeedMmS;
@@ -418,7 +419,7 @@
   async function releaseOperatorControl() {
     try {
       STATE.operator = await readOperatorResponse(await fetch('/api/operator/release', { method: 'POST' }));
-      STATE.operatorPanelOpen = true;
+      STATE.operatorPanelOpen = false;
       renderOperatorLock();
     } catch (err) {
       if (el('mb-operator-result')) el('mb-operator-result').textContent = err.message;
@@ -448,9 +449,30 @@
       STATE.operator = await readOperatorResponse(await fetch('/api/operator/heartbeat', { method: 'POST' }));
     } catch (err) {
       STATE.operator = { ...(err.data || STATE.operator), controller: false, readOnly: true, error: err.message };
-      STATE.operatorPanelOpen = true;
     }
     renderOperatorLock();
+  }
+
+  function requestOperatorControl(message = 'Claim control before changing machine state.') {
+    STATE.operatorPanelOpen = true;
+    const status = el('mb-operator-result');
+    if (status) status.textContent = message;
+    renderOperatorLock();
+  }
+
+  function installOperatorFetchMonitor() {
+    if (operatorFetchMonitorInstalled) return;
+    operatorFetchMonitorInstalled = true;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async function monitoredOperatorFetch(input, init = {}) {
+      const response = await originalFetch(input, init);
+      const url = typeof input === 'string' ? input : String(input?.url || '');
+      const method = String(init.method || input?.method || 'GET').toUpperCase();
+      if (response.status === 423 && method !== 'GET' && !url.includes('/api/operator/heartbeat')) {
+        requestOperatorControl('This action needs machine control. Enter the device PIN to continue.');
+      }
+      return response;
+    };
   }
 
   function renderOperatorLock() {
@@ -467,9 +489,9 @@
     if (strip) strip.dataset.controller = String(controller);
     if (button) {
       button.textContent = controller ? `CONTROL: ${owner}` : owner ? `READ ONLY: ${owner} controls` : 'READ ONLY: claim control';
-      button.setAttribute('aria-expanded', String(STATE.operatorPanelOpen || !controller));
+      button.setAttribute('aria-expanded', String(STATE.operatorPanelOpen));
     }
-    if (panel) panel.hidden = controller && !STATE.operatorPanelOpen;
+    if (panel) panel.hidden = !STATE.operatorPanelOpen;
     if (el('mb-operator-title')) {
       el('mb-operator-title').textContent = controller
         ? `Controller: ${owner}`
@@ -477,7 +499,7 @@
     }
     if (el('mb-operator-hint')) {
       el('mb-operator-hint').textContent = controller
-        ? 'Only this browser may change machine state. The lease stays active while this page is connected.'
+        ? 'This browser is remembered as the controller and reconnects automatically unless another device takes control.'
         : owner
           ? `${owner} currently controls the machine. This browser is read-only until that 45-second lease expires or is released.`
           : operator.configured
@@ -1113,6 +1135,7 @@
   }
 
   function install() {
+    installOperatorFetchMonitor();
     const root = document.createElement('div');
     root.className = 'machine-shell';
     root.innerHTML = `
@@ -1133,7 +1156,7 @@
         </div>
         <p id="mb-live-marlin" class="machine-live-message" hidden></p>
       </div>
-      <section id="mb-operator-panel" class="machine-operator-panel" aria-live="polite">
+      <section id="mb-operator-panel" class="machine-operator-panel" aria-live="polite" hidden>
         <h2 id="mb-operator-title">Claim machine control</h2>
         <p id="mb-operator-hint">Enter the device PIN. Only one browser can control the machine at a time.</p>
         <label data-operator-claim-field>Controller name<input id="mb-operator-owner" type="text" maxlength="32" autocomplete="nickname" placeholder="Marko phone"></label>
@@ -1313,6 +1336,14 @@
     button('mb-operator-claim', claimOperatorControl);
     button('mb-operator-release', releaseOperatorControl);
     button('mb-operator-pin-save', updateOperatorPin);
+    const interceptReadOnlyMachineControl = (event) => {
+      if (STATE.operator?.controller || !event.target?.closest?.('.machine-actions, .machine-jog-dock')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      requestOperatorControl('Claim control before operating the machine.');
+    };
+    document.addEventListener('pointerdown', interceptReadOnlyMachineControl, true);
+    document.addEventListener('click', interceptReadOnlyMachineControl, true);
     button('mb-close', () => toggleDrawer(false));
     button('machine-drawer-overlay', () => toggleDrawer(false));
     button('mb-jog-dock-toggle', () => toggleJogDock());

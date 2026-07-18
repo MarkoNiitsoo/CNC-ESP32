@@ -6,16 +6,23 @@ const machineBar = await readFile(new URL('../../www/machine-bar.js', import.met
 const styles = await readFile(new URL('../../www/style.css', import.meta.url), 'utf8');
 
 describe('single operator control lease', () => {
-  it('stores only a PIN digest and issues one expiring HttpOnly controller cookie', () => {
+  it('stores only a PIN digest and issues one persistent HttpOnly controller cookie', () => {
     expect(firmware).toContain('kOperatorPrefsPinHashKey = "pinHash"');
     expect(firmware).toContain('operatorPinDigest(const String &pin)');
     expect(firmware).toContain('mbedtls_sha256_ret');
     expect(firmware).toContain('kOperatorLeaseMs = 45000');
     expect(firmware).toContain('Set-Cookie", "cnc_operator=" + operatorSessionToken');
     expect(firmware).toContain('SameSite=Strict; HttpOnly');
+    expect(firmware).toContain('kOperatorCookieMaxAgeSeconds = 31536000');
     expect(firmware).toContain('kOperatorMaxPinAttempts = 5');
     expect(firmware).toContain('server.client().localIP() != WiFi.softAPIP()');
     expect(firmware).toContain('initial operator PIN must be set through the device Setup AP');
+  });
+
+  it('recognizes the same browser after lease expiry without blocking a later takeover', () => {
+    expect(firmware).not.toContain('operatorSessionToken = "";\n  operatorSessionOwner = "";\n  operatorOtaUnlockedUntilMs = 0;\n  return false;');
+    expect(firmware).toMatch(/operatorRequestAuthorized[\s\S]*token != operatorSessionToken[\s\S]*operatorSessionLastSeenMs = millis\(\)/);
+    expect(firmware).toMatch(/const bool controller = operatorSessionToken\.length\(\) > 0/);
   });
 
   it('guards every state-changing machine route while leaving status reads public', () => {
@@ -44,7 +51,11 @@ describe('single operator control lease', () => {
     expect(machineBar).toContain('CONTROL: ${owner}');
     expect(machineBar).toContain("fetch('/api/operator/heartbeat'");
     expect(machineBar).toContain("fetch('/api/operator/pin'");
+    expect(machineBar).toContain('panel.hidden = !STATE.operatorPanelOpen');
+    expect(machineBar).toContain("response.status === 423");
+    expect(machineBar).not.toContain('STATE.operatorPanelOpen = true;\n    }\n    renderOperatorLock();');
     expect(styles).toContain('body.operator-read-only .machine-actions');
     expect(styles).toContain('body.operator-read-only .machine-jog-dock');
+    expect(styles).not.toMatch(/body\.operator-read-only \.machine-actions,[\s\S]{0,100}pointer-events: none/);
   });
 });

@@ -172,20 +172,21 @@ export async function createMockServer(options = {}) {
   const operatorActive = () => {
     if (!env.operator.token) return false;
     if (Date.now() - env.operator.lastSeenAt <= env.operator.leaseMs) return true;
-    Object.assign(env.operator, { token: '', owner: '', lastSeenAt: 0, otaUnlockedUntil: 0 });
+    env.operator.otaUnlockedUntil = 0;
     return false;
   };
   const operatorAuthorized = (req, refresh = true) => {
-    const valid = operatorActive() && requestToken(req) === env.operator.token;
+    operatorActive();
+    const valid = Boolean(env.operator.token) && requestToken(req) === env.operator.token;
     if (valid && refresh) env.operator.lastSeenAt = Date.now();
     return valid;
   };
   const operatorStatus = (req) => {
     const active = operatorActive();
-    const controller = active && requestToken(req) === env.operator.token;
+    const controller = Boolean(env.operator.token) && requestToken(req) === env.operator.token;
     return {
       ok: true, configured: env.operator.configured, active, controller, readOnly: !controller,
-      canClaim: !active, owner: active ? env.operator.owner : null,
+      canClaim: !active, owner: active || controller ? env.operator.owner : null,
       leaseRemainingMs: active ? Math.max(0, env.operator.leaseMs - (Date.now() - env.operator.lastSeenAt)) : 0,
       leaseMs: env.operator.leaseMs,
       otaUnlocked: controller && Date.now() < env.operator.otaUnlockedUntil,
@@ -228,7 +229,7 @@ export async function createMockServer(options = {}) {
         });
         const cookie = `cnc_operator=${env.operator.token}`;
         return json(res, 200, operatorStatus({ headers: { cookie } }), {
-          'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly`,
+          'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
         });
       }
       if (req.method === 'POST' && pathname === '/api/operator/heartbeat') {

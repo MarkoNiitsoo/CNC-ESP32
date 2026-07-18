@@ -8,6 +8,20 @@ UI changes must have documented simulated or manual checks before real cutting.
 Software stop is not a physical emergency stop. Start real machine checks with router/spindle off,
 tool above material, low feed override, and a physical stop/power cut within reach.
 
+## Remembered Controller And Passive Viewer
+
+1. Claim control from a phone, then leave the CNC WiFi network for longer than 45 seconds.
+2. Rejoin the same network and confirm the phone shows itself as controller without requesting the
+   PIN again; use a harmless state-changing action to confirm the lease is renewed.
+3. Repeat with Chrome fully closed and reopened. The remembered controller cookie should survive.
+4. While that phone is connected, open the pendant from another browser and confirm it stays
+   read-only without opening the PIN panel while only status, files, and preview are viewed.
+5. Attempt a machine control from the viewer and confirm the PIN panel opens only then.
+6. Let the phone lease expire, claim from the second browser, and confirm the old phone becomes
+   read-only and cannot revive its former controller identity.
+7. Explicitly release control and confirm the PIN panel closes instead of immediately asking the
+   releasing browser to identify itself again.
+
 ## Priority Pause
 
 Simulated or air-cut check:
@@ -72,4 +86,3 @@ For each test above, confirm:
 2. No automatic homing is introduced.
 3. No new movement command is introduced except the explicitly tested control command.
 4. Software stop is not described as a physical emergency stop.
-

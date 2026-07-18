@@ -597,7 +597,6 @@ button.machine-danger-dark {
 
 body.operator-read-only .machine-actions,
 body.operator-read-only .machine-jog-dock {
-  pointer-events: none;
   opacity: 0.52;
 }
 

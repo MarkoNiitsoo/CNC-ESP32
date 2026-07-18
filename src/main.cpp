@@ -37,6 +37,7 @@ constexpr const char *kRecoveryPrefsActiveJobKey = "activeJob";
 constexpr const char *kOperatorPrefsNamespace = "operator";
 constexpr const char *kOperatorPrefsPinHashKey = "pinHash";
 constexpr uint32_t kOperatorLeaseMs = 45000;
+constexpr uint32_t kOperatorCookieMaxAgeSeconds = 31536000;
 constexpr uint32_t kOperatorOtaUnlockMs = 120000;
 constexpr uint32_t kOperatorFailedPinWindowMs = 30000;
 constexpr uint8_t kOperatorMaxPinAttempts = 5;
@@ -4493,8 +4494,6 @@ bool validOperatorPin(const String &pin) {
 bool operatorSessionActive() {
   if (operatorSessionToken.length() == 0) return false;
   if (millis() - operatorSessionLastSeenMs <= kOperatorLeaseMs) return true;
-  operatorSessionToken = "";
-  operatorSessionOwner = "";
   operatorOtaUnlockedUntilMs = 0;
   return false;
 }
@@ -4513,9 +4512,9 @@ String operatorRequestToken() {
 }
 
 bool operatorRequestAuthorized(bool refreshLease = true) {
-  if (!operatorSessionActive()) return false;
   const String token = operatorRequestToken();
-  if (token.length() == 0 || token != operatorSessionToken) return false;
+  if (token.length() == 0 || operatorSessionToken.length() == 0 || token != operatorSessionToken) return false;
+  operatorSessionActive();
   if (refreshLease) operatorSessionLastSeenMs = millis();
   return true;
 }
@@ -4527,7 +4526,9 @@ bool operatorOtaUnlocked() {
 
 String operatorStatusJson(bool assumeController = false) {
   const bool active = operatorSessionActive();
-  const bool controller = active && (assumeController || operatorRequestToken() == operatorSessionToken);
+  const String requestToken = operatorRequestToken();
+  const bool controller = operatorSessionToken.length() > 0 &&
+                          (assumeController || requestToken == operatorSessionToken);
   const uint32_t remaining = active ? kOperatorLeaseMs - (millis() - operatorSessionLastSeenMs) : 0;
   String json = "{\"ok\":true,\"configured\":";
   json += operatorPinHash.length() > 0 ? "true" : "false";
@@ -4536,7 +4537,7 @@ String operatorStatusJson(bool assumeController = false) {
   json += ",\"readOnly\":" + String(controller ? "false" : "true");
   json += ",\"canClaim\":" + String(active ? "false" : "true");
   json += ",\"owner\":";
-  json += active ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+  json += active || controller ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
   json += ",\"leaseRemainingMs\":" + String(remaining);
   json += ",\"leaseMs\":" + String(kOperatorLeaseMs);
   const bool otaUnlocked = controller && operatorOtaUnlockedUntilMs != 0 &&
@@ -4642,7 +4643,8 @@ void handleOperatorClaim() {
   operatorSessionLastSeenMs = operatorSessionClaimedAtMs;
   operatorOtaUnlockedUntilMs = 0;
   server.sendHeader("Set-Cookie", "cnc_operator=" + operatorSessionToken +
-                                  "; Path=/; SameSite=Strict; HttpOnly");
+                                  "; Path=/; SameSite=Strict; HttpOnly; Max-Age=" +
+                                  String(kOperatorCookieMaxAgeSeconds));
   server.send(200, "application/json", operatorStatusJson(true));
 }
 

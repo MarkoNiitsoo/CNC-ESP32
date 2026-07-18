@@ -37,6 +37,7 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({ owner: 'Marko phone', pin: '741852' }),
     });
     expect(claim.ok).toBe(true);
+    expect(claim.headers.get('set-cookie')).toContain('Max-Age=31536000');
     const cookie = claim.headers.get('set-cookie').split(';')[0];
     expect(await claim.json()).toMatchObject({ configured: true, controller: true, owner: 'Marko phone' });
     expect(await fetch(`${base}/api/operator/status`).then((res) => res.json()))
@@ -54,6 +55,27 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({ pin: '741852' }),
     })).ok).toBe(true);
     expect((await fetch(`${base}/api/operator/release`, { method: 'POST', headers: { Cookie: cookie } })).ok).toBe(true);
+  });
+
+  it('lets the remembered controller revive an expired lease without another PIN', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    env.operator.leaseMs = 5;
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Marko phone', pin: '741852' }),
+    });
+    const cookie = claim.headers.get('set-cookie').split(';')[0];
+    env.operator.lastSeenAt = Date.now() - 20;
+
+    expect(await fetch(`${base}/api/operator/status`, { headers: { Cookie: cookie } }).then((res) => res.json()))
+      .toMatchObject({ active: false, controller: true, readOnly: false, owner: 'Marko phone' });
+    expect(await fetch(`${base}/api/operator/status`).then((res) => res.json()))
+      .toMatchObject({ active: false, controller: false, readOnly: true, owner: null, canClaim: true });
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ cmd: 'M5' }),
+    })).ok).toBe(true);
+    expect(env.operator.lastSeenAt).toBeGreaterThan(Date.now() - 20);
   });
 
   it('locks only active/recovery job artifacts against upload, delete, and rename', async () => {

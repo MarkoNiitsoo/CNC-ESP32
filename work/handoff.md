@@ -1,5 +1,20 @@
 # Handoff
 
+## 2026-07-18 - Remembered controller handoff
+
+- `cnc_operator` remains an HttpOnly, SameSite=Strict bearer cookie and now has a one-year Max-Age.
+  The PIN and cookie token are still never exposed to JavaScript.
+- Lease expiry now makes the controller idle and available for takeover without deleting its token.
+  A matching remembered browser is reported as controller and its next guarded request renews the
+  45-second lease. A different browser can claim during the idle window and replaces the token.
+- Ordinary viewers no longer see the claim panel on load or heartbeat failure. The Machine Bar
+  intercepts read-only machine controls, and a shared HTTP 423 monitor covers other mutating UI
+  actions; either path opens the claim panel only after control is attempted.
+- Deploy firmware with `www/machine-bar.js` and `www/style.css`. The development mock mirrors the
+  new cookie and lease semantics; follow the remembered-controller checks in `docs/manual-tests.md`.
+- Full automated verification passes 41 files / 339 tests; the ESP32-CAM firmware build uses 19.6%
+  RAM (64,236 bytes) and 71.3% flash (1,401,721 bytes).
+
 ## 2026-07-16 - Configurable thumbnail projection handoff
 
 - Settings -> Appearance owns `#thumbnail-view-mode`. The preference is browser-local under
