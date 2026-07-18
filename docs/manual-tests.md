@@ -97,6 +97,18 @@ Simulated or router-off Aircut check:
    three-minute hard timeout rather than the former ten-second limit.
 6. Repeat at 50% feed override and confirm the estimated duration approximately doubles.
 
+## Aircut Animation Uses The Streamed Path
+
+1. Load a job whose production toolpath repeats the same XY contour at several step-down depths.
+2. Generate Aircut and confirm the command preview reports the repeated step-down passes skipped.
+3. Start Aircut with the router off and watch the tool marker for the whole run.
+4. Confirm the marker follows every collapsed XY path once at the Aircut safe Z; it must not replay
+   the original production depth passes.
+5. Confirm progress reaches completion together with the firmware stream instead of continuing an
+   extra production-style animation after the machine has finished.
+6. Run the normal production Cut separately and confirm its animation still includes the original
+   production passes.
+
 ## Priority Stop
 
 Simulated or air-cut check:

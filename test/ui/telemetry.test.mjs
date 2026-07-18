@@ -125,4 +125,14 @@ describe('shared browser telemetry', () => {
     expect(preview).toContain('initialPosition: productionResumePlan?.resumePoint');
     expect(preview).toContain('recoveryMotionSegments = toolpath.parseGCodeToToolpath');
   });
+
+  it('animates Aircut from the exact one-pass commands sent to firmware', () => {
+    expect(preview).toContain('function activeAnimationSegments()');
+    expect(preview).toContain('activeTestMotion?.segments');
+    expect(preview).toContain('jobRunStatus?.streamMode === activeTestMotion.mode');
+    expect(preview).toContain("toolpath.parseGCodeToToolpath(`${commands.join('\\n')}\\n`");
+    expect(preview).toContain('activeTestMotion = { mode, path, segments: animationModel.segments }');
+    expect(preview).toContain('const streamSegments = activeAnimationSegments();');
+    expect(preview).toMatch(/commandedPositionAtCommand\(\s*activeAnimationSegments\(\)/);
+  });
 });

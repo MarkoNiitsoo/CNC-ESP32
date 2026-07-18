@@ -1,5 +1,19 @@
 # Progress
 
+## 2026-07-18 - Aircut animation follows its one-pass stream
+
+- Found that Aircut motion telemetry carried the correct generated-stream command sequence, but
+  the browser resolved those sequence numbers against the original production segments. On jobs
+  with repeated step-downs this made the marker appear to perform normal multi-depth cutting.
+- Test-motion startup now parses the exact generated commands sent to firmware and retains those
+  segments for the active Aircut/tool-less stream. Live telemetry and the fallback marker both
+  select that stream-specific model; production Cut and Production Resume keep their own models.
+- Added a regression test and a manual repeated-stepdown Aircut check.
+- Verification: focused Aircut/telemetry tests pass 17 tests; full suite passes 42 files / 348
+  tests.
+- Deployed `www/preview.js` to `E:\www\preview.js`; source and SD SHA-256 both equal
+  `28D9CB4858A9C02BF90A76097317EEDDAE55449CA41D332CAB007343EBAD01E5`.
+
 ## 2026-07-18 - Actionable BLOCKED state and planner-aware ACK carry
 
 - SD evidence separated two failures: Aircut timed out on a short arc queued behind a 13.9-second

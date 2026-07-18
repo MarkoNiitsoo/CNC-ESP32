@@ -778,7 +778,9 @@ function canvasToolPosition() {
     return { ...statusPosition, source: 'STATUS' };
   }
   if (active) {
-    const commanded = workbenchUiModule?.commandedPositionAtCommand(parsed?.segments || [], jobRunStatus?.currentLineNumber);
+    const commanded = workbenchUiModule?.commandedPositionAtCommand(
+      activeAnimationSegments(), jobRunStatus?.currentLineNumber,
+    );
     if (commanded) return { ...commanded, source: 'CMD' };
   }
   if (currentMachineFrame?.machine && Number.isFinite(currentMachineFrame.machine.x)) {
@@ -2067,11 +2069,19 @@ function estimatedFirmwareUptimeMs() {
   return jobStatusFirmwareUptimeMs + Math.max(0, performance.now() - jobStatusReceivedAtMs);
 }
 
+function activeAnimationSegments() {
+  if (jobRunStatus?.streamMode === 'production-resume' && recoveryMotionSegments) {
+    return recoveryMotionSegments;
+  }
+  if (activeTestMotion?.segments && jobRunStatus?.streamMode === activeTestMotion.mode) {
+    return activeTestMotion.segments;
+  }
+  return parsed?.segments || [];
+}
+
 function handleMotionTelemetry(data = {}) {
   if (!workbenchUiModule || !parsed) return;
-  const streamSegments = jobRunStatus?.streamMode === 'production-resume' && recoveryMotionSegments
-    ? recoveryMotionSegments
-    : parsed.segments || [];
+  const streamSegments = activeAnimationSegments();
   for (const event of data.events || []) {
     const sequence = Number(event.sequence);
     if (!Number.isFinite(sequence) || sequence <= lastMotionSequence) continue;
@@ -3539,6 +3549,15 @@ function testMotionPath(mode) {
 async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {}) {
   if (activeTestMotion) throw new Error('Another test-motion stream is already active.');
   const path = testMotionPath(mode);
+  const { toolpath } = await toolpathModulesPromise;
+  const statusPosition = jobRunStatus?.position || jobRunStatus?.lastKnownPosition || {};
+  const animationModel = toolpath.parseGCodeToToolpath(`${commands.join('\n')}\n`, {
+    initialPosition: {
+      x: Number(statusPosition.x) || 0,
+      y: Number(statusPosition.y) || 0,
+      z: Number(statusPosition.z) || 0,
+    },
+  });
   await uploadGeneratedRun(path, `${commands.join('\n')}\n`);
 
   const res = await fetch('/api/test-motion/start', {
@@ -3548,7 +3567,7 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
   });
   const started = await readJsonOrThrow(res);
   if (!res.ok) throw new Error(started.error || 'Test motion start failed');
-  activeTestMotion = { mode, path };
+  activeTestMotion = { mode, path, segments: animationModel.segments };
   await applyJobRunStatus(started);
 
   return new Promise((resolve, reject) => {

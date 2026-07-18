@@ -1,5 +1,19 @@
 # Handoff
 
+## 2026-07-18 - Aircut animation model handoff
+
+- Aircut is physically generated from `aircutCommands`, including collapsed repeated step-down
+  paths. Its UI animation must therefore use the segments parsed from those same commands, never
+  command indices into the original production `parsed.segments`.
+- `activeAnimationSegments()` now selects Production Resume recovery segments first, active
+  Aircut/tool-less test-motion segments second, and production segments otherwise. Keep telemetry
+  sequence numbers and the selected command model from the same stream.
+- The live position fallback uses the same selector, preventing a stale production-depth marker
+  when no interpolated telemetry frame is active.
+- Full automated verification passes 42 files / 348 tests.
+- The updated `preview.js` is installed on SD drive `E:` and its SHA-256 matches the repository
+  source (`28D9CB4858A9C02BF90A76097317EEDDAE55449CA41D332CAB007343EBAD01E5`).
+
 ## 2026-07-18 - Actionable Cut blockers and planner wait handoff
 
 - The observed Aircut failure was `COMMUNICATION_LOST` on `G2 X503 Y0 I-3 J0 F1500`. Its own
