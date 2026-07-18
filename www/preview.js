@@ -426,6 +426,13 @@ async function handleReadinessAction(action) {
 
 function workflowHardBlockers() {
   const blockers = [...activeRunBlockers()];
+  if (firmwareRecoveryCheckpoint?.requiresReview === true) {
+    const checkpoint = firmwareRecoveryCheckpoint.checkpoint || {};
+    const legacyTestMotion = checkpoint.startMode === 'validated_test_motion';
+    blockers.unshift(legacyTestMotion
+      ? 'An old Aircut/test-motion record is blocking new motion. Clear it; test motion is not resumable.'
+      : 'An interrupted cutting job requires a recovery decision before Home, Zero, verification, or a new cut.');
+  }
   (currentPreflight?.checks || [])
     .filter((check) => check.level === 'fail' && check.id !== 'workZero')
     .forEach((check) => blockers.push(check.message));
@@ -438,6 +445,13 @@ function guidedWorkflowStatus() {
     bootSessionId: currentMachineFrame?.bootSessionId || '',
     hardBlockers: workflowHardBlockers(),
   });
+}
+
+function openFirmwareRecoveryOptions() {
+  showPreviewTab('recovery');
+  workbenchController?.openForTab('recovery');
+  history.replaceState(null, '', '#recovery');
+  firmwareRecoveryCheckpointEl?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
 }
 
 async function postManualFrame(mode) {
@@ -542,7 +556,9 @@ function renderReadiness() {
   const status = guidedWorkflowStatus();
   const machineState = String(jobRunStatus?.state || '').toUpperCase();
   const homeBusy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(machineState);
+  const recoveryPending = firmwareRecoveryCheckpoint?.requiresReview === true;
   if (readinessHomeAllButton) {
+    readinessHomeAllButton.hidden = recoveryPending;
     readinessHomeAllButton.disabled = homeBusy;
     readinessHomeAllButton.title = homeBusy ? 'Home All is available when the machine is idle.' : 'Re-home every axis';
   }
@@ -574,7 +590,15 @@ function renderReadiness() {
 
   readinessPrimaryEl.textContent = '';
   readinessSecondaryEl.textContent = '';
-  if (status.gate === 'frame') {
+  if (recoveryPending) {
+    const legacyTestMotion = firmwareRecoveryCheckpoint.checkpoint?.startMode === 'validated_test_motion';
+    readinessPrimaryEl.append(workflowButton('Review Recovery Options', openFirmwareRecoveryOptions, 'primary-action'));
+    readinessSecondaryEl.append(workflowButton(
+      legacyTestMotion ? 'Clear Old Aircut Record' : 'Discard Interrupted Cut Record',
+      dismissFirmwareRecoveryCheckpoint,
+      'machine-danger',
+    ));
+  } else if (status.gate === 'frame') {
     readinessSecondaryEl.append(workflowButton('Continue Without Homing', continueWithoutHoming, 'machine-danger'));
   } else if (status.gate === 'work-zero') {
     if (status.frame.mode === 'homed') {
@@ -2317,6 +2341,7 @@ function renderFirmwareRecoveryCheckpoint() {
   }
 
   const matches = firmwareCheckpointMatchesCurrentJob(checkpoint);
+  const legacyTestMotion = checkpoint.startMode === 'validated_test_motion';
   const position = checkpoint.workPosition;
   const toolChange = checkpoint.toolChange;
   const toolChangeDetails = toolChange?.phase && toolChange.phase !== 'NONE'
@@ -2324,11 +2349,13 @@ function renderFirmwareRecoveryCheckpoint() {
        <dt>Tool-change safety</dt><dd>parked ${toolChange.parked ? 'yes' : 'no'}, Z zero ${toolChange.zZeroCompleted ? 'complete' : 'required'}, router ready ${toolChange.routerReadyConfirmed ? 'confirmed' : 'not confirmed'}</dd>`
     : '';
   firmwareRecoveryCheckpointEl.innerHTML = `
-    <p class="eyebrow">FIRMWARE RECOVERY RECORD</p>
-    <strong>${matches ? 'Interrupted run found for this job' : 'Interrupted run belongs to another job'}</strong>
-    <p class="warning">${matches
-      ? 'The firmware checkpoint must be copied into job history before new motion is allowed.'
-      : `Open ${html(checkpoint.jobPath || checkpoint.gcodePath || 'the recorded job')} to import it, or deliberately dismiss this record.`}</p>
+    <p class="eyebrow">${legacyTestMotion ? 'OLD TEST-MOTION RECORD' : 'FIRMWARE RECOVERY RECORD'}</p>
+    <strong>${legacyTestMotion ? 'A previous Aircut/test motion was recorded by older firmware' : matches ? 'Interrupted cut found for this job' : 'Interrupted cut belongs to another job'}</strong>
+    <p class="warning">${legacyTestMotion
+      ? 'Aircut is not a production job and cannot be resumed. Clear this old record to return to Home → Zero → Bounds/Aircut → Cut.'
+      : matches
+        ? 'Review and preserve this interrupted cut in job history, or deliberately discard it if you are abandoning the cut.'
+        : `Open ${html(checkpoint.jobPath || checkpoint.gcodePath || 'the recorded job')} to review it, or deliberately discard the record if that cut is being abandoned.`}</p>
     <dl>
       <dt>Run file</dt><dd>${html(checkpoint.gcodePath || '-')}</dd>
       <dt>Firmware state</dt><dd>${html(checkpoint.state || '-')}</dd>
@@ -2339,9 +2366,9 @@ function renderFirmwareRecoveryCheckpoint() {
     </dl>
     <p class="warning">Machine position is untrusted. No automatic resume or movement was performed.</p>
   `;
-  firmwareRecoveryDismissButton.textContent = matches
-    ? 'Dismiss Without Importing'
-    : 'Dismiss Firmware Recovery Record';
+  firmwareRecoveryDismissButton.textContent = legacyTestMotion
+    ? 'Clear Old Aircut Record'
+    : matches ? 'Discard Without Importing' : 'Discard Interrupted Cut Record';
 }
 
 async function acknowledgeFirmwareRecoveryCheckpoint() {
@@ -2361,6 +2388,8 @@ async function loadFirmwareRecoveryCheckpoint() {
   if (!res.ok) throw new Error(response.error || 'Firmware recovery checkpoint request failed.');
   firmwareRecoveryCheckpoint = response;
   renderFirmwareRecoveryCheckpoint();
+  renderReadiness();
+  renderRunPanel();
   const checkpoint = response?.checkpoint;
   if (!response?.available || !response?.requiresReview || !checkpoint) return;
   if (!firmwareCheckpointMatchesCurrentJob(checkpoint)) return;
@@ -2412,17 +2441,30 @@ async function loadFirmwareRecoveryCheckpoint() {
   firmwareRecoveryCheckpoint = { available: false, requiresReview: false, checkpoint: null };
   appendRecoveryLog(`Imported firmware checkpoint at acknowledged byte ${checkpoint.lastAcknowledgedByteOffset ?? 0}. Home All before recovery motion.`);
   renderFirmwareRecoveryCheckpoint();
+  renderReadiness();
+  renderRunPanel();
 }
 
 async function dismissFirmwareRecoveryCheckpoint() {
   if (!firmwareRecoveryCheckpoint?.requiresReview) return;
-  if (!confirm('Dismiss this firmware recovery record without importing it into a job? This cannot be undone. Machine position will remain untrusted.')) return;
+  const legacyTestMotion = firmwareRecoveryCheckpoint.checkpoint?.startMode === 'validated_test_motion';
+  const prompt = legacyTestMotion
+    ? 'Clear this old Aircut/test-motion record? Aircut is not resumable. You must Home and set Zero again before new motion.'
+    : 'Discard this interrupted cutting record without importing it? This cannot be undone. Use this only if you are abandoning that cut.';
+  if (!confirm(prompt)) return;
   await acknowledgeFirmwareRecoveryCheckpoint();
   firmwareRecoveryImported = false;
   firmwareRecoveryCheckpoint = { available: false, requiresReview: false, checkpoint: null };
   setPositionTrust(false, 'firmware-recovery-dismissed');
-  appendRecoveryLog('Firmware recovery record deliberately dismissed. Home All before motion.');
+  appendRecoveryLog(legacyTestMotion
+    ? 'Old test-motion record cleared. Continue with Home → Zero → Bounds/Aircut → Cut.'
+    : 'Interrupted cut record deliberately discarded. Home All before new motion.');
   renderFirmwareRecoveryCheckpoint();
+  renderReadiness();
+  renderRunPanel();
+  setJobResult(legacyTestMotion
+    ? 'Old Aircut record cleared. Next: Home All, then set Zero.'
+    : 'Interrupted cut record discarded. Next: Home All, then set Zero.');
 }
 
 function renderRecoveryPanel() {

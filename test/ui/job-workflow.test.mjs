@@ -32,6 +32,16 @@ describe('Job JSON v3 workflow gates', () => {
     expect(evaluateWorkflow(current, { bootSessionId: 'boot-1' }).gate).toBe('cut');
   });
 
+  it('keeps the real homed workflow ordered Home, Zero, Bounds/Aircut, Cut', () => {
+    const current = job({ activeWorkZeroId: '' });
+    expect(evaluateWorkflow(current, homed).gate).toBe('work-zero');
+    current.activeWorkZeroId = 'zero-1';
+    current.workZeroDecision = { mode: 'homed', token: 'zero-1', capturedAt: 'now' };
+    expect(evaluateWorkflow(current, homed).gate).toBe('verification');
+    current.verificationDecision = createVerificationDecision(current, { type: 'aircut', safeZ: 15, decidedAt: 'now' });
+    expect(evaluateWorkflow(current, homed).gate).toBe('cut');
+  });
+
   it('accepts one current verification without stale sibling modes', () => {
     const current = job({
       workZeroDecision: { mode: 'homed', token: 'zero-1', capturedAt: 'now' },

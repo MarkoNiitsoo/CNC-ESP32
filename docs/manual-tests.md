@@ -8,6 +8,19 @@ UI changes must have documented simulated or manual checks before real cutting.
 Software stop is not a physical emergency stop. Start real machine checks with router/spindle off,
 tool above material, low feed override, and a physical stop/power cut within reach.
 
+## Guided Recovery Blocker and Non-Recoverable Aircut
+
+1. Start from a pending interrupted production checkpoint and open the affected job.
+2. Confirm the readiness card blocks the normal workflow before Home and explains that an
+   interrupted cut needs a decision.
+3. Confirm the card offers `Review Recovery Options` and `Discard Interrupted Cut Record`.
+4. Review the recovery details without discarding them, then return and deliberately discard the
+   record. Confirm the UI immediately says the next step is Home All.
+5. Complete Home All, set work zero, then verify Bounds Check/Full Aircut is offered before Cut.
+6. Start and stop or fail an Aircut, reboot the ESP, and confirm no Aircut recovery record appears.
+7. Install over firmware that has an old `validated_test_motion` checkpoint and confirm boot logs
+   `discarded legacy non-recoverable test-motion checkpoint` once, with normal workflow restored.
+
 ## SD System Diagnostics
 
 1. Install the diagnostic firmware through root `/firmware.bin`, allow the ESP to rename it to

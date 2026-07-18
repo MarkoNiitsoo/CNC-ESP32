@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
 const html = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
+const styles = await readFile(new URL('../../www/preview.css', import.meta.url), 'utf8');
 
 describe('firmware recovery checkpoint UI', () => {
   it('shows pending firmware evidence and provides a deliberate dismiss action', () => {
@@ -11,7 +12,11 @@ describe('firmware recovery checkpoint UI', () => {
     expect(html).toContain('id="firmware-recovery-dismiss"');
     expect(preview).toContain("fetch('/api/recovery/checkpoint')");
     expect(preview).toContain("fetch('/api/recovery/checkpoint/acknowledge'");
-    expect(preview).toContain('Dismiss this firmware recovery record without importing it into a job?');
+    expect(preview).toContain('Clear Old Aircut Record');
+    expect(preview).toContain('Discard Interrupted Cut Record');
+    expect(preview).toContain("workflowButton('Review Recovery Options'");
+    expect(preview).toContain("checkpoint.startMode === 'validated_test_motion'");
+    expect(preview).toContain('Home → Zero → Bounds/Aircut → Cut');
   });
 
   it('imports only a matching job and saves durable history before acknowledgement', () => {
@@ -30,5 +35,16 @@ describe('firmware recovery checkpoint UI', () => {
     expect(machineBar).toContain("? 'RECOVERY'");
     expect(machineBar).toContain('Interrupted-job evidence requires review before new motion');
     expect(machineBar).toMatch(/function canSetup\(\)[\s\S]*SETUP_STATES\.has\(state\)/);
+  });
+
+  it('makes pending recovery a visible workflow blocker before normal preparation', () => {
+    const blockers = preview.slice(
+      preview.indexOf('function workflowHardBlockers()'),
+      preview.indexOf('function guidedWorkflowStatus()'),
+    );
+    expect(blockers).toContain('firmwareRecoveryCheckpoint?.requiresReview === true');
+    expect(blockers).toContain('interrupted cutting job requires a recovery decision');
+    expect(preview).toContain('readinessHomeAllButton.hidden = recoveryPending');
+    expect(styles).toMatch(/#readiness-home-all\[hidden\][\s\S]*display: none/);
   });
 });

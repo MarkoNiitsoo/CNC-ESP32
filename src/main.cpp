@@ -1477,6 +1477,14 @@ void loadPersistentJobCheckpointAtBoot() {
   String body;
   const bool checkpointAvailable = readPersistentJobCheckpoint(body);
   const bool activeMarker = persistentActiveJobMarker();
+  const bool legacyTestMotion = checkpointAvailable &&
+                                extractJsonString(body, "startMode") == "validated_test_motion";
+  if (legacyTestMotion) {
+    const String testPath = normalizeSdPath(extractJsonString(body, "gcodePath"));
+    clearPersistentJobCheckpoint();
+    logJobEvent("discarded legacy non-recoverable test-motion checkpoint: " + testPath);
+    return;
+  }
   const bool checkpointActive = checkpointAvailable && extractJsonBool(body, "activeJob", false);
   const bool checkpointInterrupted = checkpointAvailable && extractJsonBool(body, "interrupted", false);
   if (checkpointAvailable) updateRecoveryCheckpointMetadata(body);
@@ -6088,12 +6096,6 @@ void handleTestMotionStart() {
     sendJsonError(500, jobStatus.lastError);
     return;
   }
-  if (!beginPersistentJobCheckpoint()) {
-    setJobError("could not persist the active-job checkpoint");
-    sendJsonError(500, jobStatus.lastError);
-    return;
-  }
-
   logJobEvent("test motion start: " + mode + " " + path + " commands=" + String(commandCount));
   jobRunning = true;
   jobStatus.state = JobRunnerState::Running;

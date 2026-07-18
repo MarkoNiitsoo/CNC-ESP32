@@ -33,6 +33,10 @@
   display: none;
 }
 
+#readiness-home-all[hidden] {
+  display: none;
+}
+
 .preview-stage {
   position: sticky;
   top: 190px;

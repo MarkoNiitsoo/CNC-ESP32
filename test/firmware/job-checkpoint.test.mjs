@@ -29,8 +29,13 @@ describe('persistent active-job checkpoint', () => {
       firmware.indexOf('void clearPersistentJobCheckpoint() {'),
     );
     expect(begin).toMatch(/setPersistentActiveJobMarker\(true\)[\s\S]*writePersistentJobCheckpoint\(true, false/);
-    expect(firmware.match(/if \(!beginPersistentJobCheckpoint\(\)\)/g)).toHaveLength(3);
+    expect(firmware.match(/if \(!beginPersistentJobCheckpoint\(\)\)/g)).toHaveLength(2);
     expect(firmware).toMatch(/handleJobStart\(\)[\s\S]*beginPersistentJobCheckpoint\(\)[\s\S]*runJobStartPreamble\(\)/);
+    const testMotion = firmware.slice(
+      firmware.indexOf('void handleTestMotionStart()'),
+      firmware.indexOf('void handleProductionResumeStart()'),
+    );
+    expect(testMotion).not.toContain('beginPersistentJobCheckpoint()');
   });
 
   it('keeps interrupted evidence, removes completed evidence, and never auto-resumes at boot', () => {
@@ -50,6 +55,8 @@ describe('persistent active-job checkpoint', () => {
     );
     expect(boot).toContain('sendImmediateJobSafetyM5');
     expect(boot).toContain('machineFrame = MachineFrameState()');
+    expect(boot).toContain('discarded legacy non-recoverable test-motion checkpoint');
+    expect(boot).toMatch(/startMode.*validated_test_motion[\s\S]*clearPersistentJobCheckpoint\(\)/);
     expect(boot).not.toContain('openJobFileAtOffset');
     expect(boot).not.toMatch(/jobRunning\s*=\s*true/);
   });

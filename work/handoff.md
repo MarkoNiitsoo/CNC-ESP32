@@ -1,5 +1,20 @@
 # Handoff
 
+## 2026-07-18 - Recovery UX and test-motion checkpoint handoff
+
+- `handleTestMotionStart()` no longer calls `beginPersistentJobCheckpoint()`. Production jobs and
+  Production Resume still do; recovery safety and durability for real cutting are unchanged.
+- Boot removes legacy checkpoints whose `startMode` is `validated_test_motion`. This is intentional:
+  test motion is not resumed, while every reboot already invalidates the live machine frame.
+- `workflowHardBlockers()` now includes pending firmware recovery. The readiness card offers review
+  or deliberate discard and only then returns to Home → Zero → Bounds/Aircut → Cut.
+- The readiness Home button is hidden while recovery is pending so the exception decision cannot be
+  mistaken for a later workflow step; setup controls reappear after recovery is resolved.
+- Keep recovery decisions explicit for production cuts; do not silently discard a production
+  checkpoint or allow a test stream to create one.
+- Full verification passes 42 files / 345 tests. The ESP32-CAM build uses 19.6% RAM (64,332 bytes)
+  and 72.0% flash (1,414,921 bytes); mobile recovery rendering was checked at 412 x 915.
+
 ## 2026-07-18 - HTTP 423 lock classification handoff
 
 - `installOperatorFetchMonitor()` now clones a 423 response and checks for the operator status
@@ -29,8 +44,8 @@
   any communication-loss boundary are also written to `/logs/job.log`.
 - Safety behavior is unchanged: no uncertain G-code replay, immediate M5 on communication loss,
   and no automatic M410.
-- Full automated verification passes 42 files / 343 tests. The ESP32-CAM build uses 19.6% RAM
-  (64,332 bytes) and 72.0% flash (1,414,617 bytes).
+- Full automated verification passes 42 files / 345 tests. The ESP32-CAM build uses 19.6% RAM
+  (64,332 bytes) and 72.0% flash (1,414,921 bytes).
 
 ## 2026-07-18 - SD system diagnostics handoff
 

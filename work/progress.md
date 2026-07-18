@@ -1,5 +1,22 @@
 # Progress
 
+## 2026-07-18 - Visible recovery decisions and production-only checkpoints
+
+- Removed persistent active-job checkpoint creation from Aircut and other validated test-motion
+  streams. They remain firmware-streamed and safety-controlled, but are not resumable production
+  work and no longer create a recovery record after stop/error/reboot.
+- Added a boot migration that clears legacy `validated_test_motion` checkpoints, including the old
+  Aircut record currently blocking the machine.
+- Connected pending production recovery to the guided workflow as a visible hard blocker with
+  direct `Review Recovery Options` and deliberate discard actions. Legacy test records receive a
+  specifically worded clear action instead of being presented as an interrupted cut.
+- Hid the normal Home action while a recovery decision is pending. Resolving recovery now visibly
+  reveals Home as the first normal step instead of presenting it out of order beside recovery.
+- Confirmed and regression-tested the normal operator order: Home → Zero → Bounds/Aircut → Cut.
+- Verification: full suite passes 42 files / 345 tests; ESP32-CAM build succeeds at 19.6% RAM
+  (64,332 bytes) and 72.0% flash (1,414,921 bytes). A 412 x 915 mobile check confirms that pending
+  recovery hides Home and exposes only the two recovery-resolution actions.
+
 ## 2026-07-18 - Distinguish operator locks from file locks
 
 - Fixed the global browser fetch monitor so HTTP 423 opens the operator PIN panel only when the
