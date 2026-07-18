@@ -239,7 +239,7 @@ describe('firmware-backed Go To Work Zero', () => {
 
 describe('firmware-owned coordinate frames', () => {
   it('owns homing and work-zero transitions in dedicated endpoints', () => {
-    expect(firmware).toContain('server.on("/api/machine/frame", HTTP_GET, handleMachineFrame)');
+    expect(firmware).toContain('httpRoute("/api/machine/frame", HTTP_GET, handleMachineFrame)');
     expect(firmware).toContain('operatorRoute("/api/machine/home", HTTP_POST, handleMachineHome)');
     expect(firmware).toContain('operatorRoute("/api/work-zero/set", HTTP_POST, handleSetWorkZero)');
     expect(machineBar).toContain("apiPost('/api/machine/home'");

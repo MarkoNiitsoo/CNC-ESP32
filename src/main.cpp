@@ -60,6 +60,10 @@ constexpr const char *kSdRootUpdateBinPath = "/firmware.bin";
 constexpr const char *kSdRootDoneBinPath = "/firmware.done.bin";
 constexpr const char *kSdUpdateLogPath = "/logs/update.log";
 constexpr const char *kSdJobLogPath = "/logs/job.log";
+constexpr const char *kSdSystemLogPath = "/logs/system.log";
+constexpr const char *kSdSystemLogPreviousPath = "/logs/system.previous.log";
+constexpr size_t kMaxSystemLogBytes = 128 * 1024;
+constexpr uint32_t kRepeatedHttpLogIntervalMs = 5000;
 constexpr const char *kSdActiveJobCheckpointPath = "/logs/active-job.json";
 constexpr const char *kSdActiveJobCheckpointTempPath = "/logs/active-job.tmp";
 constexpr size_t kMaxJobCheckpointBytes = 8192;
@@ -372,6 +376,9 @@ uint32_t operatorOtaUnlockedUntilMs = 0;
 uint32_t operatorFailedPinWindowStartedAtMs = 0;
 uint8_t operatorFailedPinAttempts = 0;
 bool sdMounted = false;
+bool systemLogMountRecorded = false;
+String lastLoggedHttpRequest;
+uint32_t lastLoggedHttpRequestAtMs = 0;
 File uploadFile;
 String uploadError;
 String uploadTargetPath;
@@ -462,6 +469,7 @@ bool sendMarlinControlCommand(const String &cmd, String &response);
 void sendJsonError(int status, const String &message);
 bool enqueueTelemetry(TelemetryChannel channel, const String &data);
 String bytesToHex(const uint8_t *bytes, size_t length);
+void logSystemEvent(const String &message);
 
 String marlinMessageLevel(String text) {
   text.toLowerCase();
@@ -1883,6 +1891,63 @@ void processTelemetrySocket() {
   telemetryLastBroadcastMs = now;
 }
 
+void rotateSystemLogIfNeeded() {
+  if (!sdMounted || !SD_MMC.exists(kSdSystemLogPath)) return;
+  File current = SD_MMC.open(kSdSystemLogPath, FILE_READ);
+  if (!current) return;
+  const size_t size = current.size();
+  current.close();
+  if (size < kMaxSystemLogBytes) return;
+
+  SD_MMC.remove(kSdSystemLogPreviousPath);
+  SD_MMC.rename(kSdSystemLogPath, kSdSystemLogPreviousPath);
+}
+
+void logSystemEvent(const String &message) {
+  // UART0 is reserved for Marlin, so boot/network diagnostics are persisted to SD instead.
+  if (!sdMounted) return;
+  rotateSystemLogIfNeeded();
+  File logFile = SD_MMC.open(kSdSystemLogPath, FILE_APPEND);
+  if (!logFile) return;
+  logFile.print(millis());
+  logFile.print(" ");
+  logFile.print(bootSessionId);
+  logFile.print(" ");
+  logFile.println(message);
+  logFile.close();
+}
+
+const char *httpMethodName(HTTPMethod method) {
+  switch (method) {
+  case HTTP_GET: return "GET";
+  case HTTP_HEAD: return "HEAD";
+  case HTTP_POST: return "POST";
+  case HTTP_PUT: return "PUT";
+  case HTTP_PATCH: return "PATCH";
+  case HTTP_DELETE: return "DELETE";
+  case HTTP_OPTIONS: return "OPTIONS";
+  default: return "OTHER";
+  }
+}
+
+void logHttpRequest() {
+  const String signature = String(httpMethodName(server.method())) + " " + server.uri();
+  const uint32_t now = millis();
+  if (signature == lastLoggedHttpRequest && now - lastLoggedHttpRequestAtMs < kRepeatedHttpLogIntervalMs) {
+    return;
+  }
+  lastLoggedHttpRequest = signature;
+  lastLoggedHttpRequestAtMs = now;
+  logSystemEvent("HTTP " + signature + " from=" + server.client().remoteIP().toString());
+}
+
+void httpRoute(const char *uri, HTTPMethod method, WebServer::THandlerFunction handler) {
+  server.on(uri, method, [handler]() {
+    logHttpRequest();
+    handler();
+  });
+}
+
 bool initializeSdCard() {
   if (!sdMounted) {
     sdMounted = SD_MMC.begin("/sdcard", true);
@@ -1894,6 +1959,12 @@ bool initializeSdCard() {
 
   for (const char *root : kSdRoots) {
     SD_MMC.mkdir(root);
+  }
+
+  if (!systemLogMountRecorded) {
+    systemLogMountRecorded = true;
+    logSystemEvent("SD mounted type=" + sdCardTypeName() + " totalBytes=" + String(SD_MMC.totalBytes()) +
+                   " usedBytes=" + String(SD_MMC.usedBytes()));
   }
 
   return true;
@@ -4697,7 +4768,7 @@ void handleOperatorOtaUnlock() {
 }
 
 void operatorRoute(const char *uri, HTTPMethod method, void (*handler)()) {
-  server.on(uri, method, [handler]() {
+  httpRoute(uri, method, [handler]() {
     if (requireOperatorControl()) handler();
   });
 }
@@ -7066,6 +7137,7 @@ void handleUpdateUpload() {
 }
 
 void handleNotFound() {
+  logHttpRequest();
   if (server.method() == HTTP_GET && serveSdWwwFile(server.uri())) {
     return;
   }
@@ -7116,9 +7188,12 @@ void startWifiAp(wifi_mode_t mode = WIFI_AP) {
   WiFi.softAPsetHostname(deviceIdentity.hostname.c_str());
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1),
                     IPAddress(255, 255, 255, 0));
-  WiFi.softAP(kSetupApSsid, kSetupApPassword);
+  const bool started = WiFi.softAP(kSetupApSsid, kSetupApPassword);
   activeWifiMode = mode == WIFI_AP_STA ? "ap+sta" : "ap";
   activeWifiSsid = kSetupApSsid;
+  logSystemEvent("WiFi AP started=" + String(started ? "true" : "false") + " mode=" + activeWifiMode +
+                 " ssid=" + activeWifiSsid + " ip=" + WiFi.softAPIP().toString() +
+                 " stations=" + String(WiFi.softAPgetStationNum()));
 }
 
 bool tryWifiSta(const String &ssid, const String &pass) {
@@ -7130,6 +7205,7 @@ bool tryWifiSta(const String &ssid, const String &pass) {
     if (WiFi.status() == WL_CONNECTED) {
       activeWifiMode = "ap+sta";
       activeWifiSsid = ssid;
+      logSystemEvent("WiFi STA connected ssid=" + ssid + " ip=" + WiFi.localIP().toString());
       return true;
     }
     delay(250);
@@ -7138,6 +7214,7 @@ bool tryWifiSta(const String &ssid, const String &pass) {
   WiFi.disconnect(true);
   activeWifiMode = "ap";
   activeWifiSsid = kSetupApSsid;
+  logSystemEvent("WiFi STA timeout ssid=" + ssid + "; continuing with AP");
   return false;
 }
 
@@ -7157,60 +7234,65 @@ void startWifi() {
 
 void startMdns() {
   deviceIdentity.mdnsEnabled = MDNS.begin(deviceIdentity.hostname.c_str());
-  if (!deviceIdentity.mdnsEnabled) return;
+  if (!deviceIdentity.mdnsEnabled) {
+    logSystemEvent("mDNS start failed hostname=" + deviceIdentity.hostname);
+    return;
+  }
 
   MDNS.addService("http", "tcp", 80);
   MDNS.addService("esp32cnc", "tcp", 80);
   MDNS.addServiceTxt("http", "tcp", "name", deviceIdentity.friendlyName);
   MDNS.addServiceTxt("esp32cnc", "tcp", "id", deviceIdentity.deviceId);
   MDNS.addServiceTxt("esp32cnc", "tcp", "name", deviceIdentity.friendlyName);
+  logSystemEvent("mDNS started hostname=" + deviceIdentity.hostname + ".local");
 }
 
 void startHttpServer() {
+  logSystemEvent("HTTP setup starting port=80");
   const char *collectedHeaders[] = {"Cookie"};
   server.collectHeaders(collectedHeaders, 1);
-  server.on("/", HTTP_GET, handleIndex);
-  server.on("/index.html", HTTP_GET, handleIndex);
-  server.on("/files", HTTP_GET, handleFilesPage);
-  server.on("/app.js", HTTP_GET, handleAppJs);
-  server.on("/files.js", HTTP_GET, handleFilesJs);
-  server.on("/style.css", HTTP_GET, handleStyleCss);
-  server.on("/api/operator/status", HTTP_GET, handleOperatorStatus);
-  server.on("/api/operator/claim", HTTP_POST, handleOperatorClaim);
-  server.on("/api/operator/heartbeat", HTTP_POST, handleOperatorHeartbeat);
-  server.on("/api/operator/release", HTTP_POST, handleOperatorRelease);
-  server.on("/api/operator/pin", HTTP_PUT, handleOperatorPinUpdate);
-  server.on("/api/operator/ota-unlock", HTTP_POST, handleOperatorOtaUnlock);
-  server.on("/api/health", HTTP_GET, handleHealth);
-  server.on("/api/tool-change/settings", HTTP_GET, handleToolChangeSettingsGet);
+  httpRoute("/", HTTP_GET, handleIndex);
+  httpRoute("/index.html", HTTP_GET, handleIndex);
+  httpRoute("/files", HTTP_GET, handleFilesPage);
+  httpRoute("/app.js", HTTP_GET, handleAppJs);
+  httpRoute("/files.js", HTTP_GET, handleFilesJs);
+  httpRoute("/style.css", HTTP_GET, handleStyleCss);
+  httpRoute("/api/operator/status", HTTP_GET, handleOperatorStatus);
+  httpRoute("/api/operator/claim", HTTP_POST, handleOperatorClaim);
+  httpRoute("/api/operator/heartbeat", HTTP_POST, handleOperatorHeartbeat);
+  httpRoute("/api/operator/release", HTTP_POST, handleOperatorRelease);
+  httpRoute("/api/operator/pin", HTTP_PUT, handleOperatorPinUpdate);
+  httpRoute("/api/operator/ota-unlock", HTTP_POST, handleOperatorOtaUnlock);
+  httpRoute("/api/health", HTTP_GET, handleHealth);
+  httpRoute("/api/tool-change/settings", HTTP_GET, handleToolChangeSettingsGet);
   operatorRoute("/api/tool-change/settings", HTTP_PUT, handleToolChangeSettingsPut);
-  server.on("/api/device", HTTP_GET, handleDeviceInfo);
+  httpRoute("/api/device", HTTP_GET, handleDeviceInfo);
   operatorRoute("/api/device", HTTP_PATCH, handleDeviceUpdate);
   operatorRoute("/api/system/restart", HTTP_POST, handleSystemRestart);
-  server.on("/api/machine/info", HTTP_GET, handleMachineInfo);
+  httpRoute("/api/machine/info", HTTP_GET, handleMachineInfo);
   operatorRoute("/api/machine/refresh", HTTP_POST, handleMachineRefresh);
   operatorRoute("/api/machine/apply", HTTP_POST, handleMachineApply);
   operatorRoute("/api/machine/save", HTTP_POST, handleMachineSave);
-  server.on("/api/machine/frame", HTTP_GET, handleMachineFrame);
+  httpRoute("/api/machine/frame", HTTP_GET, handleMachineFrame);
   operatorRoute("/api/machine/home", HTTP_POST, handleMachineHome);
   operatorRoute("/api/machine/manual-frame", HTTP_POST, handleManualMachineFrame);
-  server.on("/api/marlin/log", HTTP_GET, handleMarlinLog);
+  httpRoute("/api/marlin/log", HTTP_GET, handleMarlinLog);
   operatorRoute("/api/cmd", HTTP_POST, handleCommand);
-  server.on("/api/ui/status", HTTP_GET, handleUiStatus);
-  server.on("/api/sd/status", HTTP_GET, handleSdStatus);
-  server.on("/api/files", HTTP_GET, handleFilesList);
-  server.on("/api/download", HTTP_GET, handleDownload);
+  httpRoute("/api/ui/status", HTTP_GET, handleUiStatus);
+  httpRoute("/api/sd/status", HTTP_GET, handleSdStatus);
+  httpRoute("/api/files", HTTP_GET, handleFilesList);
+  httpRoute("/api/download", HTTP_GET, handleDownload);
   server.on("/api/upload", HTTP_POST,
-            []() { if (requireOperatorControl()) handleUploadComplete(); },
+            []() { logHttpRequest(); if (requireOperatorControl()) handleUploadComplete(); },
             []() { if (operatorRequestAuthorized()) handleUploadData(); });
   operatorRoute("/api/delete", HTTP_POST, handleDelete);
   operatorRoute("/api/mkdir", HTTP_POST, handleMkdir);
   operatorRoute("/api/rename", HTTP_POST, handleRename);
   operatorRoute("/api/job/start", HTTP_POST, handleJobStart);
-  server.on("/api/job/status", HTTP_GET, handleJobStatus);
+  httpRoute("/api/job/status", HTTP_GET, handleJobStatus);
   operatorRoute("/api/test-motion/start", HTTP_POST, handleTestMotionStart);
   operatorRoute("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
-  server.on("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet);
+  httpRoute("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet);
   operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
   operatorRoute("/api/job/pause", HTTP_POST, handleJobPause);
   operatorRoute("/api/job/resume", HTTP_POST, handleJobResume);
@@ -7221,21 +7303,23 @@ void startHttpServer() {
   operatorRoute("/api/jog/update", HTTP_POST, handleJogUpdate);
   operatorRoute("/api/jog/stop", HTTP_POST, handleJogStop);
   operatorRoute("/api/jog/restore-z", HTTP_POST, handleJogRestoreZ);
-  server.on("/api/jog/status", HTTP_GET, handleJogStatus);
+  httpRoute("/api/jog/status", HTTP_GET, handleJogStatus);
   operatorRoute("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
   operatorRoute("/api/work-zero/set", HTTP_POST, handleSetWorkZero);
   operatorRoute("/api/work-zero/set-z", HTTP_POST, handleSetZZero);
   operatorRoute("/api/work-zero/touch-plate", HTTP_POST, handleTouchPlateZZero);
   operatorRoute("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero);
-  server.on("/update", HTTP_GET, handleUpdatePage);
+  httpRoute("/update", HTTP_GET, handleUpdatePage);
   server.on("/api/update", HTTP_POST,
-            []() { if (requireOperatorControl()) handleUpdateComplete(); },
+            []() { logHttpRequest(); if (requireOperatorControl()) handleUpdateComplete(); },
             []() { if (operatorRequestAuthorized()) handleUpdateUpload(); });
-  server.on("/wifi", HTTP_GET, handleWifiPage);
+  httpRoute("/wifi", HTTP_GET, handleWifiPage);
   operatorRoute("/api/wifi/save", HTTP_POST, handleWifiSave);
   operatorRoute("/api/wifi/forget", HTTP_POST, handleWifiForget);
   server.onNotFound(handleNotFound);
   server.begin();
+  logSystemEvent("HTTP server started port=80 apIp=" + WiFi.softAPIP().toString() +
+                 " staIp=" + WiFi.localIP().toString());
   telemetryQueue = xQueueCreate(12, sizeof(TelemetryPacket *));
   telemetrySocket.begin();
   telemetrySocket.onEvent(handleTelemetrySocket);
@@ -7246,6 +7330,9 @@ void startHttpServer() {
     xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 8192, nullptr, 1,
                             &telemetryTaskHandle, 0);
   }
+  logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort) +
+                 " queue=" + String(telemetryQueue != nullptr ? "ready" : "failed") +
+                 " task=" + String(telemetryTaskHandle != nullptr ? "ready" : "failed"));
 }
 } // namespace
 
@@ -7265,19 +7352,39 @@ void setup() {
     sdFirmwareUpdated = performRootFirmwareUpdate();
   }
   if (sdFirmwareUpdated) {
+    logSystemEvent("Firmware update completed; rebooting");
     delay(1000);
     ESP.restart();
   }
 
+  logSystemEvent("BOOT firmware=" + String(firmwareVersion) + " build=" + String(buildDate) + " " +
+                 String(buildTime) + " reset=" + resetReasonName(esp_reset_reason()));
+  logSystemEvent("Persistent job checkpoint load starting");
   loadPersistentJobCheckpointAtBoot();
+  logSystemEvent("Persistent job checkpoint load complete review=" +
+                 String(recoveryCheckpointRequiresReview ? "true" : "false"));
 
-  SPIFFS.begin(true);
+  logSystemEvent("SPIFFS mount starting");
+  const bool spiffsMounted = SPIFFS.begin(true);
+  logSystemEvent("SPIFFS mount complete mounted=" + String(spiffsMounted ? "true" : "false"));
+  logSystemEvent("Device identity load starting");
   loadDeviceIdentity();
+  logSystemEvent("Device identity load complete hostname=" + deviceIdentity.hostname +
+                 " source=" + deviceIdentity.source);
   loadOperatorSettings();
+  logSystemEvent("Operator settings loaded configured=" +
+                 String(operatorPinHash.length() > 0 ? "true" : "false"));
+  logSystemEvent("WiFi setup starting");
   startWifi();
+  logSystemEvent("WiFi setup complete mode=" + activeWifiMode + " ssid=" + activeWifiSsid +
+                 " apIp=" + WiFi.softAPIP().toString() + " staIp=" + WiFi.localIP().toString());
+  logSystemEvent("mDNS setup starting");
   startMdns();
+  logSystemEvent("HTTP setup dispatching");
   startHttpServer();
+  logSystemEvent("Bluetooth setup starting");
   startBluetoothAdvertisement();
+  logSystemEvent("BOOT complete bluetooth=" + String(deviceIdentity.bluetoothStarted ? "started" : "stopped"));
 }
 
 void loop() {
@@ -7291,6 +7398,7 @@ void loop() {
   processIdleMarlinAutoreport();
 
   if (rebootAtMs > 0 && millis() >= rebootAtMs) {
+    logSystemEvent("Scheduled reboot executing");
     ESP.restart();
   }
 }

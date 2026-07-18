@@ -1,5 +1,22 @@
 # Handoff
 
+## 2026-07-18 - SD system diagnostics handoff
+
+- The new diagnostic source is `/logs/system.log`; the previous 128 KiB generation is retained as
+  `/logs/system.previous.log`. Each line starts with `millis bootSessionId` so separate starts can be
+  distinguished without a real-time clock.
+- A normal boot should progress through `SD mounted`, `BOOT firmware`, checkpoint load, SPIFFS,
+  identity/operator settings, WiFi, mDNS, `HTTP server started`, telemetry, Bluetooth, and
+  `BOOT complete`. The last line identifies the setup boundary where a failed boot stopped.
+- Every HTTP route logs method, URI, and client IP. A missing `GET /api/health` after HTTP startup
+  means the phone request did not reach the ESP. No Cookie, PIN, password, or request body is logged.
+- SD logging cannot record an SD mount failure because the destination is unavailable. If no new
+  boot-session line appears at all, check card seating, power, FAT32 integrity, and the SD hardware.
+- Install the new firmware, reproduce once, then inspect the log using the steps in
+  `docs/manual-tests.md`.
+- Full automated verification passes 42 files / 342 tests. The ESP32-CAM build uses 19.6% RAM
+  (64,252 bytes) and 71.6% flash (1,406,837 bytes).
+
 ## 2026-07-18 - Remembered controller handoff
 
 - `cnc_operator` remains an HttpOnly, SameSite=Strict bearer cookie and now has a one-year Max-Age.

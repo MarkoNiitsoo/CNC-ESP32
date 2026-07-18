@@ -8,6 +8,26 @@ UI changes must have documented simulated or manual checks before real cutting.
 Software stop is not a physical emergency stop. Start real machine checks with router/spindle off,
 tool above material, low feed override, and a physical stop/power cut within reach.
 
+## SD System Diagnostics
+
+1. Install the diagnostic firmware through root `/firmware.bin`, allow the ESP to rename it to
+   `/firmware.done.bin`, and wait for the automatic reboot.
+2. After attempting to open `http://192.168.4.1/api/health`, power down and inspect
+   `/logs/system.log` on a computer.
+3. Confirm one boot session contains `SD mounted`, `BOOT firmware`, checkpoint and SPIFFS
+   start/complete pairs, WiFi/AP details, mDNS result, `HTTP server started`, telemetry result, and
+   `BOOT complete`.
+4. If setup reaches HTTP, confirm the log contains `HTTP GET /api/health from=192.168.4...`.
+   Missing HTTP request lines means the request never reached the ESP; a request line proves the
+   server accepted the connection.
+5. Repeated identical polling requests should appear no more than once per five seconds. Confirm
+   the log never contains Cookie headers, operator PINs, WiFi passwords, or request bodies.
+6. Grow or simulate `/logs/system.log` past 128 KiB and confirm it rotates once to
+   `/logs/system.previous.log` while new events continue in `/logs/system.log`.
+
+If the card itself cannot mount, no SD log can be written. In that case the absence of a new boot
+session in `system.log`, together with a powered ESP, is the diagnostic signal.
+
 ## Remembered Controller And Passive Viewer
 
 1. Claim control from a phone, then leave the CNC WiFi network for longer than 45 seconds.

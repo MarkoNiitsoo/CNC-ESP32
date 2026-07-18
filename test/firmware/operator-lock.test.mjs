@@ -26,19 +26,19 @@ describe('single operator control lease', () => {
   });
 
   it('guards every state-changing machine route while leaving status reads public', () => {
-    expect(firmware).toContain('server.on("/api/operator/status", HTTP_GET, handleOperatorStatus)');
-    expect(firmware).toContain('server.on("/api/operator/claim", HTTP_POST, handleOperatorClaim)');
+    expect(firmware).toContain('httpRoute("/api/operator/status", HTTP_GET, handleOperatorStatus)');
+    expect(firmware).toContain('httpRoute("/api/operator/claim", HTTP_POST, handleOperatorClaim)');
     for (const route of [
       '/api/cmd', '/api/job/start', '/api/job/pause', '/api/job/resume', '/api/job/stop',
       '/api/jog/start', '/api/jog/update', '/api/jog/stop', '/api/machine/home',
       '/api/work-zero/set', '/api/work-zero/restore', '/api/delete', '/api/rename',
     ]) expect(firmware).toContain(`operatorRoute("${route}"`);
-    expect(firmware).toContain('server.on("/api/job/status", HTTP_GET, handleJobStatus)');
-    expect(firmware).toContain('server.on("/api/machine/frame", HTTP_GET, handleMachineFrame)');
+    expect(firmware).toContain('httpRoute("/api/job/status", HTTP_GET, handleJobStatus)');
+    expect(firmware).toContain('httpRoute("/api/machine/frame", HTTP_GET, handleMachineFrame)');
   });
 
   it('requires an idle controller and a second PIN confirmation for OTA', () => {
-    expect(firmware).toContain('server.on("/api/operator/ota-unlock", HTTP_POST, handleOperatorOtaUnlock)');
+    expect(firmware).toContain('httpRoute("/api/operator/ota-unlock", HTTP_POST, handleOperatorOtaUnlock)');
     expect(firmware).toContain('kOperatorOtaUnlockMs = 120000');
     expect(firmware).toMatch(/handleOperatorOtaUnlock[\s\S]*jobIsActive\(\)[\s\S]*verifyOperatorPin/);
     expect(firmware).toMatch(/UPLOAD_FILE_START[\s\S]*operatorOtaUnlocked\(\)/);

@@ -41,7 +41,7 @@ describe('local device discovery', () => {
     expect(source).toContain('MDNS.begin(deviceIdentity.hostname.c_str())');
     expect(source).toContain('MDNS.addService("http", "tcp", 80)');
     expect(source).toContain('MDNS.addService("esp32cnc", "tcp", 80)');
-    expect(source).toContain('server.on("/api/device", HTTP_GET, handleDeviceInfo)');
+    expect(source).toContain('httpRoute("/api/device", HTTP_GET, handleDeviceInfo)');
     const response = source.slice(source.indexOf('String deviceInfoJson()'), source.indexOf('void handleDeviceInfo()'));
     expect(response).toContain('\\"deviceId\\"');
     expect(response).toContain('\\"localUrl\\"');

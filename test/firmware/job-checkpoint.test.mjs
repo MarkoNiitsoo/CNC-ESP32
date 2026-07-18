@@ -55,7 +55,7 @@ describe('persistent active-job checkpoint', () => {
   });
 
   it('requires explicit review through dedicated recovery endpoints before new motion', () => {
-    expect(firmware).toContain('server.on("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet)');
+    expect(firmware).toContain('httpRoute("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet)');
     expect(firmware).toContain('operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge)');
     expect(firmware).toContain('confirmed true is required after importing or deliberately dismissing recovery evidence');
     expect(firmware.match(/if \(recoveryCheckpointRequiresReview\)/g).length).toBeGreaterThanOrEqual(3);

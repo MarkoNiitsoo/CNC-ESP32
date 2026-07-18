@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-07-18 - Persistent SD boot, network, and HTTP diagnostics
+
+- Added `/logs/system.log` with boot-session and millisecond prefixes. It records the reset reason,
+  firmware build, successful SD mount details, checkpoint and SPIFFS boundaries, device identity,
+  operator configuration state, WiFi/AP/STA addresses, mDNS result, HTTP/telemetry startup, BLE
+  completion, and scheduled reboot execution.
+- Routed all registered HTTP handlers and SD-served fallback paths through request logging. Entries
+  include only method, URI, and remote IP; secrets, cookies, bodies, PINs, and passwords are never
+  recorded. Immediate identical polling requests are coalesced for five seconds.
+- Bounded the active log to 128 KiB with one `/logs/system.previous.log` rotation to avoid unlimited
+  growth. UART0 remains exclusively assigned to Marlin.
+- Added focused coverage and updated route-contract tests to recognize the shared logged wrapper.
+- Verification: full suite passes 42 files / 342 tests; PlatformIO ESP32-CAM build succeeds at
+  19.6% RAM and 71.6% flash.
+
 ## 2026-07-18 - Remembered controller and lazy viewer identification
 
 - Made the HttpOnly controller cookie persistent for one year and retained the last controller
