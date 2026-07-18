@@ -8,6 +8,18 @@ UI changes must have documented simulated or manual checks before real cutting.
 Software stop is not a physical emergency stop. Start real machine checks with router/spindle off,
 tool above material, low feed override, and a physical stop/power cut within reach.
 
+## Actionable Cut Blocker and Planner-Carry Regression
+
+1. Load an existing generated job whose saved `activeRun` lacks `sizeBytes`, complete Home, Zero,
+   and Bounds Check, then review Start Cut.
+2. Confirm the job JSON is repaired with the measured active-run size and Cut is not rejected with
+   `requested file does not match job activeRun identity`.
+3. If Start is deliberately rejected, confirm the Run panel opens automatically and shows the exact
+   error, plain-language next step, and `Show Required Steps` without opening Technical log.
+4. Run an Aircut containing a long move followed by a short move. Confirm the second command's job
+   log entry has non-zero `plannerWaitMs`, its hard timeout includes that allowance, and the stream
+   completes. Confirm a later acknowledged `M400` clears the allowance.
+
 ## Guided Recovery Blocker and Non-Recoverable Aircut
 
 1. Start from a pending interrupted production checkpoint and open the affected job.

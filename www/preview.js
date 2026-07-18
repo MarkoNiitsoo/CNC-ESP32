@@ -327,6 +327,11 @@ function renderWorkbenchStatus() {
     workbenchReadinessEl.textContent = status.readiness.label;
     workbenchReadinessEl.className = `workbench-chip status-trigger ${workbenchChipClass(status.readiness.level)}`;
     workbenchReadinessEl.dataset.icon = readinessIcon(status.readiness.label);
+    const blocker = status.blockingReasons?.[0]?.message || status.blockingReasons?.[0] || '';
+    workbenchReadinessEl.title = blocker ? `Blocked: ${blocker}` : status.readiness.label;
+    workbenchReadinessEl.setAttribute('aria-label', blocker
+      ? `Blocked: ${blocker}. Open required steps.`
+      : status.readiness.label);
     window.CncSkin?.applyIcons(workbenchReadinessEl);
   }
   if (canvasJobNameEl) canvasJobNameEl.textContent = basename(filePath) || 'No job';
@@ -1354,6 +1359,36 @@ function renderToolChangeOperator() {
   }
 }
 
+function runFailureGuidance() {
+  const message = String(jobRunStatus?.lastError || latestRunEntry()?.reason || 'The operation did not complete.');
+  if (jobRunStatus?.errorCode === 'COMMUNICATION_LOST' || /acknowledgement timed out|communication/i.test(message)) {
+    return {
+      title: 'Aircut/cutting stopped because Marlin stopped answering',
+      detail: message,
+      next: 'Output-off M5 was sent. Check the controller connection, then Home All and repeat Bounds/Aircut before cutting.',
+    };
+  }
+  if (/activeRun identity|active run authorization|requested file does not match/i.test(message)) {
+    return {
+      title: 'Cut did not start because the saved run-file identity was stale',
+      detail: message,
+      next: 'No cutting motion started. The run-file size is repaired automatically; review the required steps and then hold Start Cut again.',
+    };
+  }
+  return {
+    title: 'The operation did not complete',
+    detail: message,
+    next: 'Open Required Steps below. The machine will not start until the displayed requirement is resolved.',
+  };
+}
+
+function openRequiredSteps() {
+  showPreviewTab('preflight');
+  workbenchController?.openForTab('preflight');
+  history.replaceState(null, '', '#preflight');
+  readinessSummaryEl?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+}
+
 function renderRunPanel() {
   try {
     if (!runPanel || !runSummaryEl || !startJobButton || !pauseJobButton || !resumeJobButton || !stopJobButton) return;
@@ -1389,7 +1424,17 @@ function renderRunPanel() {
       const bounds = generatedBounds() || parsed?.bounds;
       const width = bounds ? Number(bounds.xMax) - Number(bounds.xMin) : null;
       const height = bounds ? Number(bounds.yMax) - Number(bounds.yMin) : null;
-      if (active || state === 'COMPLETED' || state === 'ERROR' || state === 'STOPPED') {
+      if (state === 'ERROR') {
+        const guidance = runFailureGuidance();
+        runOperatorSummaryEl.innerHTML = `
+          <p class="eyebrow">ACTION REQUIRED</p>
+          <strong>${html(guidance.title)}</strong>
+          <p class="operator-failure-detail">${html(guidance.detail)}</p>
+          <p>${html(guidance.next)}</p>
+          <button type="button" data-run-resolution="steps" class="primary-action">Show Required Steps</button>
+        `;
+        runOperatorSummaryEl.querySelector('[data-run-resolution="steps"]')?.addEventListener('click', openRequiredSteps);
+      } else if (active || state === 'COMPLETED' || state === 'STOPPED') {
         runOperatorSummaryEl.innerHTML = `
           <div class="operator-run-state"><strong>${html(visibleState)}</strong><span>${Number(jobRunStatus?.progressPercent || 0).toFixed(1)}%</span></div>
           <p>${html(basename(currentRunPath()) || 'Active job')} · Feed ${feedStatusPercent()}%</p>
@@ -1662,10 +1707,13 @@ async function reviewAndStartJobRun() {
   if (blockers.length) {
     appendRunLog(`Start blocked: ${blockers.join(' ')}`);
     renderRunPanel();
+    openRequiredSteps();
     return;
   }
   if (!runChecklistComplete()) {
     appendRunLog('Start blocked: complete the three final checks first.');
+    showPreviewTab('run');
+    workbenchController?.openForTab('run');
     return;
   }
   await startJobRun();
@@ -1697,13 +1745,15 @@ async function startJobRun() {
     return;
   }
   const zeroReference = activeWorkZeroReference();
+  const activeRunSizeBytes = new TextEncoder().encode(activeRunText).length;
+  job.activeRun = { ...(job.activeRun || {}), sizeBytes: activeRunSizeBytes };
   job.startMode = workflow.frame.mode === 'manual-unhomed' ? 'use_manual_work_frame' : 'use_active_work_zero';
   job.startAuthorization = {
     state: 'authorized',
     activeRunMode: runMode,
     activeRunPath: runPath,
     activeRunFingerprint: gcodeFingerprint,
-    activeRunSizeBytes: Number(job.activeRun?.sizeBytes) || new TextEncoder().encode(activeRunText).length,
+    activeRunSizeBytes,
     workZeroId: zeroReference.id,
     homingEpoch: Number(zeroReference.homingEpoch) || 0,
     homingSessionId: zeroReference.homingSessionId || '',
@@ -1733,7 +1783,7 @@ async function startJobRun() {
       travelFeedMmMin: automaticTravelFeed(),
       activeRunMode: runMode,
       activeRunFingerprint: gcodeFingerprint,
-      activeRunSizeBytes: Number(job.activeRun?.sizeBytes) || new TextEncoder().encode(activeRunText).length,
+      activeRunSizeBytes,
       sourceFingerprint: job.activeRun?.sourceFingerprint || '',
       generatedFingerprint: job.activeRun?.generatedFingerprint || '',
       transformFingerprint: job.activeRun?.transformFingerprint || '',
@@ -1746,8 +1796,19 @@ async function startJobRun() {
     appendRunLog(`Started ${data.gcodePath || runPath} with ${job.startMode}.`);
   } catch (err) {
     history.finishLatestRun(job, 'error', err.message);
+    jobRunStatus = {
+      ...(jobRunStatus || {}),
+      state: 'ERROR',
+      errorCode: 'START_REJECTED',
+      lastError: err.message,
+      gcodePath: runPath,
+    };
     await saveJobQuietly().catch(() => {});
     renderHistoryPanels();
+    setJobResult(`Cut did not start: ${err.message}`, true);
+    renderRunPanel();
+    showPreviewTab('run');
+    workbenchController?.openForTab('run');
     appendRunLog(`Run ${run.id} recorded as error.`);
     throw err;
   }

@@ -94,8 +94,8 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('kMotionAckOverheadMs = 5000');
     expect(source).toContain('kMarlinUnknownMotionHardAckTimeoutMs = 180000');
     expect(source).toContain('kMarlinMaxMotionHardAckTimeoutMs = 30 * 60 * 1000');
-    expect(source).toContain('marlinHardAckTimeoutForCommand(line, timing)');
-    expect(source).toContain('marlinHardAckTimeoutForCommand(cmd, timing, jobStatus.toolChangePending)');
+    expect(source).toMatch(/marlinHardAckTimeoutForCommand\([\s\S]*line, timing, false, jobCommandPlannerWaitMs\)/);
+    expect(source).toMatch(/marlinHardAckTimeoutForCommand\([\s\S]*cmd, timing, jobStatus\.toolChangePending, priorityCommandPlannerWaitMs\)/);
     expect(source).toContain('estimatedCommandDurationMs');
 
     const start = { x: 257.913, y: 201.233 };
@@ -106,6 +106,15 @@ describe('Marlin transport safety', () => {
     const hardTimeoutMs = Math.max(10000, arcDurationMs * 3 + 5000);
     expect(arcDurationMs).toBeGreaterThan(6000);
     expect(hardTimeoutMs).toBeGreaterThan(24000);
+  });
+
+  it('carries planner wait from the acknowledged motion into the next ACK deadline', () => {
+    expect(source).toContain('marlinPlannerWaitAllowanceMs');
+    expect(source).toContain('noteAcknowledgedPlannerTiming');
+    expect(source).toMatch(/plannerWaitAllowanceMs[\s\S]*estimate\.durationMs[\s\S]*kMotionAckOverheadMs/);
+    expect(source).toContain('plannerWaitAllowanceMs');
+    expect(source).toContain('plannerWaitMs=');
+    expect(source).toMatch(/commandHasToken\(upper, "M400"\)[\s\S]*marlinPlannerWaitAllowanceMs = 0/);
   });
 
   it('reports the last confirmed stream boundary and freezes communication-loss evidence', () => {

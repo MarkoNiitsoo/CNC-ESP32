@@ -421,6 +421,7 @@ uint32_t jobCommandLivenessAtMs = 0;
 uint32_t jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
 uint32_t jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
 uint32_t jobCommandEstimatedDurationMs = 0;
+uint32_t jobCommandPlannerWaitMs = 0;
 JogStatus jogStatus;
 constexpr uint8_t kMaxPriorityCommands = 12;
 String priorityCommands[kMaxPriorityCommands];
@@ -432,6 +433,7 @@ uint32_t priorityCommandLivenessAtMs = 0;
 uint32_t priorityCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
 uint32_t priorityCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
 uint32_t priorityCommandEstimatedDurationMs = 0;
+uint32_t priorityCommandPlannerWaitMs = 0;
 MarlinLogEntry marlinLog[kMarlinLogSize];
 size_t marlinLogNext = 0;
 size_t marlinLogCount = 0;
@@ -458,6 +460,7 @@ uint8_t marlinAutoreportSeconds = 0;
 String marlinAsyncLine;
 String streamMotionMode = "G0";
 MotionTimingState motionTimingState;
+uint32_t marlinPlannerWaitAllowanceMs = 0;
 PositionTelemetry marlinPosition;
 MachineFrameState machineFrame;
 String bootSessionId;
@@ -1612,12 +1615,16 @@ String jobStatusJson() {
   const uint32_t activeEstimatedDurationMs = jobStatus.priorityCommandInProgress
                                                  ? priorityCommandEstimatedDurationMs
                                                  : (jobWaitingForOk ? jobCommandEstimatedDurationMs : 0);
+  const uint32_t activePlannerWaitMs = jobStatus.priorityCommandInProgress
+                                           ? priorityCommandPlannerWaitMs
+                                           : (jobWaitingForOk ? jobCommandPlannerWaitMs : 0);
   json += "\",\"ackWatchdog\":{\"waiting\":";
   json += waitingForMarlinAck ? "true" : "false";
   json += ",\"timeoutMs\":" + String(activeAckTimeoutMs);
   json += ",\"inactivityTimeoutMs\":" + String(activeAckTimeoutMs);
   json += ",\"hardTimeoutMs\":" + String(activeAckHardTimeoutMs);
   json += ",\"estimatedCommandDurationMs\":" + String(activeEstimatedDurationMs);
+  json += ",\"plannerWaitAllowanceMs\":" + String(activePlannerWaitMs);
   json += ",\"elapsedMs\":" + String(activeAckStartedAtMs > 0 ? millis() - activeAckStartedAtMs : 0);
   json += "}";
   json += ",\"communicationLoss\":";
@@ -2574,6 +2581,7 @@ uint32_t marlinAckTimeoutForCommand(const String &command, bool toolChangeSequen
 
 void resetMotionTimingState() {
   motionTimingState = MotionTimingState();
+  marlinPlannerWaitAllowanceMs = 0;
   if (marlinPosition.valid) {
     motionTimingState.xValid = true;
     motionTimingState.yValid = true;
@@ -2760,17 +2768,32 @@ MotionTimingEstimate estimateAndApplyMotionTiming(const String &command) {
 }
 
 uint32_t marlinHardAckTimeoutForCommand(const String &command, const MotionTimingEstimate &estimate,
-                                        bool toolChangeSequence = false) {
+                                        bool toolChangeSequence = false,
+                                        uint32_t plannerWaitAllowanceMs = 0) {
   const uint32_t specialTimeout = marlinAckTimeoutForCommand(command, toolChangeSequence);
   if (specialTimeout != kMarlinCommandAckTimeoutMs) {
     return min(kMarlinMaxMotionHardAckTimeoutMs, specialTimeout * 2U);
   }
   if (!estimate.motion) return kMarlinDefaultHardAckTimeoutMs;
   if (!estimate.durationKnown) return kMarlinUnknownMotionHardAckTimeoutMs;
-  const double calculated = static_cast<double>(estimate.durationMs) * kMotionAckDurationMultiplier +
+  const double calculated = static_cast<double>(plannerWaitAllowanceMs) +
+                            static_cast<double>(estimate.durationMs) * kMotionAckDurationMultiplier +
                             static_cast<double>(kMotionAckOverheadMs);
   return static_cast<uint32_t>(max(static_cast<double>(kMarlinDefaultHardAckTimeoutMs),
                                    min(calculated, static_cast<double>(kMarlinMaxMotionHardAckTimeoutMs))));
+}
+
+void noteAcknowledgedPlannerTiming(const String &command, uint32_t estimatedDurationMs) {
+  String upper = command;
+  upper.toUpperCase();
+  upper.trim();
+  if (commandHasToken(upper, "M400")) {
+    marlinPlannerWaitAllowanceMs = 0;
+    return;
+  }
+  if (estimatedDurationMs > 0) {
+    marlinPlannerWaitAllowanceMs = min(estimatedDurationMs, kMarlinMaxMotionHardAckTimeoutMs);
+  }
 }
 
 bool marlinAckWatchdogExpired(uint32_t startedAtMs, uint32_t livenessAtMs,
@@ -2789,6 +2812,7 @@ void clearPriorityCommands() {
   priorityCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
   priorityCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
   priorityCommandEstimatedDurationMs = 0;
+  priorityCommandPlannerWaitMs = 0;
   jobStatus.priorityCommandInProgress = false;
 }
 
@@ -2851,9 +2875,12 @@ void startNextPriorityCommand() {
   priorityCommandStartedAtMs = millis();
   priorityCommandLivenessAtMs = 0;
   priorityCommandAckTimeoutMs = marlinAckTimeoutForCommand(cmd, jobStatus.toolChangePending);
-  priorityCommandHardTimeoutMs = marlinHardAckTimeoutForCommand(cmd, timing, jobStatus.toolChangePending);
+  priorityCommandPlannerWaitMs = marlinPlannerWaitAllowanceMs;
+  priorityCommandHardTimeoutMs = marlinHardAckTimeoutForCommand(
+      cmd, timing, jobStatus.toolChangePending, priorityCommandPlannerWaitMs);
   priorityCommandEstimatedDurationMs = timing.durationKnown ? timing.durationMs : 0;
   logJobEvent("priority: " + cmd + " estimatedMs=" + String(priorityCommandEstimatedDurationMs) +
+              " plannerWaitMs=" + String(priorityCommandPlannerWaitMs) +
               " hardTimeoutMs=" + String(priorityCommandHardTimeoutMs));
 }
 
@@ -2989,6 +3016,7 @@ void processPriorityCommands() {
     jobStatus.toolChangeReturnWorkZ = marlinPosition.z;
   }
   noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer);
+  noteAcknowledgedPlannerTiming(jobStatus.lastPriorityCommand, priorityCommandEstimatedDurationMs);
   priorityCommandIndex += 1;
   jobStatus.priorityCommandInProgress = false;
   priorityResponseBuffer = "";
@@ -2996,6 +3024,7 @@ void processPriorityCommands() {
   priorityCommandLivenessAtMs = 0;
   priorityCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
   priorityCommandEstimatedDurationMs = 0;
+  priorityCommandPlannerWaitMs = 0;
 
   if (priorityCommandIndex >= priorityCommandCount) {
     finishPrioritySequence();
@@ -3978,6 +4007,7 @@ void setJobError(const String &message, bool resetFeedOverride) {
   jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
   jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
   jobCommandEstimatedDurationMs = 0;
+  jobCommandPlannerWaitMs = 0;
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
@@ -4029,6 +4059,9 @@ void setJobCommunicationLost(const String &message) {
   checkpoint += " hardTimeoutMs=" + String(jobStatus.priorityCommandInProgress
                                                  ? priorityCommandHardTimeoutMs
                                                  : jobCommandHardTimeoutMs);
+  checkpoint += " plannerWaitMs=" + String(jobStatus.priorityCommandInProgress
+                                                 ? priorityCommandPlannerWaitMs
+                                                 : jobCommandPlannerWaitMs);
   if (jobStatus.communicationLostMachinePositionValid) {
     checkpoint += " machine=" + String(jobStatus.communicationLostMachineX, 3) + "," +
                   String(jobStatus.communicationLostMachineY, 3) + "," +
@@ -4119,6 +4152,7 @@ void completeJob() {
   jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
   jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
   jobCommandEstimatedDurationMs = 0;
+  jobCommandPlannerWaitMs = 0;
   jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
   jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
   jobRunning = false;
@@ -4215,6 +4249,7 @@ void processJobRunner() {
     jobStatus.lastResponse = jobResponseBuffer;
     addMarlinLog("rx", false, jobResponseBuffer);
     updatePositionFromMarlinResponse(jobResponseBuffer);
+    noteAcknowledgedPlannerTiming(jobStatus.lastCommand, jobCommandEstimatedDurationMs);
     jobResponseBuffer = "";
     jobWaitingForOk = false;
     jobCommandStartedAtMs = 0;
@@ -4222,6 +4257,7 @@ void processJobRunner() {
     jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
     jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
     jobCommandEstimatedDurationMs = 0;
+    jobCommandPlannerWaitMs = 0;
     jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
     jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
     touchJobProgress();
@@ -4293,12 +4329,15 @@ void processJobRunner() {
   jobCommandStartedAtMs = millis();
   jobCommandLivenessAtMs = 0;
   jobCommandAckTimeoutMs = marlinAckTimeoutForCommand(line);
-  jobCommandHardTimeoutMs = marlinHardAckTimeoutForCommand(line, timing);
+  jobCommandPlannerWaitMs = marlinPlannerWaitAllowanceMs;
+  jobCommandHardTimeoutMs = marlinHardAckTimeoutForCommand(
+      line, timing, false, jobCommandPlannerWaitMs);
   jobCommandEstimatedDurationMs = timing.durationKnown ? timing.durationMs : 0;
   if (timing.motion && jobCommandHardTimeoutMs > kMarlinDefaultHardAckTimeoutMs) {
     logJobEvent("motion ACK timing command=" + line + " distanceMm=" + String(timing.distanceMm, 3) +
                 " effectiveFeed=" + String(timing.effectiveFeedMmMin, 1) +
                 " estimatedMs=" + String(jobCommandEstimatedDurationMs) +
+                " plannerWaitMs=" + String(jobCommandPlannerWaitMs) +
                 " hardTimeoutMs=" + String(jobCommandHardTimeoutMs));
   }
   touchJobProgress();

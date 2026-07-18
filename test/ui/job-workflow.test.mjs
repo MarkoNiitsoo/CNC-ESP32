@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import {
   JOB_SCHEMA_VERSION,
   createVerificationDecision,
@@ -6,6 +7,8 @@ import {
   evaluateWorkflow,
   verificationStatus,
 } from '../../www/lib/job-workflow.js';
+
+const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
 
 function job(overrides = {}) {
   return {
@@ -40,6 +43,14 @@ describe('Job JSON v3 workflow gates', () => {
     expect(evaluateWorkflow(current, homed).gate).toBe('verification');
     current.verificationDecision = createVerificationDecision(current, { type: 'aircut', safeZ: 15, decidedAt: 'now' });
     expect(evaluateWorkflow(current, homed).gate).toBe('cut');
+  });
+
+  it('shows the exact failed-operation reason and a visible route to required steps', () => {
+    expect(preview).toContain('Aircut/cutting stopped because Marlin stopped answering');
+    expect(preview).toContain('Cut did not start because the saved run-file identity was stale');
+    expect(preview).toContain('Show Required Steps');
+    expect(preview).toContain('openRequiredSteps();');
+    expect(preview).toContain('Cut did not start: ${err.message}');
   });
 
   it('accepts one current verification without stale sibling modes', () => {

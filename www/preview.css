@@ -706,6 +706,18 @@
   margin: 0;
 }
 
+.operator-start-summary .operator-failure-detail {
+  padding: 9px 10px;
+  border-left: 3px solid #ff6b6b;
+  background: rgba(124, 24, 24, 0.28);
+  color: #ffd0d0;
+  overflow-wrap: anywhere;
+}
+
+.operator-start-summary [data-run-resolution="steps"] {
+  justify-self: start;
+}
+
 .tool-change-operator {
   display: grid;
   gap: 10px;

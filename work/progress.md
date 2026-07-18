@@ -1,5 +1,21 @@
 # Progress
 
+## 2026-07-18 - Actionable BLOCKED state and planner-aware ACK carry
+
+- SD evidence separated two failures: Aircut timed out on a short arc queued behind a 13.9-second
+  move, while production Cut was rejected because the saved `activeRun` omitted `sizeBytes` and
+  therefore did not match the browser's 9529-byte execution identity.
+- ACK hard deadlines now carry the preceding acknowledged motion duration as Marlin planner wait
+  allowance into the next command. `M400` clears the allowance, and status/job logs expose
+  `plannerWaitAllowanceMs` / `plannerWaitMs` for future diagnosis.
+- Production start now writes the measured active-run byte size into `job.activeRun` before saving
+  authorization, repairing existing job JSON on the next start review instead of rejecting Cut.
+- Replaced the opaque error presentation with a visible action-required card containing the exact
+  firmware error, plain-language meaning, safe next step, and `Show Required Steps`. Rejected Cut
+  opens this card automatically; the top status also exposes the first blocker in its label text.
+- Verification: full suite passes 42 files / 347 tests. ESP32-CAM build succeeds at 19.6% RAM
+  (64,348 bytes) and 72.0% flash (1,415,797 bytes).
+
 ## 2026-07-18 - Visible recovery decisions and production-only checkpoints
 
 - Removed persistent active-job checkpoint creation from Aircut and other validated test-motion

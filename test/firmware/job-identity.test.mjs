@@ -38,7 +38,8 @@ describe('firmware-owned active run identity', () => {
     expect(matcher).toContain('file.size() != expectedSize');
     expect(matcher).toContain('mbedtls_sha256_update_ret');
     expect(matcher).toContain('hash *= 0x01000193u');
-    expect(preview).toContain('activeRunSizeBytes: Number(job.activeRun?.sizeBytes)');
+    expect(preview).toContain('job.activeRun = { ...(job.activeRun || {}), sizeBytes: activeRunSizeBytes }');
+    expect(preview).toContain('activeRunSizeBytes,');
     expect(firmware).toMatch(/validateJobExecutionAuthorization[\s\S]*beginPersistentJobCheckpoint/);
   });
 });

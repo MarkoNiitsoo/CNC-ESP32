@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-07-18 - Actionable Cut blockers and planner wait handoff
+
+- The observed Aircut failure was `COMMUNICATION_LOST` on `G2 X503 Y0 I-3 J0 F1500`. Its own
+  estimate was only 188 ms, but it followed a 13,876 ms G1. The next ACK deadline now includes the
+  previous acknowledged motion as planner wait; `M400` resets that carry.
+- The observed production rejection was `requested file does not match job activeRun identity`.
+  `/jobs/gcode_ex2.gc-15b19927.job.json` had no `activeRun.sizeBytes`, while the request and
+  authorization correctly used 9529. `startJobRun()` now persists the measured size before upload.
+- Do not reduce the UI back to a status chip plus technical log. An ERROR or rejected Cut must show
+  the exact reason, what the safety system did, and a visible route to the required corrective step.
+- Full verification passes 42 files / 347 tests. Firmware uses 19.6% RAM (64,348 bytes) and 72.0%
+  flash (1,415,797 bytes).
+
 ## 2026-07-18 - Recovery UX and test-motion checkpoint handoff
 
 - `handleTestMotionStart()` no longer calls `beginPersistentJobCheckpoint()`. Production jobs and
