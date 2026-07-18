@@ -9,12 +9,16 @@
   allowance into the next command. `M400` clears the allowance, and status/job logs expose
   `plannerWaitAllowanceMs` / `plannerWaitMs` for future diagnosis.
 - Production start now writes the measured active-run byte size into `job.activeRun` before saving
-  authorization, repairing existing job JSON on the next start review instead of rejecting Cut.
+  authorization. Matching legacy Box/Aircut decisions with a missing size are backfilled too, so a
+  completed physical check is not repeated solely because old metadata omitted the byte count.
+- Removed the firmware's obsolete hidden `arm` requirement. Current authorization is the visible
+  final checklist plus hold-to-start, bound to active run, verification, work zero, homing session,
+  generated validation, and a streamed on-SD fingerprint check.
 - Replaced the opaque error presentation with a visible action-required card containing the exact
   firmware error, plain-language meaning, safe next step, and `Show Required Steps`. Rejected Cut
   opens this card automatically; the top status also exposes the first blocker in its label text.
 - Verification: full suite passes 42 files / 347 tests. ESP32-CAM build succeeds at 19.6% RAM
-  (64,348 bytes) and 72.0% flash (1,415,797 bytes).
+  (64,348 bytes) and 72.0% flash (1,414,613 bytes).
 
 ## 2026-07-18 - Visible recovery decisions and production-only checkpoints
 

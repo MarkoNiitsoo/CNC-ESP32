@@ -7,11 +7,15 @@
   previous acknowledged motion as planner wait; `M400` resets that carry.
 - The observed production rejection was `requested file does not match job activeRun identity`.
   `/jobs/gcode_ex2.gc-15b19927.job.json` had no `activeRun.sizeBytes`, while the request and
-  authorization correctly used 9529. `startJobRun()` now persists the measured size before upload.
+  authorization correctly used 9529. `startJobRun()` now persists the measured size before upload
+  and safely backfills the matching completed verification decision.
+- Firmware no longer requires the legacy hidden `arm` object. Do not reintroduce it unless the UI
+  also exposes it as a deliberate workflow step; the present visible flow ends with checklist and
+  hold-to-start after Home, Zero, and Bounds/Aircut.
 - Do not reduce the UI back to a status chip plus technical log. An ERROR or rejected Cut must show
   the exact reason, what the safety system did, and a visible route to the required corrective step.
 - Full verification passes 42 files / 347 tests. Firmware uses 19.6% RAM (64,348 bytes) and 72.0%
-  flash (1,415,797 bytes).
+  flash (1,414,613 bytes).
 
 ## 2026-07-18 - Recovery UX and test-motion checkpoint handoff
 

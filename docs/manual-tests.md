@@ -13,7 +13,8 @@ tool above material, low feed override, and a physical stop/power cut within rea
 1. Load an existing generated job whose saved `activeRun` lacks `sizeBytes`, complete Home, Zero,
    and Bounds Check, then review Start Cut.
 2. Confirm the job JSON is repaired with the measured active-run size and Cut is not rejected with
-   `requested file does not match job activeRun identity`.
+   `requested file does not match job activeRun identity`. Confirm a matching completed Box/Aircut
+   with a legacy zero size is backfilled and is not repeated only for that missing metadata.
 3. If Start is deliberately rejected, confirm the Run panel opens automatically and shows the exact
    error, plain-language next step, and `Show Required Steps` without opening Technical log.
 4. Run an Aircut containing a long move followed by a short move. Confirm the second command's job

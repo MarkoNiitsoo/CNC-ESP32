@@ -16,6 +16,7 @@ describe('firmware-owned active run identity', () => {
     expect(loader).toContain('filter["activeRun"]');
     expect(loader).toContain('filter["startAuthorization"]');
     expect(loader).toContain('filter["verificationDecision"]');
+    expect(loader).not.toContain('filter["arm"]');
     expect(loader).not.toContain('jobFileContainsText');
   });
 
@@ -24,10 +25,11 @@ describe('firmware-owned active run identity', () => {
     const validator = firmware.slice(start, firmware.indexOf('struct ProductionResumeIdentity', start));
     for (const field of [
       'activeRunMode', 'activeRunPath', 'activeRunFingerprint', 'activeRunSizeBytes',
-      'authorizationRunMode', 'armRunFingerprint', 'verificationRunFingerprint',
+      'authorizationRunMode', 'verificationRunFingerprint',
       'activeWorkZeroId', 'authorizationHomingEpoch', 'authorizationHomingSessionId',
     ]) expect(validator).toContain(field);
     expect(validator).toContain('activeRunFileMatches');
+    expect(validator).not.toContain('arm identity');
   });
 
   it('streams the file through SHA-256 or byte-based FNV and checks size before movement', () => {
@@ -39,6 +41,7 @@ describe('firmware-owned active run identity', () => {
     expect(matcher).toContain('mbedtls_sha256_update_ret');
     expect(matcher).toContain('hash *= 0x01000193u');
     expect(preview).toContain('job.activeRun = { ...(job.activeRun || {}), sizeBytes: activeRunSizeBytes }');
+    expect(preview).toContain('verification.activeRunSizeBytes = activeRunSizeBytes');
     expect(preview).toContain('activeRunSizeBytes,');
     expect(firmware).toMatch(/validateJobExecutionAuthorization[\s\S]*beginPersistentJobCheckpoint/);
   });

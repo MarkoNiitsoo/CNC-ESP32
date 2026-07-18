@@ -1747,6 +1747,15 @@ async function startJobRun() {
   const zeroReference = activeWorkZeroReference();
   const activeRunSizeBytes = new TextEncoder().encode(activeRunText).length;
   job.activeRun = { ...(job.activeRun || {}), sizeBytes: activeRunSizeBytes };
+  const verification = job.verificationDecision || {};
+  const verificationFingerprintMatches = jobActiveRunModule?.fingerprintsMatch
+    ? jobActiveRunModule.fingerprintsMatch(verification.activeRunFingerprint, gcodeFingerprint)
+    : verification.activeRunFingerprint === gcodeFingerprint;
+  if (verification.result === 'complete' && Number(verification.activeRunSizeBytes) <= 0 &&
+      verification.activeRunPath === runPath && verificationFingerprintMatches) {
+    verification.activeRunSizeBytes = activeRunSizeBytes;
+    job.verificationDecision = verification;
+  }
   job.startMode = workflow.frame.mode === 'manual-unhomed' ? 'use_manual_work_frame' : 'use_active_work_zero';
   job.startAuthorization = {
     state: 'authorized',

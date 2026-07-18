@@ -5594,11 +5594,6 @@ struct JobExecutionAuthorization {
   uint32_t authorizationHomingEpoch = 0;
   String authorizationHomingSessionId;
   String activeWorkZeroId;
-  String armState;
-  String armRunMode;
-  String armRunPath;
-  String armRunFingerprint;
-  size_t armRunSizeBytes = 0;
   String verificationResult;
   String verificationType;
   String verificationRunPath;
@@ -5635,10 +5630,6 @@ bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorizat
   for (const char *key : {"state", "activeRunMode", "activeRunPath", "activeRunFingerprint",
                           "activeRunSizeBytes", "workZeroId", "homingEpoch", "homingSessionId"}) {
     filter["startAuthorization"][key] = true;
-  }
-  for (const char *key : {"state", "activeRunMode", "activeRunPath", "activeRunFingerprint",
-                          "activeRunSizeBytes"}) {
-    filter["arm"][key] = true;
   }
   for (const char *key : {"result", "type", "activeRunPath", "activeRunFingerprint",
                           "activeRunSizeBytes"}) {
@@ -5679,13 +5670,6 @@ bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorizat
   authorization.authorizationWorkZeroId = jsonVariantString(start["workZeroId"]);
   authorization.authorizationHomingEpoch = start["homingEpoch"] | 0;
   authorization.authorizationHomingSessionId = jsonVariantString(start["homingSessionId"]);
-
-  JsonObjectConst arm = doc["arm"];
-  authorization.armState = jsonVariantString(arm["state"]);
-  authorization.armRunMode = jsonVariantString(arm["activeRunMode"]);
-  authorization.armRunPath = normalizeSdPath(jsonVariantString(arm["activeRunPath"]));
-  authorization.armRunFingerprint = jsonVariantString(arm["activeRunFingerprint"]);
-  authorization.armRunSizeBytes = arm["activeRunSizeBytes"] | 0;
 
   JsonObjectConst verification = doc["verificationDecision"];
   authorization.verificationResult = jsonVariantString(verification["result"]);
@@ -5821,12 +5805,6 @@ bool validateJobExecutionAuthorization(const JobExecutionAuthorization &authoriz
       authorization.authorizationRunFingerprint != activeRunFingerprint ||
       authorization.authorizationRunSizeBytes != activeRunSizeBytes) {
     error = "start authorization does not match the active run";
-    return false;
-  }
-  if (authorization.armState != "ARMED" || authorization.armRunMode != activeRunMode ||
-      authorization.armRunPath != gcodePath || authorization.armRunFingerprint != activeRunFingerprint ||
-      authorization.armRunSizeBytes != activeRunSizeBytes) {
-    error = "arm identity is stale or does not match the active run";
     return false;
   }
   const bool verificationTypeValid = authorization.verificationType == "bounds" ||
