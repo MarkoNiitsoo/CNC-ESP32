@@ -1,5 +1,19 @@
 # Handoff
 
+## 2026-07-18 - HTTP 423 lock classification handoff
+
+- `installOperatorFetchMonitor()` now clones a 423 response and checks for the operator status
+  fields before opening the PIN panel. A generic 423 is not sufficient because firmware also uses
+  that status for active/interrupted job file locks.
+- The observed false prompt came from a pending firmware recovery checkpoint whose generated
+  aircut path was protected from overwrite. That safety lock is unchanged; the operator must import
+  or deliberately dismiss the recovery record before starting new motion.
+- Keep future 423 consumers aware of both meanings: operator ownership and protected SD mutation.
+- `.machine-operator-strip` is now an absolute upper-left overlay. Its compact owner badge opens the
+  same control panel without participating in the machine-bar grid or pushing other status content.
+- Full automated verification passes 42 files / 343 tests, and the 412 x 915 browser check confirms
+  the owner badge is a 17 px overlay at the top-left while the controller panel remains accessible.
+
 ## 2026-07-18 - Duration-aware ACK handoff
 
 - `estimateAndApplyMotionTiming()` owns the lightweight firmware-side modal timing state. It is

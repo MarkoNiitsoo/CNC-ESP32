@@ -47,15 +47,19 @@ describe('single operator control lease', () => {
 
   it('shows the controller owner and blocks motion controls in read-only browsers', () => {
     expect(machineBar).toContain('id="mb-operator-strip"');
-    expect(machineBar).toContain('READ ONLY: claim control');
-    expect(machineBar).toContain('CONTROL: ${owner}');
+    expect(machineBar).toContain("controller ? `● ${owner}`");
+    expect(machineBar).toContain("button.title = controller ? `Controller: ${owner}`");
     expect(machineBar).toContain("fetch('/api/operator/heartbeat'");
     expect(machineBar).toContain("fetch('/api/operator/pin'");
     expect(machineBar).toContain('panel.hidden = !STATE.operatorPanelOpen');
     expect(machineBar).toContain("response.status === 423");
+    expect(machineBar).toContain("const data = await response.clone().json().catch(() => ({}))");
+    expect(machineBar).toContain("data?.readOnly === true && typeof data?.configured === 'boolean'");
     expect(machineBar).not.toContain('STATE.operatorPanelOpen = true;\n    }\n    renderOperatorLock();');
     expect(styles).toContain('body.operator-read-only .machine-actions');
     expect(styles).toContain('body.operator-read-only .machine-jog-dock');
+    expect(styles).toMatch(/\.machine-operator-strip \{[\s\S]*position: absolute;[\s\S]*top: 1px;/);
+    expect(styles).toMatch(/\.machine-operator-strip button \{[\s\S]*font-size: 0\.56rem;/);
     expect(styles).not.toMatch(/body\.operator-read-only \.machine-actions,[\s\S]{0,100}pointer-events: none/);
   });
 });

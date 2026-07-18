@@ -469,7 +469,11 @@
       const url = typeof input === 'string' ? input : String(input?.url || '');
       const method = String(init.method || input?.method || 'GET').toUpperCase();
       if (response.status === 423 && method !== 'GET' && !url.includes('/api/operator/heartbeat')) {
-        requestOperatorControl('This action needs machine control. Enter the device PIN to continue.');
+        const data = await response.clone().json().catch(() => ({}));
+        const operatorLocked = data?.readOnly === true && typeof data?.configured === 'boolean';
+        if (operatorLocked) {
+          requestOperatorControl('This action needs machine control. Enter the device PIN to continue.');
+        }
       }
       return response;
     };
@@ -488,7 +492,9 @@
     const owner = operator.owner || '';
     if (strip) strip.dataset.controller = String(controller);
     if (button) {
-      button.textContent = controller ? `CONTROL: ${owner}` : owner ? `READ ONLY: ${owner} controls` : 'READ ONLY: claim control';
+      button.textContent = controller ? `● ${owner}` : owner ? `○ ${owner}` : '○ viewer';
+      button.title = controller ? `Controller: ${owner}` : owner ? `Read only: ${owner} controls` : 'Read only: claim control';
+      button.setAttribute('aria-label', button.title);
       button.setAttribute('aria-expanded', String(STATE.operatorPanelOpen));
     }
     if (panel) panel.hidden = !STATE.operatorPanelOpen;

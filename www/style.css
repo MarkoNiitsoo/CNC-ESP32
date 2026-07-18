@@ -540,22 +540,35 @@ button.machine-danger-dark {
 }
 
 .machine-operator-strip {
-  grid-column: 1 / -1;
-  display: flex;
+  position: absolute;
+  z-index: 2;
+  top: 1px;
+  left: max(1px, env(safe-area-inset-left));
+  max-width: min(42vw, 150px);
 }
 
 .machine-operator-strip button {
-  width: 100%;
-  min-height: 28px;
-  padding: 4px 8px;
-  border-color: color-mix(in srgb, var(--cnc-warning) 65%, var(--line));
-  background: color-mix(in srgb, var(--cnc-warning) 18%, var(--cnc-panel-strong));
-  font-size: 0.72rem;
+  display: block;
+  width: auto;
+  max-width: 100%;
+  min-height: 17px;
+  padding: 1px 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0 0 4px 0;
+  background: color-mix(in srgb, var(--cnc-warning) 14%, rgba(0, 0, 0, 0.78));
+  color: var(--muted);
+  font-size: 0.56rem;
+  font-weight: 650;
+  line-height: 1.15;
+  opacity: 0.78;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .machine-operator-strip[data-controller="true"] button {
-  border-color: color-mix(in srgb, var(--green) 65%, var(--line));
-  background: color-mix(in srgb, var(--green) 16%, var(--cnc-panel-strong));
+  background: color-mix(in srgb, var(--green) 12%, rgba(0, 0, 0, 0.78));
+  color: color-mix(in srgb, var(--green) 72%, var(--muted));
 }
 
 .machine-operator-panel {

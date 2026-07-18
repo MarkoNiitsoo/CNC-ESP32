@@ -1,5 +1,19 @@
 # Progress
 
+## 2026-07-18 - Distinguish operator locks from file locks
+
+- Fixed the global browser fetch monitor so HTTP 423 opens the operator PIN panel only when the
+  response contains the firmware's operator-lock state (`readOnly` and `configured`).
+- Active/interrupted job file locks still return 423 and remain enforced, but now reach the calling
+  workflow as their real error instead of being mislabeled as an operator authentication problem.
+- SD evidence identified the trigger: the interrupted aircut checkpoint locked
+  `/jobs/generated/ex1.run.gc.aircut.gc`, and a new aircut tried to overwrite that same file.
+- Replaced the full-width controller-owner row with a compact, absolutely positioned owner badge in
+  the machine bar's upper-left corner. It remains clickable but no longer consumes a grid row or
+  changes the height/layout of the safety controls.
+- Verification: full suite passes 42 files / 343 tests; the 412 px mobile layout measures the badge
+  at 17 px high and 1 px from the top-left without changing the machine-bar grid height.
+
 ## 2026-07-18 - Duration-aware Marlin motion ACK watchdog
 
 - Replaced the fixed ten-second streamed-command hard limit with a motion estimator that follows
