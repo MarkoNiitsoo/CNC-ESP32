@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-07-18 - Duration-aware Marlin motion ACK watchdog
+
+- Replaced the fixed ten-second streamed-command hard limit with a motion estimator that follows
+  modal G0/G1/G2/G3, G17/G18/G19, G20/G21, G90/G91, axis targets, feed, and live M220 override.
+- Linear distance and native IJK/R arc length now produce an expected physical duration. Known
+  motion receives a hard ACK limit of three times the estimate plus five seconds (10-second floor,
+  30-minute ceiling); unknown or machine-coordinate motion receives a conservative three minutes.
+- A command that has not produced any response may wait for its duration-aware hard limit. Once
+  Marlin reports `busy:`, the existing five-second liveness rule remains active, so a stalled
+  transport is still detected promptly. Uncertain motion is never resent and timeout still sends M5.
+- Applied the same policy to normal streams and priority sequences. M114 resynchronizes predicted
+  coordinates, and job status/logs expose estimate, inactivity timeout, and hard deadline evidence.
+- Verification: full suite passes 42 files / 343 tests; PlatformIO ESP32-CAM build succeeds at
+  19.6% RAM and 72.0% flash.
+
 ## 2026-07-18 - Persistent SD boot, network, and HTTP diagnostics
 
 - Added `/logs/system.log` with boot-session and millisecond prefixes. It records the reset reason,

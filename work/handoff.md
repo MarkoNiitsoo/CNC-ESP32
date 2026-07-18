@@ -1,5 +1,23 @@
 # Handoff
 
+## 2026-07-18 - Duration-aware ACK handoff
+
+- `estimateAndApplyMotionTiming()` owns the lightweight firmware-side modal timing state. It is
+  separate from execution/preview geometry and stores only the state needed to estimate the next
+  command's length and effective feed.
+- For a known motion, `hard timeout = clamp(estimated duration * 3 + 5 s, 10 s, 30 min)`. Unknown
+  geometry and G53 use 180 seconds. M400, homing, probing, and tool-change special limits remain.
+- The five-second timeout now means stale known liveness: it applies after at least one `busy:` was
+  seen. A silent long motion waits until its calculated hard deadline, since silence alone does not
+  prove Marlin failed while executing a blocking command.
+- `/api/job/status.ackWatchdog` keeps the legacy `timeoutMs` alias and adds
+  `inactivityTimeoutMs`, `hardTimeoutMs`, and `estimatedCommandDurationMs`. Long-motion timing and
+  any communication-loss boundary are also written to `/logs/job.log`.
+- Safety behavior is unchanged: no uncertain G-code replay, immediate M5 on communication loss,
+  and no automatic M410.
+- Full automated verification passes 42 files / 343 tests. The ESP32-CAM build uses 19.6% RAM
+  (64,332 bytes) and 72.0% flash (1,414,617 bytes).
+
 ## 2026-07-18 - SD system diagnostics handoff
 
 - The new diagnostic source is `/logs/system.log`; the previous 128 KiB generation is retained as

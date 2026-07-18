@@ -53,7 +53,10 @@ export class MockJobRunner {
       toolChangeZZeroMethod: 'manual', toolChangeReturnPositionCaptured: false,
       toolChangeReturnPosition: null,
       lastCommand: '', lastSentCommand: '', lastResponse: '', lastMarlinResponse: '', lastError: '',
-      errorCode: '', ackWatchdog: { waiting: false, timeoutMs: 0, hardTimeoutMs: 0, elapsedMs: 0 },
+      errorCode: '', ackWatchdog: {
+        waiting: false, timeoutMs: 0, inactivityTimeoutMs: 0,
+        hardTimeoutMs: 0, estimatedCommandDurationMs: 0, elapsedMs: 0,
+      },
       communicationLoss: null,
       lastPriorityCommand: '', lastPriorityResponse: '', lastPriorityError: '',
       lastFeedOverrideCommand: '', lastFeedOverrideResponse: '', lastFeedOverrideError: '',

@@ -54,6 +54,23 @@ Simulated or air-cut check:
 6. Confirm Pause does not show a Marlin timeout confirmation prompt.
 7. Confirm the state becomes `PAUSED` or `ERROR` with a clear reason, never silently resumes.
 
+## Duration-Aware Motion Acknowledgements
+
+Simulated or router-off Aircut check:
+
+1. Use an absolute-millimeter file containing a known long `G1` and a semicircular `G2/G3` move
+   with explicit feed rates, including the formerly failing `G3 X248.087 Y304.767 I-4.913 J51.767
+   F1500` case.
+2. Confirm `/api/job/status.ackWatchdog` reports the estimated command duration and a hard timeout
+   equal to at least three times that estimate plus five seconds, capped at 30 minutes.
+3. Confirm the long arc may continue beyond ten seconds while fresh `busy:` responses arrive, then
+   advances only after Marlin sends `ok`.
+4. Confirm a `busy:` stream that stops for more than five seconds still enters
+   `COMMUNICATION_LOST`, sends immediate M5, and never resends the uncertain motion command.
+5. Confirm motion whose starting coordinate cannot be established receives the conservative
+   three-minute hard timeout rather than the former ten-second limit.
+6. Repeat at 50% feed override and confirm the estimated duration approximately doubles.
+
 ## Priority Stop
 
 Simulated or air-cut check:

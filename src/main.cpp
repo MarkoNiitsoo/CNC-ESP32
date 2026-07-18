@@ -77,7 +77,12 @@ constexpr uint32_t kMarlinCommandAckTimeoutMs = 5000;
 constexpr uint32_t kMarlinMotionDrainAckTimeoutMs = 180000;
 constexpr uint32_t kMarlinHomingAckTimeoutMs = 180000;
 constexpr uint32_t kMarlinToolChangeAckTimeoutMs = 180000;
-constexpr uint8_t kMarlinAckHardLimitMultiplier = 2;
+constexpr uint32_t kMarlinDefaultHardAckTimeoutMs = 10000;
+constexpr uint32_t kMarlinUnknownMotionHardAckTimeoutMs = 180000;
+constexpr uint32_t kMarlinMaxMotionHardAckTimeoutMs = 30 * 60 * 1000;
+constexpr uint32_t kMotionAckOverheadMs = 5000;
+constexpr float kMotionAckDurationMultiplier = 3.0f;
+constexpr float kPi = 3.14159265358979323846f;
 constexpr uint16_t kTelemetryWebSocketPort = 81;
 constexpr uint32_t kTelemetryMinBroadcastMs = 100;
 constexpr uint32_t kJobProgressBroadcastMs = 500;
@@ -336,6 +341,28 @@ struct DeviceIdentity {
   String bluetoothName;
 };
 
+struct MotionTimingState {
+  bool xValid = false;
+  bool yValid = false;
+  bool zValid = false;
+  bool absolute = true;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float unitScale = 1.0f;
+  float feedMmMin = kDefaultTravelFeed;
+  String motionMode = "G0";
+  String plane = "G17";
+};
+
+struct MotionTimingEstimate {
+  bool motion = false;
+  bool durationKnown = false;
+  float distanceMm = 0.0f;
+  float effectiveFeedMmMin = 0.0f;
+  uint32_t durationMs = 0;
+};
+
 struct ToolChangeSettings {
   String handling = "pause";
   float parkMachineX = 0.0f;
@@ -392,6 +419,8 @@ String jobResponseBuffer;
 uint32_t jobCommandStartedAtMs = 0;
 uint32_t jobCommandLivenessAtMs = 0;
 uint32_t jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+uint32_t jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+uint32_t jobCommandEstimatedDurationMs = 0;
 JogStatus jogStatus;
 constexpr uint8_t kMaxPriorityCommands = 12;
 String priorityCommands[kMaxPriorityCommands];
@@ -401,6 +430,8 @@ String priorityResponseBuffer;
 uint32_t priorityCommandStartedAtMs = 0;
 uint32_t priorityCommandLivenessAtMs = 0;
 uint32_t priorityCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+uint32_t priorityCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+uint32_t priorityCommandEstimatedDurationMs = 0;
 MarlinLogEntry marlinLog[kMarlinLogSize];
 size_t marlinLogNext = 0;
 size_t marlinLogCount = 0;
@@ -426,6 +457,7 @@ uint32_t motionTelemetryDropped = 0;
 uint8_t marlinAutoreportSeconds = 0;
 String marlinAsyncLine;
 String streamMotionMode = "G0";
+MotionTimingState motionTimingState;
 PositionTelemetry marlinPosition;
 MachineFrameState machineFrame;
 String bootSessionId;
@@ -452,6 +484,7 @@ bool handleWorkspaceCommand(const String &line);
 bool runJobStartPreamble();
 bool responseContainsToken(const String &response, const char *token);
 bool extractGcodeIntegerWord(const String &line, char wanted, int &value);
+bool extractGcodeWordValue(const String &line, char wanted, float &value);
 bool gcodeHasM6(const String &line);
 bool gcodeIsStandaloneToolSelect(const String &line, int &toolNumber);
 bool beginToolChange(const String &line);
@@ -1565,10 +1598,18 @@ String jobStatusJson() {
   const uint32_t activeAckTimeoutMs = jobStatus.priorityCommandInProgress
                                          ? priorityCommandAckTimeoutMs
                                          : (jobWaitingForOk ? jobCommandAckTimeoutMs : 0);
+  const uint32_t activeAckHardTimeoutMs = jobStatus.priorityCommandInProgress
+                                             ? priorityCommandHardTimeoutMs
+                                             : (jobWaitingForOk ? jobCommandHardTimeoutMs : 0);
+  const uint32_t activeEstimatedDurationMs = jobStatus.priorityCommandInProgress
+                                                 ? priorityCommandEstimatedDurationMs
+                                                 : (jobWaitingForOk ? jobCommandEstimatedDurationMs : 0);
   json += "\",\"ackWatchdog\":{\"waiting\":";
   json += waitingForMarlinAck ? "true" : "false";
   json += ",\"timeoutMs\":" + String(activeAckTimeoutMs);
-  json += ",\"hardTimeoutMs\":" + String(activeAckTimeoutMs * kMarlinAckHardLimitMultiplier);
+  json += ",\"inactivityTimeoutMs\":" + String(activeAckTimeoutMs);
+  json += ",\"hardTimeoutMs\":" + String(activeAckHardTimeoutMs);
+  json += ",\"estimatedCommandDurationMs\":" + String(activeEstimatedDurationMs);
   json += ",\"elapsedMs\":" + String(activeAckStartedAtMs > 0 ? millis() - activeAckStartedAtMs : 0);
   json += "}";
   json += ",\"communicationLoss\":";
@@ -2523,10 +2564,212 @@ uint32_t marlinAckTimeoutForCommand(const String &command, bool toolChangeSequen
   return kMarlinCommandAckTimeoutMs;
 }
 
-bool marlinAckWatchdogExpired(uint32_t startedAtMs, uint32_t livenessAtMs, uint32_t timeoutMs) {
+void resetMotionTimingState() {
+  motionTimingState = MotionTimingState();
+  if (marlinPosition.valid) {
+    motionTimingState.xValid = true;
+    motionTimingState.yValid = true;
+    motionTimingState.zValid = true;
+    motionTimingState.x = marlinPosition.x;
+    motionTimingState.y = marlinPosition.y;
+    motionTimingState.z = marlinPosition.z;
+  }
+}
+
+void syncMotionTimingPosition(float x, float y, float z) {
+  motionTimingState.xValid = true;
+  motionTimingState.yValid = true;
+  motionTimingState.zValid = true;
+  motionTimingState.x = x;
+  motionTimingState.y = y;
+  motionTimingState.z = z;
+}
+
+bool commandHasToken(const String &upper, const String &wanted) {
+  int start = 0;
+  while (start < upper.length()) {
+    while (start < upper.length() && upper[start] == ' ') ++start;
+    int end = upper.indexOf(' ', start);
+    if (end < 0) end = upper.length();
+    if (upper.substring(start, end) == wanted) return true;
+    start = end + 1;
+  }
+  return false;
+}
+
+float normalizedArcSweep(float startAngle, float endAngle, bool clockwise, bool fullCircle) {
+  if (fullCircle) return 2.0f * kPi;
+  float sweep = clockwise ? startAngle - endAngle : endAngle - startAngle;
+  while (sweep < 0.0f) sweep += 2.0f * kPi;
+  while (sweep >= 2.0f * kPi) sweep -= 2.0f * kPi;
+  return sweep;
+}
+
+float estimatedArcDistance(float startA, float startB, float endA, float endB,
+                           float centerOffsetA, float centerOffsetB, bool hasCenterA,
+                           bool hasCenterB, float radiusWord, bool hasRadius,
+                           bool clockwise, float linearDelta) {
+  const float chord = hypotf(endA - startA, endB - startB);
+  float planarDistance = 0.0f;
+  if (hasRadius && fabsf(radiusWord) > 0.0001f) {
+    const float radius = fabsf(radiusWord);
+    const float ratio = min(1.0f, chord / (2.0f * radius));
+    float sweep = 2.0f * asinf(ratio);
+    if (radiusWord < 0.0f) sweep = 2.0f * kPi - sweep;
+    planarDistance = radius * sweep;
+  } else if (hasCenterA || hasCenterB) {
+    const float centerA = startA + (hasCenterA ? centerOffsetA : 0.0f);
+    const float centerB = startB + (hasCenterB ? centerOffsetB : 0.0f);
+    const float radius = hypotf(startA - centerA, startB - centerB);
+    const bool fullCircle = chord < 0.0001f;
+    const float sweep = normalizedArcSweep(atan2f(startB - centerB, startA - centerA),
+                                           atan2f(endB - centerB, endA - centerA),
+                                           clockwise, fullCircle);
+    planarDistance = radius * sweep;
+  } else {
+    planarDistance = chord;
+  }
+  return hypotf(planarDistance, linearDelta);
+}
+
+MotionTimingEstimate estimateAndApplyMotionTiming(const String &command) {
+  MotionTimingEstimate estimate;
+  String upper = command;
+  upper.toUpperCase();
+  upper.trim();
+
+  if (commandHasToken(upper, "G20")) motionTimingState.unitScale = 25.4f;
+  if (commandHasToken(upper, "G21")) motionTimingState.unitScale = 1.0f;
+  if (commandHasToken(upper, "G90")) motionTimingState.absolute = true;
+  if (commandHasToken(upper, "G91")) motionTimingState.absolute = false;
+  if (commandHasToken(upper, "G17")) motionTimingState.plane = "G17";
+  if (commandHasToken(upper, "G18")) motionTimingState.plane = "G18";
+  if (commandHasToken(upper, "G19")) motionTimingState.plane = "G19";
+  if (commandHasToken(upper, "G0") || commandHasToken(upper, "G00")) motionTimingState.motionMode = "G0";
+  if (commandHasToken(upper, "G1") || commandHasToken(upper, "G01")) motionTimingState.motionMode = "G1";
+  if (commandHasToken(upper, "G2") || commandHasToken(upper, "G02")) motionTimingState.motionMode = "G2";
+  if (commandHasToken(upper, "G3") || commandHasToken(upper, "G03")) motionTimingState.motionMode = "G3";
+
+  float feedWord = 0.0f;
+  if (extractGcodeWordValue(upper, 'F', feedWord) && feedWord > 0.0f) {
+    motionTimingState.feedMmMin = feedWord * motionTimingState.unitScale;
+  }
+
+  if (commandHasToken(upper, "G28")) {
+    motionTimingState.xValid = false;
+    motionTimingState.yValid = false;
+    motionTimingState.zValid = false;
+    return estimate;
+  }
+
+  float xWord = 0.0f;
+  float yWord = 0.0f;
+  float zWord = 0.0f;
+  float i = 0.0f, j = 0.0f, k = 0.0f, r = 0.0f;
+  const bool hasX = extractGcodeWordValue(upper, 'X', xWord);
+  const bool hasY = extractGcodeWordValue(upper, 'Y', yWord);
+  const bool hasZ = extractGcodeWordValue(upper, 'Z', zWord);
+  const bool hasI = extractGcodeWordValue(upper, 'I', i);
+  const bool hasJ = extractGcodeWordValue(upper, 'J', j);
+  const bool hasK = extractGcodeWordValue(upper, 'K', k);
+  const bool hasR = extractGcodeWordValue(upper, 'R', r);
+  const bool arcMode = motionTimingState.motionMode == "G2" || motionTimingState.motionMode == "G3";
+  if (!hasX && !hasY && !hasZ && !(arcMode && (hasI || hasJ || hasK || hasR))) return estimate;
+  estimate.motion = motionTimingState.motionMode == "G0" || motionTimingState.motionMode == "G1" ||
+                    motionTimingState.motionMode == "G2" || motionTimingState.motionMode == "G3";
+  if (!estimate.motion) return estimate;
+
+  const float scale = motionTimingState.unitScale;
+  const float startX = motionTimingState.x;
+  const float startY = motionTimingState.y;
+  const float startZ = motionTimingState.z;
+  const bool startXValid = motionTimingState.xValid;
+  const bool startYValid = motionTimingState.yValid;
+  const bool startZValid = motionTimingState.zValid;
+  auto target = [&](float start, bool valid, float word, bool present, bool &targetValid) {
+    if (!present) {
+      targetValid = valid;
+      return start;
+    }
+    if (motionTimingState.absolute) {
+      targetValid = true;
+      return word * scale;
+    }
+    targetValid = valid;
+    return valid ? start + word * scale : 0.0f;
+  };
+  bool targetXValid = false;
+  bool targetYValid = false;
+  bool targetZValid = false;
+  const float endX = target(startX, startXValid, xWord, hasX, targetXValid);
+  const float endY = target(startY, startYValid, yWord, hasY, targetYValid);
+  const float endZ = target(startZ, startZValid, zWord, hasZ, targetZValid);
+
+  bool neededStartsValid = (!hasX || startXValid) && (!hasY || startYValid) && (!hasZ || startZValid);
+  if (arcMode && motionTimingState.plane == "G18") neededStartsValid = neededStartsValid && startXValid && startZValid;
+  if (arcMode && motionTimingState.plane == "G19") neededStartsValid = neededStartsValid && startYValid && startZValid;
+  if (arcMode && motionTimingState.plane == "G17") neededStartsValid = neededStartsValid && startXValid && startYValid;
+  const bool machineCoordinateMove = commandHasToken(upper, "G53");
+  if (neededStartsValid && !machineCoordinateMove) {
+    const float dx = hasX ? endX - startX : 0.0f;
+    const float dy = hasY ? endY - startY : 0.0f;
+    const float dz = hasZ ? endZ - startZ : 0.0f;
+    if (motionTimingState.motionMode == "G2" || motionTimingState.motionMode == "G3") {
+      i *= scale; j *= scale; k *= scale; r *= scale;
+      const bool clockwise = motionTimingState.motionMode == "G2";
+      if (motionTimingState.plane == "G18") {
+        estimate.distanceMm = estimatedArcDistance(startX, startZ, endX, endZ, i, k, hasI, hasK,
+                                                   r, hasR, clockwise, dy);
+      } else if (motionTimingState.plane == "G19") {
+        estimate.distanceMm = estimatedArcDistance(startY, startZ, endY, endZ, j, k, hasJ, hasK,
+                                                   r, hasR, clockwise, dx);
+      } else {
+        estimate.distanceMm = estimatedArcDistance(startX, startY, endX, endY, i, j, hasI, hasJ,
+                                                   r, hasR, clockwise, dz);
+      }
+    } else {
+      estimate.distanceMm = sqrtf(dx * dx + dy * dy + dz * dz);
+    }
+    const float overrideScale = max(0.1f, static_cast<float>(jobStatus.feedOverridePercent) / 100.0f);
+    estimate.effectiveFeedMmMin = motionTimingState.feedMmMin * overrideScale;
+    if (estimate.effectiveFeedMmMin > 0.0f && isfinite(estimate.distanceMm)) {
+      const double duration = static_cast<double>(estimate.distanceMm) * 60000.0 /
+                              static_cast<double>(estimate.effectiveFeedMmMin);
+      estimate.durationMs = static_cast<uint32_t>(min(duration, static_cast<double>(UINT32_MAX)));
+      estimate.durationKnown = true;
+    }
+  }
+
+  if (hasX) { motionTimingState.x = endX; motionTimingState.xValid = targetXValid; }
+  if (hasY) { motionTimingState.y = endY; motionTimingState.yValid = targetYValid; }
+  if (hasZ) { motionTimingState.z = endZ; motionTimingState.zValid = targetZValid; }
+  if (machineCoordinateMove) {
+    motionTimingState.xValid = false;
+    motionTimingState.yValid = false;
+    motionTimingState.zValid = false;
+  }
+  return estimate;
+}
+
+uint32_t marlinHardAckTimeoutForCommand(const String &command, const MotionTimingEstimate &estimate,
+                                        bool toolChangeSequence = false) {
+  const uint32_t specialTimeout = marlinAckTimeoutForCommand(command, toolChangeSequence);
+  if (specialTimeout != kMarlinCommandAckTimeoutMs) {
+    return min(kMarlinMaxMotionHardAckTimeoutMs, specialTimeout * 2U);
+  }
+  if (!estimate.motion) return kMarlinDefaultHardAckTimeoutMs;
+  if (!estimate.durationKnown) return kMarlinUnknownMotionHardAckTimeoutMs;
+  const double calculated = static_cast<double>(estimate.durationMs) * kMotionAckDurationMultiplier +
+                            static_cast<double>(kMotionAckOverheadMs);
+  return static_cast<uint32_t>(max(static_cast<double>(kMarlinDefaultHardAckTimeoutMs),
+                                   min(calculated, static_cast<double>(kMarlinMaxMotionHardAckTimeoutMs))));
+}
+
+bool marlinAckWatchdogExpired(uint32_t startedAtMs, uint32_t livenessAtMs,
+                              uint32_t inactivityTimeoutMs, uint32_t hardTimeoutMs) {
   const uint32_t now = millis();
-  return now - livenessAtMs > timeoutMs ||
-         now - startedAtMs > timeoutMs * kMarlinAckHardLimitMultiplier;
+  const bool knownLivenessExpired = livenessAtMs > 0 && now - livenessAtMs > inactivityTimeoutMs;
+  return knownLivenessExpired || now - startedAtMs > hardTimeoutMs;
 }
 
 void clearPriorityCommands() {
@@ -2536,6 +2779,8 @@ void clearPriorityCommands() {
   priorityCommandStartedAtMs = 0;
   priorityCommandLivenessAtMs = 0;
   priorityCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+  priorityCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+  priorityCommandEstimatedDurationMs = 0;
   jobStatus.priorityCommandInProgress = false;
 }
 
@@ -2575,6 +2820,7 @@ void startNextPriorityCommand() {
   }
 
   const String &cmd = priorityCommands[priorityCommandIndex];
+  const MotionTimingEstimate timing = estimateAndApplyMotionTiming(cmd);
   if (jobStatus.toolChangePending && jobStatus.toolChangeHandling == "park" &&
       cmd.startsWith("G53 G0") && jobStatus.toolChangePhase != "PARKING_FOR_TOOL_CHANGE") {
     jobStatus.toolChangePhase = "PARKING_FOR_TOOL_CHANGE";
@@ -2595,9 +2841,12 @@ void startNextPriorityCommand() {
   jobStatus.priorityCommandInProgress = true;
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = millis();
-  priorityCommandLivenessAtMs = priorityCommandStartedAtMs;
+  priorityCommandLivenessAtMs = 0;
   priorityCommandAckTimeoutMs = marlinAckTimeoutForCommand(cmd, jobStatus.toolChangePending);
-  logJobEvent("priority: " + cmd);
+  priorityCommandHardTimeoutMs = marlinHardAckTimeoutForCommand(cmd, timing, jobStatus.toolChangePending);
+  priorityCommandEstimatedDurationMs = timing.durationKnown ? timing.durationMs : 0;
+  logJobEvent("priority: " + cmd + " estimatedMs=" + String(priorityCommandEstimatedDurationMs) +
+              " hardTimeoutMs=" + String(priorityCommandHardTimeoutMs));
 }
 
 uint32_t priorityAckTimeoutMs() {
@@ -2709,7 +2958,7 @@ void processPriorityCommands() {
 
   if (!responseContainsToken(priorityResponseBuffer, "ok")) {
     if (marlinAckWatchdogExpired(priorityCommandStartedAtMs, priorityCommandLivenessAtMs,
-                                 priorityAckTimeoutMs())) {
+                                 priorityAckTimeoutMs(), priorityCommandHardTimeoutMs)) {
       jobStatus.lastPriorityResponse = priorityResponseBuffer;
       jobStatus.lastPriorityError = "Priority command acknowledgement timed out";
       addMarlinLog("rx", true, priorityResponseBuffer.length() > 0 ? priorityResponseBuffer : "timeout", "error");
@@ -2737,6 +2986,8 @@ void processPriorityCommands() {
   priorityResponseBuffer = "";
   priorityCommandStartedAtMs = 0;
   priorityCommandLivenessAtMs = 0;
+  priorityCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+  priorityCommandEstimatedDurationMs = 0;
 
   if (priorityCommandIndex >= priorityCommandCount) {
     finishPrioritySequence();
@@ -2878,6 +3129,7 @@ void updatePositionFromMarlinResponse(const String &response) {
       !parseAxisFromM114(response, 'Z', z)) {
     return;
   }
+  syncMotionTimingPosition(x, y, z);
   const bool workChanged = !marlinPosition.valid || fabs(marlinPosition.x - x) > 0.0005f ||
       fabs(marlinPosition.y - y) > 0.0005f || fabs(marlinPosition.z - z) > 0.0005f;
   int32_t countX = 0;
@@ -3716,6 +3968,8 @@ void setJobError(const String &message, bool resetFeedOverride) {
   jobCommandStartedAtMs = 0;
   jobCommandLivenessAtMs = 0;
   jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+  jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+  jobCommandEstimatedDurationMs = 0;
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
@@ -3758,6 +4012,15 @@ void setJobCommunicationLost(const String &message) {
   checkpoint += " acknowledgedOffset=" + String(jobStatus.lastAcknowledgedByteOffset);
   checkpoint += " line=" + String(jobStatus.currentLineNumber);
   checkpoint += " acknowledgedLine=" + String(jobStatus.lastAcknowledgedLineNumber);
+  checkpoint += " estimatedMs=" + String(jobStatus.priorityCommandInProgress
+                                               ? priorityCommandEstimatedDurationMs
+                                               : jobCommandEstimatedDurationMs);
+  checkpoint += " inactivityTimeoutMs=" + String(jobStatus.priorityCommandInProgress
+                                                       ? priorityCommandAckTimeoutMs
+                                                       : jobCommandAckTimeoutMs);
+  checkpoint += " hardTimeoutMs=" + String(jobStatus.priorityCommandInProgress
+                                                 ? priorityCommandHardTimeoutMs
+                                                 : jobCommandHardTimeoutMs);
   if (jobStatus.communicationLostMachinePositionValid) {
     checkpoint += " machine=" + String(jobStatus.communicationLostMachineX, 3) + "," +
                   String(jobStatus.communicationLostMachineY, 3) + "," +
@@ -3846,6 +4109,8 @@ void completeJob() {
   jobCommandStartedAtMs = 0;
   jobCommandLivenessAtMs = 0;
   jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+  jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+  jobCommandEstimatedDurationMs = 0;
   jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
   jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
   jobRunning = false;
@@ -3929,7 +4194,7 @@ void processJobRunner() {
     }
     if (!responseContainsToken(jobResponseBuffer, "ok")) {
       if (marlinAckWatchdogExpired(jobCommandStartedAtMs, jobCommandLivenessAtMs,
-                                   jobCommandAckTimeoutMs)) {
+                                   jobCommandAckTimeoutMs, jobCommandHardTimeoutMs)) {
         jobStatus.lastResponse = jobResponseBuffer;
         addMarlinLog("rx", false, jobResponseBuffer.length() > 0 ? jobResponseBuffer : "timeout", "error");
         setJobCommunicationLost("Marlin acknowledgement timed out; command was not resent: " +
@@ -3947,6 +4212,8 @@ void processJobRunner() {
     jobCommandStartedAtMs = 0;
     jobCommandLivenessAtMs = 0;
     jobCommandAckTimeoutMs = kMarlinCommandAckTimeoutMs;
+    jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
+    jobCommandEstimatedDurationMs = 0;
     jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
     jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
     touchJobProgress();
@@ -4006,6 +4273,7 @@ void processJobRunner() {
   }
 
   jobStatus.lastCommand = line;
+  const MotionTimingEstimate timing = estimateAndApplyMotionTiming(line);
   jobResponseBuffer = "";
   addMarlinLog("tx", false, line);
   Serial.print(line);
@@ -4015,8 +4283,16 @@ void processJobRunner() {
   queueMotionTelemetry(line, jobStatus.currentLineNumber);
   jobWaitingForOk = true;
   jobCommandStartedAtMs = millis();
-  jobCommandLivenessAtMs = jobCommandStartedAtMs;
+  jobCommandLivenessAtMs = 0;
   jobCommandAckTimeoutMs = marlinAckTimeoutForCommand(line);
+  jobCommandHardTimeoutMs = marlinHardAckTimeoutForCommand(line, timing);
+  jobCommandEstimatedDurationMs = timing.durationKnown ? timing.durationMs : 0;
+  if (timing.motion && jobCommandHardTimeoutMs > kMarlinDefaultHardAckTimeoutMs) {
+    logJobEvent("motion ACK timing command=" + line + " distanceMm=" + String(timing.distanceMm, 3) +
+                " effectiveFeed=" + String(timing.effectiveFeedMmMin, 1) +
+                " estimatedMs=" + String(jobCommandEstimatedDurationMs) +
+                " hardTimeoutMs=" + String(jobCommandHardTimeoutMs));
+  }
   touchJobProgress();
 }
 
@@ -5790,6 +6066,7 @@ void handleTestMotionStart() {
   jobStatus = JobRunnerStatus();
   marlinAsyncLine = "";
   streamMotionMode = "G0";
+  resetMotionTimingState();
   motionTelemetryCount = 0;
   motionTelemetryDropped = 0;
   clearPriorityCommands();
@@ -5886,6 +6163,7 @@ void handleProductionResumeStart() {
 
   jobStatus = JobRunnerStatus();
   streamMotionMode = "G0";
+  resetMotionTimingState();
   motionTelemetryCount = 0;
   motionTelemetryDropped = 0;
   clearPriorityCommands();
@@ -6064,6 +6342,7 @@ void handleJobStart() {
   jobStatus = JobRunnerStatus();
   marlinAsyncLine = "";
   streamMotionMode = "G0";
+  resetMotionTimingState();
   motionTelemetryCount = 0;
   motionTelemetryDropped = 0;
   clearPriorityCommands();

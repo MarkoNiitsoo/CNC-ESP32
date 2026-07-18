@@ -76,11 +76,36 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('code == "M400"');
     expect(source).toContain('code == "G28" || code == "G29" || code.startsWith("G38.")');
     expect(source).toContain('bool marlinAckWatchdogExpired(');
-    expect(source).toContain('timeoutMs * kMarlinAckHardLimitMultiplier');
+    expect(source).toContain('livenessAtMs > 0 && now - livenessAtMs > inactivityTimeoutMs');
+    expect(source).toContain('now - startedAtMs > hardTimeoutMs');
     expect(source).toContain('uint32_t priorityAckTimeoutMs()');
     expect(source).toContain('priorityCommandAckTimeoutMs = marlinAckTimeoutForCommand(cmd, jobStatus.toolChangePending)');
     expect(source).toContain('jobCommandAckTimeoutMs = marlinAckTimeoutForCommand(line)');
-    expect(source).toMatch(/marlinAckWatchdogExpired\(priorityCommandStartedAtMs, priorityCommandLivenessAtMs,[\s\S]*priorityAckTimeoutMs\(\)\)/);
+    expect(source).toMatch(/marlinAckWatchdogExpired\(priorityCommandStartedAtMs, priorityCommandLivenessAtMs,[\s\S]*priorityAckTimeoutMs\(\), priorityCommandHardTimeoutMs\)/);
+  });
+
+  it('derives motion ACK deadlines from commanded path duration', () => {
+    expect(source).toContain('struct MotionTimingState');
+    expect(source).toContain('MotionTimingEstimate estimateAndApplyMotionTiming');
+    expect(source).toContain('estimatedArcDistance(');
+    expect(source).toContain('motionTimingState.feedMmMin * overrideScale');
+    expect(source).toContain('estimate.distanceMm) * 60000.0');
+    expect(source).toContain('kMotionAckDurationMultiplier = 3.0f');
+    expect(source).toContain('kMotionAckOverheadMs = 5000');
+    expect(source).toContain('kMarlinUnknownMotionHardAckTimeoutMs = 180000');
+    expect(source).toContain('kMarlinMaxMotionHardAckTimeoutMs = 30 * 60 * 1000');
+    expect(source).toContain('marlinHardAckTimeoutForCommand(line, timing)');
+    expect(source).toContain('marlinHardAckTimeoutForCommand(cmd, timing, jobStatus.toolChangePending)');
+    expect(source).toContain('estimatedCommandDurationMs');
+
+    const start = { x: 257.913, y: 201.233 };
+    const end = { x: 248.087, y: 304.767 };
+    const center = { x: start.x - 4.913, y: start.y + 51.767 };
+    const radius = Math.hypot(start.x - center.x, start.y - center.y);
+    const arcDurationMs = (Math.PI * radius * 60000) / 1500;
+    const hardTimeoutMs = Math.max(10000, arcDurationMs * 3 + 5000);
+    expect(arcDurationMs).toBeGreaterThan(6000);
+    expect(hardTimeoutMs).toBeGreaterThan(24000);
   });
 
   it('reports the last confirmed stream boundary and freezes communication-loss evidence', () => {
