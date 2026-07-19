@@ -2230,3 +2230,14 @@
   blocking. Full automated verification passes 40 files / 334 tests.
 - PlatformIO revalidation passes after correcting the handler callback type. The ESP32-CAM build
   uses 19.6% RAM (64,236 bytes) and 71.3% flash (1,401,681 bytes).
+
+## 2026-07-19 - Glassmorphic "Aurora Glass" UI/UX skin
+
+- Installed the custom `ui-ux-cr` (Cyber-Rage Design Intelligence Engine) assistant skill to `/config/plugins/ui-ux-cr`.
+- Designed and implemented a new premium, high-readability glassmorphic theme called "Aurora Glass" (`aurora-glass`).
+- Created a vibrant aurora mesh gradient body background and frosted translucent glass panels (`backdrop-filter: blur(16px)`).
+- Applied rounded corners (`border-radius: 12px` and `16px`) to all panels, buttons, inputs, selects, and dialogs.
+- Optimized design elements for touch safety and responsiveness across pad/tablet and mobile viewports.
+- Registered the new skin in `www/lib/ui-skins.js` and added validation coverage to `test/ui/ui-skins.test.mjs`.
+- Verified that all 42 test files and 350 test assertions pass successfully.
+

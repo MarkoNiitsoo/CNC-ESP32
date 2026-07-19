@@ -1,0 +1,241 @@
+:root {
+  --cnc-bg: #0c0f1a;
+  --cnc-panel: rgba(15, 23, 42, 0.45);
+  --cnc-panel-strong: rgba(10, 16, 32, 0.7);
+  --cnc-text: #f8fafc;
+  --cnc-muted: #94a3b8;
+  --cnc-accent: #6366f1;
+  --cnc-ok: #10b981;
+  --cnc-warning: #f59e0b;
+  --cnc-danger: #ef4444;
+  --cnc-blocked: #f97316;
+  --cnc-button-size: 44px;
+  --cnc-large-button-size: 56px;
+  --cnc-icon-stroke: 2;
+
+  --cnc-path-source: #64748b;
+  --cnc-path-generated: #6366f1;
+  --cnc-path-travel: #10b981;
+  --cnc-path-cut: #06b6d4;
+  --cnc-bounds-raw: #f59e0b;
+  --cnc-bounds-cut: #10b981;
+  --cnc-bounds-placement: #ec4899;
+  --cnc-zero: #10b981;
+  --cnc-current-position: #fbbf24;
+
+  /* Custom glassmorphism variables */
+  --glass-bg: rgba(15, 23, 42, 0.45);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-hover: rgba(255, 255, 255, 0.16);
+  --glass-border-focus: rgba(99, 102, 241, 0.4);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.35);
+  --glass-blur: 16px;
+}
+
+/* Base body background override with vibrant glowing aurora effect */
+body {
+  background: 
+    radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15), transparent 450px),
+    radial-gradient(circle at 90% 15%, rgba(236, 72, 153, 0.12), transparent 400px),
+    radial-gradient(circle at 50% 85%, rgba(6, 182, 212, 0.14), transparent 500px),
+    #0c0f1a !important;
+}
+
+/* Glass panel containers */
+.machine-state,
+.machine-drawer-head,
+.machine-drawer-card,
+.machine-config-group,
+.machine-operator-panel,
+.machine-jog-dock-settings,
+.machine-bar,
+.status-header,
+.topbar,
+.path-picker,
+.panel {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(var(--glass-blur)) saturate(120%) !important;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(120%) !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--glass-shadow) !important;
+  border-radius: 16px !important;
+}
+
+/* Header tweaks */
+.status-header,
+.topbar {
+  padding: 12px 16px !important;
+  margin-top: 6px !important;
+  background: rgba(12, 15, 26, 0.45) !important;
+}
+
+.machine-bar {
+  border-bottom: 1px solid var(--glass-border) !important;
+  padding: 10px 14px !important;
+}
+
+/* Form Inputs, Buttons, and Select elements */
+button,
+input,
+select,
+textarea {
+  border-radius: 12px !important;
+  border: 1px solid var(--glass-border) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  color: var(--cnc-text) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Element hovers */
+button:not(:disabled):hover,
+select:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: var(--glass-border-hover) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Active transitions */
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+/* Primary/Accent buttons */
+button:not(.danger-button):not(.warning-button):not(.secondary-button):not(.machine-warn):not(.machine-danger):not(.caution):not(.machine-danger-dark) {
+  background: color-mix(in srgb, var(--cnc-accent) 25%, rgba(255, 255, 255, 0.05)) !important;
+  border-color: rgba(99, 102, 241, 0.35) !important;
+}
+
+button:not(.danger-button):not(.warning-button):not(.secondary-button):not(.machine-warn):not(.machine-danger):not(.caution):not(.machine-danger-dark):not(:disabled):hover {
+  background: color-mix(in srgb, var(--cnc-accent) 45%, rgba(255, 255, 255, 0.1)) !important;
+  border-color: var(--cnc-accent) !important;
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.35) !important;
+}
+
+/* State warning/danger buttons */
+button.machine-warn,
+button.warning-button {
+  background: color-mix(in srgb, var(--cnc-warning) 25%, rgba(255, 255, 255, 0.05)) !important;
+  border-color: rgba(245, 158, 11, 0.35) !important;
+}
+button.machine-warn:not(:disabled):hover,
+button.warning-button:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cnc-warning) 45%, rgba(255, 255, 255, 0.1)) !important;
+  border-color: var(--cnc-warning) !important;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.35) !important;
+}
+
+button.machine-danger,
+button.machine-danger-dark,
+button.danger-button {
+  background: color-mix(in srgb, var(--cnc-danger) 25%, rgba(255, 255, 255, 0.05)) !important;
+  border-color: rgba(239, 68, 68, 0.35) !important;
+}
+button.machine-danger:not(:disabled):hover,
+button.machine-danger-dark:not(:disabled):hover,
+button.danger-button:not(:disabled):hover {
+  background: color-mix(in srgb, var(--cnc-danger) 45%, rgba(255, 255, 255, 0.1)) !important;
+  border-color: var(--cnc-danger) !important;
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.35) !important;
+}
+
+/* Secondary/Neutral buttons */
+.secondary-button,
+.maintenance-link,
+.icon-link {
+  background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Input Focus states */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: var(--cnc-accent) !important;
+  box-shadow: 0 0 0 3px var(--glass-border-focus) !important;
+}
+
+/* CNC Status Text effects for readability */
+.machine-state strong {
+  text-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+}
+.machine-state strong[data-state="running"],
+.machine-state strong[data-state="paused"] {
+  text-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+}
+.machine-state strong[data-state="error"],
+.machine-state strong[data-state="unknown"] {
+  text-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+}
+
+/* Jog Pad & Dock Stylings */
+.machine-jog-center {
+  border: 2px solid rgba(255, 255, 255, 0.25) !important;
+  background: rgba(15, 23, 42, 0.7) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3) !important;
+}
+
+.machine-jog-knob {
+  background: var(--cnc-accent) !important;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.6) !important;
+}
+
+.machine-jog-handle {
+  background: rgba(99, 102, 241, 0.35) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-right: 0 !important;
+  border-radius: 12px 0 0 12px !important;
+}
+
+/* File list picker styling */
+.path-picker {
+  overflow: hidden;
+}
+.path-picker-header {
+  border-bottom: 1px solid var(--glass-border) !important;
+}
+.path-tree-item {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+  transition: background 0.15s ease;
+}
+.path-tree-item:hover {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+/* Drawer overlays */
+.machine-drawer-overlay {
+  background: rgba(8, 12, 24, 0.6) !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
+}
+
+/* Responsive pad & mobile optimizations */
+@media (max-width: 768px) {
+  .app {
+    padding: 12px 10px 84px !important;
+    gap: 10px !important;
+  }
+  .machine-state,
+  .machine-drawer-head,
+  .machine-drawer-card,
+  .machine-config-group,
+  .panel {
+    border-radius: 12px !important;
+    padding: 10px !important;
+  }
+  button,
+  input,
+  select {
+    border-radius: 10px !important;
+    padding: 10px 12px !important;
+  }
+}

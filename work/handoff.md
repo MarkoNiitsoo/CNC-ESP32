@@ -2080,3 +2080,13 @@ No firmware upload is required.
   older firmware fails closed as read-only because `/api/operator/status` is absent.
 - Automated verification passes 40 files / 334 tests, browser QA passes, and the ESP32-CAM
   PlatformIO build succeeds at 19.6% RAM (64,236 bytes) and 71.3% flash (1,401,681 bytes).
+
+## 2026-07-19 Aurora Glass UI/UX skin handoff
+
+- Implemented the `aurora-glass` theme using glassmorphism design parameters generated via the Cyber-Rage Design Intelligence Engine.
+- The skin is defined in `/www/skins/aurora-glass/` containing `skin.json` and `theme.css`.
+- Registered `aurora-glass` as an active skin in `/www/lib/ui-skins.js` under the `KNOWN_SKINS` array.
+- Included validation assertions in `/test/ui/ui-skins.test.mjs` to check the `skin.json` syntax and icon availability.
+- Deploy the new `/www/` resources to the SD card (under `/www/skins/aurora-glass/` and `/www/lib/ui-skins.js`) to make it selectable in the settings/skin selector of the web pendant UI.
+- All 42 tests and 350 assertions verify the new skin structure. Build footprint is unchanged.
+

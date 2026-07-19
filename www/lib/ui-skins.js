@@ -4,6 +4,7 @@ export const KNOWN_SKINS = Object.freeze([
   { id: 'default', name: 'Default' },
   { id: 'freecad-like', name: 'FreeCAD-like' },
   { id: 'high-contrast', name: 'High Contrast' },
+  { id: 'aurora-glass', name: 'Aurora Glass' },
 ]);
 
 export const REQUIRED_ICON_ROLES = Object.freeze([

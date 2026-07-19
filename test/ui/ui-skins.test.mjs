@@ -15,7 +15,7 @@ const manifest = (id) => JSON.parse(readFileSync(join('www', 'skins', id, 'skin.
 
 describe('UI skin manifests and semantic icons', () => {
   it('validates every bundled skin manifest', () => {
-    ['default', 'freecad-like', 'high-contrast'].forEach((id) => {
+    ['default', 'freecad-like', 'high-contrast', 'aurora-glass'].forEach((id) => {
       const skin = manifest(id);
       const sprite = readFileSync(join('www', 'skins', id, 'icons.svg'), 'utf8');
       expect(validateSkinManifest(skin)).toEqual({ ok: true, errors: [] });
