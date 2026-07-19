@@ -25,10 +25,19 @@ describe('firmware recovery checkpoint UI', () => {
       preview.indexOf('async function loadFirmwareRecoveryCheckpoint()'),
       preview.indexOf('async function dismissFirmwareRecoveryCheckpoint()'),
     );
-    expect(importer).toContain("state: 'PAUSED'");
+    expect(importer).toContain("state: checkpoint.state || (checkpoint.interrupted ? 'STOPPED' : 'ERROR')");
     expect(importer).toContain('lastAcknowledgedByteOffset');
     expect(importer.indexOf('await saveJobQuietly()')).toBeLessThan(importer.indexOf('await acknowledgeFirmwareRecoveryCheckpoint()'));
     expect(importer).toMatch(/if \(!firmwareCheckpointMatchesCurrentJob\(checkpoint\)\) return/);
+  });
+
+  it('puts ordered Home and work-zero repairs directly beside recovery blockers', () => {
+    expect(preview).toContain('Fix this here');
+    expect(preview).toContain('data-recovery-fix="home"');
+    expect(preview).toContain('data-recovery-fix="restore"');
+    expect(preview).toContain('Recovery record could not be imported:');
+    expect(styles).toContain('.recovery-fix-card');
+    expect((html.match(/<details\b/g) || []).length).toBe((html.match(/<\/details>/g) || []).length);
   });
 
   it('marks pending evidence in the persistent machine bar without blocking setup controls', () => {

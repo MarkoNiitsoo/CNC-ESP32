@@ -1,5 +1,23 @@
 # Handoff
 
+## 2026-07-19 - Recovery workflow repair handoff
+
+- Keep recovery evidence durable in this order: read checkpoint, update matching job history,
+  save that job JSON, then acknowledge the firmware checkpoint. The narrow recovery-review lock
+  exception exists solely to make that safe ordering possible; never unlock the motion files.
+- Do not convert imported checkpoints to `PAUSED`. Preserve firmware `STOPPED`/`ERROR` so
+  `planMotionOnlyRecovery()` can identify a recoverable terminal run.
+- Recovery blocker repairs belong in `.recovery-fix-card`: Home All, then restore the interrupted
+  work zero. Their results and failures must stay visible next to the blocker, not only in logs or
+  separate preparation tabs.
+- Production Resume is a top-level guarded recovery section. It must not be nested in the
+  motion-only `<details>` element.
+- Full automated verification passes 42 files / 350 tests. The ESP32-CAM build uses 19.6% RAM
+  (64,348 bytes) and 72.0% flash (1,414,885 bytes).
+- Firmware and all three changed recovery web assets are installed on SD drive `E:` with matching
+  SHA-256 hashes. Final firmware hash is `E36A7F5718344453600470FDEF2E6BFBEB6C35E45AAF8E6D73CE681377646A93`;
+  the pending production checkpoint was deliberately preserved for repaired import.
+
 ## 2026-07-18 - Aircut animation model handoff
 
 - Aircut is physically generated from `aircutCommands`, including collapsed repeated step-down

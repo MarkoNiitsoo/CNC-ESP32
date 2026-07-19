@@ -1,5 +1,28 @@
 # Progress
 
+## 2026-07-19 - Recovery import order and in-place repairs
+
+- SD evidence showed the rebooted firmware retained a valid production checkpoint at acknowledged
+  line 140. The later Home All and work-zero restore requests reached firmware, but Production
+  Resume never did.
+- Fixed a circular lock: recovery import must save the interrupted run into its matching job JSON
+  before acknowledging the checkpoint, while firmware previously locked that JSON. During idle
+  review only that exact `.job.json` is now writable; the interrupted G-code and active run remain
+  protected.
+- Recovery import now preserves the checkpoint's real `STOPPED`/`ERROR` state instead of forcing
+  `PAUSED`, which the recovery planner correctly treats as an active, non-recoverable state.
+- Home All and interrupted work-zero restoration now appear as an ordered action card directly
+  beside their blocker. Success, cancellation, import failure, and restore failure are visible
+  there rather than only in the collapsed technical log.
+- Corrected the Recovery HTML nesting so guarded Production Resume is no longer inside the
+  collapsed motion-only panel. A 412 x 915 browser check measured a 386 px action card and 342 px
+  restore button with no horizontal overflow.
+- Verification: focused recovery/lock tests pass 28 tests; full suite passes 42 files / 350 tests.
+  ESP32-CAM build succeeds at 19.6% RAM (64,348 bytes) and 72.0% flash (1,414,885 bytes).
+- Deployed `firmware.bin`, `preview.js`, `preview.html`, and `preview.css` to SD drive `E:`. All
+  four source/SD SHA-256 comparisons match; final firmware SHA-256 is
+  `E36A7F5718344453600470FDEF2E6BFBEB6C35E45AAF8E6D73CE681377646A93`.
+
 ## 2026-07-18 - Aircut animation follows its one-pass stream
 
 - Found that Aircut motion telemetry carried the correct generated-stream command sequence, but

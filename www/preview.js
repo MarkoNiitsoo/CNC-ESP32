@@ -201,6 +201,7 @@ let jobStatusFirmwareUptimeMs = 0;
 let redirectingToFiles = false;
 let recoveryPlan = null;
 let recoveryOverlayVisible = true;
+let recoveryActionNotice = null;
 let firmwareRecoveryCheckpoint = null;
 let firmwareRecoveryImported = false;
 let positionTrust = { trusted: false, fullHoming: false, source: '', confirmedAt: null, bootUptimeMs: null, firmwareVersion: '' };
@@ -2250,6 +2251,11 @@ function appendRecoveryLog(message) {
   recoveryLogEl.scrollTop = recoveryLogEl.scrollHeight;
 }
 
+function setRecoveryActionNotice(message, error = false) {
+  recoveryActionNotice = message ? { message, error } : null;
+  renderRecoveryPanel();
+}
+
 function refreshRecoveryPlan() {
   if (!jobRecoveryModule || !jobState || !toolpathModel) {
     recoveryPlan = null;
@@ -2348,7 +2354,7 @@ async function restoreInterruptedWorkZero() {
   if (!zero) throw new Error('Interrupted run has no saved work zero.');
   const reference = await resolveWorkZeroMachineReference(zero);
   const safeMachineZ = RECOVERY_LIMITS.zMax;
-  if (!confirm(`Restore saved work zero and go there?\n\nThe machine will lift to machine Z${safeMachineZ.toFixed(1)}, move to machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}, descend to saved Z${reference.position.z.toFixed(3)}, then set G92 X0 Y0 Z0.\n\nKeep your hand near the physical emergency stop.`)) return;
+  if (!confirm(`Restore saved work zero and go there?\n\nThe machine will lift to machine Z${safeMachineZ.toFixed(1)}, move to machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}, descend to saved Z${reference.position.z.toFixed(3)}, then set G92 X0 Y0 Z0.\n\nKeep your hand near the physical emergency stop.`)) return false;
 
   restoreSavedWorkZeroButton.disabled = true;
   appendRecoveryLog(`Restoring saved work zero at machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}...`);
@@ -2392,6 +2398,24 @@ async function restoreInterruptedWorkZero() {
   renderHistoryPanels();
   refreshRecoveryPlan();
   draw();
+  return true;
+}
+
+async function runInterruptedWorkZeroRestore() {
+  setRecoveryActionNotice('Restoring the interrupted work zero...');
+  try {
+    const restored = await restoreInterruptedWorkZero();
+    if (!restored) {
+      setRecoveryActionNotice('Work-zero restore cancelled. No recovery movement was requested.');
+      return false;
+    }
+    setRecoveryActionNotice('Saved work zero restored in this Home All session. Recovery checks are updating.');
+    return true;
+  } catch (err) {
+    appendRecoveryLog(`Work zero restore blocked: ${err.message}`);
+    setRecoveryActionNotice(`Work zero restore failed: ${err.message}`, true);
+    throw err;
+  }
 }
 
 function firmwareCheckpointId(checkpoint = {}) {
@@ -2501,7 +2525,7 @@ async function loadFirmwareRecoveryCheckpoint() {
   run.lastAcknowledgedByteOffset = checkpoint.lastAcknowledgedByteOffset ?? null;
   run.currentByteOffset = checkpoint.currentByteOffset ?? null;
   history.updateRunHistoryFromStatus(job, {
-    state: 'PAUSED',
+    state: checkpoint.state || (checkpoint.interrupted ? 'STOPPED' : 'ERROR'),
     currentLineNumber: checkpoint.currentLineNumber,
     sentLineCount: checkpoint.sentLineCount,
     acknowledgedLineCount: checkpoint.lastAcknowledgedLineNumber ?? checkpoint.acknowledgedLineCount,
@@ -2556,7 +2580,9 @@ function renderRecoveryPanel() {
   }
   if (!recoverySummaryEl) return;
   if (!recoveryPlan) {
-    recoverySummaryEl.innerHTML = '<p>Load an active job and run history to build a recovery plan.</p>';
+    recoverySummaryEl.innerHTML = recoveryActionNotice
+      ? `<p class="recovery-action-notice ${recoveryActionNotice.error ? 'error' : ''}" role="status">${html(recoveryActionNotice.message)}</p>`
+      : '<p>Load an active job and run history to build a recovery plan.</p>';
     if (moveToResumePointButton) moveToResumePointButton.disabled = true;
     renderToollessResumePanel();
     renderProductionResumePanel();
@@ -2567,11 +2593,33 @@ function renderRecoveryPanel() {
   const blockers = recoveryPlan.blockingReasons || [];
   const recoveryWarnings = recoveryPlan.warnings || [];
   const available = recoveryPlan.status === 'available';
+  const needsHome = blockers.some((item) => item.id === 'positionUntrusted');
+  const needsWorkZero = blockers.some((item) => item.id === 'workZeroFrame' || item.id === 'workZeroMismatch');
+  const fullHomeReady = positionTrust.trusted && positionTrust.fullHoming && currentMachineFrame?.absoluteFromHome === true;
+  const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
+  const zero = interruptedWorkZeroEntry();
+  const recoveryFixes = needsHome || needsWorkZero ? `
+    <section class="recovery-fix-card" aria-label="Required recovery actions">
+      <h4>Fix this here</h4>
+      <ol>
+        <li class="${fullHomeReady ? 'complete' : ''}">
+          <span><strong>1. Home All</strong><small>${fullHomeReady ? 'Complete in the current powered session.' : 'Required before a saved machine-relative zero can be restored.'}</small></span>
+          ${fullHomeReady ? '<span class="recovery-step-state">DONE</span>' : '<button type="button" data-recovery-fix="home">Home All</button>'}
+        </li>
+        <li class="${!needsWorkZero ? 'complete' : ''}">
+          <span><strong>2. Restore interrupted work zero</strong><small>${!needsWorkZero ? 'Active in the current Home All session.' : 'Moves safely to the saved home-relative origin and activates G92 XYZ zero.'}</small></span>
+          ${!needsWorkZero ? '<span class="recovery-step-state">DONE</span>' : `<button type="button" data-recovery-fix="restore" ${!fullHomeReady || !idle || !zero ? 'disabled' : ''}>Restore Saved Work Zero</button>`}
+        </li>
+      </ol>
+      ${recoveryActionNotice ? `<p class="recovery-action-notice ${recoveryActionNotice.error ? 'error' : ''}" role="status">${html(recoveryActionNotice.message)}</p>` : ''}
+    </section>
+  ` : recoveryActionNotice ? `<p class="recovery-action-notice ${recoveryActionNotice.error ? 'error' : ''}" role="status">${html(recoveryActionNotice.message)}</p>` : '';
   recoverySummaryEl.innerHTML = `
     <p class="eyebrow">${available ? 'READY TO REVIEW' : 'ACTION REQUIRED'}</p>
     <strong>${candidate ? `Continue from command ${candidate.lineNumber}` : 'No safe resume point is available'}</strong>
     ${candidate ? `<p>Resume at X${fmtValue(candidate.position.x)} Y${fmtValue(candidate.position.y)} after moving at Safe Z ${fmtValue(candidate.safeZ)} mm.</p>` : ''}
     ${blockers.length ? `<ul class="readiness-blockers">${blockers.map((item) => `<li>${html(item.message)}</li>`).join('')}</ul>` : '<p class="ok-text">Interrupted file, machine position and work zero match.</p>'}
+    ${recoveryFixes}
     ${recoveryWarnings.length ? `<ul class="dry-run-errors">${recoveryWarnings.map((item) => `<li>${html(item.message)}</li>`).join('')}</ul>` : ''}
     <details class="operator-diagnostics"><summary>Recovery details</summary>
       <dl>
@@ -2583,6 +2631,13 @@ function renderRecoveryPanel() {
       </dl>
     </details>
   `;
+  recoverySummaryEl.querySelector('[data-recovery-fix="home"]')?.addEventListener('click', () => {
+    setRecoveryActionNotice('Home All requested. Wait for all axes to finish homing.');
+    window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
+  });
+  recoverySummaryEl.querySelector('[data-recovery-fix="restore"]')?.addEventListener('click', () => {
+    runInterruptedWorkZeroRestore().catch(() => {});
+  });
   if (moveToResumePointButton) moveToResumePointButton.disabled = recoveryPlan.status !== 'available' || toollessResumeRunning || productionResumeRunning;
   renderToollessResumePanel();
   renderProductionResumePanel();
@@ -6106,10 +6161,7 @@ firmwareRecoveryDismissButton?.addEventListener('click', () => {
   dismissFirmwareRecoveryCheckpoint().catch((err) => appendRecoveryLog(`Recovery record dismiss failed: ${err.message}`));
 });
 restoreSavedWorkZeroButton?.addEventListener('click', () => {
-  restoreInterruptedWorkZero().catch((err) => {
-    appendRecoveryLog(`Work zero restore blocked: ${err.message}`);
-    renderWorkZeroRestore();
-  });
+  runInterruptedWorkZeroRestore().catch(() => renderWorkZeroRestore());
 });
 fitResumePointButton?.addEventListener('click', () => {
   if (!recoveryPlan?.resumeCandidate) return;
@@ -6200,7 +6252,12 @@ addEventListener('cnc-z-zero-set', (event) => {
   setZZeroWithCapture(event.detail).catch((err) => setToolZeroResult(err.message, true));
 });
 addEventListener('cnc-position-trust', (event) => {
-  if (event.detail?.trusted) setPositionTrust(true, event.detail.source || 'homing', event.detail.fullHoming === true);
+  if (event.detail?.trusted) {
+    setPositionTrust(true, event.detail.source || 'homing', event.detail.fullHoming === true);
+    if (event.detail.fullHoming === true) {
+      setRecoveryActionNotice('Home All complete. Next: restore the interrupted work zero.');
+    }
+  }
   else setPositionTrust(false, event.detail?.source || 'external');
 });
 addEventListener('cnc-critical-control', (event) => {
@@ -6260,7 +6317,10 @@ jobReadinessPromise.then(renderReadiness).catch((err) => {
   if (readinessSummaryEl) readinessSummaryEl.textContent = `Readiness unavailable: ${err.message}`;
 });
 loadPreview()
-  .then(() => loadFirmwareRecoveryCheckpoint().catch((err) => appendRecoveryLog(`Firmware recovery record unavailable: ${err.message}`)))
+  .then(() => loadFirmwareRecoveryCheckpoint().catch((err) => {
+    appendRecoveryLog(`Firmware recovery record unavailable: ${err.message}`);
+    setRecoveryActionNotice(`Recovery record could not be imported: ${err.message}`, true);
+  }))
   .catch(() => redirectToFiles(filePath));
 window.CncTelemetry?.subscribe('job', (data) => {
   applyJobRunStatus(data).catch((err) => appendRunLog(`Status update failed: ${err.message}`));

@@ -5290,6 +5290,16 @@ void handleDownload() {
   file.close();
 }
 
+bool recoveryJobMetadataImportAllowed(const String &path) {
+  if (jobIsActive() || jobCheckpointTracking || !recoveryCheckpointRequiresReview) return false;
+  const String normalized = normalizeSdPath(path);
+  // Recovery import must durably add the interrupted run to its job metadata before
+  // acknowledging the firmware checkpoint. This exception is used only by upload;
+  // delete and rename remain locked with every motion file.
+  const String recoveryJob = normalizeSdPath(recoveryCheckpointJobPath);
+  return recoveryJob.endsWith(".job.json") && normalized == recoveryJob;
+}
+
 bool mutationPathTouchesLockedFile(const String &path) {
   if (!(jobIsActive() || jobCheckpointTracking || recoveryCheckpointRequiresReview)) return false;
   const String normalized = normalizeSdPath(path);
@@ -5372,7 +5382,8 @@ void handleUploadData() {
     }
 
     uploadTargetPath = dir + "/" + upload.filename;
-    if (mutationPathTouchesLockedFile(uploadTargetPath)) {
+    if (mutationPathTouchesLockedFile(uploadTargetPath) &&
+        !recoveryJobMetadataImportAllowed(uploadTargetPath)) {
       uploadError = "file is locked by the active or interrupted job";
       return;
     }

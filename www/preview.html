@@ -220,6 +220,7 @@
         <div id="firmware-recovery-checkpoint" class="job-summary" hidden></div>
         <button id="firmware-recovery-dismiss" class="machine-danger" type="button" hidden>Dismiss Firmware Recovery Record</button>
         <div id="recovery-trust" class="arm-state arm-not-ready">POSITION UNTRUSTED</div>
+        <div id="recovery-summary" class="job-summary"></div>
         <details class="operator-diagnostics"><summary>Recovery settings</summary><div class="dry-run-inputs">
           <label for="recovery-safe-z">Safe Z (mm)</label>
           <input id="recovery-safe-z" type="number" inputmode="decimal" min="0.1" max="70" step="0.1" value="15">
@@ -236,7 +237,6 @@
           <button id="restore-saved-work-zero" type="button" disabled>Restore Saved Work Zero</button>
           <p class="form-hint">Home All first. The saved home-relative XYZ origin is restored; homing is never automatic.</p>
         </details>
-        <div id="recovery-summary" class="job-summary"></div>
         <details class="operator-diagnostics recovery-positioning-panel">
           <summary>Motion-only positioning</summary>
         <div class="job-actions">
@@ -244,6 +244,7 @@
           <button id="move-to-resume-point" type="button" disabled>Move Axes to Resume Point</button>
           <button id="cancel-recovery" type="button">Hide Recovery</button>
         </div>
+        </details>
         <details class="operator-diagnostics toolless-resume-panel"><summary>Advanced: test remaining path without tool</summary>
           <p class="warning">Toolless resume test. No cutter/router installed. Spindle stays off. This follows the real Z path.</p>
           <label class="recovery-overlay-toggle"><input id="toolless-no-cutter" type="checkbox"> I confirm no cutter/router is installed</label>
@@ -323,7 +324,6 @@
           <button id="resume-job" type="button">Resume Job</button>
           <button id="stop-job" type="button" aria-label="Stop Now with M410" title="Abrupt quickstop; position must be verified" data-icon="stop">Stop Now</button>
         </div>
-        </details>
         <p class="form-hint"><strong>Pause Safely</strong> finishes buffered motion. <strong>Stop Now</strong> uses abrupt M410 and requires Home All plus recovery review. <strong>Output Off (M5)</strong> does not stop motion.</p>
         <details class="operator-diagnostics">
           <summary>Advanced run details</summary>

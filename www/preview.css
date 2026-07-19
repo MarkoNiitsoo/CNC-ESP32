@@ -139,6 +139,73 @@
   color: #ffd0d0;
 }
 
+.recovery-fix-card {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 190, 70, 0.65);
+  border-radius: 8px;
+  background: rgba(105, 70, 8, 0.2);
+}
+
+.recovery-fix-card h4 {
+  margin: 0 0 9px;
+}
+
+.recovery-fix-card ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recovery-fix-card li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px;
+  border-radius: 7px;
+  background: rgba(5, 14, 22, 0.55);
+}
+
+.recovery-fix-card li span:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.recovery-fix-card small {
+  color: #9fb1bf;
+}
+
+.recovery-fix-card li.complete {
+  border-left: 3px solid #3fc475;
+}
+
+.recovery-step-state {
+  color: #6de09b;
+  font-weight: 700;
+}
+
+.recovery-action-notice {
+  margin: 10px 0 0;
+  padding: 9px;
+  border-radius: 7px;
+  background: rgba(63, 196, 117, 0.14);
+}
+
+.recovery-action-notice.error {
+  color: #ffd0d0;
+  background: rgba(255, 95, 105, 0.16);
+}
+
+@media (max-width: 560px) {
+  .recovery-fix-card li {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .readiness-panel h3 {
   margin: 12px 0 0;
   color: #cbd8e1;

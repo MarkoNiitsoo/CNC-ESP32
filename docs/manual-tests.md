@@ -34,6 +34,22 @@ tool above material, low feed override, and a physical stop/power cut within rea
 7. Install over firmware that has an old `validated_test_motion` checkpoint and confirm boot logs
    `discarded legacy non-recoverable test-motion checkpoint` once, with normal workflow restored.
 
+## Interrupted Cut Import, Home, and Zero Order
+
+1. Stop a production Cut after several acknowledged commands, reboot without discarding
+   `/logs/active-job.json`, and reopen the affected job.
+2. Confirm the firmware checkpoint is copied into durable run history and then acknowledged. The
+   saved run must retain its checkpoint `STOPPED`/`ERROR` state, not become `PAUSED`.
+3. Confirm the recovery problem card shows its repairs in place: `Home All` first and `Restore
+   Saved Work Zero` second. The second button must remain disabled until Home All completes.
+4. Complete Home All and confirm step 1 becomes `DONE` in the same card without a page reload.
+5. Restore the interrupted work zero and confirm step 2 becomes `DONE`, the current Home All frame
+   matches, and the recovery candidate becomes available without visiting Zero History or logs.
+6. Confirm the generated run and interrupted stream remain locked throughout review; only the
+   matching `.job.json` may be updated so the checkpoint can be imported before acknowledgement.
+7. At 412 x 915, confirm both repair actions use the full card width without horizontal overflow,
+   and guarded Production Resume remains visible outside collapsed motion-only diagnostics.
+
 ## SD System Diagnostics
 
 1. Install the diagnostic firmware through root `/firmware.bin`, allow the ESP to rename it to
