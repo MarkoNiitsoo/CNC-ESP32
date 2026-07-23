@@ -2090,3 +2090,17 @@ No firmware upload is required.
 - Deploy the new `/www/` resources to the SD card (under `/www/skins/aurora-glass/` and `/www/lib/ui-skins.js`) to make it selectable in the settings/skin selector of the web pendant UI.
 - All 42 tests and 350 assertions verify the new skin structure. Build footprint is unchanged.
 
+## 2026-07-23 remembered controller handoff
+
+- Deploy firmware and `www/machine-bar.js` together. The updated claim request includes `browserId`,
+  and old firmware does not provide `/api/operator/reconnect`.
+- On the first successful claim, the browser keeps a random 256-bit identity under
+  `cnc.operator.browserId`. Firmware persists only
+  `SHA-256(deviceId + ":browser:" + browserId)` plus the controller display name.
+- Opening or refreshing the page stays read-only while status is checked. If that browser identity
+  matches the last controller stored by ESP32, reconnect happens silently and a fresh HttpOnly cookie
+  is issued; otherwise no dialog appears until the user attempts a machine-changing action.
+- Cancel only closes the panel. Release Control intentionally also forgets the browser on both sides,
+  so the next controller claim requires the PIN and establishes a new remembered browser.
+- DEV MOCK and firmware contract tests cover restart recovery and wrong-browser rejection. Full suite
+  passes 42 files / 352 tests; PlatformIO ESP32-CAM build succeeds at 19.7% RAM / 72.1% flash.

@@ -2241,3 +2241,17 @@
 - Registered the new skin in `www/lib/ui-skins.js` and added validation coverage to `test/ui/ui-skins.test.mjs`.
 - Verified that all 42 test files and 350 test assertions pass successfully.
 
+## 2026-07-23 - Remembered browser control without passive-view prompts
+
+- Added a cryptographically random browser identity stored in browser `localStorage`. ESP32 stores
+  only its device-salted SHA-256 digest and the last controller name in NVS.
+- Added `/api/operator/reconnect`: after an ESP32 restart or lost cookie, the same remembered browser
+  silently receives a fresh controller session without entering its name or PIN again. A different
+  browser remains read-only and cannot restore that session by copying the visible controller name.
+- Explicit Release Control now removes both the live session and the remembered-browser association.
+- The global 423 monitor opens the claim panel only for a recent user control action; passive status
+  and telemetry activity no longer puts the panel over the screen.
+- Added a Cancel button that closes the claim/controller panel without claiming or releasing control.
+- DEV MOCK mirrors claim, restart/reconnect, rejection of another browser, and remembered-state
+  deletion. Full verification passes 42 files / 352 tests. ESP32-CAM build succeeds at 19.7% RAM
+  (64,396 bytes) and 72.1% flash (1,417,129 bytes).

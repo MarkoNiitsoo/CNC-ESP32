@@ -36,6 +36,8 @@ constexpr const char *kRecoveryPrefsNamespace = "recovery";
 constexpr const char *kRecoveryPrefsActiveJobKey = "activeJob";
 constexpr const char *kOperatorPrefsNamespace = "operator";
 constexpr const char *kOperatorPrefsPinHashKey = "pinHash";
+constexpr const char *kOperatorPrefsBrowserHashKey = "browserHash";
+constexpr const char *kOperatorPrefsOwnerKey = "lastOwner";
 constexpr uint32_t kOperatorLeaseMs = 45000;
 constexpr uint32_t kOperatorCookieMaxAgeSeconds = 31536000;
 constexpr uint32_t kOperatorOtaUnlockMs = 120000;
@@ -395,8 +397,11 @@ bool otaUploadOk = false;
 uint32_t rebootAtMs = 0;
 String otaError;
 String operatorPinHash;
+String operatorRememberedBrowserHash;
+String operatorRememberedOwner;
 String operatorSessionToken;
 String operatorSessionOwner;
+String operatorSessionBrowserHash;
 uint32_t operatorSessionClaimedAtMs = 0;
 uint32_t operatorSessionLastSeenMs = 0;
 uint32_t operatorOtaUnlockedUntilMs = 0;
@@ -4877,6 +4882,23 @@ String operatorPinDigest(const String &pin) {
   return bytesToHex(digest, sizeof(digest));
 }
 
+String operatorBrowserDigest(const String &browserId) {
+  const String material = deviceIdentity.deviceId + ":browser:" + browserId;
+  uint8_t digest[32];
+  mbedtls_sha256_ret(reinterpret_cast<const unsigned char *>(material.c_str()),
+                     material.length(), digest, 0);
+  return bytesToHex(digest, sizeof(digest));
+}
+
+bool validOperatorBrowserId(const String &browserId) {
+  if (browserId.length() != 64) return false;
+  for (size_t i = 0; i < browserId.length(); ++i) {
+    const char value = browserId[i];
+    if (!((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f'))) return false;
+  }
+  return true;
+}
+
 bool validOperatorPin(const String &pin) {
   if (pin.length() < 6 || pin.length() > 12) return false;
   for (size_t i = 0; i < pin.length(); ++i) {
@@ -4995,9 +5017,29 @@ void saveOperatorPin(const String &pin) {
   operatorPrefs.end();
 }
 
+void rememberOperatorBrowser(const String &browserId, const String &owner) {
+  operatorRememberedBrowserHash = operatorBrowserDigest(browserId);
+  operatorRememberedOwner = owner;
+  operatorPrefs.begin(kOperatorPrefsNamespace, false);
+  operatorPrefs.putString(kOperatorPrefsBrowserHashKey, operatorRememberedBrowserHash);
+  operatorPrefs.putString(kOperatorPrefsOwnerKey, operatorRememberedOwner);
+  operatorPrefs.end();
+}
+
+void forgetOperatorBrowser() {
+  operatorRememberedBrowserHash = "";
+  operatorRememberedOwner = "";
+  operatorPrefs.begin(kOperatorPrefsNamespace, false);
+  operatorPrefs.remove(kOperatorPrefsBrowserHashKey);
+  operatorPrefs.remove(kOperatorPrefsOwnerKey);
+  operatorPrefs.end();
+}
+
 void loadOperatorSettings() {
   operatorPrefs.begin(kOperatorPrefsNamespace, true);
   operatorPinHash = operatorPrefs.getString(kOperatorPrefsPinHashKey, "");
+  operatorRememberedBrowserHash = operatorPrefs.getString(kOperatorPrefsBrowserHashKey, "");
+  operatorRememberedOwner = operatorPrefs.getString(kOperatorPrefsOwnerKey, "");
   operatorPrefs.end();
 }
 
@@ -5009,10 +5051,13 @@ void handleOperatorClaim() {
   const String body = server.hasArg("plain") ? server.arg("plain") : "";
   String owner = extractJsonString(body, "owner");
   String pin = extractJsonString(body, "pin");
+  String browserId = extractJsonString(body, "browserId");
   owner.trim();
   pin.trim();
-  if (owner.length() == 0 || owner.length() > 32 || !validOperatorPin(pin)) {
-    sendJsonError(400, "owner and a 6-12 digit PIN are required");
+  browserId.trim();
+  if (owner.length() == 0 || owner.length() > 32 || !validOperatorPin(pin) ||
+      !validOperatorBrowserId(browserId)) {
+    sendJsonError(400, "owner, browser identity, and a 6-12 digit PIN are required");
     return;
   }
   if (operatorSessionActive() && !operatorRequestAuthorized(false)) {
@@ -5033,6 +5078,38 @@ void handleOperatorClaim() {
   }
   operatorSessionToken = newOperatorToken();
   operatorSessionOwner = owner;
+  operatorSessionBrowserHash = operatorBrowserDigest(browserId);
+  rememberOperatorBrowser(browserId, owner);
+  operatorSessionClaimedAtMs = millis();
+  operatorSessionLastSeenMs = operatorSessionClaimedAtMs;
+  operatorOtaUnlockedUntilMs = 0;
+  server.sendHeader("Set-Cookie", "cnc_operator=" + operatorSessionToken +
+                                  "; Path=/; SameSite=Strict; HttpOnly; Max-Age=" +
+                                  String(kOperatorCookieMaxAgeSeconds));
+  server.send(200, "application/json", operatorStatusJson(true));
+}
+
+void handleOperatorReconnect() {
+  String browserId = extractJsonString(server.hasArg("plain") ? server.arg("plain") : "", "browserId");
+  browserId.trim();
+  if (!validOperatorBrowserId(browserId)) {
+    sendJsonError(400, "valid browser identity is required");
+    return;
+  }
+  const String browserHash = operatorBrowserDigest(browserId);
+  if (operatorRememberedBrowserHash.length() == 0 || browserHash != operatorRememberedBrowserHash) {
+    sendJsonError(403, "this browser is not the remembered controller");
+    return;
+  }
+  if (operatorSessionActive() && operatorSessionBrowserHash.length() > 0 &&
+      browserHash != operatorSessionBrowserHash) {
+    sendOperatorLocked();
+    return;
+  }
+  operatorSessionToken = newOperatorToken();
+  operatorSessionOwner = operatorRememberedOwner.length() > 0
+                           ? operatorRememberedOwner : "Remembered controller";
+  operatorSessionBrowserHash = browserHash;
   operatorSessionClaimedAtMs = millis();
   operatorSessionLastSeenMs = operatorSessionClaimedAtMs;
   operatorOtaUnlockedUntilMs = 0;
@@ -5051,7 +5128,9 @@ void handleOperatorRelease() {
   if (!requireOperatorControl()) return;
   operatorSessionToken = "";
   operatorSessionOwner = "";
+  operatorSessionBrowserHash = "";
   operatorOtaUnlockedUntilMs = 0;
+  forgetOperatorBrowser();
   server.sendHeader("Set-Cookie", "cnc_operator=; Path=/; SameSite=Strict; HttpOnly; Max-Age=0");
   server.send(200, "application/json", operatorStatusJson());
 }
@@ -7568,6 +7647,7 @@ void startHttpServer() {
   httpRoute("/style.css", HTTP_GET, handleStyleCss);
   httpRoute("/api/operator/status", HTTP_GET, handleOperatorStatus);
   httpRoute("/api/operator/claim", HTTP_POST, handleOperatorClaim);
+  httpRoute("/api/operator/reconnect", HTTP_POST, handleOperatorReconnect);
   httpRoute("/api/operator/heartbeat", HTTP_POST, handleOperatorHeartbeat);
   httpRoute("/api/operator/release", HTTP_POST, handleOperatorRelease);
   httpRoute("/api/operator/pin", HTTP_PUT, handleOperatorPinUpdate);

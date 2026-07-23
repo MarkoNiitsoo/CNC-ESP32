@@ -156,6 +156,7 @@ export async function createMockEnvironment(options = {}) {
   };
   const operator = {
     configured: false, pin: '', token: '', owner: '', lastSeenAt: 0,
+    browserId: '', rememberedBrowserId: '', rememberedOwner: '',
     leaseMs: 45000, otaUnlockedUntil: 0,
   };
   return {
@@ -214,8 +215,9 @@ export async function createMockServer(options = {}) {
         const body = await readJson(req);
         const owner = String(body.owner || '').trim();
         const pin = String(body.pin || '').trim();
-        if (!owner || owner.length > 32 || !/^\d{6,12}$/.test(pin)) {
-          return json(res, 400, { ok: false, error: 'owner and a 6-12 digit PIN are required' });
+        const browserId = String(body.browserId || '').trim();
+        if (!owner || owner.length > 32 || !/^\d{6,12}$/.test(pin) || !/^[a-f0-9]{64}$/.test(browserId)) {
+          return json(res, 400, { ok: false, error: 'owner, browser identity, and a 6-12 digit PIN are required' });
         }
         if (operatorActive() && !operatorAuthorized(req, false)) {
           return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
@@ -225,7 +227,31 @@ export async function createMockServer(options = {}) {
         }
         Object.assign(env.operator, {
           configured: true, pin, token: randomBytes(20).toString('hex'), owner,
+          browserId, rememberedBrowserId: browserId, rememberedOwner: owner,
           lastSeenAt: Date.now(), otaUnlockedUntil: 0,
+        });
+        const cookie = `cnc_operator=${env.operator.token}`;
+        return json(res, 200, operatorStatus({ headers: { cookie } }), {
+          'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
+        });
+      }
+      if (req.method === 'POST' && pathname === '/api/operator/reconnect') {
+        const browserId = String((await readJson(req)).browserId || '').trim();
+        if (!/^[a-f0-9]{64}$/.test(browserId)) {
+          return json(res, 400, { ok: false, error: 'valid browser identity is required' });
+        }
+        if (!env.operator.rememberedBrowserId || browserId !== env.operator.rememberedBrowserId) {
+          return json(res, 403, { ok: false, error: 'this browser is not the remembered controller' });
+        }
+        if (operatorActive() && env.operator.browserId && browserId !== env.operator.browserId) {
+          return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        }
+        Object.assign(env.operator, {
+          token: randomBytes(20).toString('hex'),
+          owner: env.operator.rememberedOwner || 'Remembered controller',
+          browserId,
+          lastSeenAt: Date.now(),
+          otaUnlockedUntil: 0,
         });
         const cookie = `cnc_operator=${env.operator.token}`;
         return json(res, 200, operatorStatus({ headers: { cookie } }), {
@@ -238,7 +264,10 @@ export async function createMockServer(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/api/operator/release') {
         if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
-        Object.assign(env.operator, { token: '', owner: '', lastSeenAt: 0, otaUnlockedUntil: 0 });
+        Object.assign(env.operator, {
+          token: '', owner: '', browserId: '', rememberedBrowserId: '', rememberedOwner: '',
+          lastSeenAt: 0, otaUnlockedUntil: 0,
+        });
         return json(res, 200, operatorStatus(req), { 'Set-Cookie': 'cnc_operator=; Path=/; Max-Age=0' });
       }
       if (req.method === 'PUT' && pathname === '/api/operator/pin') {

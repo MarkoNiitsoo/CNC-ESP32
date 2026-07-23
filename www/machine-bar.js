@@ -24,6 +24,9 @@
   let travelSpeedMmS = 50;
   let operatorTimer = null;
   let operatorFetchMonitorInstalled = false;
+  let operatorIntentUntil = 0;
+  let operatorReconnectLastAttempt = 0;
+  const OPERATOR_BROWSER_ID_KEY = 'cnc.operator.browserId';
   const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
     motionSettingsModule = module;
     travelSpeedMmS = module.loadMotionSettings().travelSpeedMmS;
@@ -384,9 +387,38 @@
     return data;
   }
 
+  function storedOperatorBrowserId(create = false) {
+    let browserId = localStorage.getItem(OPERATOR_BROWSER_ID_KEY) || '';
+    if (/^[a-f0-9]{64}$/.test(browserId)) return browserId;
+    localStorage.removeItem(OPERATOR_BROWSER_ID_KEY);
+    if (!create || !globalThis.crypto?.getRandomValues) return '';
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    browserId = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(OPERATOR_BROWSER_ID_KEY, browserId);
+    return browserId;
+  }
+
+  async function silentlyReconnectOperator() {
+    const browserId = storedOperatorBrowserId();
+    const now = Date.now();
+    if (!browserId || now - operatorReconnectLastAttempt < 15000) return false;
+    operatorReconnectLastAttempt = now;
+    try {
+      STATE.operator = await readOperatorResponse(await fetch('/api/operator/reconnect', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ browserId }),
+      }));
+      renderOperatorLock();
+      return STATE.operator.controller === true;
+    } catch {
+      return false;
+    }
+  }
+
   async function refreshOperatorStatus() {
     try {
       STATE.operator = await readOperatorResponse(await fetch('/api/operator/status', { cache: 'no-store' }));
+      if (!STATE.operator.controller) await silentlyReconnectOperator();
     } catch (err) {
       STATE.operator = { ...STATE.operator, controller: false, readOnly: true, error: err.message };
     }
@@ -397,11 +429,12 @@
   async function claimOperatorControl() {
     const owner = String(el('mb-operator-owner')?.value || '').trim();
     const pin = String(el('mb-operator-pin')?.value || '').trim();
+    const browserId = storedOperatorBrowserId(true);
     const status = el('mb-operator-result');
     try {
       const data = await readOperatorResponse(await fetch('/api/operator/claim', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ owner, pin }),
+        body: JSON.stringify({ owner, pin, browserId }),
       }));
       localStorage.setItem('cnc.operator.owner', owner);
       if (el('mb-operator-pin')) el('mb-operator-pin').value = '';
@@ -419,6 +452,7 @@
   async function releaseOperatorControl() {
     try {
       STATE.operator = await readOperatorResponse(await fetch('/api/operator/release', { method: 'POST' }));
+      localStorage.removeItem(OPERATOR_BROWSER_ID_KEY);
       STATE.operatorPanelOpen = false;
       renderOperatorLock();
     } catch (err) {
@@ -465,10 +499,12 @@
     operatorFetchMonitorInstalled = true;
     const originalFetch = window.fetch.bind(window);
     window.fetch = async function monitoredOperatorFetch(input, init = {}) {
+      const operatorRequestWasUserInitiated = Date.now() <= operatorIntentUntil;
       const response = await originalFetch(input, init);
       const url = typeof input === 'string' ? input : String(input?.url || '');
       const method = String(init.method || input?.method || 'GET').toUpperCase();
-      if (response.status === 423 && method !== 'GET' && !url.includes('/api/operator/heartbeat')) {
+      if (operatorRequestWasUserInitiated && response.status === 423 && method !== 'GET' &&
+          !url.includes('/api/operator/')) {
         const data = await response.clone().json().catch(() => ({}));
         const operatorLocked = data?.readOnly === true && typeof data?.configured === 'boolean';
         if (operatorLocked) {
@@ -1170,6 +1206,7 @@
         <div class="machine-operator-actions">
           <button id="mb-operator-claim" type="button" data-operator-control>Claim Control</button>
           <button id="mb-operator-release" type="button" data-operator-control hidden>Release Control</button>
+          <button id="mb-operator-cancel" type="button">Cancel</button>
         </div>
         <details id="mb-operator-change" data-operator-pin-field hidden>
           <summary>Change device PIN</summary>
@@ -1341,7 +1378,16 @@
     });
     button('mb-operator-claim', claimOperatorControl);
     button('mb-operator-release', releaseOperatorControl);
+    button('mb-operator-cancel', () => {
+      STATE.operatorPanelOpen = false;
+      renderOperatorLock();
+    });
     button('mb-operator-pin-save', updateOperatorPin);
+    document.addEventListener('click', (event) => {
+      const control = event.target?.closest?.('button, input[type="submit"], input[type="button"], [role="button"]');
+      if (!control || control.closest('#mb-operator-panel') || control.id === 'mb-operator-toggle') return;
+      operatorIntentUntil = Date.now() + 5000;
+    }, true);
     const interceptReadOnlyMachineControl = (event) => {
       if (STATE.operator?.controller || !event.target?.closest?.('.machine-actions, .machine-jog-dock')) return;
       event.preventDefault();

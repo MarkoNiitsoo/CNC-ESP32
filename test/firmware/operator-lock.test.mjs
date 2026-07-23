@@ -25,6 +25,16 @@ describe('single operator control lease', () => {
     expect(firmware).toMatch(/const bool controller = operatorSessionToken\.length\(\) > 0/);
   });
 
+  it('restores only the remembered browser after restart without asking for the PIN', () => {
+    expect(firmware).toContain('kOperatorPrefsBrowserHashKey = "browserHash"');
+    expect(firmware).toContain('operatorBrowserDigest(const String &browserId)');
+    expect(firmware).toContain('httpRoute("/api/operator/reconnect", HTTP_POST, handleOperatorReconnect)');
+    expect(firmware).toMatch(/handleOperatorReconnect[\s\S]*operatorRememberedBrowserHash[\s\S]*newOperatorToken/);
+    expect(machineBar).toContain("const OPERATOR_BROWSER_ID_KEY = 'cnc.operator.browserId'");
+    expect(machineBar).toContain("fetch('/api/operator/reconnect'");
+    expect(machineBar).toContain('body: JSON.stringify({ owner, pin, browserId })');
+  });
+
   it('guards every state-changing machine route while leaving status reads public', () => {
     expect(firmware).toContain('httpRoute("/api/operator/status", HTTP_GET, handleOperatorStatus)');
     expect(firmware).toContain('httpRoute("/api/operator/claim", HTTP_POST, handleOperatorClaim)');
@@ -55,6 +65,9 @@ describe('single operator control lease', () => {
     expect(machineBar).toContain("response.status === 423");
     expect(machineBar).toContain("const data = await response.clone().json().catch(() => ({}))");
     expect(machineBar).toContain("data?.readOnly === true && typeof data?.configured === 'boolean'");
+    expect(machineBar).toContain('operatorRequestWasUserInitiated && response.status === 423');
+    expect(machineBar).toContain('id="mb-operator-cancel"');
+    expect(machineBar).toMatch(/mb-operator-cancel[\s\S]*STATE\.operatorPanelOpen = false/);
     expect(machineBar).not.toContain('STATE.operatorPanelOpen = true;\n    }\n    renderOperatorLock();');
     expect(styles).toContain('body.operator-read-only .machine-actions');
     expect(styles).toContain('body.operator-read-only .machine-jog-dock');

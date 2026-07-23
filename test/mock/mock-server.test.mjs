@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createMockServer } from '../../dev/mock-server.mjs';
 
 const instances = [];
+const markoBrowserId = 'a'.repeat(64);
+const workshopBrowserId = 'b'.repeat(64);
 async function start(config = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'cnc-mock-http-'));
   const instance = await createMockServer({
@@ -34,7 +36,7 @@ describe('mock HTTP API', () => {
 
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner: 'Marko phone', pin: '741852' }),
+      body: JSON.stringify({ owner: 'Marko phone', pin: '741852', browserId: markoBrowserId }),
     });
     expect(claim.ok).toBe(true);
     expect(claim.headers.get('set-cookie')).toContain('Max-Age=31536000');
@@ -44,7 +46,7 @@ describe('mock HTTP API', () => {
       .toMatchObject({ controller: false, readOnly: true, owner: 'Marko phone' });
     expect((await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner: 'Workshop laptop', pin: '741852' }),
+      body: JSON.stringify({ owner: 'Workshop laptop', pin: '741852', browserId: workshopBrowserId }),
     })).status).toBe(423);
     expect((await fetch(`${base}/api/cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
@@ -62,7 +64,7 @@ describe('mock HTTP API', () => {
     env.operator.leaseMs = 5;
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner: 'Marko phone', pin: '741852' }),
+      body: JSON.stringify({ owner: 'Marko phone', pin: '741852', browserId: markoBrowserId }),
     });
     const cookie = claim.headers.get('set-cookie').split(';')[0];
     env.operator.lastSeenAt = Date.now() - 20;
@@ -76,6 +78,30 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({ cmd: 'M5' }),
     })).ok).toBe(true);
     expect(env.operator.lastSeenAt).toBeGreaterThan(Date.now() - 20);
+  });
+
+  it('silently restores only the remembered browser after an ESP restart', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Marko phone', pin: '741852', browserId: markoBrowserId }),
+    });
+    Object.assign(env.operator, { token: '', owner: '', browserId: '', lastSeenAt: 0 });
+
+    expect((await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: workshopBrowserId }),
+    })).status).toBe(403);
+
+    const reconnect = await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: markoBrowserId }),
+    });
+    expect(reconnect.ok).toBe(true);
+    expect(reconnect.headers.get('set-cookie')).toContain('cnc_operator=');
+    expect(await reconnect.json()).toMatchObject({
+      controller: true, readOnly: false, owner: 'Marko phone',
+    });
   });
 
   it('locks only active/recovery job artifacts against upload, delete, and rename', async () => {
