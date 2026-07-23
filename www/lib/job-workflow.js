@@ -128,11 +128,13 @@ export function evaluateWorkflow(job = {}, context = {}) {
   const zero = workZeroStatus(job, context);
   const verification = verificationStatus(job, context);
   const hardBlockers = Array.isArray(context.hardBlockers) ? context.hardBlockers : [];
+  const blockPreparation = context.blockPreparation === true;
   let gate = 'cut';
-  if (hardBlockers.length) gate = 'blocked';
+  if (blockPreparation && hardBlockers.length) gate = 'blocked';
   else if (!frame.ok) gate = 'frame';
   else if (!zero.ok) gate = 'work-zero';
   else if (!verification.ok) gate = 'verification';
+  else if (hardBlockers.length) gate = 'blocked';
   return {
     gate,
     frame,

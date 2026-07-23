@@ -450,6 +450,7 @@ function guidedWorkflowStatus() {
     machineFrame: currentMachineFrame || {},
     bootSessionId: currentMachineFrame?.bootSessionId || '',
     hardBlockers: workflowHardBlockers(),
+    blockPreparation: firmwareRecoveryCheckpoint?.requiresReview === true,
   });
 }
 
@@ -617,6 +618,24 @@ function renderReadiness() {
     readinessPrimaryEl.append(workflowButton('Run Bounds Check', sendBoundingBoxTrace, 'primary-action'));
     readinessSecondaryEl.append(workflowButton('Run Full Aircut', sendAircutToolpath));
     readinessSecondaryEl.append(workflowButton('Continue Without Check', skipPhysicalVerification, 'caution'));
+  } else if (status.gate === 'blocked') {
+    const runFileProblem = activeRunBlockers().length > 0;
+    readinessPrimaryEl.append(workflowButton(
+      runFileProblem ? 'Update Run File' : 'Review Placement & Preflight',
+      async () => {
+        if (runFileProblem) {
+          await generateRunFile({ overwrite: true });
+          renderAllWorkflowPanels();
+          return;
+        }
+        showPreviewTab('preflight');
+        workbenchController?.openForTab('preflight');
+        history.replaceState(null, '', '#preflight');
+      },
+      'primary-action',
+    ));
+    readinessSecondaryEl.append(workflowButton('Repeat Bounds Check', sendBoundingBoxTrace));
+    readinessSecondaryEl.append(workflowButton('Run Full Aircut', sendAircutToolpath));
   } else if (status.gate === 'cut') {
     readinessPrimaryEl.append(workflowButton('Review & Start Cut', () => {
       showPreviewTab('run');

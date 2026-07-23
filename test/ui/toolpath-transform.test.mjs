@@ -47,6 +47,19 @@ describe('toolpath transform math', () => {
     expect(result.selectedTransformedBounds.yMax).toBeCloseTo(21.2132, 3);
   });
 
+  it('does not treat the transformed parser origin as a commanded negative move', () => {
+    const model = parseGCodeToToolpath([
+      'G21', 'G90', 'G0 Z5', 'G0 X-253 Y247', 'G1 Z-4', 'G1 X253 Y247', 'G1 X253 Y753',
+      'G1 X-253 Y753', 'G1 X-253 Y247',
+    ].join('\n'));
+    const result = transformToolpath(model, { rotationDeg: 5 });
+
+    expect(result.selectedTransformedBounds.xMin).toBeCloseTo(0);
+    expect(result.selectedTransformedBounds.yMin).toBeCloseTo(0);
+    expect(result.generatedRunBounds.xMin).toBeGreaterThanOrEqual(0);
+    expect(result.generatedRunBounds.yMin).toBeGreaterThanOrEqual(0);
+  });
+
   it('preserves Z and feed values in transformed segments', () => {
     const model = parseGCodeToToolpath(fixture('simple-feed-values.gc'));
     const result = transformToolpath(model, { rotationDeg: 12.5 });

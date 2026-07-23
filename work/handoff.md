@@ -2104,3 +2104,18 @@ No firmware upload is required.
   so the next controller claim requires the PIN and establishes a new remembered browser.
 - DEV MOCK and firmware contract tests cover restart recovery and wrong-browser rejection. Full suite
   passes 42 files / 352 tests; PlatformIO ESP32-CAM build succeeds at 19.7% RAM / 72.1% flash.
+
+## 2026-07-23 Bounds/Aircut and transformed-bounds handoff
+
+- Deploy `www/preview.js`, `www/lib/job-workflow.js`, and
+  `www/lib/toolpath-transform.js` together; no firmware update is needed.
+- The generated bounds contract now describes commands actually written to the run file. A
+  transformed parser `from` coordinate is not counted when the emitted command changes only Z.
+- For SD `ex2.gc` at 5°, the corrected placement and generated bounds are both
+  X 0..547.68, Y 0..547.68. The old -224.26 mm Y minimum was metadata-only and was never an emitted
+  XY target.
+- Normal preflight failures are deferred until after the current preparation step, so they cannot
+  remove the Bounds Check and Full Aircut choices. A real firmware recovery checkpoint still blocks
+  preparation until explicitly resolved.
+- Full suite passes 42 files / 354 tests, including a regression with an initial Z-only move before
+  the first transformed XY command.

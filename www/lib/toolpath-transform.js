@@ -95,6 +95,29 @@ function calculateBounds(segments) {
   return finishBounds(bounds);
 }
 
+function calculateGeneratedRunBounds(segments) {
+  const bounds = mutableBounds();
+  // Generated G-code starts in the current work frame. A parser segment's first
+  // transformed `from` point is an internal assumption, not a commanded target.
+  const current = { x: 0, y: 0, z: 0 };
+  addPoint(bounds, current);
+  for (const segment of segments) {
+    const xyChanged = round(segment.from.x) !== round(segment.to.x) ||
+      round(segment.from.y) !== round(segment.to.y);
+    const zChanged = round(segment.from.z) !== round(segment.to.z);
+    if (segment.type === 'arc' && xyChanged) {
+      (segment.points || []).forEach((point) => addPoint(bounds, point));
+    }
+    if (xyChanged) {
+      current.x = segment.to.x;
+      current.y = segment.to.y;
+    }
+    if (zChanged) current.z = segment.to.z;
+    addPoint(bounds, current);
+  }
+  return finishBounds(bounds);
+}
+
 export function defaultPlacement(model = {}) {
   return {
     rotationDeg: 0,
@@ -215,7 +238,7 @@ export function transformToolpath(model, placement = {}) {
   }));
   const selectedSegmentsAfterShift = segments.filter((segment) => selectedOriginal.has(segment.sourceSegment));
   const selectedTransformedBounds = calculateBounds(selectedSegmentsAfterShift.length ? selectedSegmentsAfterShift : segments);
-  const generatedRunBounds = calculateBounds(segments);
+  const generatedRunBounds = calculateGeneratedRunBounds(segments);
 
   return {
     placement: resolved,

@@ -45,6 +45,18 @@ describe('Job JSON v3 workflow gates', () => {
     expect(evaluateWorkflow(current, homed).gate).toBe('cut');
   });
 
+  it('does not let ordinary preflight problems hide Home, Zero, or Bounds/Aircut', () => {
+    const current = job({ activeWorkZeroId: '' });
+    const context = { ...homed, hardBlockers: ['Toolpath bounds need review'] };
+    expect(evaluateWorkflow(current, context).gate).toBe('work-zero');
+    current.activeWorkZeroId = 'zero-1';
+    current.workZeroDecision = { mode: 'homed', token: 'zero-1', capturedAt: 'now' };
+    expect(evaluateWorkflow(current, context).gate).toBe('verification');
+    current.verificationDecision = createVerificationDecision(current, { type: 'bounds', decidedAt: 'now' });
+    expect(evaluateWorkflow(current, context).gate).toBe('blocked');
+    expect(evaluateWorkflow(current, { ...context, blockPreparation: true }).gate).toBe('blocked');
+  });
+
   it('shows the exact failed-operation reason and a visible route to required steps', () => {
     expect(preview).toContain('Aircut/cutting stopped because Marlin stopped answering');
     expect(preview).toContain('Cut did not start because the saved run-file identity was stale');

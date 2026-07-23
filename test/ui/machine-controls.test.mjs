@@ -16,6 +16,8 @@ describe('compact machine drawer', () => {
     expect(preview).toContain("workflowButton('Continue Without Homing'");
     expect(preview).toContain("workflowButton('Use Existing G54 Coordinates'");
     expect(preview).toContain("workflowButton('Run Bounds Check'");
+    expect(preview).toContain("workflowButton('Repeat Bounds Check'");
+    expect(preview).toContain("runFileProblem ? 'Update Run File' : 'Review Placement & Preflight'");
     expect(preview).toContain("workflowButton('Continue Without Check'");
   });
 

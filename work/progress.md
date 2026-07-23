@@ -2255,3 +2255,19 @@
 - DEV MOCK mirrors claim, restart/reconnect, rejection of another browser, and remembered-state
   deletion. Full verification passes 42 files / 352 tests. ESP32-CAM build succeeds at 19.7% RAM
   (64,396 bytes) and 72.1% flash (1,417,129 bytes).
+
+## 2026-07-23 - Restore Bounds/Aircut workflow and correct transformed bounds
+
+- Diagnosed `ex2` from the SD logs and files. Its 506 × 506 mm cut area becomes a valid
+  547.68 × 547.68 mm area at 5°, but `generatedRunBounds` incorrectly included the transformed
+  parser origin attached to the initial Z-only move, producing a false Y minimum of -224.26 mm.
+- Generated bounds now simulate the axes actually emitted by each G-code command. Internal parser
+  coordinates on Z-only moves no longer appear as commanded X/Y travel; `ex2` now reports
+  X 0..547.68 and Y 0..547.68 for both placement and generated execution.
+- Ordinary active-run and preflight problems no longer skip ahead of the required
+  Home → Zero → Bounds/Aircut → Cut sequence. Firmware recovery remains the only condition that can
+  block the whole preparation sequence before those steps.
+- A blocker that remains after physical verification now shows direct Update Run File or
+  Review Placement & Preflight actions alongside Repeat Bounds Check and Run Full Aircut.
+- Full verification passes 42 files / 354 tests. This is an SD web-asset change; firmware rebuild is
+  not required.
