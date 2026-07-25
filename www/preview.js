@@ -67,6 +67,7 @@ const recoveryTrustButton = document.querySelector('#recovery-trust-position');
 const recoveryUntrustButton = document.querySelector('#recovery-untrust-position');
 const recoveryOverlayInput = document.querySelector('#show-recovery-overlay');
 const recoverySummaryEl = document.querySelector('#recovery-summary');
+const recoveryCollectionEl = document.querySelector('#recovery-collection');
 const firmwareRecoveryCheckpointEl = document.querySelector('#firmware-recovery-checkpoint');
 const firmwareRecoveryDismissButton = document.querySelector('#firmware-recovery-dismiss');
 const workZeroRestoreSummaryEl = document.querySelector('#work-zero-restore-summary');
@@ -211,6 +212,7 @@ let recoveryOverlayVisible = true;
 let recoveryActionNotice = null;
 let firmwareRecoveryCheckpoint = null;
 let firmwareRecoveryImported = false;
+let selectedRecoveryId = '';
 let positionTrust = { trusted: false, fullHoming: false, source: '', confirmedAt: null, bootUptimeMs: null, firmwareVersion: '' };
 let toollessResumePlan = null;
 let toollessResumeRunning = false;
@@ -2277,7 +2279,9 @@ function productionSignature(plan = recoveryPlan) {
 
 function recoveryWorkZeroMachine() {
   const runs = Array.isArray(jobState?.runHistory) ? jobState.runHistory : [];
-  const zeroId = runs[runs.length - 1]?.zeroId || jobState?.activeWorkZeroId;
+  const selected = jobRecoveryModule?.recoveryById(jobState || {}, selectedRecoveryId);
+  const run = selected ? runs.find((entry) => entry.id === selected.runId) : null;
+  const zeroId = run?.zeroId || jobState?.activeWorkZeroId;
   const zero = (jobState?.zeroHistory || []).find((entry) => entry?.type === 'workZero' && entry.id === zeroId);
   return zero?.machineReference?.position || null;
 }
@@ -2327,6 +2331,7 @@ function refreshRecoveryPlan() {
   }
   recoveryPlan = jobRecoveryModule.planMotionOnlyRecovery({
     job: ensureJobState(),
+    recoveryId: selectedRecoveryId,
     toolpathModel,
     activeRunFingerprint: gcodeFingerprint,
     safeZ: recoverySafeZ(),
@@ -2547,6 +2552,64 @@ async function acknowledgeFirmwareRecoveryCheckpoint() {
   return data;
 }
 
+async function closeSavedRecovery(recoveryId, status) {
+  const label = status === 'abandoned' ? 'abandon' : 'mark finished';
+  if (!confirm(`${label === 'abandon' ? 'Abandon' : 'Mark'} this recovery? The original run history will be preserved.`)) return;
+  jobRecoveryModule.updateRecoveryStatus(ensureJobState(), recoveryId, status, {
+    now: nowIso(),
+    note: status === 'abandoned' ? 'Operator abandoned recovery.' : 'Operator marked recovery finished.',
+  });
+  if (selectedRecoveryId === recoveryId) selectedRecoveryId = '';
+  await saveJobQuietly();
+  refreshRecoveryPlan();
+  renderHistoryPanels();
+  renderReadiness();
+}
+
+function renderRecoveryCollection() {
+  if (!recoveryCollectionEl || !jobRecoveryModule) return;
+  jobRecoveryModule.normalizeRecoveries(ensureJobState());
+  const entries = [...jobRecoveryModule.activeRecoveries(jobState)].reverse();
+  if (!entries.length) {
+    selectedRecoveryId = '';
+    recoveryCollectionEl.innerHTML = '<p>No saved recoveries. Stopped/interrupted runs remain in Run History.</p>';
+    return;
+  }
+  if (!entries.some((entry) => entry.id === selectedRecoveryId)) selectedRecoveryId = entries[0].id;
+  recoveryCollectionEl.innerHTML = entries.map((entry) => {
+    const run = jobState.runHistory.find((item) => item.id === entry.runId);
+    const selected = entry.id === selectedRecoveryId;
+    return `
+      <article class="history-entry ${selected ? 'active' : ''}">
+        <div class="history-head">
+          <strong>${html(basename(entry.sourceGcodePath || entry.activeRunPath) || entry.runId)}</strong>
+          <span class="status-badge caution">${html(entry.status.replaceAll('_', ' '))}</span>
+        </div>
+        <p>${html(run?.state || 'interrupted')} Â· ${html(localTimestamp(run?.endedAt || run?.startedAt))}</p>
+        <p class="form-hint">${html(entry.activeRunPath || 'Execution file not recorded')}</p>
+        <div class="job-actions compact-actions">
+          <button type="button" data-recovery-review="${html(entry.id)}">${selected ? 'Reviewing' : 'Review / Resume'}</button>
+          <button type="button" data-recovery-abandon="${html(entry.id)}">Abandon Recovery</button>
+          <button type="button" data-recovery-finished="${html(entry.id)}">Mark as Finished</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+  recoveryCollectionEl.querySelectorAll('[data-recovery-review]').forEach((button) => {
+    button.addEventListener('click', () => {
+      selectedRecoveryId = button.dataset.recoveryReview;
+      resetProductionWorkflow();
+      refreshRecoveryPlan();
+    });
+  });
+  recoveryCollectionEl.querySelectorAll('[data-recovery-abandon]').forEach((button) => {
+    button.addEventListener('click', () => closeSavedRecovery(button.dataset.recoveryAbandon, 'abandoned'));
+  });
+  recoveryCollectionEl.querySelectorAll('[data-recovery-finished]').forEach((button) => {
+    button.addEventListener('click', () => closeSavedRecovery(button.dataset.recoveryFinished, 'marked_finished'));
+  });
+}
+
 async function loadFirmwareRecoveryCheckpoint() {
   const res = await fetch('/api/recovery/checkpoint');
   const response = await readJsonOrThrow(res);
@@ -2634,6 +2697,7 @@ async function dismissFirmwareRecoveryCheckpoint() {
 
 function renderRecoveryPanel() {
   renderFirmwareRecoveryCheckpoint();
+  renderRecoveryCollection();
   renderWorkZeroRestore();
   if (recoveryTrustEl) {
     recoveryTrustEl.textContent = positionTrust.trusted ? 'POSITION TRUSTED' : 'POSITION UNTRUSTED';
@@ -3307,6 +3371,7 @@ function renderHistoryPanels() {
   renderZeroHistoryPanel();
   renderRunHistoryPanel();
   renderZeroOriginPanel();
+  renderRecoveryCollection();
 }
 
 async function selectHistoryZero(id, type) {

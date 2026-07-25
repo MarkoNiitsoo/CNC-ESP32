@@ -2178,3 +2178,10 @@ No firmware upload is required.
   Bounds/Aircut repetition possible.
 - Placement/execution identity invalidation follows the same pattern and continues to enforce
   generated-file identity rather than falling back to source G-code.
+
+## 2026-07-25 recovery collection UI handoff
+
+- The Recovery tab lists every active saved opportunity and passes the selected recovery id into the
+  planner. Closing a recovery preserves both its collection entry and original run audit.
+- The dashboard shows recovery count separately. Its current-job action no longer branches on
+  terminal firmware telemetry or the latest historical run.

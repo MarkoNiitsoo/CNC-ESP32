@@ -733,8 +733,6 @@ function nextAction() {
   if (!currentJob?.gcodePath) return { label: 'Choose G-code File', view: 'files' };
   if (state === 'RUNNING' || state === 'PREPARING' || state === 'RESUMING') return { label: 'Monitor Job', view: 'job' };
   if (state === 'PAUSED') return { label: 'Resume Job', api: '/api/job/resume' };
-  if (state === 'STOPPED' || state === 'ERROR') return { label: 'Open Log', view: 'logs' };
-  if (lastRun?.state === 'stopped' || lastRun?.state === 'interrupted') return { label: 'Review Interrupted Run', href: `${previewUrl()}#recovery` };
   if (!previewBounds()) return { label: 'Open Preview', href: previewUrl() };
   if (activeRunNeedsUpdate()) return { label: 'Update Run File', href: `${previewUrl()}#preview` };
   if (Number(jobMeta?.schemaVersion) === 3) return { label: 'Prepare & Cut', href: `${previewUrl()}#preflight` };
@@ -798,6 +796,9 @@ function renderCurrentJob() {
   const run = activeRun();
   const readiness = dashboardReadiness();
   const lastRun = latestRunMeta();
+  const savedRecoveries = Array.isArray(jobMeta?.recoveries)
+    ? jobMeta.recoveries.filter((item) => !['abandoned', 'marked_finished', 'recovery_completed'].includes(item?.status)).length
+    : 0;
   const lastRunBadge = lastRun?.state === 'stopped' || lastRun?.state === 'interrupted'
     ? '<span class="status-badge caution">Last run interrupted/stopped</span>'
     : '';
@@ -823,7 +824,8 @@ function renderCurrentJob() {
         <dt>Run mode</dt><dd>${html(run.mode || 'source')}</dd>
         <dt>Generated</dt><dd>${html(activeRunNeedsUpdate() ? 'Update required' : (jobMeta?.generatedValidation?.status || '-'))}</dd>
         <dt>Warnings</dt><dd>${warningCount()}</dd>
-        <dt>Last run</dt><dd>${lastRun ? `${html(lastRun.state || 'started')} ${lastRunBadge}` : '-'}</dd>
+       <dt>Last run</dt><dd>${lastRun ? `${html(lastRun.state || 'started')} ${lastRunBadge}` : '-'}</dd>
+        <dt>Saved recoveries</dt><dd>${savedRecoveries}</dd>
         <dt>Preparation</dt><dd>${readiness?.blockingReasons?.length ? readiness.blockingReasons.map((reason) => html(reason.message)).join('<br>') : 'Open Prepare & Cut for live checks'}</dd>
         <dt>Marlin critical</dt><dd>${html(critical || '-')}</dd>
       </dl>
@@ -841,7 +843,7 @@ function renderCurrentJob() {
       <a class="maintenance-link" href="${previewUrl()}">Full Preview</a>
       <a class="maintenance-link" href="${previewUrl()}#preview">Place & Rotate</a>
       ${hasNewerUnusedWorkZero() ? `<a class="maintenance-link" href="${previewUrl()}#preflight">Choose previous zero</a>` : ''}
-      ${lastRun?.state === 'stopped' || lastRun?.state === 'interrupted' ? `<a class="maintenance-link" href="${previewUrl()}#recovery">Review interrupted run</a>` : ''}
+      ${savedRecoveries ? `<a class="maintenance-link" href="${previewUrl()}#recovery">Saved recoveries (${savedRecoveries})</a>` : ''}
       <a class="maintenance-link" href="${previewUrl()}#preflight">Prepare & Cut</a>
       <a class="maintenance-link" href="#logs" data-nav-target="logs">Open Log</a>
     </div>

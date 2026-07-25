@@ -234,6 +234,11 @@ describe('motion-only recovery UI safety contract', () => {
     expect(previewHtml).toMatch(/id="move-to-resume-point"[^>]*>Move Axes to Resume Point<\/button>/);
     expect(previewHtml).toContain('class="production-resume-panel"');
     expect(controllerSource).toContain("'recovery'");
+    expect(previewHtml).toContain('id="recovery-collection"');
+    expect(previewSource).toContain('Review / Resume');
+    expect(previewSource).toContain('Abandon Recovery');
+    expect(previewSource).toContain('Mark as Finished');
+    expect(previewSource).toContain('recoveryId: selectedRecoveryId');
   });
 
   it('requires session position trust and clears it on firmware reboot', () => {

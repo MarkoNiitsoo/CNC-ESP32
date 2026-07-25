@@ -2341,3 +2341,12 @@
   stale completed dry-run results, and invalidate Arm and temporary start authorization.
 - Placement/execution-target changes now also preserve stale verification evidence and invalidate
   temporary start authorization in addition to the existing generated-file and dry-run safeguards.
+
+## 2026-07-25 - Recovery collection UI and dashboard separation
+
+- Recovery now opens as a collection of saved opportunities rather than implicitly using only the
+  latest run. Operators can explicitly Review/Resume, Abandon Recovery, or Mark as Finished.
+- Recovery planning and saved-zero lookup follow the selected recovery's original run id.
+- The dashboard reports saved recovery count and links to the drawer as a secondary action.
+  Stopped/error telemetry and historical interruptions no longer replace the dashboard's current-job
+  Next Action.
