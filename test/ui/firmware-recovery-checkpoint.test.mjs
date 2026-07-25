@@ -14,21 +14,23 @@ describe('firmware recovery checkpoint UI', () => {
     expect(preview).toContain("fetch('/api/recovery/checkpoint/acknowledge'");
     expect(preview).toContain('Clear Old Aircut Record');
     expect(preview).toContain('Discard Interrupted Cut Record');
-    expect(preview).toContain("workflowButton('Review Recovery Options'");
+    expect(preview).toContain('readinessInspectRecoveriesButton');
+    expect(preview).toContain('openFirmwareRecoveryOptions');
     expect(preview).toContain("checkpoint.startMode === 'validated_test_motion'");
     expect(preview).toContain('Home → Zero → Bounds/Aircut → Cut');
   });
 
-  it('imports only a matching job and saves durable history before acknowledgement', () => {
+  it('imports into the checkpoint job even when another job is selected and saves before acknowledgement', () => {
     expect(preview).toMatch(/function firmwareCheckpointMatchesCurrentJob[\s\S]*Boolean\(checkpoint\.jobPath\)[\s\S]*checkpoint\.jobPath === jobPathFor\(filePath\)/);
     const importer = preview.slice(
-      preview.indexOf('async function loadFirmwareRecoveryCheckpoint()'),
+      preview.indexOf('async function importFirmwareRecoveryCheckpoint('),
       preview.indexOf('async function dismissFirmwareRecoveryCheckpoint()'),
     );
     expect(importer).toContain("state: checkpoint.state || (checkpoint.interrupted ? 'STOPPED' : 'ERROR')");
     expect(importer).toContain('lastAcknowledgedByteOffset');
-    expect(importer.indexOf('await saveJobQuietly()')).toBeLessThan(importer.indexOf('await acknowledgeFirmwareRecoveryCheckpoint()'));
-    expect(importer).toMatch(/if \(!firmwareCheckpointMatchesCurrentJob\(checkpoint\)\) return/);
+    expect(importer.indexOf('await uploadJobJson(job)')).toBeLessThan(importer.indexOf('await acknowledgeFirmwareRecoveryCheckpoint()'));
+    expect(preview).toContain('jobMetadataForFirmwareCheckpoint');
+    expect(preview).toContain('Recovery remains available without blocking another job.');
   });
 
   it('puts ordered Home and work-zero repairs directly beside recovery blockers', () => {
@@ -46,14 +48,14 @@ describe('firmware recovery checkpoint UI', () => {
     expect(machineBar).toMatch(/function canSetup\(\)[\s\S]*SETUP_STATES\.has\(state\)/);
   });
 
-  it('makes pending recovery a visible workflow blocker before normal preparation', () => {
+  it('keeps a pending import visible without hiding normal preparation tools', () => {
     const blockers = preview.slice(
       preview.indexOf('function workflowHardBlockers()'),
       preview.indexOf('function guidedWorkflowStatus()'),
     );
     expect(blockers).toContain('firmwareRecoveryCheckpoint?.requiresReview === true');
     expect(blockers).toContain('interrupted cutting job requires a recovery decision');
-    expect(preview).toContain('readinessHomeAllButton.hidden = recoveryPending');
-    expect(styles).toMatch(/#readiness-home-all\[hidden\][\s\S]*display: none/);
+    expect(preview).toContain('blockPreparation: false');
+    expect(preview).toContain('readinessHomeAllButton.hidden = false');
   });
 });

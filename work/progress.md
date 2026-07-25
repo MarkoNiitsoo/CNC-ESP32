@@ -2350,3 +2350,14 @@
 - The dashboard reports saved recovery count and links to the drawer as a secondary action.
   Stopped/error telemetry and historical interruptions no longer replace the dashboard's current-job
   Next Action.
+
+## 2026-07-25 - Durable Stop checkpoint handoff without a global workflow lock
+
+- A production interruption checkpoint is imported into its recorded Job JSON even when another job
+  is selected. Missing metadata is created conservatively with the checkpoint's exact execution
+  identity, so unverifiable details remain recovery blockers instead of being guessed.
+- Firmware evidence is acknowledged only after the target Job JSON upload succeeds. This releases
+  the stream lock while retaining the older recovery for later.
+- Added explicit older-run history updates so checkpoint import cannot rewrite a newer run record.
+- Pending import remains visible and can fail closed at Start, but no longer hides Home or ordinary
+  setup tools. Dashboard terminal telemetry displays the physical machine as Idle.

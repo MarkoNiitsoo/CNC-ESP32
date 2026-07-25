@@ -11,6 +11,7 @@ import {
   recordZeroRestore,
   runStateLabel,
   startRunHistory,
+  updateRunHistoryEntryFromStatus,
   updateRunHistoryFromStatus,
   zeroStatus,
 } from '../../www/lib/job-history.js';
@@ -191,6 +192,18 @@ describe('job history metadata', () => {
     updateRunHistoryFromStatus(job, { state: 'ERROR', lastError: 'Marlin error' });
     expect(job.runHistory[1].state).toBe('error');
     expect(job.runHistory[1].reason).toBe('Marlin error');
+  });
+
+  it('updates an explicitly referenced older run without rewriting newer history', () => {
+    const job = { runHistory: [
+      { id: 'run-1', state: 'running', startedAt: '2026-07-25T10:00:00.000Z' },
+      { id: 'run-2', state: 'completed', endedAt: '2026-07-25T11:00:00.000Z' },
+    ] };
+
+    updateRunHistoryEntryFromStatus(job, job.runHistory[0], { state: 'STOPPED', lastError: 'Operator stop' });
+
+    expect(job.runHistory[0]).toMatchObject({ state: 'stopped', reason: 'Operator stop' });
+    expect(job.runHistory[1]).toMatchObject({ state: 'completed' });
   });
 
   it('provides display labels and zero usage categories', () => {

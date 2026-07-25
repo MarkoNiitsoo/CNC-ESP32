@@ -313,9 +313,8 @@ export function latestRun(job) {
   return job.runHistory[job.runHistory.length - 1] || null;
 }
 
-export function updateRunHistoryFromStatus(job, status = {}, now = isoNow()) {
+export function updateRunHistoryEntryFromStatus(job, run, status = {}, now = isoNow()) {
   ensureHistory(job);
-  const run = latestRun(job);
   if (!run) return null;
 
   const nextState = normalizeRunState(status.state);
@@ -337,6 +336,11 @@ export function updateRunHistoryFromStatus(job, status = {}, now = isoNow()) {
       : null;
   }
   return run;
+}
+
+export function updateRunHistoryFromStatus(job, status = {}, now = isoNow()) {
+  ensureHistory(job);
+  return updateRunHistoryEntryFromStatus(job, latestRun(job), status, now);
 }
 
 export function finishLatestRun(job, state, reason = '', now = isoNow()) {

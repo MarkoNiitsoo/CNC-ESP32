@@ -459,7 +459,9 @@ function guidedWorkflowStatus() {
     machineFrame: currentMachineFrame || {},
     bootSessionId: currentMachineFrame?.bootSessionId || '',
     hardBlockers: workflowHardBlockers(),
-    blockPreparation: firmwareRecoveryCheckpoint?.requiresReview === true,
+    // Import may still block Start in firmware, but it must not hide normal
+    // preparation tools while the evidence is being saved durably.
+    blockPreparation: false,
   });
 }
 
@@ -572,9 +574,8 @@ function renderReadiness() {
   const status = guidedWorkflowStatus();
   const machineState = String(jobRunStatus?.state || '').toUpperCase();
   const homeBusy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(machineState);
-  const recoveryPending = firmwareRecoveryCheckpoint?.requiresReview === true;
   if (readinessHomeAllButton) {
-    readinessHomeAllButton.hidden = recoveryPending;
+    readinessHomeAllButton.hidden = false;
     readinessHomeAllButton.disabled = homeBusy;
     readinessHomeAllButton.title = homeBusy ? 'Home All is available when the machine is idle.' : 'Re-home every axis';
   }
@@ -635,15 +636,7 @@ function renderReadiness() {
 
   readinessPrimaryEl.textContent = '';
   readinessSecondaryEl.textContent = '';
-  if (recoveryPending) {
-    const legacyTestMotion = firmwareRecoveryCheckpoint.checkpoint?.startMode === 'validated_test_motion';
-    readinessPrimaryEl.append(workflowButton('Review Recovery Options', openFirmwareRecoveryOptions, 'primary-action'));
-    readinessSecondaryEl.append(workflowButton(
-      legacyTestMotion ? 'Clear Old Aircut Record' : 'Discard Interrupted Cut Record',
-      dismissFirmwareRecoveryCheckpoint,
-      'machine-danger',
-    ));
-  } else if (status.gate === 'frame') {
+  if (status.gate === 'frame') {
     readinessSecondaryEl.append(workflowButton('Continue Without Homing', continueWithoutHoming, 'machine-danger'));
   } else if (status.gate === 'work-zero') {
     if (status.frame.mode === 'homed') {
@@ -2620,10 +2613,47 @@ async function loadFirmwareRecoveryCheckpoint() {
   renderRunPanel();
   const checkpoint = response?.checkpoint;
   if (!response?.available || !response?.requiresReview || !checkpoint) return;
-  if (!firmwareCheckpointMatchesCurrentJob(checkpoint)) return;
+  if (checkpoint.startMode === 'validated_test_motion') return;
+  await importFirmwareRecoveryCheckpoint(response, checkpoint);
+}
 
+async function jobMetadataForFirmwareCheckpoint(checkpoint) {
+  if (firmwareCheckpointMatchesCurrentJob(checkpoint)) return { job: ensureJobState(), current: true };
+  if (!checkpoint.jobPath) throw new Error('Interrupted run did not record a Job JSON path.');
+  const res = await fetch(`/api/download?path=${encodeURIComponent(checkpoint.jobPath)}`);
+  if (res.ok) return { job: await res.json(), current: false };
+  if (res.status !== 404) throw new Error('Recorded Job JSON could not be loaded for recovery import.');
+  const createdAt = nowIso();
+  return {
+    current: false,
+    job: {
+      schemaVersion: JOB_SCHEMA_VERSION,
+      createdAt,
+      updatedAt: createdAt,
+      gcodePath: checkpoint.gcodePath || '',
+      sourceGcodePath: checkpoint.gcodePath || '',
+      jobPath: checkpoint.jobPath,
+      activeRun: {
+        mode: checkpoint.activeRunMode || 'source',
+        path: checkpoint.gcodePath || '',
+        sourceFingerprint: checkpoint.activeRunMode === 'generated' ? '' : (checkpoint.activeRunFingerprint || ''),
+        generatedFingerprint: checkpoint.activeRunMode === 'generated' ? (checkpoint.activeRunFingerprint || '') : '',
+      },
+      zeroHistory: [],
+      runHistory: [],
+      recoveries: [],
+      recoveryHistory: [],
+      activeWorkZeroId: checkpoint.workZeroId || null,
+      activeZZeroId: null,
+    },
+  };
+}
+
+async function importFirmwareRecoveryCheckpoint(response, checkpoint) {
   const history = await jobHistoryPromise;
-  const job = ensureJobState();
+  const target = await jobMetadataForFirmwareCheckpoint(checkpoint);
+  const job = target.job;
+  ensureHistoryShape(job);
   const checkpointId = firmwareCheckpointId(checkpoint);
   let run = job.runHistory.find((item) => item.firmwareCheckpointId === checkpointId);
   if (!run) {
@@ -2648,7 +2678,7 @@ async function loadFirmwareRecoveryCheckpoint() {
   run.activeRunFingerprint = checkpoint.activeRunFingerprint || run.activeRunFingerprint;
   run.lastAcknowledgedByteOffset = checkpoint.lastAcknowledgedByteOffset ?? null;
   run.currentByteOffset = checkpoint.currentByteOffset ?? null;
-  history.updateRunHistoryFromStatus(job, {
+  history.updateRunHistoryEntryFromStatus(job, run, {
     state: checkpoint.state || (checkpoint.interrupted ? 'STOPPED' : 'ERROR'),
     currentLineNumber: checkpoint.currentLineNumber,
     sentLineCount: checkpoint.sentLineCount,
@@ -2659,15 +2689,19 @@ async function loadFirmwareRecoveryCheckpoint() {
     lastResponse: checkpoint.lastResponse,
     lastError: checkpoint.lastError || checkpoint.reason || `Firmware detected an interrupted run after ${response.resetReason || 'restart'}.`,
   });
+  jobRecoveryModule.normalizeRecoveries(job);
 
   // Durable job history is written before firmware evidence is cleared.
-  await saveJobQuietly();
-  renderHistoryPanels();
-  refreshRecoveryPlan();
+  await uploadJobJson(job);
   await acknowledgeFirmwareRecoveryCheckpoint();
   firmwareRecoveryImported = true;
   firmwareRecoveryCheckpoint = { available: false, requiresReview: false, checkpoint: null };
-  appendRecoveryLog(`Imported firmware checkpoint at acknowledged byte ${checkpoint.lastAcknowledgedByteOffset ?? 0}. Home All before recovery motion.`);
+  appendRecoveryLog(`Saved firmware checkpoint to ${job.jobPath} at acknowledged byte ${checkpoint.lastAcknowledgedByteOffset ?? 0}. Recovery remains available without blocking another job.`);
+  if (target.current) {
+    jobState = job;
+    renderHistoryPanels();
+    refreshRecoveryPlan();
+  }
   renderFirmwareRecoveryCheckpoint();
   renderReadiness();
   renderRunPanel();

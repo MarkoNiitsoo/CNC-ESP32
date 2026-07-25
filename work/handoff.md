@@ -2185,3 +2185,12 @@ No firmware upload is required.
   planner. Closing a recovery preserves both its collection entry and original run audit.
 - The dashboard shows recovery count separately. Its current-job action no longer branches on
   terminal firmware telemetry or the latest historical run.
+
+## 2026-07-25 durable checkpoint handoff
+
+- Preview startup saves a production firmware checkpoint into the `jobPath` recorded by firmware,
+  including when a different job is selected, then acknowledges the checkpoint.
+- Upload must remain before acknowledgement. If recorded metadata cannot be written, firmware keeps
+  its checkpoint and continues to fail closed for Start; ordinary preparation remains visible.
+- Legacy test-motion checkpoints still require deliberate clearing because they are not recoverable
+  production runs.

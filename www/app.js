@@ -696,7 +696,8 @@ function activeRun(meta = jobMeta) {
 }
 
 function jobStateName() {
-  return String(jobStatus?.state || 'UNKNOWN').toUpperCase();
+  const state = String(jobStatus?.state || 'UNKNOWN').toUpperCase();
+  return ['STOPPED', 'COMPLETED', 'ERROR'].includes(state) ? 'IDLE' : state;
 }
 
 function activeZeroMeta(type, meta = jobMeta) {
