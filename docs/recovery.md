@@ -10,8 +10,8 @@ restarted and the machine does not descend to cutting depth.
 
 ## Required Conditions
 
-- The latest run is `stopped`, `interrupted`, or `error`. An older interrupted run is never offered
-  after a newer running or completed run.
+- The selected recovery references a `stopped`, `interrupted`, or eligible `error` run. Older
+  recoveries remain selectable after newer running or completed runs.
 - The activeRun path, mode (when recorded), and fingerprint match the interrupted run. A missing
   interrupted-run path blocks recovery because the execution file cannot be proven identical.
 - A generated active run still passes normal `generatedValidation`; stale, pending, missing, or
@@ -24,11 +24,28 @@ restarted and the machine does not descend to cutting depth.
 - The machine was homed in the current powered session and position is explicitly trusted.
 - Safe Z and the resume target fit configured X/Y/Z limits.
 - No job or pause state is currently active.
+- Before cutting resume, the operator explicitly confirms that material and fixtures are correctly
+  positioned. Software does not claim to verify physical stock placement.
 
 Position trust is anchored by firmware `homingEpoch` and homed-axis state. Successful Home All
 creates the trusted frame consumed by Machine Bar and Preview. Operator confirmation remains an
 additional recovery gate, not the source of machine coordinates. Firmware reboot,
 firmware identity change, Cancel/Start Over, or the explicit untrust action clears it.
+
+## Collection And Lifecycle
+
+Every eligible terminal run may have a `recoveries` entry. Saved opportunities do not affect
+another selected job's readiness. The operator may:
+
+- keep the recovery for later (default);
+- Review/Resume it explicitly;
+- abandon it while preserving run history and an audit event;
+- mark it finished while preserving run history and an audit event.
+
+Recovery validation failure updates displayed requirements; it does not destroy the saved entry.
+Firmware interruption evidence is uploaded to the Job JSON recorded in the checkpoint before the
+firmware checkpoint is acknowledged. This also works while another job is selected, so a stopped
+job remains recoverable without holding later work hostage.
 
 ## Candidate Policy
 

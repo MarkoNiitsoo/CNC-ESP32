@@ -223,7 +223,10 @@ It returns:
     "status": "armed"
   },
   "run": {
-    "status": "idle"
+    "liveStatus": "idle",
+    "status": "idle",
+    "lastOutcome": "stopped",
+    "latest": {}
   },
   "blockingReasons": [],
   "primaryAction": {},
@@ -235,6 +238,10 @@ It returns:
 This model does not send commands. It is a decision/audit layer only. The Preview / Job page may use
 the primary action to open the exact relevant panel or update the generated run file. It must not
 introduce new movement behavior.
+
+`run.liveStatus` comes only from current firmware telemetry. Terminal firmware values are retained
+as outcomes but normalize to live `idle`; historical `runHistory` entries never make a machine
+operation active. `run.status` is a compatibility alias for `liveStatus`.
 
 Generated run stale rules:
 
@@ -360,6 +367,41 @@ Current lifecycle data comes from the existing job APIs:
 Some fields remain `null` until firmware exposes richer runner data or the browser observes a
 terminal state. This is intentional; the history should not invent recovery data.
 
+Run records are immutable attempts. A recovery attempt appends a separate `recoveryHistory` event;
+it does not change a stopped/interrupted/error record to completed.
+
+## Saved Recovery Collection
+
+`recoveries` is the collection of optional opportunities. It is separate from `recoveryHistory`,
+which remains the append-only action/event audit:
+
+```json
+{
+  "recoveries": [{
+    "id": "recovery-run-...",
+    "runId": "run-...",
+    "status": "saved_for_later",
+    "createdAt": "...",
+    "updatedAt": "...",
+    "sourceGcodePath": "/gcode/example.gc",
+    "activeRunPath": "/jobs/generated/example.run.gc",
+    "activeRunMode": "generated",
+    "activeRunFingerprint": "...",
+    "workZeroId": "zero-...",
+    "zZeroId": "zero-z-...",
+    "lastAckedCommandNumber": 123,
+    "lastKnownPosition": {},
+    "materialConfirmedAt": null,
+    "note": ""
+  }]
+}
+```
+
+Active states include `saved_for_later` and requirement/ready states. `abandoned`,
+`marked_finished`, and `recovery_completed` close the opportunity without deleting either the
+collection entry or original run. Loading older metadata derives one entry per eligible stable run
+id; repeated normalization cannot create duplicates.
+
 ## Zero And Run Relationship
 
 Work-zero entries may store `machineReference` with M114 `counts`, M92 `stepsPerMm`, derived machine
@@ -383,9 +425,9 @@ active, that current-active status takes display priority.
 
 ## Resume Metadata
 
-The first implemented recovery stage is motion-only. `www/lib/job-recovery.js` examines the latest
-stopped/interrupted/error run and chooses a previous clearance point, but it does not generate a
-cutting continuation. Toolpath segments carry both raw `lineNumber` and firmware-compatible
+The first implemented recovery stage is motion-only. `www/lib/job-recovery.js` examines the
+explicitly selected saved recovery (or newest eligible legacy run) and chooses a previous clearance
+point, but it does not generate a cutting continuation. Toolpath segments carry both raw `lineNumber` and firmware-compatible
 `commandNumber`; recovery progress must use `commandNumber` because run history counts cleaned,
 non-empty commands.
 

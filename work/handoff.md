@@ -2194,3 +2194,8 @@ No firmware upload is required.
   its checkpoint and continues to fail closed for Start; ordinary preparation remains visible.
 - Legacy test-motion checkpoints still require deliberate clearing because they are not recoverable
   production runs.
+
+## 2026-07-25 workflow/recovery documentation handoff
+
+- `docs/job-metadata.md`, `docs/recovery.md`, and `docs/mobile-job-flow.md` now describe the separated
+  live/current/history/recovery model and supersede older newest-run/Review-Last-Run behavior.

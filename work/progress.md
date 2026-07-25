@@ -2361,3 +2361,10 @@
 - Added explicit older-run history updates so checkpoint import cannot rewrite a newer run record.
 - Pending import remains visible and can fail closed at Start, but no longer hides Home or ordinary
   setup tools. Dashboard terminal telemetry displays the physical machine as Idle.
+
+## 2026-07-25 - Workflow/recovery documentation
+
+- Updated the metadata contract for `liveStatus`, `lastOutcome`, immutable run attempts, normalized
+  `recoveries`, closed recovery states, and idempotent legacy migration.
+- Updated operator flow and recovery safety docs for persistent setup actions, explicit older
+  recovery selection, cross-job checkpoint preservation, and material/fixture confirmation.

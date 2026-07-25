@@ -226,7 +226,6 @@ Primary action examples:
 - Start Cut.
 - Monitor Job.
 - Resume Job, only for an actively paused firmware job.
-- Review Last Run.
 
 The current implementation uses `www/lib/job-readiness.js` as the shared decision layer for the
 Dashboard and Preview / Job page. The helper derives a readiness model from the selected job JSON,
@@ -245,8 +244,14 @@ Primary action priority:
 - Missing or stale dry run shows Run Bounding Box / Dry Run.
 - Missing or stale arm state shows Arm Job.
 - Armed and otherwise ready jobs show Start Cut.
-- Stopped, interrupted, or error run history shows Review Last Run. It opens the guarded Recovery
-  panel; it never starts cutting directly.
+
+Historical outcomes never replace this priority. Saved recoveries appear as a count/badge and a
+secondary Recovery action.
+
+Home All, Set Work Zero, Set Z Zero, Bounding Box, Aircut, Preflight, and Recovery/History remain in
+one persistent tool row whenever live machine state safely permits them. Completed actions use
+`Again` labels. Changing zero, placement, transformation, or execution identity preserves prior
+history, marks dependent verification stale, and leaves the repeat action visible.
 
 The readiness card must always show the source `/gcode/...` file and the effective `activeRun.path`.
 When placement is transformed but the generated run file is not valid, the UI must not present the
@@ -344,8 +349,8 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
   newest related run. Raw records remain collapsed under Details / Advanced Diagnostics.
 - Every verified zero operation automatically persists the active job metadata; no manual capture
   or Save Job action is required.
-- Stopped/interrupted runs route to Review Recovery. The Recovery drawer separates Safe-Z
-  reposition, Toolless Resume Test, and guarded Production Resume.
+- Stopped/interrupted runs create saved recovery entries. The Recovery drawer lists all active
+  entries and separates Safe-Z reposition, Toolless Resume Test, and guarded Production Resume.
 - Logs are promoted to a bottom-nav view and use the existing `/api/marlin/log` endpoint when
   available.
 - Machine controls live in the shared top Machine Bar / Drawer on `/`, `/files`, and preview pages.
@@ -359,8 +364,9 @@ The right readiness drawer includes a Recovery tab for stopped/interrupted/error
 overlay separates completed and remaining geometry, marks interruption/resume positions, and shows
 the Safe-Z recovery travel. Movement remains disabled until position trust, activeRun identity,
 zero IDs, machine idle state, Safe Z, and XYZ limits pass. This panel has no cutting-resume action.
-Only the newest run is eligible. Generated runs must remain validated; recovery never falls back to
-the original source file when generated output is stale or invalid. Work-zero mismatch blocks.
+The operator selects a recovery by id; older entries remain available after newer history.
+Generated runs must remain validated; recovery never falls back to the original source file when
+generated output is stale or invalid. Work-zero mismatch blocks.
 Z-zero change is a warning for this Safe-Z-only movement.
 
 The panel may also offer **Toolless Resume Test** when all Recovery V0 and full remaining X/Y/Z
