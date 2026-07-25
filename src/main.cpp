@@ -187,6 +187,8 @@ struct JobRunnerStatus {
   String lastPriorityCommand;
   String lastPriorityResponse;
   String lastPriorityError;
+  bool stopEmergencyParserDetected = false;
+  String stopWarning;
   String lastFeedOverrideCommand;
   String lastFeedOverrideResponse;
   String lastFeedOverrideError;
@@ -1671,6 +1673,10 @@ String jobStatusJson() {
   json += jsonEscape(jobStatus.lastPriorityResponse);
   json += "\",\"lastPriorityError\":\"";
   json += jsonEscape(jobStatus.lastPriorityError);
+  json += "\",\"stopEmergencyParserDetected\":";
+  json += jobStatus.stopEmergencyParserDetected ? "true" : "false";
+  json += ",\"stopWarning\":\"";
+  json += jsonEscape(jobStatus.stopWarning);
   json += "\",\"lastFeedOverrideCommand\":\"";
   json += jsonEscape(jobStatus.lastFeedOverrideCommand);
   json += "\",\"lastFeedOverrideResponse\":\"";
@@ -2392,6 +2398,8 @@ bool parseMachineProfile(const String &response) {
   machineProfile.available = machineProfile.firmwareName.length() > 0 && saneArea;
   machineProfile.refreshedAtMs = millis();
   machineProfile.lastError = machineProfile.available ? "" : "M115 did not contain a usable area.full profile";
+  logSystemEvent("Marlin EMERGENCY_PARSER detected=" +
+                 String(machineProfile.capEmergencyParser ? "true" : "false"));
   if (machineProfile.available) saveMachineProfile();
   return machineProfile.available;
 }
@@ -2889,6 +2897,23 @@ void startNextPriorityCommand() {
               " hardTimeoutMs=" + String(priorityCommandHardTimeoutMs));
 }
 
+void invalidateMachineFrameAfterQuickstop() {
+  const uint32_t invalidatedRevision = machineFrame.revision + 1;
+  machineFrame = MachineFrameState();
+  machineFrame.revision = invalidatedRevision;
+  machineFrame.updatedAtMs = millis();
+  marlinPosition = PositionTelemetry();
+  telemetryPositionDirty = true;
+}
+
+void startImmediateStopPrioritySequence() {
+  // Stop owns the UART immediately: discard any buffered response and replace lower-priority
+  // controls (including M220 or a Pause M5/M400 sequence) before writing M410 here.
+  queuePriorityCommands("M410", "M5");
+  drainMarlinInput();
+  startNextPriorityCommand();
+}
+
 uint32_t priorityAckTimeoutMs() {
   return priorityCommandAckTimeoutMs;
 }
@@ -2940,12 +2965,6 @@ void finishPrioritySequence() {
     jobWaitingForOk = false;
     jobResponseBuffer = "";
     jobRunning = false;
-    const uint32_t invalidatedRevision = machineFrame.revision + 1;
-    machineFrame = MachineFrameState();
-    machineFrame.revision = invalidatedRevision;
-    machineFrame.updatedAtMs = millis();
-    marlinPosition = PositionTelemetry();
-    telemetryPositionDirty = true;
     jobStatus.state = JobRunnerState::Stopped;
     jobStatus.pauseRequested = false;
     jobStatus.stopRequested = false;
@@ -6669,14 +6688,23 @@ void handleJobStop() {
   jobStatus.toolChangeRouterReadyConfirmed = false;
   jobStatus.toolChangePhase = "NONE";
   jobStatus.state = JobRunnerState::Stopping;
-  jobStatus.streamingPausedReason =
-      "Stop now requested. M5 output shutdown and M410 quickstop are in progress; position will be invalidated.";
-  queuePriorityCommands("M5", "M410");
+  jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
+  jobStatus.stopWarning = machineProfile.capEmergencyParser
+                              ? ""
+                              : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
+  jobStatus.streamingPausedReason = machineProfile.capEmergencyParser
+                                        ? "Stop now requested. M410 quickstop was sent; M5 output shutdown will follow. Position is untrusted until Home All."
+                                        : jobStatus.stopWarning + " Position is untrusted until Home All.";
+  startImmediateStopPrioritySequence();
+  invalidateMachineFrameAfterQuickstop();
   touchJobStatus();
-  logJobEvent("stop requested: " + jobStatus.gcodePath);
+  logJobEvent("stop requested: " + jobStatus.gcodePath +
+              " emergencyParser=" + String(machineProfile.capEmergencyParser ? "detected" : "not-detected"));
   server.send(200, "application/json",
               jobStatusJsonWithMessage(
-                  "Stop now requested. Position and recovery must be verified after M410 quickstop."));
+                  machineProfile.capEmergencyParser
+                      ? "Stop now requested. Position and recovery must be verified after M410 quickstop."
+                      : "Stop now requested, but Marlin EMERGENCY_PARSER was not detected; immediate interruption cannot be guaranteed. Home All before further motion."));
 }
 
 void handleJogStatus() {

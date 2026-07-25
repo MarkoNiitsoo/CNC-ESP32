@@ -133,8 +133,10 @@ Simulated or air-cut check:
 2. Press Stop while `RUNNING`, `PAUSING`, or `PAUSED`.
 3. Confirm the UI changes to `STOPPING` immediately.
 4. Confirm no additional normal file lines are sent.
-5. Confirm priority `M5` and `M410` are requested.
-6. Confirm resume is not allowed from `STOPPED`.
+5. Confirm the Marlin log shows priority `M410` transmitted before priority `M5`.
+6. Repeat with an `M220` queued and confirm Stop replaces it instead of waiting.
+7. Confirm telemetry warns when `EMERGENCY_PARSER` is not detected.
+8. Confirm position remains untrusted until Home All and resume is not allowed from `STOPPED`.
 
 ## M5 Priority
 

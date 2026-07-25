@@ -2271,3 +2271,22 @@
   Review Placement & Preflight actions alongside Repeat Bounds Check and Run Full Aircut.
 - Full verification passes 42 files / 354 tests. This is an SD web-asset change; firmware rebuild is
   not required.
+
+## 2026-07-25 - Immediate firmware-owned job Stop (implementation)
+
+- `/api/job/stop` now closes the SD stream, clears the streamed-command wait state, replaces any
+  lower-priority sequence, and writes `M410` to UART directly from the request handler.
+- `M5` remains on the asynchronous priority path and is sent only after the `M410` response.
+- Stop invalidates the existing machine-frame and position trust immediately; Home All is the
+  existing operation that restores trusted position.
+- Job telemetry records whether `EMERGENCY_PARSER` was detected and exposes a warning when Marlin
+  cannot guarantee immediate interruption. M115 discovery also logs the detected capability.
+- Protocol/manual documentation and Stop UI wording now consistently describe `M410` then `M5`.
+- DEV MOCK now preserves the asynchronous endpoint contract: Stop returns `STOPPING`, processes
+  `M410` then `M5` independently of the caller, and reaches `STOPPED` or `ERROR`.
+- Regression coverage checks long-command Stop ordering, no further file lines, fast acceptance,
+  priority failure, lower-priority replacement, streamed ACK preemption, capability warnings, and
+  the absence of movement segmentation/source rewriting.
+- Verification passes: focused Stop coverage is 3 files / 67 tests; the full suite is 42 files /
+  357 tests. The AI-Thinker ESP32-CAM PlatformIO build succeeds at 19.7% RAM (64,412 bytes) and
+  72.1% flash (1,417,845 bytes).

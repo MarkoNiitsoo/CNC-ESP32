@@ -316,7 +316,7 @@
       setMessage('Stop Now already requested');
       return;
     }
-    if (!confirm('STOP NOW sends M5 and the abrupt M410 quickstop. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
+    if (!confirm('STOP NOW sends the abrupt M410 quickstop first, then M5. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
     try {
       await criticalJobPost('/api/job/stop');

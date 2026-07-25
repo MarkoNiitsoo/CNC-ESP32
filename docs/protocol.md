@@ -501,8 +501,13 @@ Valid from `PAUSED`. Reopens the G-code file, seeks to the saved byte offset, tr
 
 Valid from active job states such as `PREPARING`, `RUNNING`, `PAUSING`, `PAUSED`, and `RESUMING`.
 Stops sending new file lines immediately, closes the active SD stream, sets state `STOPPING`,
-queues priority `M5` and `M410`, and returns quickly. The state changes to `STOPPED` after the
-priority sequence completes. This is not a physical emergency stop.
+replaces lower-priority controls, and transmits priority `M410` immediately from the request
+handler. Priority `M5` is transmitted only after the `M410` response, and the endpoint returns
+without waiting for the sequence to complete. The state changes to `STOPPED` after the priority
+sequence completes. If `EMERGENCY_PARSER` was not detected from `M115`, telemetry and the response
+warn that immediate interruption cannot be guaranteed, but Stop is still sent. Position trust is
+invalidated as soon as the quickstop is issued; Home All restores trust. This is not a physical
+emergency stop.
 
 Priority controls are separate from normal file streaming. Normal streaming sends one cleaned
 G-code file line at a time and waits for Marlin `ok` before sending the next file line. Pause, Stop,
@@ -510,6 +515,8 @@ and manual `M5` during active job states do not wait behind queued file lines; t
 as stopped/paused first and then use the priority command path. Manual `M5` is accepted during
 `RUNNING`, `PAUSING`, `PAUSED`, `RESUMING`, `STOPPING`, and `ERROR`. If a lower-priority feed
 override is queued, `M5` may replace it; Stop/Pause/M5 stay above `M220` feed override.
+Stop additionally preempts an active lower-priority sequence so `M410` is never held behind its
+acknowledgement or timeout.
 
 ### `GET /api/marlin/log`
 

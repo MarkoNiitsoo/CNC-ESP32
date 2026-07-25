@@ -1511,7 +1511,7 @@ function renderRunPanel() {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Pause Safely: no new G-code is sent; M5 turns output off and M400 lets Marlin finish buffered motion.</div></div>';
     }
     if (stopping) {
-      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stop Now: M5 turns output off and M410 abruptly clears motion. Home All and recovery review are required afterward.</div></div>';
+      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stop Now: M410 abruptly clears motion first, then M5 turns output off. Home All and recovery review are required afterward.</div></div>';
     }
     renderToolChangeOperator();
     renderLiveFeedOverride();
@@ -1864,7 +1864,7 @@ async function resumeJobRun() {
 }
 
 async function stopJobRun() {
-  if (!confirm('STOP NOW sends M5 and the abrupt M410 quickstop. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
+  if (!confirm('STOP NOW sends the abrupt M410 quickstop first, then M5. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
   appendRunLog('Stop Now requested. This is not a physical emergency stop.');
   try {
     const data = await postCriticalJobAction('/api/job/stop');

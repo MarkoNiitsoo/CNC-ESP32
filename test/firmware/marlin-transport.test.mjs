@@ -148,11 +148,35 @@ describe('Marlin transport safety', () => {
     const finish = source.slice(source.indexOf('void finishPrioritySequence()'), source.indexOf('void processPriorityCommands()'));
     expect(pause).toContain('queuePriorityCommands("M5", "M400")');
     expect(pause).toContain('Buffered motion will finish');
-    expect(stop).toContain('queuePriorityCommands("M5", "M410")');
-    expect(stop).toContain('position will be invalidated');
-    expect(finish).toMatch(/JobRunnerState::Stopping[\s\S]*machineFrame = MachineFrameState\(\)[\s\S]*marlinPosition = PositionTelemetry\(\)/);
+    expect(stop).toContain('startImmediateStopPrioritySequence()');
+    expect(stop).toContain('invalidateMachineFrameAfterQuickstop()');
+    expect(source).toMatch(/void startImmediateStopPrioritySequence\(\)[\s\S]*queuePriorityCommands\("M410", "M5"\);[\s\S]*drainMarlinInput\(\);[\s\S]*startNextPriorityCommand\(\);/);
+    expect(source).toMatch(/void invalidateMachineFrameAfterQuickstop\(\)[\s\S]*machineFrame = MachineFrameState\(\)[\s\S]*marlinPosition = PositionTelemetry\(\)/);
+    expect(finish).toMatch(/JobRunnerState::Stopping[\s\S]*JobRunnerState::Stopped/);
     expect(source).toContain('\\"positionValid\\":');
     expect(source).toContain('M5 output-off requested. Motion is not stopped');
+  });
+
+  it('lets Stop preempt streamed ACK waits, Pause M5, and queued M220 without rewriting motion', () => {
+    const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
+    const immediate = source.slice(source.indexOf('void startImmediateStopPrioritySequence()'), source.indexOf('uint32_t priorityAckTimeoutMs()'));
+    expect(stop.indexOf('jobWaitingForOk = false')).toBeLessThan(stop.indexOf('startImmediateStopPrioritySequence()'));
+    expect(stop.indexOf('jobFile.close()')).toBeLessThan(stop.indexOf('startImmediateStopPrioritySequence()'));
+    expect(immediate).toContain('queuePriorityCommands("M410", "M5")');
+    expect(immediate).toContain('startNextPriorityCommand()');
+    expect(source).toContain('clearPriorityCommands();');
+    expect(source).not.toContain('segmentLongMovement');
+    expect(source).not.toContain('rewriteSourceGcode');
+  });
+
+  it('returns Stop acceptance after immediate M410 transmission and publishes capability warnings', () => {
+    const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
+    expect(stop.indexOf('startImmediateStopPrioritySequence()')).toBeLessThan(stop.lastIndexOf('server.send(200'));
+    expect(stop).toContain('stopEmergencyParserDetected = machineProfile.capEmergencyParser');
+    expect(stop).toContain('immediate interruption cannot be guaranteed');
+    expect(source).toContain('\\"stopEmergencyParserDetected\\":');
+    expect(source).toContain('\\"stopWarning\\":');
+    expect(source).toContain('Marlin EMERGENCY_PARSER detected=');
   });
 
   it('owns validated Aircut and Toolless streams in firmware', () => {

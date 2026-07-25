@@ -10,7 +10,7 @@ import { MockSD } from '../../dev/mock-sd.mjs';
 const roots = [];
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', validation = 'valid', delay = 1, toolChangeSettings = null } = {}) {
+async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', validation = 'valid', delay = 1, toolChangeSettings = null, marlinConfig = null } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'cnc-mock-runner-'));
   roots.push(root);
   const sd = new MockSD(root);
@@ -47,7 +47,7 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
   };
   const jobPath = '/jobs/job.job.json';
   await sd.writeText(jobPath, JSON.stringify(job));
-  const marlin = new MockMarlin();
+  const marlin = new MockMarlin(marlinConfig || {});
   const frame = { trusted: true, absoluteFromHome: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
   const runner = new MockJobRunner({
     sd, marlin, frame, lineDelayMs: delay,
@@ -124,7 +124,7 @@ describe('MockJobRunner', () => {
     expect(ctx.runner.status.lastError).toMatch(/soft limit.*Z/i);
   });
 
-  it('pauses, resumes, and stops without continuing the stream', async () => {
+  it('stops an outstanding long G1 asynchronously without sending another file line', async () => {
     const lines = ['G21', 'G90', ...Array.from({ length: 80 }, (_, index) => `G1 X${index + 1} Y1 F600`)].join('\n');
     const ctx = await fixture({ gcode: lines, delay: 5 });
     await ctx.runner.start(ctx.request);
@@ -135,8 +135,10 @@ describe('MockJobRunner', () => {
     expect(ctx.runner.status.sentLineCount).toBe(pausedAt);
     ctx.runner.resume();
     await wait(20);
-    ctx.runner.stop();
+    const accepted = ctx.runner.stop();
     const stoppedAt = ctx.runner.status.sentLineCount;
+    expect(accepted).toMatchObject({ state: 'STOPPING', stopRequested: true });
+    expect(ctx.runner.status.state).toBe('STOPPING');
     await wait(30);
     expect(ctx.runner.status.state).toBe('STOPPED');
     expect(ctx.runner.status.sentLineCount).toBe(stoppedAt);
@@ -146,7 +148,22 @@ describe('MockJobRunner', () => {
       workZeroValid: false, frameMode: 'untrusted',
     });
     expect(ctx.marlin.log.filter((entry) => entry.direction === 'tx').slice(-2).map((entry) => entry.text))
-      .toEqual(['M5', 'M410']);
+      .toEqual(['M410', 'M5']);
+  });
+
+  it('transitions STOPPING to ERROR when the M410 priority command fails', async () => {
+    const ctx = await fixture({
+      gcode: ['G21', 'G90', ...Array.from({ length: 40 }, (_, index) => `G1 X${index + 1} F600`)].join('\n'),
+      delay: 5,
+      marlinConfig: { failCommands: ['M410'] },
+    });
+    await ctx.runner.start(ctx.request);
+    const accepted = ctx.runner.stop();
+    expect(accepted.state).toBe('STOPPING');
+    expect(await waitForState(ctx.runner, 'ERROR')).toBe('ERROR');
+    expect(ctx.runner.status.lastPriorityCommand).toBe('M410');
+    expect(ctx.runner.status.lastPriorityError).toMatch(/Injected failure/);
+    expect(ctx.marlin.log.filter((entry) => entry.direction === 'tx').slice(-1)[0].text).toBe('M410');
   });
 
   it('rejects a same-size active file changed after authorization', async () => {

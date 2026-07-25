@@ -59,6 +59,7 @@ export class MockJobRunner {
       },
       communicationLoss: null,
       lastPriorityCommand: '', lastPriorityResponse: '', lastPriorityError: '',
+      stopEmergencyParserDetected: true, stopWarning: '',
       lastFeedOverrideCommand: '', lastFeedOverrideResponse: '', lastFeedOverrideError: '',
       streamingPausedReason: '', uptimeMs: 0,
     };
@@ -494,19 +495,33 @@ export class MockJobRunner {
     this.status.toolChangeToolConfirmed = false;
     this.status.toolChangeRouterReadyConfirmed = false;
     this.status.toolChangePhase = 'NONE';
-    this.status.streamingPausedReason = 'Stop now requested. M5 output shutdown and M410 quickstop are in progress; position will be invalidated.';
+    this.status.streamingPausedReason = 'Stop now requested. M410 quickstop was sent; M5 output shutdown will follow. Position is untrusted until Home All.';
     this.runToken += 1;
-    this.runCommand('M5', { priority: true });
-    this.runCommand('M410', { priority: true });
     Object.assign(this.frame, {
       machine: null, work: { x: 0, y: 0, z: 0 }, positionValid: false, workZeroMachine: null,
       homedAxes: { x: false, y: false, z: false }, absoluteFromHome: false,
       manualWorkFrameValid: false, workZeroValid: false, frameMode: 'untrusted',
       homeReference: null, trusted: false, revision: Number(this.frame.revision || 0) + 1,
     });
-    this.status.state = 'STOPPED';
-    this.status.streamingPausedReason = 'Stopped now with M410 quickstop. Home All and verify recovery before further motion.';
-    return this.snapshot('Stop now completed. Position and recovery must be verified after M410 quickstop.');
+    const accepted = this.snapshot('Stop now requested. Position and recovery must be verified after M410 quickstop.');
+    queueMicrotask(() => {
+      for (const command of ['M410', 'M5']) {
+        this.status.priorityCommandInProgress = true;
+        const result = this.runCommand(command, { priority: true });
+        this.status.priorityCommandInProgress = false;
+        if (!result.ok) {
+          this.status.state = 'ERROR';
+          this.status.lastPriorityError = result.error || `Priority command failed: ${command}`;
+          this.status.lastError = this.status.lastPriorityError;
+          this.status.streamingPausedReason = this.status.lastError;
+          return;
+        }
+      }
+      this.status.state = 'STOPPED';
+      this.status.stopRequested = false;
+      this.status.streamingPausedReason = 'Stopped now with M410 quickstop. Home All and verify recovery before further motion.';
+    });
+    return accepted;
   }
 
   setFeedOverride(percent, { allowDuringTransition = false } = {}) {

@@ -17,6 +17,7 @@ export class MockMarlin {
       ...(config.machine || {}),
     };
     this.allowHoming = Boolean(config.allowHoming);
+    this.failCommands = new Set((config.failCommands || []).map((command) => String(command).toUpperCase()));
     this.maxFeedrates = { x: 100, y: 100, z: 5, ...(config.maxFeedrates || {}) };
     this.stepsPerMm = { x: 100, y: 100, z: 400, ...(config.stepsPerMm || {}) };
     this.maxAccelerations = { x: 1000, y: 1000, z: 100, ...(config.maxAccelerations || {}) };
@@ -70,6 +71,7 @@ export class MockMarlin {
     this.addLog('tx', command, options);
     const upper = command.toUpperCase();
     const args = words(upper);
+    if (this.failCommands.has(upper)) return this.error(`Injected failure for ${command}`);
 
     const machineCoordinates = /\bG53\b/.test(upper);
     if (machineCoordinates && !options.allowMachineCoordinates) {

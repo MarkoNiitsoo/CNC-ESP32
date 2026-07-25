@@ -2119,3 +2119,21 @@ No firmware upload is required.
   preparation until explicitly resolved.
 - Full suite passes 42 files / 354 tests, including a regression with an initial Z-only move before
   the first transformed XY command.
+
+## 2026-07-25 Immediate Stop handoff
+
+- Firmware Stop now preempts queued/active lower-priority control state and transmits priority
+  `M410` synchronously in `/api/job/stop`; priority `M5` follows only after the M410 acknowledgement.
+- The endpoint still returns without waiting for Stop completion, and the firmware runner owns the
+  remaining `STOPPING` to `STOPPED` transition if the browser disconnects.
+- The existing machine-frame state is invalidated when M410 is issued. Home All is required to
+  restore trusted position before recovery or safety-sensitive motion.
+- `stopEmergencyParserDetected` and `stopWarning` are included in job telemetry. When M115 did not
+  report `EMERGENCY_PARSER`, Stop remains functional but explicitly warns that immediate interruption
+  cannot be guaranteed.
+- DEV MOCK and firmware contract tests now cover asynchronous acceptance, `M410` before `M5`, stream
+  cancellation, priority failures, ACK/lower-priority preemption, and capability warnings.
+- Verification passes: 42 test files / 357 tests, plus an AI-Thinker ESP32-CAM PlatformIO build at
+  19.7% RAM (64,412 bytes) and 72.1% flash (1,417,845 bytes).
+- Deploy the firmware and updated `www/machine-bar.js` / `www/preview.js` together so displayed Stop
+  order and Emergency Parser warnings match the controller behavior.
