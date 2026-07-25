@@ -2137,3 +2137,15 @@ No firmware upload is required.
   19.7% RAM (64,412 bytes) and 72.1% flash (1,417,845 bytes).
 - Deploy the firmware and updated `www/machine-bar.js` / `www/preview.js` together so displayed Stop
   order and Emergency Parser warnings match the controller behavior.
+
+## 2026-07-25 workflow/history/recovery refactor design handoff
+
+- The implementation boundary is browser metadata and UI normalization; firmware movement behavior
+  does not need to change. Firmware already treats `STOPPED`, `COMPLETED`, and `ERROR` as non-active.
+- Preserve the existing `activeRun` metadata name for executable-file compatibility, but expose it
+  to new logic as the execution target. Use `liveStatus` for physical operation state and
+  `lastOutcome` for historical/terminal telemetry.
+- Add `recoveries` without replacing `recoveryHistory`: the former is the saved opportunity
+  collection, while the latter remains an append-only action/event audit.
+- Migration must be deterministic and idempotent by `runId`; older Job JSON remains loadable and no
+  fingerprints, generated validation, zero history, run history, or recovery events may be dropped.

@@ -2290,3 +2290,21 @@
 - Verification passes: focused Stop coverage is 3 files / 67 tests; the full suite is 42 files /
   357 tests. The AI-Thinker ESP32-CAM PlatformIO build succeeds at 19.7% RAM (64,412 bytes) and
   72.1% flash (1,417,845 bytes).
+
+## 2026-07-25 - Job workflow/history/recovery refactor design
+
+- Keep firmware job telemetry as the source of truth for the live operation. Browser normalization
+  treats active transition states and `PAUSED` as live; terminal `COMPLETED`, `STOPPED`, and `ERROR`
+  describe the last outcome and normalize to an idle live operation.
+- Keep `runHistory` immutable as the audit of Start Cut attempts. Historical outcomes never choose
+  the current job's primary action.
+- Add a normalized `recoveries` collection keyed by recovery id and original run id. Migrate eligible
+  legacy terminal runs once per run id without removing `recoveryHistory` events or changing the run.
+- Select recovery explicitly by recovery id. Recovery validation uses the referenced run identity,
+  not the newest run or the current selected job by implication.
+- Keep Home, Work Zero, Z Zero, Bounds Check, Aircut, history, and recovery controls persistent when
+  live motion allows them. Workflow gates remain recommendations; file identity, generated output,
+  bounds, and unsafe live motion remain hard execution blockers.
+- Re-zeroing or changing placement/execution identity preserves history and marks dependent
+  verification/authorization stale. Start authorization stays short-lived and is invalidated by
+  relevant setup changes.
