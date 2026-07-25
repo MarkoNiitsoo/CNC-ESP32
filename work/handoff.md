@@ -2199,3 +2199,10 @@ No firmware upload is required.
 
 - `docs/job-metadata.md`, `docs/recovery.md`, and `docs/mobile-job-flow.md` now describe the separated
   live/current/history/recovery model and supersede older newest-run/Review-Last-Run behavior.
+
+## 2026-07-25 workflow/history/recovery verification handoff
+
+- Full suite: 42 files / 365 tests passing.
+- This refactor is an SD web-asset/metadata change; firmware movement behavior is unchanged.
+- Real-machine acceptance should still cover Stop A -> select/run B -> reopen A, stale Bounds after
+  re-zero, generated-file-change recovery blocking, and deliberate material/fixture confirmation.

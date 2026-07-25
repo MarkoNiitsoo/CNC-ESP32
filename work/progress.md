@@ -2368,3 +2368,10 @@
   `recoveries`, closed recovery states, and idempotent legacy migration.
 - Updated operator flow and recovery safety docs for persistent setup actions, explicit older
   recovery selection, cross-job checkpoint preservation, and material/fixture confirmation.
+
+## 2026-07-25 - Workflow/history/recovery final verification
+
+- Full automated verification passes 42 test files / 365 tests.
+- JavaScript syntax checks pass for `www/preview.js` and `www/app.js`; `git diff --check` passes.
+- No firmware movement code changed. Existing active-file identity, streaming, checkpoint, motion
+  limit, tool-change, and production-resume suites remain green.
