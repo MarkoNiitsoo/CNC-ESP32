@@ -2158,3 +2158,14 @@ No firmware upload is required.
   belong in badges and secondary actions.
 - Firmware keeps its existing terminal telemetry for diagnostics; browser normalization supplies the
   required idle live-state behavior without changing Stop movement semantics.
+
+## 2026-07-25 multi-recovery metadata handoff
+
+- Job JSON now carries `recoveries` alongside the append-only `recoveryHistory`. Each entry references
+  an immutable `runHistory` record and snapshots the execution identity needed for later validation.
+- `normalizeRecoveries()` is safe to call repeatedly and derives only missing entries for eligible
+  runs with stable ids. It does not remove legacy history or fingerprints.
+- `planMotionOnlyRecovery()` accepts `recoveryId` or `runId`; callers should pass the operator's
+  explicit selection instead of relying on default newest-eligible selection.
+- Closing states (`abandoned`, `marked_finished`, `recovery_completed`) remain auditable in the
+  collection but are excluded from active recovery counts.

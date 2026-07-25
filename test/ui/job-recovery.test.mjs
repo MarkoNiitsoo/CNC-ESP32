@@ -1,7 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { parseGCodeToToolpath } from '../../www/lib/toolpath-model.js';
-import { buildMotionOnlyRecoveryCommands, planMotionOnlyRecovery } from '../../www/lib/job-recovery.js';
+import {
+  activeRecoveries,
+  buildMotionOnlyRecoveryCommands,
+  normalizeRecoveries,
+  planMotionOnlyRecovery,
+  updateRecoveryStatus,
+} from '../../www/lib/job-recovery.js';
 
 const source = await readFile(new URL('../fixtures/simple-square.gc', import.meta.url), 'utf8');
 const previewSource = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
@@ -47,14 +53,16 @@ describe('motion-only recovery planner', () => {
     expect(plan(jobFor('completed')).status).toBe('not_available');
   });
 
-  it('uses only the newest run and does not recover an older interruption', () => {
+  it('can open an older interruption after newer history entries exist', () => {
     const job = jobFor('interrupted');
     job.runHistory.push({ id: 'run-2', state: 'completed' });
-    expect(plan(job).status).toBe('not_available');
-    job.runHistory[1].state = 'running';
-    expect(plan(job).status).toBe('not_available');
-    job.runHistory[1] = { ...job.runHistory[0], id: 'run-2', state: 'stopped', lastAckedLineNumber: 8 };
-    expect(plan(job).run.id).toBe('run-2');
+    normalizeRecoveries(job);
+
+    expect(plan(job, { recoveryId: 'recovery-run-1' })).toMatchObject({
+      status: 'available',
+      run: { id: 'run-1' },
+      recovery: { runId: 'run-1' },
+    });
   });
 
   it('uses acknowledged progress before current or sent progress', () => {
@@ -142,6 +150,57 @@ describe('motion-only recovery planner', () => {
   it('blocks recovery motion while a machine job state is active', () => {
     expect(plan(jobFor(), { machineState: 'RUNNING' }).blockingReasons.map((x) => x.id)).toContain('machineBusy');
     expect(plan(jobFor(), { machineState: 'PAUSED' }).blockingReasons.map((x) => x.id)).toContain('machineBusy');
+  });
+});
+
+describe('saved recovery collection', () => {
+  it('migrates eligible legacy runs once and preserves multiple recoveries', () => {
+    const job = jobFor('stopped');
+    job.runHistory.push({
+      ...job.runHistory[0],
+      id: 'run-2',
+      state: 'interrupted',
+      endedAt: '2026-07-24T10:00:00.000Z',
+    });
+
+    normalizeRecoveries(job);
+    normalizeRecoveries(job);
+
+    expect(job.recoveries.map((entry) => entry.runId)).toEqual(['run-1', 'run-2']);
+    expect(job.recoveries).toHaveLength(2);
+  });
+
+  it('loads metadata without a recovery collection', () => {
+    const job = jobFor('completed');
+    delete job.recoveries;
+
+    expect(normalizeRecoveries(job)).toEqual([]);
+    expect(job.recoveryHistory).toEqual([]);
+  });
+
+  it('abandons or marks a recovery finished without changing run history', () => {
+    const job = jobFor('stopped');
+    normalizeRecoveries(job);
+    const originalRun = structuredClone(job.runHistory[0]);
+
+    updateRecoveryStatus(job, 'recovery-run-1', 'abandoned', {
+      now: '2026-07-25T10:00:00.000Z',
+      note: 'Operator will recut.',
+    });
+
+    expect(activeRecoveries(job)).toEqual([]);
+    expect(job.runHistory[0]).toEqual(originalRun);
+    expect(job.recoveryHistory.at(-1)).toMatchObject({
+      type: 'recovery-status',
+      runId: 'run-1',
+      status: 'abandoned',
+    });
+
+    updateRecoveryStatus(job, 'recovery-run-1', 'marked_finished', {
+      now: '2026-07-25T10:01:00.000Z',
+    });
+    expect(job.runHistory[0]).toEqual(originalRun);
+    expect(job.recoveryHistory).toHaveLength(2);
   });
 });
 

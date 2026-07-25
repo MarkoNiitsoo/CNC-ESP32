@@ -7,6 +7,19 @@ import {
 
 const RECOVERABLE_STATES = new Set(['stopped', 'interrupted', 'error']);
 const ACTIVE_MACHINE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
+const CLOSED_RECOVERY_STATES = new Set(['recovery_completed', 'abandoned', 'marked_finished']);
+const RECOVERY_STATES = new Set([
+  'saved_for_later',
+  'needs_home',
+  'needs_work_zero_restore',
+  'needs_z_zero',
+  'position_untrusted',
+  'file_missing',
+  'execution_file_changed',
+  'material_confirmation_required',
+  'ready',
+  ...CLOSED_RECOVERY_STATES,
+]);
 
 function finitePosition(value) {
   return value && ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(value[axis])));
@@ -20,9 +33,102 @@ function segmentCommandNumber(segment) {
   return Number(segment?.commandNumber ?? segment?.lineNumber ?? 0);
 }
 
-function latestRun(job = {}) {
+function latestRecoverableRun(job = {}) {
   const runs = Array.isArray(job.runHistory) ? job.runHistory : [];
-  return runs[runs.length - 1] || null;
+  return [...runs].reverse().find((run) => RECOVERABLE_STATES.has(String(run?.state || '').toLowerCase())) || null;
+}
+
+function recoveryIdForRun(runId) {
+  return `recovery-${String(runId || '').replace(/[^0-9A-Za-z._-]/g, '-')}`;
+}
+
+function recoveryFromRun(run, options = {}) {
+  const timestamp = run.endedAt || run.startedAt || options.now || new Date().toISOString();
+  return {
+    id: options.id || recoveryIdForRun(run.id),
+    runId: run.id,
+    status: 'saved_for_later',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    sourceGcodePath: run.sourceGcodePath || run.gcodePath || '',
+    activeRunPath: run.activeRunPath || '',
+    activeRunMode: run.activeRunMode || 'source',
+    activeRunFingerprint: run.activeRunFingerprint || '',
+    workZeroId: run.zeroId || null,
+    zZeroId: run.zZeroId || null,
+    lastAckedCommandNumber: Number(run.lastAckedLineNumber) || null,
+    lastKnownPosition: run.lastKnownPosition ? { ...run.lastKnownPosition } : null,
+    materialConfirmedAt: null,
+    note: '',
+  };
+}
+
+export function normalizeRecoveries(job = {}, options = {}) {
+  if (!Array.isArray(job.recoveries)) job.recoveries = [];
+  if (!Array.isArray(job.recoveryHistory)) job.recoveryHistory = [];
+  const runs = Array.isArray(job.runHistory) ? job.runHistory : [];
+  const runIds = new Set(runs.map((run) => run?.id).filter(Boolean));
+  job.recoveries = job.recoveries
+    .filter((entry) => entry && entry.id && entry.runId && runIds.has(entry.runId))
+    .map((entry) => ({
+      ...entry,
+      status: RECOVERY_STATES.has(entry.status) ? entry.status : 'saved_for_later',
+      note: entry.note || '',
+    }));
+  const represented = new Set(job.recoveries.map((entry) => entry.runId));
+  for (const run of runs) {
+    const state = String(run?.state || '').toLowerCase();
+    if (!run?.id || !RECOVERABLE_STATES.has(state) || represented.has(run.id)) continue;
+    job.recoveries.push(recoveryFromRun(run, options));
+    represented.add(run.id);
+  }
+  return job.recoveries;
+}
+
+export function activeRecoveries(job = {}) {
+  return (Array.isArray(job.recoveries) ? job.recoveries : [])
+    .filter((entry) => entry && !CLOSED_RECOVERY_STATES.has(entry.status));
+}
+
+export function recoveryById(job = {}, recoveryId = '') {
+  return (Array.isArray(job.recoveries) ? job.recoveries : [])
+    .find((entry) => entry.id === recoveryId) || null;
+}
+
+export function updateRecoveryStatus(job = {}, recoveryId, status, options = {}) {
+  if (!RECOVERY_STATES.has(status)) throw new Error(`Unsupported recovery status: ${status}`);
+  normalizeRecoveries(job, options);
+  const recovery = recoveryById(job, recoveryId);
+  if (!recovery) return null;
+  const updatedAt = options.updatedAt || options.now || new Date().toISOString();
+  const previousStatus = recovery.status;
+  recovery.status = status;
+  recovery.updatedAt = updatedAt;
+  if (options.note !== undefined) recovery.note = String(options.note || '');
+  if (options.materialConfirmed === true) recovery.materialConfirmedAt = updatedAt;
+  job.recoveryHistory.push({
+    id: options.eventId || `${recovery.id}-event-${job.recoveryHistory.length + 1}`,
+    type: 'recovery-status',
+    recoveryId: recovery.id,
+    runId: recovery.runId,
+    previousStatus,
+    status,
+    occurredAt: updatedAt,
+    note: options.note || '',
+  });
+  return recovery;
+}
+
+function selectedRecoveryAndRun(job, options) {
+  const recoveries = Array.isArray(job.recoveries) ? job.recoveries : [];
+  const recovery = options.recoveryEntry ||
+    (options.recoveryId ? recoveries.find((entry) => entry.id === options.recoveryId) : null) ||
+    (options.runId ? recoveries.find((entry) => entry.runId === options.runId) : null) ||
+    null;
+  const runId = recovery?.runId || options.runId || '';
+  const runs = Array.isArray(job.runHistory) ? job.runHistory : [];
+  const run = runId ? runs.find((entry) => entry.id === runId) : latestRecoverableRun(job);
+  return { recovery, run };
 }
 
 function interruptionLine(run = {}) {
@@ -82,11 +188,14 @@ export function planMotionOnlyRecovery(options = {}) {
   const machineState = String(options.machineState || '').toUpperCase();
   const activeRun = getActiveRun(job);
   const activeFingerprint = options.activeRunFingerprint || getActiveRunFingerprint(job);
-  const run = latestRun(job);
+  const { recovery, run } = selectedRecoveryAndRun(job, options);
 
   if (!activeRun.path) return emptyResult('blocked', 'Active run is missing.', [{ id: 'activeRun', message: 'Active run is missing.' }]);
   if (!model?.segments?.length) return emptyResult('blocked', 'ToolpathModel is missing.', [{ id: 'toolpath', message: 'ToolpathModel is missing.' }]);
   if (!run) return emptyResult('not_available', 'No interrupted run is available.');
+  if (recovery && CLOSED_RECOVERY_STATES.has(recovery.status)) {
+    return emptyResult('not_available', 'The selected recovery is no longer active.');
+  }
   const runState = String(run.state || '').toLowerCase();
   if (runState === 'completed') return emptyResult('not_available', 'Latest run completed normally.');
   if (!RECOVERABLE_STATES.has(runState)) {
@@ -197,6 +306,7 @@ export function planMotionOnlyRecovery(options = {}) {
       zeroId: run.zeroId || null,
       zZeroId: run.zZeroId || null,
     },
+    recovery: recovery ? { ...recovery } : null,
     interruption: {
       lineNumber,
       position: interruptionPosition,

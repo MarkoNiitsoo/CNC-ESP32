@@ -2319,3 +2319,14 @@
 - Saved recoveries and run history are secondary actions, and active recoveries get a separate badge.
 - Added readiness regressions for idle-after-stop, terminal firmware telemetry, running, paused, and
   historical errors.
+
+## 2026-07-25 - Multi-recovery metadata and per-run planning
+
+- Added an idempotent `recoveries` collection migration for every eligible stopped, interrupted, or
+  error run with a stable run id. Existing `recoveryHistory` remains the action audit.
+- Recovery planning accepts an explicit recovery id/run id and can evaluate an older interruption
+  after newer completed history entries.
+- Abandon and Mark Finished are recovery status transitions that remove an item from the active list,
+  append an audit event, and never rewrite or delete the original run.
+- New and loaded Job JSON normalizes the collection, and terminal run synchronization creates any
+  missing saved opportunity before metadata is persisted.

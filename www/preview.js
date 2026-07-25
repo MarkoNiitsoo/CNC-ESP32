@@ -956,6 +956,8 @@ function newJobState() {
     toolZero: emptyToolZero(),
     zeroHistory: [],
     runHistory: [],
+    recoveries: [],
+    recoveryHistory: [],
     activeWorkZeroId: null,
     activeZZeroId: null,
     placement: defaultPlacementState(),
@@ -1885,6 +1887,7 @@ async function markLatestRunStopped(status = null, reason = '') {
   else history.finishLatestRun(jobState, 'stopped', reason);
   const run = history.latestRun(jobState);
   if (run && !run.reason) run.reason = reason;
+  jobRecoveryModule?.normalizeRecoveries(jobState);
   await saveJobQuietly().catch((err) => appendRunLog(`Run history save failed: ${err.message}`));
   renderHistoryPanels();
   refreshRecoveryPlan();
@@ -1898,6 +1901,7 @@ async function syncRunHistoryFromStatus(status) {
   const run = history.latestRun(jobState);
   if (!run || run.endedAt) return;
   history.updateRunHistoryFromStatus(jobState, status);
+  jobRecoveryModule?.normalizeRecoveries(jobState);
   await saveJobQuietly().catch((err) => appendRunLog(`Run history save failed: ${err.message}`));
   renderHistoryPanels();
   refreshRecoveryPlan();
@@ -2025,7 +2029,9 @@ function ensureHistoryShape(job) {
   if (!job) return null;
   if (!Array.isArray(job.zeroHistory)) job.zeroHistory = [];
   if (!Array.isArray(job.runHistory)) job.runHistory = [];
+  if (!Array.isArray(job.recoveries)) job.recoveries = [];
   if (!Array.isArray(job.recoveryHistory)) job.recoveryHistory = [];
+  jobRecoveryModule?.normalizeRecoveries(job);
   if (!Object.prototype.hasOwnProperty.call(job, 'activeWorkZeroId')) job.activeWorkZeroId = null;
   if (!Object.prototype.hasOwnProperty.call(job, 'activeZZeroId')) job.activeZZeroId = null;
   return job;
@@ -5983,6 +5989,7 @@ async function loadPreview() {
   generateTraceCommands();
   renderArmPanel();
   await jobRecoveryPromise;
+  jobRecoveryModule.normalizeRecoveries(jobState);
   refreshRecoveryPlan();
   draw();
   await syncPreviewMetadata();
