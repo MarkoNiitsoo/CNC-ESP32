@@ -2371,7 +2371,14 @@
 
 ## 2026-07-25 - Workflow/history/recovery final verification
 
-- Full automated verification passes 42 test files / 365 tests.
+- Full automated verification passes 42 test files / 366 tests.
 - JavaScript syntax checks pass for `www/preview.js` and `www/app.js`; `git diff --check` passes.
 - No firmware movement code changed. Existing active-file identity, streaming, checkpoint, motion
   limit, tool-change, and production-resume suites remain green.
+
+## 2026-07-25 - Readiness blocker audit follow-up
+
+- Missing, stale, or failed Bounding Box/Aircut is now a visible warning and recommended primary
+  action, not a hard execution-identity blocker. The existing deliberate skip path remains usable.
+- Work/Z zero, Arm/start authorization, generated output identity, active path, and fingerprint
+  constraints remain hard blockers.

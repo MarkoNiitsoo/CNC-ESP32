@@ -346,6 +346,7 @@ export function buildWorkbenchStatus(job = {}, options = {}) {
     readiness: readinessBadge(job, options),
     activeRunPath: readiness.activeRun.path,
     blockingReasons: readiness.blockingReasons,
+    warnings: readiness.warnings,
     primaryAction: readiness.primaryAction,
     secondaryActions: readiness.secondaryActions,
   };

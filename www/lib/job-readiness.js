@@ -122,14 +122,24 @@ export function getBlockingReasons(job = {}, options = {}) {
   }
   if (zeroStatus(current, 'workZero') !== 'ok') addReason(reasons, 'work_zero_missing', 'Work zero is missing.');
   if (zeroStatus(current, 'zZero') !== 'ok') addReason(reasons, 'z_zero_missing', 'Z zero is missing.');
-  const dry = dryRunStatus(current);
-  if (dry === 'missing') addReason(reasons, 'dry_run_missing', 'Dry run has not been completed for the active run file.');
-  if (dry === 'stale') addReason(reasons, 'dry_run_stale', 'Dry run was made for another file and is stale.');
-  if (dry === 'failed') addReason(reasons, 'dry_run_failed', 'Dry run failed and must be repeated.');
   const arm = armStatus(current);
   if (arm === 'unarmed') addReason(reasons, 'arm_missing', 'Job is not armed.');
   if (arm === 'stale') addReason(reasons, 'arm_stale', 'Job was armed for another active file and must be re-armed.');
   return reasons;
+}
+
+export function getReadinessWarnings(job = {}, options = {}) {
+  const current = jobWithContext(job, options);
+  const warnings = [];
+  const dry = dryRunStatus(current);
+  if (dry === 'missing') addReason(warnings, 'dry_run_missing', 'Bounding Box or Aircut has not been completed.');
+  if (dry === 'stale') addReason(warnings, 'dry_run_stale', 'Bounding Box or Aircut is stale after setup changed.');
+  if (dry === 'failed') addReason(warnings, 'dry_run_failed', 'The previous Bounding Box or Aircut failed.');
+  const outcome = latestRunOutcome(current, options);
+  if (outcome === 'stopped' || outcome === 'error') {
+    addReason(warnings, 'previous_run_incomplete', `Previous run outcome: ${outcome}.`);
+  }
+  return warnings;
 }
 
 function action(id, label, target, extra = {}) {
@@ -213,6 +223,7 @@ export function buildJobReadiness(job = {}, options = {}) {
   const placement = current.placement || {};
   const activeCheck = assertCanUseActiveRunForExecution(current);
   const blockingReasons = getBlockingReasons(current, options);
+  const warnings = getReadinessWarnings(current, options);
   return {
     activeRun: {
       mode: active.mode,
@@ -250,6 +261,7 @@ export function buildJobReadiness(job = {}, options = {}) {
       latest: latestRun(current),
     },
     blockingReasons,
+    warnings,
     primaryAction: getPrimaryNextAction(current, options),
     secondaryActions: getSecondaryActions(current, options),
     badges: getReadinessBadges(current, options),

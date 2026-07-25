@@ -90,6 +90,14 @@ describe('job readiness source workflow', () => {
     expect(readiness.activeRun).toMatchObject({ mode: 'source', path: '/gcode/test.gc' });
     expect(readiness.badges.map((badge) => badge.label)).toContain('USING ORIGINAL');
   });
+
+  it('classifies missing Bounding Box/Aircut as a warning rather than an execution-identity blocker', () => {
+    const readiness = buildJobReadiness(baseJob({ workZero, toolZero }), { currentJob });
+
+    expect(readiness.warnings.map((item) => item.id)).toContain('dry_run_missing');
+    expect(readiness.blockingReasons.map((item) => item.id)).not.toContain('dry_run_missing');
+    expect(readiness.primaryAction.label).toBe('Run Bounding Box / Dry Run');
+  });
 });
 
 describe('job readiness generated workflow', () => {

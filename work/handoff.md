@@ -2202,7 +2202,13 @@ No firmware upload is required.
 
 ## 2026-07-25 workflow/history/recovery verification handoff
 
-- Full suite: 42 files / 365 tests passing.
+- Full suite: 42 files / 366 tests passing.
 - This refactor is an SD web-asset/metadata change; firmware movement behavior is unchanged.
 - Real-machine acceptance should still cover Stop A -> select/run B -> reopen A, stale Bounds after
   re-zero, generated-file-change recovery blocking, and deliberate material/fixture confirmation.
+
+## 2026-07-25 readiness blocker audit handoff
+
+- `buildJobReadiness()` now returns `warnings` separately from `blockingReasons`. Bounding
+  Box/Aircut recommendations live in warnings; execution identity and required authorization remain
+  blockers.
