@@ -2169,3 +2169,12 @@ No firmware upload is required.
   explicit selection instead of relying on default newest-eligible selection.
 - Closing states (`abandoned`, `marked_finished`, `recovery_completed`) remain auditable in the
   collection but are excluded from active recovery counts.
+
+## 2026-07-25 persistent setup tools handoff
+
+- Readiness has a static setup-tool row. Keep it independent from the dynamic primary recommendation.
+- Re-zeroing retains the prior verification decision with `staleReason`/`staleAt`, marks completed
+  dry-run modes stale, and clears authorization. This keeps history inspectable and makes immediate
+  Bounds/Aircut repetition possible.
+- Placement/execution identity invalidation follows the same pattern and continues to enforce
+  generated-file identity rather than falling back to source G-code.

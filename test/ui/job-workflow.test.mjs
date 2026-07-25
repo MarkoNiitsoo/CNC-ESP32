@@ -5,6 +5,7 @@ import {
   createVerificationDecision,
   emptyWorkflow,
   evaluateWorkflow,
+  invalidateDependentSetup,
   verificationStatus,
 } from '../../www/lib/job-workflow.js';
 
@@ -81,6 +82,46 @@ describe('Job JSON v3 workflow gates', () => {
     current.activeRun.transformFingerprint = 'tx';
     current.workZeroDecision.token = 'zero-2';
     expect(verificationStatus(current, homed)).toMatchObject({ ok: false, reason: 'zero-changed' });
+  });
+
+  it('preserves completed verification as stale and invalidates temporary authorization after re-zeroing', () => {
+    const current = job({
+      workZeroDecision: { mode: 'homed', token: 'zero-1', capturedAt: 'now' },
+      dryRun: { lastBoundingBoxTraceStatus: 'complete', lastAircutStatus: 'idle' },
+      arm: { state: 'ARMED' },
+      startAuthorization: { state: 'authorized', authorizedAt: 'now' },
+    });
+    current.verificationDecision = createVerificationDecision(current, { type: 'bounds', decidedAt: 'now' });
+    const previousDecision = structuredClone(current.verificationDecision);
+
+    invalidateDependentSetup(current, 'Work zero changed.');
+    current.workZeroDecision.token = 'zero-2';
+
+    expect(current.verificationDecision).toMatchObject({
+      ...previousDecision,
+      staleReason: 'Work zero changed.',
+    });
+    expect(verificationStatus(current, homed)).toMatchObject({ ok: false, reason: 'zero-changed' });
+    expect(current.dryRun.lastBoundingBoxTraceStatus).toBe('stale');
+    expect(current.arm.state).toBe('STALE');
+    expect(current.startAuthorization.state).toBe('pending');
+  });
+
+  it('keeps repeatable setup actions in one persistent readiness location', async () => {
+    const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
+    for (const id of [
+      'readiness-set-work-zero',
+      'readiness-set-z-zero',
+      'readiness-run-bounds',
+      'readiness-run-aircut',
+      'readiness-inspect-preflight',
+      'readiness-inspect-recoveries',
+    ]) {
+      expect(previewHtml).toContain(`id="${id}"`);
+    }
+    expect(preview).toContain("'Set Work Zero Again'");
+    expect(preview).toContain("'Run Bounding Box Again'");
+    expect(preview).toContain("'Run Aircut Again'");
   });
 
   it('expires an unhomed decision on firmware boot-session change', () => {

@@ -3,6 +3,7 @@ import {
   createVerificationDecision,
   emptyWorkflow,
   evaluateWorkflow,
+  invalidateDependentSetup,
   isJobV3,
   workflowFor,
 } from './lib/job-workflow.js';
@@ -29,6 +30,12 @@ const placementSummaryEl = document.querySelector('#placement-summary');
 const placementResultEl = document.querySelector('#placement-result');
 const readinessSummaryEl = document.querySelector('#readiness-summary');
 const readinessHomeAllButton = document.querySelector('#readiness-home-all');
+const readinessSetWorkZeroButton = document.querySelector('#readiness-set-work-zero');
+const readinessSetZZeroButton = document.querySelector('#readiness-set-z-zero');
+const readinessRunBoundsButton = document.querySelector('#readiness-run-bounds');
+const readinessRunAircutButton = document.querySelector('#readiness-run-aircut');
+const readinessInspectPreflightButton = document.querySelector('#readiness-inspect-preflight');
+const readinessInspectRecoveriesButton = document.querySelector('#readiness-inspect-recoveries');
 const readinessPrimaryEl = document.querySelector('#readiness-primary');
 const readinessSecondaryEl = document.querySelector('#readiness-secondary');
 const jobSummaryEl = document.querySelector('#job-summary');
@@ -569,7 +576,31 @@ function renderReadiness() {
     readinessHomeAllButton.disabled = homeBusy;
     readinessHomeAllButton.title = homeBusy ? 'Home All is available when the machine is idle.' : 'Re-home every axis';
   }
+  const persistentButtons = [
+    readinessSetWorkZeroButton,
+    readinessSetZZeroButton,
+    readinessRunBoundsButton,
+    readinessRunAircutButton,
+  ].filter(Boolean);
+  persistentButtons.forEach((button) => {
+    button.disabled = homeBusy;
+    button.title = homeBusy ? 'This setup action is available when the machine is idle.' : '';
+  });
+  if (readinessSetWorkZeroButton) {
+    readinessSetWorkZeroButton.textContent = status.workZero.ok ? 'Set Work Zero Again' : 'Set Work Zero';
+  }
+  if (readinessSetZZeroButton) {
+    readinessSetZZeroButton.textContent = activeZero('zZero') ? 'Set Z Zero Again' : 'Set Z Zero';
+  }
+  const verificationType = jobState?.verificationDecision?.type;
+  if (readinessRunBoundsButton) {
+    readinessRunBoundsButton.textContent = verificationType === 'bounds' ? 'Run Bounding Box Again' : 'Run Bounding Box';
+  }
+  if (readinessRunAircutButton) {
+    readinessRunAircutButton.textContent = verificationType === 'aircut' ? 'Run Aircut Again' : 'Run Aircut';
+  }
   const completedSteps = [status.frame.ok, status.workZero.ok, status.verification.ok].filter(Boolean).length;
+  const savedRecoveries = jobRecoveryModule?.activeRecoveries(jobState || {}).length || 0;
   const copy = {
     blocked: ['Job needs attention', status.hardBlockers[0] || 'Resolve the job file problem before moving the machine.'],
     frame: ['Establish machine position', 'Home All is recommended. You may deliberately continue without homing when recovering material or a job.'],
@@ -579,6 +610,11 @@ function renderReadiness() {
   }[status.gate];
 
   readinessSummaryEl.innerHTML = `
+    <dl class="operator-current-state">
+      <dt>Machine</dt><dd>${html(homeBusy ? machineState : 'Idle')}</dd>
+      <dt>Current job</dt><dd>${html(basename(filePath) || 'None')}</dd>
+      <dt>Saved recoveries</dt><dd>${savedRecoveries}</dd>
+    </dl>
     <div class="operator-readiness-progress"><strong>${completedSteps} / 3</strong><span>preparation decisions ready</span></div>
     <h3>${html(copy[0])}</h3>
     <p>${html(copy[1])}</p>
@@ -4683,6 +4719,7 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
       revision: Number(data.frame?.revision),
     },
   });
+  invalidateDependentSetup(jobState, 'Z zero changed after physical verification.');
   markArmStaleForZZero();
   setJobResult('Z zero saved');
   renderToolZeroPanel();
@@ -4794,8 +4831,8 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
       bootSessionId: data.frame?.bootSessionId || '',
       capturedAt: job.workZero.capturedAt,
     };
-    job.verificationDecision = emptyWorkflow().verificationDecision;
   }
+  invalidateDependentSetup(job, 'Work zero changed after physical verification.');
   if (job.arm?.state === 'ARMED') job.arm.state = 'STALE';
   await saveJobQuietly();
   setJobResult(selectedAxes === 'x' ? 'X zero saved' : selectedAxes === 'y' ? 'Y zero saved' : 'Work zero saved');
@@ -6095,6 +6132,15 @@ setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 
 readinessHomeAllButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
 });
+readinessSetWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz'));
+readinessSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture(null, { confirm: false }));
+readinessRunBoundsButton?.addEventListener('click', sendBoundingBoxTrace);
+readinessRunAircutButton?.addEventListener('click', sendAircutToolpath);
+readinessInspectPreflightButton?.addEventListener('click', () => {
+  showPreviewTab('preflight');
+  workbenchController?.openForTab('preflight');
+});
+readinessInspectRecoveriesButton?.addEventListener('click', openFirmwareRecoveryOptions);
 const toolChangeSettingsPromise = import('/lib/tool-change-settings.js');
 
 async function loadToolChangeDeviceSettings() {

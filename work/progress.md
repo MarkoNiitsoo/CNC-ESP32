@@ -2330,3 +2330,14 @@
   append an audit event, and never rewrite or delete the original run.
 - New and loaded Job JSON normalizes the collection, and terminal run synchronization creates any
   missing saved opportunity before metadata is persisted.
+
+## 2026-07-25 - Persistent and repeatable setup tools
+
+- Added one persistent readiness tool row for Work Zero, Z Zero, Bounding Box, Aircut, Preflight,
+  and Recovery/History. Completed actions change to `Again` labels instead of disappearing.
+- The tool row is disabled only while live machine motion/transition state makes setup unsafe; the
+  recommended Next Action no longer controls tool visibility.
+- Work/Z zero changes now preserve the completed verification record for audit, expose it as stale,
+  stale completed dry-run results, and invalidate Arm and temporary start authorization.
+- Placement/execution-target changes now also preserve stale verification evidence and invalidate
+  temporary start authorization in addition to the existing generated-file and dry-run safeguards.

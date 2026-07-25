@@ -297,6 +297,25 @@ function invalidateArmAndDryRun(job, reason) {
       staleReason: reason,
     };
   }
+  if (job.verificationDecision?.result === 'complete') {
+    job.verificationDecision = {
+      ...job.verificationDecision,
+      staleReason: reason,
+      staleAt: nowIso(),
+    };
+  }
+  if (job.startAuthorization) {
+    job.startAuthorization = {
+      state: 'pending',
+      activeRunPath: '',
+      activeRunFingerprint: '',
+      activeRunSizeBytes: 0,
+      frameMode: '',
+      verificationType: '',
+      checklist: {},
+      authorizedAt: null,
+    };
+  }
 }
 
 export function selectGeneratedRun(job, validation, now = nowIso()) {

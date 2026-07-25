@@ -165,3 +165,29 @@ export function invalidateStartAuthorization(job = {}) {
   job.startAuthorization = emptyWorkflow().startAuthorization;
   return job;
 }
+
+export function invalidateDependentSetup(job = {}, reason = 'Job setup changed') {
+  const changedAt = new Date().toISOString();
+  if (job.verificationDecision?.result === 'complete') {
+    job.verificationDecision = {
+      ...job.verificationDecision,
+      staleReason: reason,
+      staleAt: changedAt,
+    };
+  }
+  if (job.dryRun) {
+    job.dryRun = {
+      ...job.dryRun,
+      lastBoundingBoxTraceStatus: job.dryRun.lastBoundingBoxTraceStatus === 'complete'
+        ? 'stale'
+        : job.dryRun.lastBoundingBoxTraceStatus,
+      lastAircutStatus: job.dryRun.lastAircutStatus === 'complete'
+        ? 'stale'
+        : job.dryRun.lastAircutStatus,
+      staleReason: reason,
+    };
+  }
+  if (job.arm?.state === 'ARMED') job.arm = { ...job.arm, state: 'STALE', staleReason: reason };
+  invalidateStartAuthorization(job);
+  return job;
+}
