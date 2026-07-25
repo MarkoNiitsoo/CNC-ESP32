@@ -2149,3 +2149,12 @@ No firmware upload is required.
   collection, while the latter remains an append-only action/event audit.
 - Migration must be deterministic and idempotent by `runId`; older Job JSON remains loadable and no
   fingerprints, generated validation, zero history, run history, or recovery events may be dropped.
+
+## 2026-07-25 live readiness separation handoff
+
+- `buildJobReadiness().run` now exposes `liveStatus`, `lastOutcome`, and `latest`. The old `status`
+  key remains as an alias of `liveStatus` for compatibility.
+- Do not reintroduce a primary-action branch based on `runHistory`. Recovery/history affordances
+  belong in badges and secondary actions.
+- Firmware keeps its existing terminal telemetry for diagnostics; browser normalization supplies the
+  required idle live-state behavior without changing Stop movement semantics.

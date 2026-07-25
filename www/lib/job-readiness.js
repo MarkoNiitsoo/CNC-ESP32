@@ -8,6 +8,7 @@ import {
 } from './job-active-run.js';
 
 const ACTIVE_STATES = new Set(['RUNNING', 'PREPARING', 'RESUMING', 'PAUSING', 'STOPPING']);
+const TERMINAL_RECOVERY_STATES = new Set(['recovery_completed', 'abandoned', 'marked_finished']);
 
 function jobWithContext(job = {}, options = {}) {
   const sourcePath = getSourceGcodePath(job) || options.currentJob?.gcodePath || '';
@@ -74,19 +75,38 @@ function generatedStatus(job = {}) {
   return validation.status || 'missing';
 }
 
-function runStatus(job = {}, options = {}) {
+function terminalOutcome(state) {
+  if (state === 'COMPLETED') return 'completed';
+  if (state === 'STOPPED') return 'stopped';
+  if (state === 'ERROR') return 'error';
+  return '';
+}
+
+export function liveRunStatus(options = {}) {
   const live = stateOf(options.jobStatus || {});
   if (live === 'RUNNING' || live === 'PREPARING' || live === 'RESUMING' || live === 'PAUSING' || live === 'STOPPING') return 'running';
   if (live === 'PAUSED') return 'paused';
-  if (live === 'COMPLETED') return 'completed';
-  if (live === 'STOPPED') return 'stopped';
-  if (live === 'ERROR') return 'error';
+  // Firmware retains terminal outcomes in job status for diagnostics. They are no
+  // longer live operations and must not keep the current workflow pseudo-active.
+  if (terminalOutcome(live)) return 'idle';
+  if (!options.jobStatus || live === 'UNKNOWN') return 'unknown';
+  return 'idle';
+}
+
+export function latestRunOutcome(job = {}, options = {}) {
+  const reported = terminalOutcome(stateOf(options.jobStatus || {}));
+  if (reported) return reported;
   const run = latestRun(job);
   if (run?.state === 'stopped' || run?.state === 'interrupted') return 'stopped';
   if (run?.state === 'error') return 'error';
   if (run?.state === 'completed') return 'completed';
-  if (!options.jobStatus || live === 'UNKNOWN') return 'unknown';
-  return 'idle';
+  return null;
+}
+
+function activeRecoveryCount(job = {}) {
+  return Array.isArray(job.recoveries)
+    ? job.recoveries.filter((item) => item && !TERMINAL_RECOVERY_STATES.has(item.status)).length
+    : 0;
 }
 
 function addReason(reasons, id, message) {
@@ -119,11 +139,10 @@ function action(id, label, target, extra = {}) {
 export function getPrimaryNextAction(job = {}, options = {}) {
   const current = jobWithContext(job, options);
   const sourcePath = getSourceGcodePath(current) || options.currentJob?.gcodePath || '';
-  const run = runStatus(current, options);
+  const run = liveRunStatus(options);
   if (run === 'running') return action('monitor_job', 'Monitor Job', 'run');
   if (run === 'paused') return action('resume_job', 'Resume Job', 'run', { api: '/api/job/resume' });
   if (!sourcePath) return action('choose_file', 'Choose G-code File', 'files');
-  if (run === 'stopped' || run === 'error') return action('review_last_run', 'Review Last Run', 'setup');
 
   const activeCheck = assertCanUseActiveRunForExecution(current);
   if (!activeCheck.ok) {
@@ -142,7 +161,7 @@ export function getPrimaryNextAction(job = {}, options = {}) {
 
 export function getSecondaryActions(job = {}, options = {}) {
   const current = jobWithContext(job, options);
-  const run = runStatus(current, options);
+  const run = liveRunStatus(options);
   if (run === 'running') {
     return [
       action('pause_job', 'Pause', 'run', { api: '/api/job/pause' }),
@@ -156,18 +175,15 @@ export function getSecondaryActions(job = {}, options = {}) {
       action('m5', 'M5', 'run', { command: 'M5' }),
     ];
   }
-  if (run === 'stopped' || run === 'error') {
-    return [
-      action('start_over', 'Start Over', 'setup'),
-      action('rerun_dry_run', 'Re-run Dry Run', 'dry-run'),
-    ];
-  }
-  return [
+  const actions = [
     action('open_preview', 'Preview', 'preview'),
     action('open_setup', 'Setup', 'setup'),
     action('open_dry_run', 'Dry Run', 'dry-run'),
     action('open_arm', 'Arm', 'arm'),
   ];
+  if (activeRecoveryCount(current)) actions.push(action('open_recoveries', 'Saved Recoveries', 'recovery'));
+  if (latestRun(current)) actions.push(action('review_history', 'Run History', 'history'));
+  return actions;
 }
 
 export function getReadinessBadges(job = {}, options = {}) {
@@ -184,8 +200,10 @@ export function getReadinessBadges(job = {}, options = {}) {
     const status = generatedStatus(current);
     badges.splice(1, 0, { id: 'generated', label: `Generated: ${status}`, level: status === 'valid' ? 'ok' : 'warn' });
   }
-  const live = runStatus(current, options);
+  const live = liveRunStatus(options);
   badges.push({ id: 'run', label: `Run: ${live}`, level: live === 'running' ? 'active' : live === 'error' ? 'fail' : 'info' });
+  const recoveries = activeRecoveryCount(current);
+  if (recoveries) badges.push({ id: 'recoveries', label: `Saved recoveries: ${recoveries}`, level: 'warn' });
   return badges;
 }
 
@@ -225,7 +243,10 @@ export function buildJobReadiness(job = {}, options = {}) {
       staleReason: current.arm?.staleReason || '',
     },
     run: {
-      status: runStatus(current, options),
+      liveStatus: liveRunStatus(options),
+      // Keep status as a compatibility alias for existing UI consumers.
+      status: liveRunStatus(options),
+      lastOutcome: latestRunOutcome(current, options),
       latest: latestRun(current),
     },
     blockingReasons,

@@ -170,13 +170,32 @@ describe('job readiness stale and live states', () => {
     expect(getSecondaryActions(baseJob(), { currentJob, jobStatus: { state: 'PAUSED' } }).map((item) => item.label)).toEqual(['Stop', 'M5']);
   });
 
-  it('reviews stopped or interrupted runs without offering resume execution', () => {
-    const job = readySourceJob({ runHistory: [{ state: 'interrupted', startedAt: '2026-06-23T12:00:00.000Z' }] });
-    const readiness = buildJobReadiness(job, { currentJob });
+  it('keeps a stopped historical run separate from an idle live operation', () => {
+    const job = readySourceJob({
+      runHistory: [{ id: 'run-1', state: 'stopped', startedAt: '2026-06-23T12:00:00.000Z' }],
+      recoveries: [{ id: 'recovery-run-1', runId: 'run-1', status: 'saved_for_later' }],
+    });
+    const readiness = buildJobReadiness(job, { currentJob, jobStatus: { state: 'IDLE' } });
 
-    expect(readiness.primaryAction.label).toBe('Review Last Run');
-    expect(readiness.secondaryActions.map((item) => item.label)).toEqual(['Start Over', 'Re-run Dry Run']);
-    expect(JSON.stringify(readiness.secondaryActions)).not.toMatch(/resume/i);
+    expect(readiness.run).toMatchObject({ liveStatus: 'idle', lastOutcome: 'stopped' });
+    expect(readiness.primaryAction.label).toBe('Start Cut');
+    expect(readiness.secondaryActions.map((item) => item.label)).toContain('Saved Recoveries');
+    expect(readiness.badges.map((item) => item.label)).toContain('Saved recoveries: 1');
+  });
+
+  it('normalizes terminal firmware telemetry to idle without losing its outcome', () => {
+    const readiness = buildJobReadiness(readySourceJob(), { currentJob, jobStatus: { state: 'STOPPED' } });
+
+    expect(readiness.run).toMatchObject({ liveStatus: 'idle', lastOutcome: 'stopped' });
+    expect(readiness.primaryAction.label).toBe('Start Cut');
+  });
+
+  it('does not let a historical error override a valid current job', () => {
+    const job = readySourceJob({ runHistory: [{ id: 'run-1', state: 'error' }] });
+    const readiness = buildJobReadiness(job, { currentJob, jobStatus: { state: 'IDLE' } });
+
+    expect(readiness.run.lastOutcome).toBe('error');
+    expect(readiness.primaryAction.label).toBe('Start Cut');
   });
 });
 

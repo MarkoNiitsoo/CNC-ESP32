@@ -2308,3 +2308,14 @@
 - Re-zeroing or changing placement/execution identity preserves history and marks dependent
   verification/authorization stale. Start authorization stays short-lived and is invalidated by
   relevant setup changes.
+
+## 2026-07-25 - Live readiness separated from historical outcomes
+
+- Job readiness now derives `run.liveStatus` only from firmware telemetry. Firmware terminal
+  `STOPPED`, `COMPLETED`, and `ERROR` values normalize to live `idle` while remaining visible as
+  `run.lastOutcome`.
+- Removed the historical `Review Last Run` primary-action override. A valid selected job continues
+  to Start Cut after an older stopped/error run.
+- Saved recoveries and run history are secondary actions, and active recoveries get a separate badge.
+- Added readiness regressions for idle-after-stop, terminal firmware telemetry, running, paused, and
+  historical errors.
