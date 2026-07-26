@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { parseGCodeToToolpath } from '../../www/lib/toolpath-model.js';
 import {
   activeRecoveries,
+  appendFreshRestartEvent,
   buildMotionOnlyRecoveryCommands,
   normalizeRecoveries,
   planMotionOnlyRecovery,
+  recoveriesForSource,
   updateRecoveryStatus,
 } from '../../www/lib/job-recovery.js';
+import { startRunHistory } from '../../www/lib/job-history.js';
 
 const source = await readFile(new URL('../fixtures/simple-square.gc', import.meta.url), 'utf8');
 const previewSource = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
@@ -201,6 +204,52 @@ describe('saved recovery collection', () => {
     });
     expect(job.runHistory[0]).toEqual(originalRun);
     expect(job.recoveryHistory).toHaveLength(2);
+  });
+
+  it('starts a new same-file run from the beginning without closing the old recovery', () => {
+    const job = jobFor('stopped');
+    normalizeRecoveries(job);
+    const recovery = recoveriesForSource(job, '/gcode/simple-square.gc')[0];
+    const oldRun = structuredClone(job.runHistory[0]);
+
+    appendFreshRestartEvent(job, recovery.id, {
+      now: '2026-07-26T10:00:00.000Z',
+      executionTarget: '/gcode/simple-square.gc',
+    });
+    const fresh = startRunHistory(job, {}, '2026-07-26T10:00:01.000Z');
+
+    expect(fresh.id).not.toBe(oldRun.id);
+    expect(job.runHistory[0]).toEqual(oldRun);
+    expect(activeRecoveries(job).map((entry) => entry.id)).toContain(recovery.id);
+    expect(job.recoveryHistory.at(-1)).toMatchObject({
+      type: 'recovery-fresh-restart',
+      recoveryId: recovery.id,
+      runId: oldRun.id,
+    });
+  });
+
+  it('does not apply job A recoveries to selected job B', () => {
+    const jobA = jobFor('stopped');
+    normalizeRecoveries(jobA);
+    const jobB = {
+      gcodePath: '/gcode/job-b.gc',
+      sourceGcodePath: '/gcode/job-b.gc',
+      runHistory: [],
+      recoveries: [],
+    };
+
+    expect(recoveriesForSource(jobB, '/gcode/job-b.gc')).toEqual([]);
+    startRunHistory(jobB, {}, '2026-07-26T11:00:00.000Z');
+    expect(activeRecoveries(jobA)).toHaveLength(1);
+  });
+
+  it('offers explicit Review, Restart, and Cancel choices without auto-resuming', () => {
+    expect(previewHtml).toContain('id="interrupted-start-dialog"');
+    expect(previewHtml).toContain('Review / Resume Recovery');
+    expect(previewHtml).toContain('Restart From Beginning');
+    expect(previewHtml).toContain('>Cancel</button>');
+    expect(previewSource).toMatch(/choice === 'review'[\s\S]*selectedRecoveryId = recovery\.id[\s\S]*refreshRecoveryPlan/);
+    expect(previewSource).toMatch(/choice !== 'restart'[\s\S]*return[\s\S]*appendFreshRestartEvent[\s\S]*await startJobRun/);
   });
 });
 

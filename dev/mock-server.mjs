@@ -405,21 +405,13 @@ export async function createMockServer(options = {}) {
         });
         return json(res, 200, { ok: true, message: 'Recovery checkpoint cleared. Machine position remains untrusted until Home All.' });
       }
-      const requireReviewedCheckpoint = () => {
-        if (!env.recoveryCheckpoint.requiresReview) return false;
-        json(res, 409, { ok: false, error: 'review and import or dismiss the interrupted-job checkpoint before starting motion' });
-        return true;
-      };
       if (req.method === 'POST' && pathname === '/api/job/start') {
-        if (requireReviewedCheckpoint()) return;
         return json(res, 200, await env.runner.start(await readJson(req)));
       }
       if (req.method === 'POST' && pathname === '/api/test-motion/start') {
-        if (requireReviewedCheckpoint()) return;
         return json(res, 200, await env.runner.startTestMotion(await readJson(req)));
       }
       if (req.method === 'POST' && pathname === '/api/recovery/production/start') {
-        if (requireReviewedCheckpoint()) return;
         return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
       }
       if (req.method === 'POST' && pathname === '/api/job/pause') return json(res, 200, env.runner.pause());

@@ -95,6 +95,36 @@ export function recoveryById(job = {}, recoveryId = '') {
     .find((entry) => entry.id === recoveryId) || null;
 }
 
+export function recoveriesForSource(job = {}, sourceGcodePath = '') {
+  const source = String(sourceGcodePath || '');
+  if (!source) return [];
+  const runs = Array.isArray(job.runHistory) ? job.runHistory : [];
+  return activeRecoveries(job).filter((recovery) => {
+    if (recovery.sourceGcodePath === source || recovery.activeRunPath === source) return true;
+    const run = runs.find((entry) => entry.id === recovery.runId);
+    if (run?.sourceGcodePath === source || run?.gcodePath === source || run?.activeRunPath === source) return true;
+    return (job.sourceGcodePath === source || job.gcodePath === source) && Boolean(run);
+  });
+}
+
+export function appendFreshRestartEvent(job = {}, recoveryId, options = {}) {
+  normalizeRecoveries(job, options);
+  const recovery = recoveryById(job, recoveryId);
+  if (!recovery) return null;
+  const occurredAt = options.occurredAt || options.now || new Date().toISOString();
+  const event = {
+    id: options.eventId || `${recovery.id}-fresh-restart-${job.recoveryHistory.length + 1}`,
+    type: 'recovery-fresh-restart',
+    recoveryId: recovery.id,
+    runId: recovery.runId,
+    occurredAt,
+    executionTarget: options.executionTarget || '',
+    note: options.note || 'Operator chose a fresh start. Saved recovery remains active.',
+  };
+  job.recoveryHistory.push(event);
+  return event;
+}
+
 export function updateRecoveryStatus(job = {}, recoveryId, status, options = {}) {
   if (!RECOVERY_STATES.has(status)) throw new Error(`Unsupported recovery status: ${status}`);
   normalizeRecoveries(job, options);

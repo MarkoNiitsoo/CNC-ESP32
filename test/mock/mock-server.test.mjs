@@ -18,6 +18,55 @@ async function start(config = {}) {
   instances.push({ ...instance, root });
   return { ...instance, base };
 }
+
+async function prepareAuthorizedJob(base, env, name) {
+  const gcodePath = `/gcode/${name}.gc`;
+  const jobPath = `/jobs/${name}.job.json`;
+  const gcode = 'G21\nG90\nG0 Z15\nG1 X10 Y10\n';
+  const sizeBytes = Buffer.byteLength(gcode);
+  const fingerprint = createHash('sha256').update(Buffer.from(gcode)).digest('hex');
+  await env.sd.writeText(gcodePath, gcode);
+  await fetch(`${base}/api/machine/home`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }),
+  });
+  env.marlin.execute('G0 X100 Y500 Z-20');
+  const zeroFrame = await fetch(`${base}/api/work-zero/set`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }).then((res) => res.json());
+  const workZeroId = `zero-${name}`;
+  await env.sd.writeText(jobPath, JSON.stringify({
+    gcodePath, sourceGcodePath: gcodePath, placement: { rotationDeg: 0 },
+    activeRun: { mode: 'source', path: gcodePath, sizeBytes, sourceFingerprint: fingerprint },
+    schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED', activeWorkZeroId: workZeroId,
+    startAuthorization: {
+      state: 'authorized', activeRunMode: 'source', activeRunPath: gcodePath,
+      activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes, workZeroId,
+      homingEpoch: zeroFrame.frame.homingEpoch, homingSessionId: zeroFrame.frame.homingSessionId,
+    },
+    arm: {
+      state: 'ARMED', activeRunMode: 'source', activeRunPath: gcodePath,
+      activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+    },
+    verificationDecision: {
+      result: 'complete', type: 'bounds', activeRunPath: gcodePath,
+      activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+    },
+    feedOverride: { startPercent: 100, resetTo100AfterJob: true },
+  }));
+  return {
+    gcodePath,
+    jobPath,
+    request: {
+      gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
+      activeRunSizeBytes: sizeBytes, startMode: 'use_active_work_zero', workZeroId,
+      homingEpoch: zeroFrame.frame.homingEpoch, homingSessionId: zeroFrame.frame.homingSessionId,
+      workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
+      workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
+      workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
+    },
+  };
+}
+
 afterEach(async () => {
   await Promise.all(instances.splice(0).map(async ({ server, root }) => {
     await new Promise((resolve) => server.close(resolve));
@@ -140,8 +189,9 @@ describe('mock HTTP API', () => {
     })).status).toBe(423);
   });
 
-  it('blocks new motion until persistent recovery evidence is acknowledged', async () => {
+  it('keeps Job A recovery evidence available while a valid Job B starts', async () => {
     const { base, env } = await start();
+    const jobB = await prepareAuthorizedJob(base, env, 'job-b');
     env.recoveryCheckpoint.available = true;
     env.recoveryCheckpoint.requiresReview = true;
     env.recoveryCheckpoint.bootInterrupted = true;
@@ -154,10 +204,23 @@ describe('mock HTTP API', () => {
 
     const checkpoint = await fetch(`${base}/api/recovery/checkpoint`).then((res) => res.json());
     expect(checkpoint).toMatchObject({ available: true, requiresReview: true, resetReason: 'BROWNOUT' });
-    expect((await fetch(`${base}/api/job/start`, { method: 'POST' })).status).toBe(409);
+    const started = await fetch(`${base}/api/job/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(jobB.request),
+    });
+    const startedBody = await started.json();
+    expect(started.ok).toBe(true);
+    expect(startedBody).toMatchObject({ state: 'RUNNING', gcodePath: jobB.gcodePath });
+    expect(env.recoveryCheckpoint).toMatchObject({
+      available: true,
+      requiresReview: true,
+      checkpoint: { gcodePath: '/gcode/sample.gc' },
+    });
     expect((await fetch(`${base}/api/recovery/checkpoint/acknowledge`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: false }),
     })).status).toBe(400);
+    for (let attempt = 0; attempt < 100 && env.runner.isActive(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     const acknowledged = await fetch(`${base}/api/recovery/checkpoint/acknowledge`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true }),
     });

@@ -402,6 +402,11 @@ Active states include `saved_for_later` and requirement/ready states. `abandoned
 collection entry or original run. Loading older metadata derives one entry per eligible stable run
 id; repeated normalization cannot create duplicates.
 
+Choosing **Restart From Beginning** for the same source appends a `recovery-fresh-restart` event
+and then creates a normal new `runHistory` attempt with a unique id. The referenced recovery and
+its old stopped/interrupted/error run remain unchanged. Firmware checkpoint presence is not stored
+or interpreted as a global start blocker, so an unrelated job may start normally.
+
 ## Zero And Run Relationship
 
 Work-zero entries may store `machineReference` with M114 `counts`, M92 `stepsPerMm`, derived machine

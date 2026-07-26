@@ -47,6 +47,12 @@ Firmware interruption evidence is uploaded to the Job JSON recorded in the check
 firmware checkpoint is acknowledged. This also works while another job is selected, so a stopped
 job remains recoverable without holding later work hostage.
 
+A firmware checkpoint is durable evidence, never a global motion authorization gate. A recovery
+for Job A does not block starting Job B. If the operator starts the same source again, the UI asks
+them to choose **Review / Resume Recovery**, **Restart From Beginning**, or **Cancel**. A fresh
+restart creates a new immutable run attempt and appends a `recovery-fresh-restart` audit event; it
+does not close, replace, or modify the older recovery or its interrupted run.
+
 ## Candidate Policy
 
 Recovery uses ToolpathModel `commandNumber`, which matches firmware's cleaned non-empty command

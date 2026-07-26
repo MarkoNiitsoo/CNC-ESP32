@@ -6163,10 +6163,6 @@ void handleTestMotionStart() {
     sendJsonError(409, "another job or motion stream is already active");
     return;
   }
-  if (recoveryCheckpointRequiresReview) {
-    sendJsonError(409, "review and import or dismiss the interrupted-job checkpoint before starting motion");
-    return;
-  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
@@ -6236,10 +6232,6 @@ void handleProductionResumeStart() {
   }
   if (jobIsActive()) {
     sendJsonError(409, "another job or motion stream is already active");
-    return;
-  }
-  if (recoveryCheckpointRequiresReview) {
-    sendJsonError(409, "import the interrupted-job checkpoint before starting Production Resume");
     return;
   }
   if (!server.hasArg("plain")) {
@@ -6372,10 +6364,6 @@ void handleJobStart() {
   }
   if (jobIsActive()) {
     sendJsonError(409, "another job is already active");
-    return;
-  }
-  if (recoveryCheckpointRequiresReview) {
-    sendJsonError(409, "review and import or dismiss the interrupted-job checkpoint before starting another job");
     return;
   }
   if (!server.hasArg("plain")) {

@@ -43,8 +43,9 @@ describe('firmware recovery checkpoint UI', () => {
   });
 
   it('marks pending evidence in the persistent machine bar without blocking setup controls', () => {
-    expect(machineBar).toContain("? 'RECOVERY'");
-    expect(machineBar).toContain('Interrupted-job evidence requires review before new motion');
+    expect(machineBar).toContain("? 'RECOVERY AVAILABLE'");
+    expect(machineBar).toContain('Interrupted-job evidence is saved and available to review');
+    expect(machineBar).not.toContain('requires review before new motion');
     expect(machineBar).toMatch(/function canSetup\(\)[\s\S]*SETUP_STATES\.has\(state\)/);
   });
 
@@ -53,8 +54,8 @@ describe('firmware recovery checkpoint UI', () => {
       preview.indexOf('function workflowHardBlockers()'),
       preview.indexOf('function guidedWorkflowStatus()'),
     );
-    expect(blockers).toContain('firmwareRecoveryCheckpoint?.requiresReview === true');
-    expect(blockers).toContain('interrupted cutting job requires a recovery decision');
+    expect(blockers).not.toContain('firmwareRecoveryCheckpoint?.requiresReview === true');
+    expect(blockers).not.toContain('interrupted cutting job requires a recovery decision');
     expect(preview).toContain('blockPreparation: false');
     expect(preview).toContain('readinessHomeAllButton.hidden = false');
   });

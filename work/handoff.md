@@ -2115,8 +2115,8 @@ No firmware upload is required.
   X 0..547.68, Y 0..547.68. The old -224.26 mm Y minimum was metadata-only and was never an emitted
   XY target.
 - Normal preflight failures are deferred until after the current preparation step, so they cannot
-  remove the Bounds Check and Full Aircut choices. A real firmware recovery checkpoint still blocks
-  preparation until explicitly resolved.
+  remove the Bounds Check and Full Aircut choices. Recovery checkpoints are surfaced separately
+  from preparation and start authorization.
 - Full suite passes 42 files / 354 tests, including a regression with an initial Z-only move before
   the first transformed XY command.
 
@@ -2191,7 +2191,7 @@ No firmware upload is required.
 - Preview startup saves a production firmware checkpoint into the `jobPath` recorded by firmware,
   including when a different job is selected, then acknowledges the checkpoint.
 - Upload must remain before acknowledgement. If recorded metadata cannot be written, firmware keeps
-  its checkpoint and continues to fail closed for Start; ordinary preparation remains visible.
+  its checkpoint visible as recovery evidence; it does not globally block Start.
 - Legacy test-motion checkpoints still require deliberate clearing because they are not recoverable
   production runs.
 
@@ -2212,3 +2212,16 @@ No firmware upload is required.
 - `buildJobReadiness()` now returns `warnings` separately from `blockingReasons`. Bounding
   Box/Aircut recommendations live in warnings; execution identity and required authorization remain
   blockers.
+
+## 2026-07-26 interrupted-job start behavior handoff
+
+- `recoveryCheckpointRequiresReview` remains useful for checkpoint visibility and artifact locking,
+  but no start handler may use it as a global authorization gate.
+- Same-source Start is the only place that prompts about an active recovery. Review opens the
+  selected recovery, Restart records `recovery-fresh-restart` and starts a unique new run, and
+  Cancel changes nothing.
+- A recovery owned by Job A must not affect Job B readiness or start. Keep the checkpoint/recovery
+  visible until explicit import/acknowledgement, without restoring the removed 409 gate.
+- Legacy recovery normalization remains deterministic by stable run id and must stay idempotent.
+- Verification at handoff: 42 files / 369 tests, all relevant JavaScript syntax checks,
+  `git diff --check`, and an AI-Thinker ESP32-CAM build at 19.7% RAM / 72.1% flash.

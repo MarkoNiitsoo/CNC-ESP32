@@ -223,6 +223,18 @@
         <div id="preflight-checks" class="preflight-checks"></div>
       </section>
 
+      <dialog id="interrupted-start-dialog" class="zero-history-dialog interrupted-start-dialog">
+        <div class="history-dialog-head">
+          <div><p class="eyebrow">RECOVERY AVAILABLE</p><h2>Start this job</h2></div>
+        </div>
+        <p>An earlier run of this job was interrupted. Choose whether to review that recovery or start a new independent run from the beginning.</p>
+        <div class="job-actions">
+          <button id="interrupted-start-review" type="button">Review / Resume Recovery</button>
+          <button id="interrupted-start-fresh" class="primary-action" type="button">Restart From Beginning</button>
+          <button id="interrupted-start-cancel" type="button">Cancel</button>
+        </div>
+      </dialog>
+
       <section class="panel recovery-panel preview-tab-panel" data-preview-tab="recovery">
         <h2>Saved Recoveries</h2>
         <div id="firmware-recovery-checkpoint" class="job-summary" hidden></div>

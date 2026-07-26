@@ -1032,7 +1032,7 @@
     const recoveryPending = STATE.job?.recoveryCheckpoint?.requiresReview === true;
     const stateLabel = STATE.job?.errorCode === 'COMMUNICATION_LOST' ? 'COMM LOST' : state;
     const displayedStateLabel = recoveryPending && stateLabel === state && SETUP_STATES.has(state)
-      ? 'RECOVERY'
+      ? 'RECOVERY AVAILABLE'
       : stateLabel;
     const running = state === 'RUNNING';
     const busy = BUSY_STATES.has(state);
@@ -1067,7 +1067,7 @@
       stateEl.title = STATE.job?.errorCode === 'COMMUNICATION_LOST'
         ? (STATE.job?.lastError || 'Marlin communication lost')
         : recoveryPending
-          ? 'Interrupted-job evidence requires review before new motion'
+          ? 'Interrupted-job evidence is saved and available to review'
           : '';
     }
     if (mockBadgeEl) {

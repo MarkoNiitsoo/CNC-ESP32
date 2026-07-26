@@ -61,10 +61,15 @@ describe('persistent active-job checkpoint', () => {
     expect(boot).not.toMatch(/jobRunning\s*=\s*true/);
   });
 
-  it('requires explicit review through dedicated recovery endpoints before new motion', () => {
+  it('exposes dedicated recovery endpoints without making checkpoint review a global motion gate', () => {
     expect(firmware).toContain('httpRoute("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet)');
     expect(firmware).toContain('operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge)');
     expect(firmware).toContain('confirmed true is required after importing or deliberately dismissing recovery evidence');
-    expect(firmware.match(/if \(recoveryCheckpointRequiresReview\)/g).length).toBeGreaterThanOrEqual(3);
+    for (const handler of ['handleTestMotionStart', 'handleProductionResumeStart', 'handleJobStart']) {
+      const start = firmware.indexOf(`void ${handler}()`);
+      const end = firmware.indexOf('\nvoid ', start + 1);
+      expect(firmware.slice(start, end)).not.toContain('recoveryCheckpointRequiresReview');
+    }
+    expect(firmware).not.toContain('before starting another job');
   });
 });

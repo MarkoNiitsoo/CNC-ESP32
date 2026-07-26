@@ -191,13 +191,13 @@
   every 2 seconds or 4096 acknowledged bytes. The record includes run identity, acknowledged
   byte/line, work-zero and homing identity, tool-change state, feed override, and last known positions.
 - Clean completion removes the checkpoint. Stop, runner error, communication loss, brownout, or
-  reboot preserve an interrupted record that blocks new motion until it is reviewed.
+  reboot preserve an interrupted record for later review without globally blocking new motion.
 - Boot with an active marker sends immediate `M5`, invalidates the coordinate frame, requires Home
   All before position can be trusted again, and deliberately does not seek or resume the file.
 - Added recovery checkpoint GET/acknowledge endpoints and matching DEV MOCK behavior. Preview imports
   a checkpoint belonging to the open job into durable run history before acknowledging firmware;
-  mismatched records remain visible and require opening the correct job or an explicit destructive
-  dismiss. Machine Bar shows `RECOVERY` while review is pending without disabling homing/setup.
+  records for another job are imported into their recorded Job JSON. Machine Bar shows
+  `RECOVERY AVAILABLE` while review is pending without disabling homing/setup or Start.
 - Added focused firmware, UI, and mock API regression coverage.
 - Verification passed: 36 test files / 317 tests, JavaScript syntax checks, `git diff --check`, and
   the ESP32-CAM PlatformIO build (RAM 19.6%, flash 69.3%).
@@ -2359,8 +2359,8 @@
 - Firmware evidence is acknowledged only after the target Job JSON upload succeeds. This releases
   the stream lock while retaining the older recovery for later.
 - Added explicit older-run history updates so checkpoint import cannot rewrite a newer run record.
-- Pending import remains visible and can fail closed at Start, but no longer hides Home or ordinary
-  setup tools. Dashboard terminal telemetry displays the physical machine as Idle.
+- Pending import remains visible without blocking Start, Home, or ordinary setup tools. Dashboard
+  terminal telemetry displays the physical machine as Idle.
 
 ## 2026-07-25 - Workflow/recovery documentation
 
@@ -2382,3 +2382,19 @@
   action, not a hard execution-identity blocker. The existing deliberate skip path remains usable.
 - Work/Z zero, Arm/start authorization, generated output identity, active path, and fingerprint
   constraints remain hard blockers.
+
+## 2026-07-26 - Interrupted-job global start blocker removed
+
+- Removed the recovery-checkpoint start rejection from firmware job, test-motion, and production
+  resume handlers, the DEV MOCK runner, and browser readiness hard blockers.
+- Machine Bar now reports `RECOVERY AVAILABLE`; Preflight remains READY when all current-job
+  requirements pass.
+- Same-source Start now offers Review / Resume Recovery, Restart From Beginning, and Cancel.
+  Restart appends a fresh-restart audit event, creates a separate run attempt, and preserves the
+  older recovery and immutable stopped run.
+- Added regressions for same-source restart preservation, cross-job start while Job A evidence
+  remains available, idempotent legacy recovery migration, explicit UI choices, and removal of the
+  legacy global-gate message.
+- Final verification passes 42 test files / 369 tests, JavaScript syntax checks for Preview, App,
+  Machine Bar, and DEV MOCK, `git diff --check`, and the AI-Thinker ESP32-CAM PlatformIO build
+  (19.7% RAM, 72.1% flash).

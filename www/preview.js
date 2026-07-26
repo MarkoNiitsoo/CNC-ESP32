@@ -135,6 +135,10 @@ const feedLiveSetButton = document.querySelector('#feed-live-set');
 const feedLiveButtons = [...document.querySelectorAll('[data-feed-live]')];
 const feedDeltaButtons = [...document.querySelectorAll('[data-feed-delta]')];
 const startJobButton = document.querySelector('#start-job');
+const interruptedStartDialog = document.querySelector('#interrupted-start-dialog');
+const interruptedStartReviewButton = document.querySelector('#interrupted-start-review');
+const interruptedStartFreshButton = document.querySelector('#interrupted-start-fresh');
+const interruptedStartCancelButton = document.querySelector('#interrupted-start-cancel');
 const pauseJobButton = document.querySelector('#pause-job');
 const resumeJobButton = document.querySelector('#resume-job');
 const stopJobButton = document.querySelector('#stop-job');
@@ -441,13 +445,6 @@ async function handleReadinessAction(action) {
 
 function workflowHardBlockers() {
   const blockers = [...activeRunBlockers()];
-  if (firmwareRecoveryCheckpoint?.requiresReview === true) {
-    const checkpoint = firmwareRecoveryCheckpoint.checkpoint || {};
-    const legacyTestMotion = checkpoint.startMode === 'validated_test_motion';
-    blockers.unshift(legacyTestMotion
-      ? 'An old Aircut/test-motion record is blocking new motion. Clear it; test motion is not resumable.'
-      : 'An interrupted cutting job requires a recovery decision before Home, Zero, verification, or a new cut.');
-  }
   (currentPreflight?.checks || [])
     .filter((check) => check.level === 'fail' && check.id !== 'workZero')
     .forEach((check) => blockers.push(check.message));
@@ -459,8 +456,7 @@ function guidedWorkflowStatus() {
     machineFrame: currentMachineFrame || {},
     bootSessionId: currentMachineFrame?.bootSessionId || '',
     hardBlockers: workflowHardBlockers(),
-    // Import may still block Start in firmware, but it must not hide normal
-    // preparation tools while the evidence is being saved durably.
+    // Recovery evidence stays visible without becoming a preparation or start gate.
     blockPreparation: false,
   });
 }
@@ -1771,7 +1767,53 @@ async function reviewAndStartJobRun() {
     workbenchController?.openForTab('run');
     return;
   }
+  const recoveries = jobRecoveryModule?.recoveriesForSource(ensureJobState(), filePath) || [];
+  if (recoveries.length) {
+    const recovery = recoveries[0];
+    const choice = await requestInterruptedStartChoice();
+    if (choice === 'review') {
+      selectedRecoveryId = recovery.id;
+      openFirmwareRecoveryOptions();
+      refreshRecoveryPlan();
+      return;
+    }
+    if (choice !== 'restart') return;
+    jobRecoveryModule.appendFreshRestartEvent(ensureJobState(), recovery.id, {
+      now: nowIso(),
+      executionTarget: currentRunPath(),
+    });
+  }
   await startJobRun();
+}
+
+function requestInterruptedStartChoice() {
+  if (!interruptedStartDialog?.showModal) {
+    return Promise.resolve(confirm('A recovery is available for this job. Press OK to restart from the beginning, or Cancel to leave everything unchanged.')
+      ? 'restart'
+      : 'cancel');
+  }
+  return new Promise((resolve) => {
+    const finish = (choice) => {
+      interruptedStartReviewButton?.removeEventListener('click', review);
+      interruptedStartFreshButton?.removeEventListener('click', restart);
+      interruptedStartCancelButton?.removeEventListener('click', cancel);
+      interruptedStartDialog.removeEventListener('cancel', cancelEvent);
+      interruptedStartDialog.close();
+      resolve(choice);
+    };
+    const review = () => finish('review');
+    const restart = () => finish('restart');
+    const cancel = () => finish('cancel');
+    const cancelEvent = (event) => {
+      event.preventDefault();
+      finish('cancel');
+    };
+    interruptedStartReviewButton?.addEventListener('click', review);
+    interruptedStartFreshButton?.addEventListener('click', restart);
+    interruptedStartCancelButton?.addEventListener('click', cancel);
+    interruptedStartDialog.addEventListener('cancel', cancelEvent);
+    interruptedStartDialog.showModal();
+  });
 }
 
 async function startJobRun() {

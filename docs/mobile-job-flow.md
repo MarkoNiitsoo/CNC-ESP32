@@ -351,6 +351,10 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
   or Save Job action is required.
 - Stopped/interrupted runs create saved recovery entries. The Recovery drawer lists all active
   entries and separates Safe-Z reposition, Toolless Resume Test, and guarded Production Resume.
+- Recovery availability is informational, not a global blocker. Starting a different job follows
+  its normal readiness flow while the older recovery remains saved.
+- Starting the same source opens a three-way choice: Review / Resume Recovery, Restart From
+  Beginning, or Cancel. Restart creates a new run attempt and preserves the older recovery.
 - Logs are promoted to a bottom-nav view and use the existing `/api/marlin/log` endpoint when
   available.
 - Machine controls live in the shared top Machine Bar / Drawer on `/`, `/files`, and preview pages.
