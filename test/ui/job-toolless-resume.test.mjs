@@ -127,7 +127,7 @@ describe('Toolless Resume Test history and UI', () => {
     expect(previewHtml).toContain('class="production-resume-panel"');
     expect(machineBar).toContain("detail: { type: 'pause' }");
     expect(machineBar).toContain("detail: { type: 'stop' }");
-    expect(machineBar).toContain("detail: { type: 'm5' }");
+    expect(machineBar).not.toContain("detail: { type: 'm5' }");
     expect(previewSource).toContain("addEventListener('cnc-critical-control'");
     expect(previewSource).toContain("fetch('/api/jog/stop', { method: 'POST' })");
     expect(previewSource).toContain("fetch('/api/test-motion/start'");

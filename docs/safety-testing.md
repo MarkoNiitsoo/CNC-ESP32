@@ -29,7 +29,8 @@ First hardware test must use router/spindle off and preferably no cutter:
 1. Boot with Marlin attached and verify the cached profile appears immediately, then M115 refreshes
    firmware identity, capabilities, and `area.full` / `area.work` while idle.
 2. Start a job or jog and verify machine refresh/apply/M500 return busy rather than sharing UART.
-3. Confirm M5 remains available during discovery.
+3. Confirm Advanced Manual M5 remains available only while discovery, job, jog, and automatic
+   motion are idle.
 4. Read M503 and verify M92/M203/M201/M204 fields match Marlin output; M211 must visibly report ON,
    OFF, or unrecognized.
 5. Apply a harmless test value, verify M503 changes, restart Marlin without M500, and verify the
@@ -53,7 +54,8 @@ Automated mock coverage verifies:
 - explicit firmware-internal Safe Jog `G53` movement to the clamped machine Z ceiling after G92
 - exact source/generated active-run streaming with no silent source fallback
 - stale or missing generated run blocking
-- completion, pause, resume, stop, priority M5, feed override, and error status
+- completion, intact pause/resume, stop ordering, active-job M5 rejection, feed override, and error
+  status
 - core HTTP compatibility for UI, files, commands, job start, and status
 
 Mock tests reduce iteration time but do not replace real-machine tests. They do not model inertia,
@@ -91,16 +93,26 @@ Test that:
 - File streaming starts only after the preamble completes.
 - `M220` start override is applied before streaming when configured.
 
-## Priority Command Tests
+## Pause, Resume, Stop, And M5 Tests
 
 Test that:
 
 - Pause stops new file lines immediately.
+- With explicit realtime reporting plus Emergency Parser capability, Pause sends `P000`, enters
+  `PAUSED_INTACT`, leaves the cutter running, and sends no M5/M410/Z/park command.
+- Without explicit realtime capability, Pause shows pending, finishes the current command, waits
+  with `M400` at the acknowledged boundary, and never segments or rewrites G-code.
+- Direct Resume from `PAUSED_INTACT` sends `R000` only for a realtime hold, preserves the original
+  in-flight acknowledgement, and performs no modal setup or repositioning.
+- A manual-movement request invalidates direct Resume before moving, persists the interrupted
+  snapshot, executes M410 then M5, clears frame trust, and enters `RECOVERY_REQUIRED`.
 - Stop stops new file lines immediately.
-- `M5` is accepted during `RUNNING`, `PAUSING`, and `PAUSED`.
-- Pause, Stop, and `M5` do not wait behind normal file streaming.
-- Pause does not show "Marlin did not respond, are you sure?" style prompts.
-- HTTP response for Pause/Stop returns quickly and state changes to `PAUSING` or `STOPPING`.
+- Stop transmits M410 first and M5 only after motion has stopped.
+- Standalone `M5` is rejected throughout active, intact-paused, resumable, stopping, and recovery
+  states, and is absent from primary job controls.
+- Pause, Resume, and Stop require a 500 ms hold and show no confirmation prompts.
+- HTTP response for Pause/Stop returns quickly and state changes to `PAUSING`, `PAUSED_INTACT`, or
+  `STOPPING`.
 
 ## Feed Override Tests
 
@@ -108,7 +120,7 @@ Test that:
 
 - `M220 S<percent>` is sent.
 - Range `10` to `200` is enforced.
-- Stop, Pause, and `M5` have higher priority than feed override.
+- Stop has higher priority than feed override; Pause/Resume own their stateful transport path.
 - New jobs default or reset to `100` unless job config says otherwise.
 - Feed override does not change router RPM and the UI says so.
 
@@ -251,7 +263,8 @@ Test that:
 - With one visible UI client, M154 uses 2 seconds while idle and 1 second during job motion.
 - Closing/hiding the last UI eventually sends M154 S0 without interrupting an active command.
 - A physical Marlin joystick move while idle changes the UI position without browser M114 polling.
-- Motion telemetry contains only movement command events; Pause, Stop, and M5 remain HTTP controls.
+- Motion telemetry contains only movement command events; Pause/Resume and Stop remain HTTP
+  controls.
 - G2/G3 marker animation follows the arc and creates no additional network requests per frame.
 
 - Marlin responses are captured.
@@ -313,7 +326,7 @@ Current coverage:
   - source ORIGINAL and valid generated GENERATED badges
   - stale/invalid generated output remains on generated `activeRun.path` and requires Update Run File
   - visual layer and placement drawer state contains no movement commands
-  - Start Cut uses hold policy while Pause, Stop, and M5 remain direct
+  - Start Cut uses its hold policy while Pause, Resume, and Stop use a 500 ms hold
   - no G28, automatic G92, homing, or restore metadata
 - `www/lib/ui-skins.js`
   - bundled manifest validation and sprite symbol completeness
@@ -396,7 +409,8 @@ Phone portrait (390x844 or similar):
 5. Toggle every visual layer and confirm no API/machine command is sent.
 6. Change rotation while Tools is open and confirm the graphical path updates immediately.
 7. Confirm stale generated state shows Update Run File and never silently switches to source.
-8. Confirm Start Cut requires hold; Pause, Stop, and M5 execute without modal confirmation.
+8. Confirm Start Cut requires its hold; Pause, Resume, and Stop require 500 ms holds without modal
+   confirmation, and no primary M5 button exists.
 
 Tablet/desktop:
 
@@ -474,7 +488,8 @@ Aircut and Toolless execution should also verify the firmware-owned stream trans
 2. Confirm valid XY arcs remain native `G2/G3` commands with I/J and feed.
 3. Confirm M3/M4/G28/G53/G92 files are rejected before the first command reaches Marlin.
 4. Confirm Aircut rejects any Z value different from configured Safe Z.
-5. Confirm Pause/Stop/M5 remain responsive during a long stream.
+5. Confirm Pause/Resume and Stop remain responsive during a long stream; active-stream M5 is
+   rejected.
 6. Confirm `/api/job/status` reports progress and `streamMode` without changing normal run history.
 
 ## Guarded Production Resume Test
@@ -504,7 +519,8 @@ Only test with material secured, a known small fixture, and the physical emergen
 10. Verify Phase 2 follows only the controlled remaining ToolpathModel X/Y/Z path and no pre-resume
    lines.
 11. Verify no phase sends G28, G53, G92, M3, or M4 and no automatic homing/zero restore occurs.
-12. Verify Pause, Stop, and M5 remain higher-priority firmware controls while connected.
+12. Verify Pause/Resume and Stop remain firmware-owned controls while connected and active-stream
+    standalone M5 is rejected.
 13. Confirm a separate `production-resume` event records checklist, activeRun, resume point, Safe Z,
     Z-zero change acknowledgement, result, and reason while the original run stays interrupted.
 

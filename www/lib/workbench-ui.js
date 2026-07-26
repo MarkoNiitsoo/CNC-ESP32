@@ -354,6 +354,7 @@ export function buildWorkbenchStatus(job = {}, options = {}) {
 
 export function actionPolicy(actionId) {
   if (actionId === 'start_cut') return { mode: 'hold', holdMs: 1000 };
-  if (['pause', 'stop', 'm5'].includes(actionId)) return { mode: 'direct', holdMs: 0 };
+  if (['pause', 'resume', 'stop'].includes(actionId)) return { mode: 'hold', holdMs: 500 };
+  if (actionId === 'm5') return { mode: 'advanced-manual', holdMs: 0 };
   return { mode: 'tap', holdMs: 0 };
 }

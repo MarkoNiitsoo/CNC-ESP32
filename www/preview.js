@@ -103,7 +103,6 @@ const dryRunSummaryEl = document.querySelector('#dry-run-summary');
 const traceMarginInput = document.querySelector('#trace-margin');
 const dryRunAircutToggle = document.querySelector('#dry-run-aircut');
 const sendDryRunButton = document.querySelector('#send-dry-run');
-const stopM5Button = document.querySelector('#stop-m5');
 const dryRunStatusEl = document.querySelector('#dry-run-status');
 const traceCommandsEl = document.querySelector('#trace-commands');
 const dryRunLogEl = document.querySelector('#dry-run-log');
@@ -320,7 +319,7 @@ function activeRunIcon(label) {
 
 function readinessIcon(label) {
   if (label === 'READY' || label === 'ARMED' || label === 'RUNNING') return 'ok';
-  if (label === 'PAUSED') return 'pause';
+  if (label === 'PAUSED' || label === 'PAUSED_INTACT') return 'pause';
   return 'blocked';
 }
 
@@ -583,7 +582,7 @@ function renderReadiness() {
   if (!readinessSummaryEl || !readinessPrimaryEl || !readinessSecondaryEl) return;
   const status = guidedWorkflowStatus();
   const machineState = String(jobRunStatus?.state || '').toUpperCase();
-  const homeBusy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(machineState);
+  const homeBusy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(machineState);
   if (readinessHomeAllButton) {
     readinessHomeAllButton.hidden = false;
     readinessHomeAllButton.disabled = homeBusy;
@@ -832,7 +831,7 @@ function parseM114(response) {
 
 function canvasToolPosition() {
   const state = String(jobRunStatus?.state || '').toUpperCase();
-  const active = ['RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(state);
+  const active = ['RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(state);
   const statusPosition = jobRunStatus?.position || jobRunStatus?.lastKnownPosition;
   if (active && animatedToolPosition) return animatedToolPosition;
   if (active && Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
@@ -1527,11 +1526,13 @@ function renderRunPanel() {
     const running = state === 'RUNNING';
     const preparing = state === 'PREPARING';
     const pausing = state === 'PAUSING';
-    const paused = state === 'PAUSED';
+    const pausedIntact = state === 'PAUSED_INTACT';
+    const toolChangePaused = state === 'PAUSED';
+    const recoveryRequired = state === 'RECOVERY_REQUIRED';
     const resuming = state === 'RESUMING';
     const stopping = state === 'STOPPING';
     const toolChangePending = jobRunStatus?.toolChangePending === true;
-    const active = running || preparing || pausing || paused || resuming || stopping;
+    const active = running || preparing || pausing || pausedIntact || toolChangePaused || resuming || stopping;
     const statusUnknown = !jobStatusHealthy || state === 'UNKNOWN';
     const startAllowed = preparationBlockers.length === 0 && !active && !toollessResumeRunning && !productionResumeRunning;
     const startChecklistReady = runChecklistComplete();
@@ -1541,10 +1542,11 @@ function renderRunPanel() {
     startJobButton.textContent = startAllowed ? 'Hold to Start Cut' : 'Complete Preparation First';
     if (runFinalChecklistEl) runFinalChecklistEl.hidden = !startAllowed;
     pauseJobButton.hidden = !(running || pausing || statusUnknown);
-    resumeJobButton.hidden = !paused || toolChangePending;
+    resumeJobButton.hidden = !(pausedIntact || recoveryRequired);
+    resumeJobButton.textContent = recoveryRequired ? 'Review Recovery' : 'Resume';
     stopJobButton.hidden = !(active || statusUnknown);
     pauseJobButton.disabled = !(running || statusUnknown);
-    resumeJobButton.disabled = !paused || toolChangePending;
+    resumeJobButton.disabled = !(pausedIntact || recoveryRequired) || toolChangePending;
     stopJobButton.disabled = stopping;
 
     if (runOperatorSummaryEl) {
@@ -1614,7 +1616,10 @@ function renderRunPanel() {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Status could not be parsed. Stop remains available.</div></div>';
     }
     if (pausing) {
-      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Pause Safely: no new G-code is sent; M5 turns output off and M400 lets Marlin finish buffered motion.</div></div>';
+      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Pause pending: no new source commands are being sent. The cutter remains running while the current command reaches a safe boundary.</div></div>';
+    }
+    if (pausedIntact) {
+      runSummaryEl.innerHTML += '<div class="dry-run-errors"><div><strong>Motion held — cutter remains running.</strong> Manual movement will invalidate direct Resume and create a normal Recovery.</div></div>';
     }
     if (stopping) {
       runSummaryEl.innerHTML += '<div class="dry-run-errors"><div>Stop Now: M410 abruptly clears motion first, then M5 turns output off. Home All and recovery review are required afterward.</div></div>';
@@ -1672,7 +1677,7 @@ async function applyJobRunStatus(data) {
   jobStatusHealthy = true;
   if (!data?.streamMode || data.streamMode === 'job') await syncRunHistoryFromStatus(data);
   if (data?.streamMode === 'production-resume') await syncProductionResumeFromStatus(data);
-  const terminalStates = new Set(['IDLE', 'COMPLETED', 'STOPPED', 'ERROR']);
+  const terminalStates = new Set(['IDLE', 'COMPLETED', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR']);
   const belongsToAnotherFile = data?.gcodePath
     && data.gcodePath !== currentRunPath()
     && terminalStates.has(String(data.state || '').toUpperCase());
@@ -1734,7 +1739,7 @@ function optimisticCriticalStatus(url) {
     return {
       ...(jobRunStatus || {}),
       state: 'PAUSING',
-      streamingPausedReason: 'Pause Safely requested; buffered motion will finish first.',
+      streamingPausedReason: 'Pause requested; motion will hold intact and the cutter will remain running.',
       lastError: 'Firmware returned malformed JSON after Pause.',
     };
   }
@@ -1777,7 +1782,7 @@ async function postCriticalJobAction(url, body = null) {
         const statusRes = await fetch('/api/job/status', { cache: 'no-store' });
         const status = await readJsonOrThrow(statusRes);
         const expectedPath = url.includes('/api/job/start') ? currentRunPath() : null;
-        const acceptedStates = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING', 'STOPPED']);
+        const acceptedStates = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING', 'STOPPED', 'RECOVERY_REQUIRED']);
         if (statusRes.ok && acceptedStates.has(status.state) && (!expectedPath || status.gcodePath === expectedPath)) {
           appendRunLog(`Network reply was lost; reconciled ${url} from firmware status ${status.state}.`);
           return applyJobRunStatus(status);
@@ -2008,6 +2013,11 @@ async function pauseJobRun() {
 }
 
 async function resumeJobRun() {
+  if (String(jobRunStatus?.state || '').toUpperCase() === 'RECOVERY_REQUIRED') {
+    showPreviewTab('recovery');
+    refreshRecoveryPlan();
+    return;
+  }
   try {
     const data = await postCriticalJobAction('/api/job/resume');
     appendRunLog(data.message || `Resume requested${data.currentByteOffset !== undefined ? ` at byte ${data.currentByteOffset}` : ''}`);
@@ -2017,7 +2027,6 @@ async function resumeJobRun() {
 }
 
 async function stopJobRun() {
-  if (!confirm('STOP NOW sends the abrupt M410 quickstop first, then M5. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
   appendRunLog('Stop Now requested. This is not a physical emergency stop.');
   try {
     const data = await postCriticalJobAction('/api/job/stop');
@@ -2025,8 +2034,7 @@ async function stopJobRun() {
     await markLatestRunStopped(data, data.message || 'Operator stop requested');
   } catch (err) {
     runLogError('Stop endpoint failed', err);
-    appendRunLog('Sending best-effort output-off M5 only. Motion may continue; use the physical emergency stop if needed.');
-    await sendCmdBestEffort('M5');
+    appendRunLog('M5 was not sent because motion may still be active. Use the physical emergency stop.');
     await refreshJobStatus().catch(() => {});
   }
 }
@@ -2046,7 +2054,8 @@ async function markLatestRunStopped(status = null, reason = '') {
 
 async function syncRunHistoryFromStatus(status) {
   if (!jobState || !status?.state) return;
-  const terminal = status.state === 'COMPLETED' || status.state === 'STOPPED' || status.state === 'ERROR';
+  const terminal = status.state === 'COMPLETED' || status.state === 'STOPPED' ||
+    status.state === 'RECOVERY_REQUIRED' || status.state === 'ERROR';
   if (!terminal) return;
   const history = await jobHistoryPromise;
   const run = history.latestRun(jobState);
@@ -2489,7 +2498,7 @@ function renderWorkZeroRestore() {
   const counts = zero?.machineReference?.counts || zero?.countsBefore || zero?.countsAfter;
   const position = zero?.machineReference?.position;
   const trusted = positionTrust.trusted && positionTrust.fullHoming;
-  const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
+  const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
   workZeroRestoreSummaryEl.innerHTML = zero ? `
     <dl>
       <dt>Interrupted work zero</dt><dd>${html(zero.label || zero.id)}</dd>
@@ -2874,7 +2883,7 @@ function renderRecoveryPanel() {
   const needsHome = blockers.some((item) => item.id === 'positionUntrusted');
   const needsWorkZero = blockers.some((item) => item.id === 'workZeroFrame' || item.id === 'workZeroMismatch');
   const fullHomeReady = positionTrust.trusted && positionTrust.fullHoming && currentMachineFrame?.absoluteFromHome === true;
-  const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
+  const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
   const zero = interruptedWorkZeroEntry();
   const recoveryFixes = needsHome || needsWorkZero ? `
     <section class="recovery-fix-card" aria-label="Required recovery actions">
@@ -3195,7 +3204,7 @@ async function syncProductionResumeFromStatus(status) {
     });
     productionResumeFinished = true;
   } else {
-    productionResumeRunning = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'].includes(status.state);
+    productionResumeRunning = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(status.state);
   }
   if (productionResumeFinished) {
     if (job.productionResumeAuthorization?.eventId === event.id) {
@@ -3459,7 +3468,7 @@ function renderPrepareWorkZeroHistory() {
   prepareWorkZeroHistorySelect.value = preferredId;
   prepareWorkZeroHistorySelect.disabled = false;
   const homed = positionTrust.trusted && positionTrust.fullHoming && currentMachineFrame?.absoluteFromHome === true;
-  const busy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']
+  const busy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']
     .includes(String(jobRunStatus?.state || '').toUpperCase());
   restorePrepareWorkZeroButton.disabled = !homed || busy;
   prepareWorkZeroHintEl.textContent = homed
@@ -4073,7 +4082,7 @@ async function restoreHistoryZero(zero) {
   if (!positionTrust.trusted || !positionTrust.fullHoming) {
     throw new Error('Home All first so the saved point can be resolved from machine home.');
   }
-  const activeStates = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING'];
+  const activeStates = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'];
   if (activeStates.includes(String(jobRunStatus?.state || '').toUpperCase())) {
     throw new Error('Stop the active job before restoring a zero.');
   }
@@ -4853,16 +4862,6 @@ async function copyAircutCommands() {
     appendDryRunLog('Copied aircut commands to clipboard');
   } else {
     appendDryRunLog('Clipboard API unavailable; copy from the command block.');
-  }
-}
-
-async function stopSpindleM5() {
-  appendDryRunLog('> M5');
-  try {
-    const response = await sendCmd('M5');
-    appendDryRunLog(response || '(ok)');
-  } catch (err) {
-    appendDryRunLog(`M5 failed: ${err.message}`);
   }
 }
 
@@ -6279,7 +6278,7 @@ function guardedRunClick(label, action) {
 
 function installHoldAction(button, action, policy = {}) {
   if (!button) return;
-  const holdMs = Math.max(600, Number(policy.holdMs || 1000));
+  const holdMs = Math.max(500, Number(policy.holdMs || 1000));
   let timer = null;
   let frame = null;
   let startedAt = 0;
@@ -6312,7 +6311,7 @@ function installHoldAction(button, action, policy = {}) {
     timer = setTimeout(() => {
       completed = true;
       reset();
-      Promise.resolve(action()).catch((err) => appendRunLog(`Start failed: ${err.message}`));
+      Promise.resolve(action()).catch((err) => appendRunLog(`Hold action failed: ${err.message}`));
     }, holdMs);
   };
 
@@ -6407,7 +6406,6 @@ feedStartButtons.forEach((button) => {
 feedStartPercentInput?.addEventListener('change', () => setFeedStartPercent(feedStartPercentInput.value));
 refreshPreflightButton?.addEventListener('click', renderPreflight);
 sendDryRunButton?.addEventListener('click', () => sendSelectedDryRun().catch((err) => appendDryRunLog(`Dry run failed: ${err.message}`)));
-stopM5Button?.addEventListener('click', stopSpindleM5);
 armJobButton?.addEventListener('click', () => armJob().catch((err) => setArmResult(err.message, true)));
 disarmJobButton?.addEventListener('click', disarmJob);
 saveArmedJobButton?.addEventListener('click', () => saveArmedJob().catch((err) => setArmResult(err.message, true)));
@@ -6421,8 +6419,8 @@ saveToolZeroButton?.addEventListener('click', () => saveToolZeroToJob().catch((e
 workbenchUiPromise.then((ui) => {
   installHoldAction(startJobButton, reviewAndStartJobRun, ui.actionPolicy('start_cut'));
 });
-pauseJobButton?.addEventListener('click', guardedRunClick('Pause', pauseJobRun));
-resumeJobButton?.addEventListener('click', guardedRunClick('Resume', resumeJobRun));
+installHoldAction(pauseJobButton, pauseJobRun, { holdMs: 500 });
+installHoldAction(resumeJobButton, resumeJobRun, { holdMs: 500 });
 toolChangeManualZButton?.addEventListener('click', () => setToolChangeManualZ().catch((err) => {
   if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
 }));
@@ -6433,7 +6431,7 @@ toolChangeRouterReadyInput?.addEventListener('change', renderToolChangeOperator)
 toolChangeCompleteButton?.addEventListener('click', () => completeToolChange().catch((err) => {
   if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
 }));
-stopJobButton?.addEventListener('click', guardedRunClick('Stop', stopJobRun));
+installHoldAction(stopJobButton, stopJobRun, { holdMs: 500 });
 refreshJobStatusButton?.addEventListener('click', guardedRunClick('Status', refreshJobStatus));
 feedLiveButtons.forEach((button) => {
   button.addEventListener('click', () => setLiveFeedOverride(button.dataset.feedLive));
@@ -6639,7 +6637,7 @@ window.CncTelemetry?.subscribe('job', (data) => {
     lastMotionSequence = 0;
     stopMotionAnimation();
   }
-  if (['PAUSED', 'STOPPED', 'COMPLETED', 'ERROR'].includes(String(data?.state || '').toUpperCase())) {
+  if (['PAUSED_INTACT', 'PAUSED', 'RECOVERY_REQUIRED', 'STOPPED', 'COMPLETED', 'ERROR'].includes(String(data?.state || '').toUpperCase())) {
     stopMotionAnimation();
   }
 });

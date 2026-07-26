@@ -39,9 +39,11 @@ function normalizeRunState(state) {
   const value = String(state || '').toUpperCase();
   if (value === 'COMPLETED') return 'completed';
   if (value === 'STOPPED') return 'stopped';
+  if (value === 'RECOVERY_REQUIRED') return 'interrupted';
   if (value === 'ERROR') return 'error';
-  if (value === 'PAUSED') return 'interrupted';
-  if (value === 'RUNNING' || value === 'PREPARING' || value === 'PAUSING' || value === 'RESUMING' || value === 'STOPPING') {
+  if (value === 'PAUSED' || value === 'PAUSED_INTACT' ||
+      value === 'RUNNING' || value === 'PREPARING' || value === 'PAUSING' ||
+      value === 'RESUMING' || value === 'STOPPING') {
     return 'running';
   }
   return String(state || 'started').toLowerCase();

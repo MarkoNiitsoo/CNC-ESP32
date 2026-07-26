@@ -17,7 +17,8 @@ describe('manual tool-change operator workflow', () => {
     expect(preview).toContain('info?.diameterMm');
     expect(preview).toContain('info?.spindleRpm');
     expect(preview).toMatch(/function applyActiveRunParse[\s\S]*renderWorkbenchStatus\(\);[\s\S]*renderRunPanel\(\);/);
-    expect(preview).toContain('resumeJobButton.hidden = !paused || toolChangePending');
+    expect(preview).toContain('resumeJobButton.hidden = !(pausedIntact || recoveryRequired)');
+    expect(preview).toContain('resumeJobButton.disabled = !(pausedIntact || recoveryRequired) || toolChangePending');
     expect(preview).toContain("postCriticalJobAction('/api/job/tool-change/complete', { confirmed: true, routerReady: true })");
     expect(preview).toContain("toolChangeCompleteButton.disabled = !ready || !zeroComplete || !toolChangeRouterReadyInput?.checked");
   });
@@ -32,7 +33,7 @@ describe('manual tool-change operator workflow', () => {
 
   it('does not offer the generic Machine Bar Resume while M6 is pending', () => {
     expect(machineBar).toContain("STATE.job?.toolChangePending === true");
-    expect(machineBar).toContain("const pauseLabel = toolChangePending ? 'Tool Change'");
-    expect(machineBar).toContain("setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending)");
+    expect(machineBar).toMatch(/const pauseLabel = recoveryRequired[\s\S]*toolChangePending[\s\S]*'Tool Change'/);
+    expect(machineBar).toContain("setDisabled('mb-pause', !(running || state === 'PAUSED_INTACT' || recoveryRequired || isUnknown()) || toolChangePending)");
   });
 });

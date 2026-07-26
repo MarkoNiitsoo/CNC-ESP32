@@ -55,6 +55,7 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
   const frame = { trusted: true, absoluteFromHome: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
   const runner = new MockJobRunner({
     sd, marlin, frame, lineDelayMs: delay,
+    realtimeHold: marlin.realtimeHold,
     toolChangeSettings: toolChangeSettings || { handling: 'pause', zZeroMethod: 'manual' },
   });
   return { sd, marlin, runner, job, jobPath, gcodePath, request: {
@@ -224,17 +225,53 @@ describe('MockJobRunner', () => {
     expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
   });
 
-  it('supports priority M5 and live feed override while running', async () => {
+  it('pauses and resumes intact with realtime P000/R000 and no cutter or position commands', async () => {
     const lines = ['G21', 'G90', ...Array.from({ length: 40 }, (_, index) => `G1 X${index + 1}`)].join('\n');
     const ctx = await fixture({ gcode: lines, delay: 5 });
     await ctx.runner.start(ctx.request);
     ctx.marlin.execute('M3');
     expect(ctx.marlin.spindleOff).toBe(false);
-    ctx.marlin.execute('M5', { priority: true });
-    expect(ctx.marlin.spindleOff).toBe(true);
+    const before = ctx.marlin.log.length;
+    expect(ctx.runner.pause()).toMatchObject({ state: 'PAUSED_INTACT', directResumeValid: true, cutterState: 'running_assumed' });
+    const pauseCommands = ctx.marlin.log.slice(before).filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    expect(pauseCommands).toEqual(['P000']);
+    expect(ctx.marlin.spindleOff).toBe(false);
+    expect(ctx.runner.resume()).toMatchObject({ state: 'RUNNING', directResumeValid: false });
+    expect(ctx.marlin.log.filter((entry) => entry.direction === 'tx').at(-1).text).toBe('R000');
     ctx.runner.setFeedOverride(75);
     expect(ctx.runner.status.feedOverridePercent).toBe(75);
     ctx.runner.stop();
+  });
+
+  it('uses a resumable command-boundary fallback when realtime hold is not detected', async () => {
+    const ctx = await fixture({
+      gcode: ['G21', 'G90', ...Array.from({ length: 20 }, (_, index) => `G1 X${index + 1}`)].join('\n'),
+      delay: 5,
+      marlinConfig: { realtimeHold: false },
+    });
+    await ctx.runner.start(ctx.request);
+    const before = ctx.marlin.log.length;
+    expect(ctx.runner.pause()).toMatchObject({ state: 'PAUSED_INTACT', pauseMode: 'boundary', realtimeHoldSupported: false });
+    const commands = ctx.marlin.log.slice(before).filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    expect(commands).toEqual(['M400']);
+    expect(commands).not.toEqual(expect.arrayContaining(['P000', 'R000', 'M5', 'M410']));
+    expect(ctx.runner.resume()).toMatchObject({ state: 'RUNNING' });
+    ctx.runner.stop();
+  });
+
+  it('invalidates direct Resume before manual movement and shuts down M410 then M5', async () => {
+    const ctx = await fixture({
+      gcode: ['G21', 'G90', ...Array.from({ length: 20 }, (_, index) => `G1 X${index + 1}`)].join('\n'),
+      delay: 5,
+    });
+    await ctx.runner.start(ctx.request);
+    ctx.runner.pause();
+    const before = ctx.marlin.log.length;
+    expect(ctx.runner.interruptForManualMotion()).toMatchObject({ state: 'STOPPING', directResumeValid: false, recoveryRequired: true });
+    expect(() => ctx.runner.resume()).toThrow(/direct Resume is unavailable/i);
+    expect(await waitForState(ctx.runner, 'RECOVERY_REQUIRED')).toBe('RECOVERY_REQUIRED');
+    const commands = ctx.marlin.log.slice(before).filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    expect(commands).toEqual(['M410', 'M5']);
   });
 
   it('streams validated native-arc test motion without job arming', async () => {

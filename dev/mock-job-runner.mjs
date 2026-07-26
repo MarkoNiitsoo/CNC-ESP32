@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { assertCanUseActiveRunForExecution, getActiveRun, getActiveRunFingerprint } from '../www/lib/job-active-run.js';
 import { migrateProjectSafeZ } from '../www/lib/job-safe-z.js';
 
-const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
+const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']);
 
 function cleanLine(line) {
   return String(line || '').replace(/\([^)]*\)/g, '').replace(/;.*/, '').trim();
@@ -26,12 +26,13 @@ function sleep(ms) {
 }
 
 export class MockJobRunner {
-  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20 } = {}) {
+  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20, realtimeHold = true } = {}) {
     this.sd = sd;
     this.marlin = marlin;
     this.frame = frame;
     this.toolChangeSettings = toolChangeSettings || {};
     this.lineDelayMs = Math.max(0, Number(lineDelayMs) || 0);
+    this.realtimeHold = realtimeHold !== false;
     this.runToken = 0;
     this.status = this.emptyStatus();
   }
@@ -45,6 +46,9 @@ export class MockJobRunner {
       sentLineCount: 0, acknowledgedLineCount: 0, currentLineNumber: 0,
       lastAcknowledgedLineNumber: 0,
       pauseRequested: false, stopRequested: false, priorityCommandInProgress: false,
+      pauseMode: 'none', realtimeHoldSupported: this?.realtimeHold !== false,
+      realtimeHoldActive: false, directResumeValid: false, recoveryRequired: false,
+      cutterState: 'unknown',
       feedOverridePercent: this?.marlin?.feedOverride || 100,
       toolChangePending: false, toolChangeReady: false, toolChangeZZeroCompleted: false,
       toolChangeParked: false, toolChangeToolConfirmed: false, toolChangeRouterReadyConfirmed: false,
@@ -360,7 +364,7 @@ export class MockJobRunner {
     let commandLineNumber = 0;
     for (let index = 0; index < lines.length; index += 1) {
       if (token !== this.runToken || this.status.stopRequested) return;
-      while (this.status.state === 'PAUSED' || this.status.state === 'PAUSING') {
+      while (this.status.state === 'PAUSED_INTACT' || this.status.state === 'PAUSED' || this.status.state === 'PAUSING') {
         if (token !== this.runToken || this.status.stopRequested) return;
         await sleep(5);
       }
@@ -428,21 +432,50 @@ export class MockJobRunner {
     if (this.status.state !== 'RUNNING') throw new Error('job is not running');
     this.status.state = 'PAUSING';
     this.status.pauseRequested = true;
-    this.status.streamingPausedReason = 'Pause safely requested. No new G-code will be sent; Marlin is finishing buffered motion after M5.';
-    this.runCommand('M5', { priority: true });
-    this.runCommand('M400', { priority: true });
-    this.status.state = 'PAUSED';
-    return this.snapshot('Pause safely requested. Buffered motion will finish before the machine is paused.');
+    this.status.directResumeValid = true;
+    this.status.cutterState = 'running_assumed';
+    if (this.realtimeHold) {
+      this.runCommand('P000', { priority: true });
+      this.status.pauseMode = 'realtime';
+      this.status.realtimeHoldActive = true;
+    } else {
+      this.status.pauseMode = 'boundary';
+      this.status.streamingPausedReason = 'Pause pending at the next safely resumable command boundary; cutter remains running.';
+      this.runCommand('M400', { priority: true });
+    }
+    this.status.state = 'PAUSED_INTACT';
+    this.status.pauseRequested = false;
+    this.status.streamingPausedReason = 'Motion held — cutter remains running. Direct Resume is valid until any manual movement.';
+    return this.snapshot(this.realtimeHold
+      ? 'Realtime hold requested with P000. Motion held — cutter remains running.'
+      : 'Current command boundary reached. Motion held — cutter remains running.');
   }
 
   resume() {
-    if (this.status.state !== 'PAUSED') throw new Error('job is not paused');
-    if (this.status.toolChangePending) throw new Error('complete the pending tool change before resuming');
+    if (this.status.state === 'PAUSED' && this.status.toolChangePending) {
+      throw new Error('complete the pending tool change before resuming');
+    }
+    if (this.status.state !== 'PAUSED_INTACT' || !this.status.directResumeValid) {
+      throw new Error('direct Resume is unavailable; review Recovery');
+    }
     this.status.state = 'RESUMING';
+    if (this.status.realtimeHoldActive) this.runCommand('R000', { priority: true });
     this.status.pauseRequested = false;
     this.status.streamingPausedReason = '';
+    this.status.realtimeHoldActive = false;
+    this.status.directResumeValid = false;
+    this.status.pauseMode = 'none';
     this.status.state = 'RUNNING';
     return this.snapshot('Resume requested.');
+  }
+
+  interruptForManualMotion() {
+    if (this.status.state === 'RECOVERY_REQUIRED') {
+      return this.snapshot('Direct Resume is invalid. Manual movement may proceed through Recovery.');
+    }
+    if (this.status.state !== 'PAUSED_INTACT') throw new Error('job is not in PAUSED_INTACT');
+    const accepted = this.stop({ manualMovement: true });
+    return { ...accepted, message: 'Direct Resume invalidated. Wait for RECOVERY_REQUIRED before manual movement.' };
   }
 
   markToolChangeZZero(method = 'manual') {
@@ -494,11 +527,13 @@ export class MockJobRunner {
     return this.snapshot('Tool change confirmed. Resume requested.');
   }
 
-  stop() {
+  stop({ manualMovement = false } = {}) {
     if (!this.isActive()) throw new Error('job is not active');
     this.status.state = 'STOPPING';
     this.status.stopRequested = true;
     this.status.pauseRequested = false;
+    this.status.directResumeValid = false;
+    this.status.recoveryRequired = true;
     this.status.toolChangePending = false;
     this.status.toolChangeReady = false;
     this.status.toolChangeZZeroCompleted = false;
@@ -528,9 +563,11 @@ export class MockJobRunner {
           return;
         }
       }
-      this.status.state = 'STOPPED';
+      this.status.state = manualMovement ? 'RECOVERY_REQUIRED' : 'STOPPED';
       this.status.stopRequested = false;
-      this.status.streamingPausedReason = 'Stopped now with M410 quickstop. Home All and verify recovery before further motion.';
+      this.status.streamingPausedReason = manualMovement
+        ? 'Manual movement invalidated direct Resume. Review Recovery before continuing.'
+        : 'Stopped now with M410 quickstop. Home All and verify recovery before further motion.';
     });
     return accepted;
   }

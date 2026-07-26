@@ -23,7 +23,8 @@ restarted and the machine does not descend to cutting depth.
   re-touch was intentional and that the new Z zero is correct.
 - The machine was homed in the current powered session and position is explicitly trusted.
 - Safe Z and the resume target fit configured X/Y/Z limits.
-- No job or pause state is currently active.
+- No job or intact-pause state is currently active. `RECOVERY_REQUIRED` is reviewed and imported
+  through this workflow before recovery motion is authorized.
 - Before cutting resume, the operator explicitly confirms that material and fixtures are correctly
   positioned. Software does not claim to verify physical stock placement.
 
@@ -137,8 +138,9 @@ M400
 ```
 
 `G28`, `G53`, `G92`, `M3`, and `M4` are never generated. Source M3/M4 warnings are shown but all
-spindle/laser starts are omitted. Pause/Stop/M5 stop further browser commands; Pause/Stop also
-request existing M410+M5 and invalidate position trust.
+spindle/laser starts are omitted. Pause holds the firmware stream intact and keeps the cutter
+running. Stop executes `M410` then `M5` and invalidates position trust. Standalone M5 is unavailable
+while the recovery stream owns the machine.
 
 ## Guarded Production Resume
 
@@ -180,9 +182,10 @@ does not start the router, spindle, or laser automatically. It also never genera
 After the hold, the browser uploads one `/jobs/generated/*.production-resume.gc` file and sends one
 `POST /api/recovery/production/start` request. Firmware verifies the prepared event provenance and
 the complete command file before sending anything, then owns SD/UART streaming and Marlin `ok`
-pacing. A browser or WiFi disconnect therefore does not interrupt Phase 2. Pause, Stop, and M5
-remain priority HTTP controls when connectivity is available; the physical emergency stop remains
-the independent final safety control.
+pacing. A browser or WiFi disconnect therefore does not interrupt Phase 2. Pause/Resume and Stop
+remain firmware-owned HTTP controls when connectivity is available; standalone M5 remains blocked
+while the recovery stream is active. The physical emergency stop remains the independent final
+safety control.
 
 Each attempt appends a separate `production-resume` history event. The original interrupted run
 remains interrupted/stopped/error. Future hardening is still required for power-loss recovery,

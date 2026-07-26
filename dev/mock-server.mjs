@@ -137,7 +137,10 @@ export async function createMockEnvironment(options = {}) {
   const toolChangeSettings = { ...DEFAULT_TOOL_CHANGE_SETTINGS };
   const bootstrapEnv = { frame, marlin, toolChangeSettings };
   updateMockSafeZ(bootstrapEnv);
-  const runner = new MockJobRunner({ sd, marlin, frame, toolChangeSettings, lineDelayMs: config.lineDelayMs });
+  const runner = new MockJobRunner({
+    sd, marlin, frame, toolChangeSettings, lineDelayMs: config.lineDelayMs,
+    realtimeHold: config.realtimeHold !== false,
+  });
   const jog = {
     state: 'IDLE', safeJog: true, zLiftedForJog: false, safeLiftZ: 70,
     zRestoreAvailable: false, originalZ: null, safeLiftWorkZ: null, zChangedDuringJog: false,
@@ -376,8 +379,8 @@ export async function createMockServer(options = {}) {
         const command = String((await readJson(req)).cmd || '').trim();
         if (!command) throw new Error('missing cmd');
         const upper = command.toUpperCase();
-        if (env.runner.status.state === 'RUNNING' && !['M114', 'M115', 'M119', 'M400', 'M5'].includes(upper)) {
-          return json(res, 409, { ok: false, error: 'job is running; manual command rejected' });
+        if (env.runner.isActive() || (upper === 'M5' && env.runner.status.state === 'RECOVERY_REQUIRED')) {
+          return json(res, 409, { ok: false, error: 'active or resumable job; manual command rejected' });
         }
         const result = env.marlin.execute(command, { priority: upper === 'M5' });
         if (result.ok && env.frame.trusted) syncMockFrame(env);
@@ -417,6 +420,9 @@ export async function createMockServer(options = {}) {
       }
       if (req.method === 'POST' && pathname === '/api/job/pause') return json(res, 200, env.runner.pause());
       if (req.method === 'POST' && pathname === '/api/job/resume') return json(res, 200, env.runner.resume());
+      if (req.method === 'POST' && pathname === '/api/job/interrupt-for-manual-motion') {
+        return json(res, 202, env.runner.interruptForManualMotion());
+      }
       if (req.method === 'POST' && pathname === '/api/job/tool-change/complete') {
         return json(res, 200, env.runner.completeToolChange(await readJson(req)));
       }
@@ -425,6 +431,10 @@ export async function createMockServer(options = {}) {
         return json(res, 200, env.runner.setFeedOverride((await readJson(req)).percent));
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/goto') {
+        if (env.runner.status.state === 'PAUSED_INTACT') {
+          env.runner.interruptForManualMotion();
+          return json(res, 409, { ok: false, error: 'direct Resume invalidated; wait for RECOVERY_REQUIRED before moving' });
+        }
         if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'go to work zero rejected while job is active' });
         if (!env.frame.workZeroValid) {
           return json(res, 409, {
@@ -597,7 +607,10 @@ export async function createMockServer(options = {}) {
           available: true, refreshing: false, firmwareName: 'MockMarlin 2.1.1', machineType: 'DEV-MOCK', sourceCodeUrl: 'local',
           full: { xMin: m.xMin, xMax: m.xMax, yMin: m.yMin, yMax: m.yMax, zMin: m.zMin, zMax: m.zMax },
           work: { xMin: m.xMin, xMax: m.xMax, yMin: m.yMin, yMax: m.yMax, zMin: m.zMin, zMax: m.zMax },
-          capabilities: { emergencyParser: true, arcs: true, autoreportPosition: true, eeprom: true, sdCard: true, motionModes: true },
+          capabilities: {
+            emergencyParser: true, realtimeHold: env.runner.realtimeHold, arcs: true,
+            autoreportPosition: true, eeprom: true, sdCard: true, motionModes: true,
+          },
           refreshedAtMs: Date.now() - env.startedAt, lastError: '',
         });
       }
@@ -693,6 +706,10 @@ export async function createMockServer(options = {}) {
         return json(res, 200, { ...env.jog, heartbeatAgeMs: age, uptimeMs: Date.now() - env.startedAt });
       }
       if (req.method === 'POST' && pathname === '/api/jog/start') {
+        if (env.runner.status.state === 'PAUSED_INTACT') {
+          env.runner.interruptForManualMotion();
+          return json(res, 409, { ok: false, error: 'direct Resume invalidated; wait for RECOVERY_REQUIRED before jogging' });
+        }
         if (env.runner.isActive() && env.runner.status.state !== 'PAUSED') {
           return json(res, 409, { ok: false, error: 'jog rejected while job is active' });
         }

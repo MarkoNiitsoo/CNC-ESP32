@@ -331,11 +331,12 @@ describe('canvas workbench control policy', () => {
       .toMatchObject({ x: 110, y: 520, z: -2 });
   });
 
-  it('keeps Start Cut deliberate while Pause, Stop, and M5 remain direct', () => {
+  it('uses the specified hold policy for job controls and keeps M5 advanced-only', () => {
     expect(actionPolicy('start_cut')).toMatchObject({ mode: 'hold', holdMs: 1000 });
-    expect(actionPolicy('pause').mode).toBe('direct');
-    expect(actionPolicy('stop').mode).toBe('direct');
-    expect(actionPolicy('m5').mode).toBe('direct');
+    expect(actionPolicy('pause')).toMatchObject({ mode: 'hold', holdMs: 500 });
+    expect(actionPolicy('resume')).toMatchObject({ mode: 'hold', holdMs: 500 });
+    expect(actionPolicy('stop')).toMatchObject({ mode: 'hold', holdMs: 500 });
+    expect(actionPolicy('m5').mode).toBe('advanced-manual');
   });
 
   it('does not introduce homing or automatic zero commands', () => {

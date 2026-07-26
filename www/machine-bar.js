@@ -36,10 +36,10 @@
   const toolChangeSettingsPromise = import('/lib/tool-change-settings.js').catch(() => null);
   const jobSafeZModulePromise = import('/lib/job-safe-z.js').catch(() => null);
 
-  const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
+  const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
-  const PAUSED_STATES = new Set(['PAUSED']);
-  const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'COMPLETED', 'ERROR']);
+  const PAUSED_STATES = new Set(['PAUSED_INTACT', 'PAUSED']);
+  const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'RECOVERY_REQUIRED', 'COMPLETED', 'ERROR']);
   const MACHINE_Z_MAX_MM = 70;
 
   window.LowRiderMachineBar = {
@@ -340,14 +340,13 @@
 
   async function pauseJob() {
     await criticalJobPost('/api/job/pause');
-    setMessage('Pause Safely requested; buffered motion will finish first');
+    setMessage('Pause requested; motion will hold intact and the cutter will remain running');
     STATE.job = { ...(STATE.job || {}), state: 'PAUSING' };
     render();
     await refreshJobStatus();
   }
 
   async function resumeJob() {
-    if (!confirmUnknown('resuming the job')) return;
     await apiPost('/api/job/resume');
     setMessage('Resume requested');
     STATE.job = { ...(STATE.job || {}), state: 'RESUMING' };
@@ -360,7 +359,17 @@
       setMessage('Complete the pending tool change in the job panel.');
       return;
     }
-    if (visibleJobState() === 'PAUSED') return resumeJob();
+    if (visibleJobState() === 'PAUSED_INTACT') return resumeJob();
+    if (visibleJobState() === 'RECOVERY_REQUIRED') {
+      let currentJob = null;
+      try {
+        currentJob = JSON.parse(localStorage.getItem('lowrider.currentJob') || 'null');
+      } catch (err) {
+        currentJob = null;
+      }
+      location.href = `/preview.html?path=${encodeURIComponent(currentJob?.gcodePath || '')}#recovery`;
+      return;
+    }
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'pause' } }));
     return pauseJob();
   }
@@ -371,7 +380,6 @@
       setMessage('Stop Now already requested');
       return;
     }
-    if (!confirm('STOP NOW sends the abrupt M410 quickstop first, then M5. The machine position will no longer be trusted; Home All and recovery review are required before further motion. Continue?')) return;
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
     try {
       await criticalJobPost('/api/job/stop');
@@ -379,8 +387,7 @@
       STATE.job = { ...(STATE.job || {}), state: 'STOPPING' };
       render();
     } catch (err) {
-      setMessage(`Stop Now endpoint failed. Sending output-off M5 only; motion may continue. Use the physical emergency stop if needed. ${err.message}`);
-      await sendCmd('M5').catch(() => {});
+      setMessage(`Stop endpoint failed; M5 was not sent because motion may still be active. Use the physical emergency stop. ${err.message}`);
     }
     await refreshJobStatus();
   }
@@ -399,6 +406,7 @@
   }
 
   async function goToWorkZero(axes) {
+    await invalidatePausedResumeBeforeManualMotion();
     if (!canSetup()) throw new Error('Work-zero movement is unavailable while the job is active.');
     if (STATE.frame?.workZeroValid !== true) {
       throw new Error('No active work zero. Set one or restore a saved zero from Prepare first.');
@@ -701,6 +709,7 @@
 
   async function startJog(safeJog) {
     if (jogStartPending || jogTimer || STATE.jog?.state === 'JOGGING') return;
+    await invalidatePausedResumeBeforeManualMotion();
     const sessionId = ++jogSessionId;
     await refreshProjectSafeZ();
     const settings = jogSettings(safeJog);
@@ -761,6 +770,19 @@
     const y = -dy / radius;
     STATE.jogVector = { x, y, z: 0, speed: Math.min(1, Math.hypot(x, y)) };
     knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+  }
+
+  async function invalidatePausedResumeBeforeManualMotion() {
+    if (visibleJobState() !== 'PAUSED_INTACT') return;
+    setMessage('Invalidating direct Resume and stopping the cutter before manual movement…');
+    await apiPost('/api/job/interrupt-for-manual-motion');
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await refreshJobStatus();
+      if (visibleJobState() === 'RECOVERY_REQUIRED') return;
+      if (visibleJobState() === 'ERROR') throw new Error(STATE.job?.lastError || 'Could not establish a safe manual-movement state.');
+    }
+    throw new Error('Manual movement is waiting for held motion to stop. Retry after RECOVERY_REQUIRED is shown.');
   }
 
   function updateDirectionalVector(event, item) {
@@ -1036,6 +1058,46 @@
     });
   }
 
+  function installCriticalHold(item, action) {
+    if (!item) return;
+    let timer = null;
+    let completed = false;
+    const reset = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      item.classList.remove('holding');
+      item.style.setProperty('--hold-progress', '0');
+    };
+    const begin = (event) => {
+      if (item.disabled || timer) return;
+      event.preventDefault();
+      completed = false;
+      item.classList.add('holding');
+      item.style.setProperty('--hold-progress', '1');
+      timer = setTimeout(() => {
+        completed = true;
+        reset();
+        Promise.resolve(action()).catch((err) => {
+          setMessage(err.message || String(err));
+          render();
+        });
+      }, 500);
+    };
+    const cancel = (event) => {
+      event?.preventDefault();
+      if (!completed) reset();
+    };
+    item.addEventListener('pointerdown', begin);
+    item.addEventListener('pointerup', cancel);
+    item.addEventListener('pointercancel', cancel);
+    item.addEventListener('pointerleave', cancel);
+    item.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') begin(event);
+    });
+    item.addEventListener('keyup', cancel);
+    item.addEventListener('click', (event) => event.preventDefault());
+  }
+
   function renderMarlinReadouts() {
     const entries = STATE.marlinLog?.entries || [];
     const lastEntry = entries.length ? entries[entries.length - 1] : null;
@@ -1175,16 +1237,25 @@
     }
 
     const toolChangePending = paused && STATE.job?.toolChangePending === true;
-    const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause Safely';
+    const recoveryRequired = state === 'RECOVERY_REQUIRED';
+    const pauseLabel = recoveryRequired
+      ? 'Review Recovery'
+      : toolChangePending
+        ? 'Tool Change'
+        : state === 'PAUSED_INTACT'
+          ? 'Resume'
+          : 'Pause';
     [pauseResumeEl].forEach((item) => {
       if (!item) return;
       const label = item.querySelector('.machine-button-label');
       if (label && label.textContent !== pauseLabel) label.textContent = pauseLabel;
       item.setAttribute('aria-label', `${pauseLabel} job`);
-      item.title = paused
-        ? 'Resume streaming after a safe pause'
-        : 'Stop sending new G-code and finish motion already buffered by Marlin';
-      const icon = paused && !toolChangePending ? 'start' : 'pause';
+      item.title = recoveryRequired
+        ? 'Direct Resume is invalid; review the normal recovery workflow'
+        : state === 'PAUSED_INTACT'
+          ? 'Resume the intact held stream; cutter remains running'
+          : 'Hold motion without lifting Z or stopping the cutter';
+      const icon = (state === 'PAUSED_INTACT' || recoveryRequired) && !toolChangePending ? 'start' : 'pause';
       if (item.dataset.icon !== icon) {
         item.dataset.icon = icon;
         window.CncSkin?.applyIcons?.(item);
@@ -1216,8 +1287,12 @@
     }
     syncJogDock();
 
-    setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending);
-    setDisabled('mb-stop', state === 'STOPPING');
+    setDisabled('mb-pause', !(running || state === 'PAUSED_INTACT' || recoveryRequired || isUnknown()) || toolChangePending);
+    setDisabled('mb-stop', !ACTIVE_STATES.has(state) || state === 'STOPPING');
+    const diagnosticsBusy = ACTIVE_STATES.has(state) || state === 'RECOVERY_REQUIRED' || jogIsUiActive();
+    setDisabled('mb-terminal-send', diagnosticsBusy);
+    setDisabled('mb-terminal-select', diagnosticsBusy);
+    setDisabled('mb-terminal-cmd', diagnosticsBusy);
 
     const disableZero = busy;
     setDisabled('mb-set-work-zero', disableZero || !canSetup());
@@ -1255,9 +1330,8 @@
           <small id="mb-mock-badge" class="machine-mock-badge" title="DEV MOCK - NO REAL MACHINE" hidden>DEV MOCK</small>
         </button>
         <div class="machine-actions">
-          <button id="mb-pause" class="machine-warn" type="button" aria-label="Pause Safely job" title="Finish buffered motion, then pause" data-icon="pause"><span class="machine-button-label">Pause Safely</span></button>
-          <button id="mb-stop" class="machine-danger" type="button" aria-label="Stop Now with M410" title="Abrupt quickstop; position must be verified" data-icon="stop">Stop Now</button>
-          <button id="mb-m5" class="machine-danger-dark" type="button" aria-label="Output Off M5; motion continues" title="Router/spindle output off only; motion continues" data-icon="m5">Output Off (M5)</button>
+          <button id="mb-pause" class="machine-warn hold-to-confirm" type="button" aria-label="Hold to Pause job" title="Hold motion; cutter remains running" data-icon="pause"><span class="machine-button-label">Pause</span></button>
+          <button id="mb-stop" class="machine-danger hold-to-confirm" type="button" aria-label="Hold to Stop with M410" title="Stop motion first, then stop the cutter" data-icon="stop">Stop</button>
         </div>
         <div id="mb-operator-strip" class="machine-operator-strip" data-controller="false">
           <button id="mb-operator-toggle" type="button" data-operator-control aria-expanded="true">READ ONLY: claim control</button>
@@ -1342,8 +1416,8 @@
         <div class="machine-drawer-card">
           <h2>Job Safety</h2>
           <p class="warning">Software stop is not a physical emergency stop.</p>
-          <p><strong>Pause Safely</strong> finishes Marlin's buffered motion. <strong>Stop Now</strong> uses abrupt M410 and requires Home All plus recovery review. <strong>Output Off (M5)</strong> switches the router/spindle output off but does not stop motion.</p>
-          <p>Use the physical emergency stop for real emergencies. All three controls remain visible in the machine bar above this drawer.</p>
+          <p><strong>Pause</strong> holds motion without lifting Z and keeps the cutter running. <strong>Stop</strong> uses M410 first and sends M5 only after motion is stopped.</p>
+          <p>Use the physical emergency stop for real emergencies. Standalone M5 is restricted to idle Advanced diagnostics.</p>
         </div>
         <div class="machine-drawer-card">
           <h2>Feed Override</h2>
@@ -1473,13 +1547,8 @@
       }
     });
     button('mb-jog-restore-z', restoreJogZ);
-    button('mb-pause', pauseOrResumeJob);
-    button('mb-stop', stopJob);
-    button('mb-m5', () => {
-      dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'm5' } }));
-      setMessage('Output Off (M5) requested; machine motion is not stopped');
-      return sendCmd('M5');
-    });
+    installCriticalHold(el('mb-pause'), pauseOrResumeJob);
+    installCriticalHold(el('mb-stop'), stopJob);
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
       item.addEventListener('click', () => {
         goToWorkZero(item.dataset.mbGotoZero).catch((err) => {

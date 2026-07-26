@@ -72,9 +72,10 @@ describe('UI skin loading and persistence', () => {
     const preview = readFileSync(join('www', 'preview.html'), 'utf8');
     const machineBar = readFileSync(join('www', 'machine-bar.js'), 'utf8');
     expect(preview).toMatch(/id="start-job"[^>]*aria-label="Hold to Start Cut"[^>]*data-icon="start"[^>]*>Hold to Start Cut/);
-    expect(preview).toMatch(/id="stop-job"[^>]*aria-label="Stop Now with M410"[^>]*data-icon="stop"/);
-    expect(machineBar).toMatch(/id="mb-pause"[^>]*aria-label="Pause Safely job"[^>]*data-icon="pause"[^>]*><span class="machine-button-label">Pause Safely<\/span>/);
-    expect(machineBar).toMatch(/id="mb-m5"[^>]*aria-label="Output Off M5; motion continues"[^>]*data-icon="m5"[^>]*>Output Off \(M5\)/);
+    expect(preview).toMatch(/id="pause-job"[^>]*aria-label="Hold to Pause"[^>]*data-icon="pause"/);
+    expect(preview).toMatch(/id="stop-job"[^>]*aria-label="Hold to Stop with M410"[^>]*data-icon="stop"/);
+    expect(machineBar).toMatch(/id="mb-pause"[^>]*aria-label="Hold to Pause job"[^>]*data-icon="pause"[^>]*><span class="machine-button-label">Pause<\/span>/);
+    expect(machineBar).not.toContain('id="mb-m5"');
   });
 
   it('uses theme variables for workbench status and canvas layers', () => {

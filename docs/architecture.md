@@ -29,6 +29,25 @@ or job runner functionality.
 - Validated temporary Aircut, Toolless, and Production Resume streams have a separate 2 MiB safety
   cap. Firmware still validates them incrementally from SD and reopens the file for streaming.
 
+## Job hold and interruption state machine
+
+```mermaid
+stateDiagram-v2
+    RUNNING --> PAUSING: "Pause (500 ms hold)"
+    PAUSING --> PAUSED_INTACT: "P000 detected path or confirmed boundary + M400"
+    PAUSED_INTACT --> RESUMING: "Resume (500 ms hold)"
+    RESUMING --> RUNNING: "R000 or reopen at next unsent byte"
+    PAUSED_INTACT --> STOPPING: "Manual movement request / direct Resume invalidated"
+    RUNNING --> STOPPING: "Stop (500 ms hold)"
+    PAUSING --> STOPPING: "Stop"
+    RESUMING --> STOPPING: "Stop"
+    STOPPING --> RECOVERY_REQUIRED: "Manual-movement invalidation: M410 then M5"
+    STOPPING --> STOPPED: "Operator Stop: M410 then M5"
+```
+
+`PAUSED` is reserved for the separate M6 tool-change confirmation flow. `PAUSED_INTACT` never
+implies cutter shutdown; the operator UI must say that the cutter remains running.
+
 ## MVP Components
 
 - WiFi station mode with setup AP fallback.
@@ -74,8 +93,16 @@ or job runner functionality.
   - Runs in `loop()` with one command in flight and waits for Marlin `ok` before sending the next
     cleaned line.
   - Provides start, status, pause, resume, and stop API endpoints for the browser UI.
-  - Keeps normal file streaming separate from priority controls such as Pause, Stop, M5, and
-    feed override.
+  - Keeps normal file streaming separate from stateful Pause/Resume, urgent Stop, and feed
+    override controls.
+  - Models ordinary holds as `RUNNING -> PAUSING -> PAUSED_INTACT -> RESUMING -> RUNNING`.
+    Explicitly detected Marlin realtime reporting uses `P000/R000`; otherwise Pause waits for the
+    current command and `M400` boundary without segmenting source G-code.
+  - Any manual-movement request from `PAUSED_INTACT` invalidates direct Resume before movement,
+    persists recovery evidence, executes `M410` then `M5`, clears frame trust, and enters
+    `RECOVERY_REQUIRED`.
+  - Standalone `M5` is Advanced Manual only and is rejected throughout active, intact-paused,
+    resumable, stopping, and recovery states.
   - Captures recent Marlin commands/responses in a bounded log for global UI visibility.
   - Scans safety-critical job metadata with a bounded streaming window, so ARMED and active-run
     checks do not fail when run history grows the JSON beyond an earlier snippet size.
@@ -133,7 +160,7 @@ or job runner functionality.
   - Firmware validates the whole file, then revalidates each command while the existing SD/UART
     runner streams one command per Marlin `ok`.
   - Native G2/G3 I/J arcs are retained, allowing Marlin's planner to execute continuous curves.
-  - Existing priority Pause, Stop, and M5 behavior remains above the test-motion stream.
+  - Existing stateful Pause/Resume and urgent Stop behavior remains above the test-motion stream.
 - WiFi settings route:
   - Browser form at `/wifi`.
   - Save endpoint at `/api/wifi/save`.

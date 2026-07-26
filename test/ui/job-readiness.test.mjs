@@ -173,9 +173,10 @@ describe('job readiness stale and live states', () => {
 
   it('prioritizes running and paused live states', () => {
     expect(getPrimaryNextAction(baseJob(), { currentJob, jobStatus: { state: 'RUNNING' } }).label).toBe('Monitor Job');
-    expect(getSecondaryActions(baseJob(), { currentJob, jobStatus: { state: 'RUNNING' } }).map((item) => item.label)).toEqual(['Pause', 'Stop', 'M5']);
-    expect(getPrimaryNextAction(baseJob(), { currentJob, jobStatus: { state: 'PAUSED' } }).label).toBe('Resume Job');
-    expect(getSecondaryActions(baseJob(), { currentJob, jobStatus: { state: 'PAUSED' } }).map((item) => item.label)).toEqual(['Stop', 'M5']);
+    expect(getSecondaryActions(baseJob(), { currentJob, jobStatus: { state: 'RUNNING' } }).map((item) => item.label)).toEqual(['Pause', 'Stop']);
+    expect(getPrimaryNextAction(baseJob(), { currentJob, jobStatus: { state: 'PAUSED_INTACT' } }).label).toBe('Resume Job');
+    expect(getSecondaryActions(baseJob(), { currentJob, jobStatus: { state: 'PAUSED_INTACT' } }).map((item) => item.label)).toEqual(['Stop']);
+    expect(getPrimaryNextAction(baseJob(), { currentJob, jobStatus: { state: 'RECOVERY_REQUIRED' } }).label).toBe('Review Recovery');
   });
 
   it('keeps a stopped historical run separate from an idle live operation', () => {

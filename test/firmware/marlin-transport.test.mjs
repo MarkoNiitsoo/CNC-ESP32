@@ -135,29 +135,57 @@ describe('Marlin transport safety', () => {
     expect(source).not.toContain('TODO: add line-numbered resend support');
   });
 
-  it('keeps M5 on the priority path before the busy transport rejection', () => {
-    const m5 = source.indexOf('upper == "M5")');
-    const busy = source.indexOf('Marlin transport is busy with the active job');
-    expect(m5).toBeGreaterThan(-1);
-    expect(busy).toBeGreaterThan(m5);
+  it('rejects standalone M5 through the normal active-job transport gate', () => {
+    const command = source.slice(source.indexOf('void handleCommand()'), source.indexOf('void handleJobStart()'));
+    expect(command).not.toContain('queuePriorityCommands("M5")');
+    expect(command).toMatch(/upper == "M5" && jobStatus\.state == JobRunnerState::RecoveryRequired/);
+    expect(command).toContain('Marlin transport is busy with the active job');
   });
 
-  it('drains buffered motion for Pause Safely but invalidates position after Stop Now', () => {
+  it('holds an intact pause without M5, quickstop, or repositioning', () => {
     const pause = source.slice(source.indexOf('void handleJobPause()'), source.indexOf('void handleJobResume()'));
+    const resume = source.slice(source.indexOf('void handleJobResume()'), source.indexOf('void handleToolChangeComplete()'));
     const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
     const finish = source.slice(source.indexOf('void finishPrioritySequence()'), source.indexOf('void processPriorityCommands()'));
-    expect(pause).toContain('queuePriorityCommands("M5", "M400")');
-    expect(pause).toContain('Buffered motion will finish');
+    expect(pause).toContain('machineProfile.capRealtimeReporting');
+    expect(pause).toContain('Serial.print("P000\\n")');
+    expect(pause).toContain('JobRunnerState::PausedIntact');
+    expect(pause).not.toMatch(/\bM5\b|\bM410\b|G0 |G1 /);
+    expect(resume).toContain('JobRunnerState::PausedIntact');
+    expect(resume).not.toMatch(/\bM5\b|\bM410\b|G0 |G1 /);
+    expect(resume).toContain('const bool realtimeHold = jobStatus.pauseRealtimeHold');
+    expect(resume).toMatch(/if \(!realtimeHold && !openJobFileAtOffset\(\)\)/);
+    expect(resume).toMatch(/if \(realtimeHold\)[\s\S]*Serial\.print\("R000\\n"\)[\s\S]*else[\s\S]*jobWaitingForOk = false/);
+    expect(source).toMatch(/JobRunnerState::Resuming[\s\S]*Serial\.print\("R000\\n"\)/);
+    expect(source).toMatch(/capRealtimeReporting\s*=\s*[\s\S]*capEmergencyParser[\s\S]*REALTIME_REPORTING/);
     expect(stop).toContain('startImmediateStopPrioritySequence()');
     expect(stop).toContain('invalidateMachineFrameAfterQuickstop()');
     expect(source).toMatch(/void startImmediateStopPrioritySequence\(\)[\s\S]*queuePriorityCommands\("M410", "M5"\);[\s\S]*drainMarlinInput\(\);[\s\S]*startNextPriorityCommand\(\);/);
     expect(source).toMatch(/void invalidateMachineFrameAfterQuickstop\(\)[\s\S]*machineFrame = MachineFrameState\(\)[\s\S]*marlinPosition = PositionTelemetry\(\)/);
-    expect(finish).toMatch(/JobRunnerState::Stopping[\s\S]*JobRunnerState::Stopped/);
+    expect(finish).toMatch(/JobRunnerState::Stopping[\s\S]*JobRunnerState::RecoveryRequired[\s\S]*JobRunnerState::Stopped/);
     expect(source).toContain('\\"positionValid\\":');
-    expect(source).toContain('M5 output-off requested. Motion is not stopped');
   });
 
-  it('lets Stop preempt streamed ACK waits, Pause M5, and queued M220 without rewriting motion', () => {
+  it('persists intact-pause evidence before manual movement loses frame trust', () => {
+    const invalidate = source.slice(
+      source.indexOf('bool beginPausedManualInterruption()'),
+      source.indexOf('void handlePausedManualInterruption()'),
+    );
+    expect(invalidate).toContain('jobStatus.directResumeValid = false');
+    expect(invalidate).toContain('jobStatus.state = JobRunnerState::Stopping');
+    expect(invalidate.indexOf('startImmediateStopPrioritySequence()')).toBeLessThan(
+      invalidate.indexOf('writePersistentJobCheckpoint(false, true'),
+    );
+    expect(invalidate.indexOf('writePersistentJobCheckpoint(false, true')).toBeLessThan(
+      invalidate.indexOf('invalidateMachineFrameAfterQuickstop()'),
+    );
+    expect(invalidate).toMatch(/writePersistentJobCheckpoint\(false, true[\s\S]*jobCheckpointTracking = false/);
+    expect(source).toContain('"stopping_pending_m5"');
+    const finish = source.slice(source.indexOf('void finishPrioritySequence()'), source.indexOf('void processPriorityCommands()'));
+    expect(finish).toMatch(/pauseInterruptedForManualMotion[\s\S]*setPersistentActiveJobMarker\(false\)/);
+  });
+
+  it('lets Stop preempt streamed ACK waits and queued M220 without rewriting motion', () => {
     const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
     const immediate = source.slice(source.indexOf('void startImmediateStopPrioritySequence()'), source.indexOf('uint32_t priorityAckTimeoutMs()'));
     expect(stop.indexOf('jobWaitingForOk = false')).toBeLessThan(stop.indexOf('startImmediateStopPrioritySequence()'));

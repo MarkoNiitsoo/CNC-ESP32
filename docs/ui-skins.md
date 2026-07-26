@@ -129,7 +129,7 @@ Skin and icon code must not:
 - send G-code;
 - add homing or movement behavior;
 - restore coordinate zeros;
-- change Start/Pause/Stop/M5 priority behavior;
+- change Start/Pause/Resume/Stop hold policy or the idle-only Advanced Manual M5 restriction;
 - modify `activeRun.path` or generated validation.
 
 Automated tests validate manifests, sprite completeness, fallback behavior, persistence,

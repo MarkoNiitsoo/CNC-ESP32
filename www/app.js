@@ -733,7 +733,8 @@ function nextAction() {
   const lastRun = latestRunMeta();
   if (!currentJob?.gcodePath) return { label: 'Choose G-code File', view: 'files' };
   if (state === 'RUNNING' || state === 'PREPARING' || state === 'RESUMING') return { label: 'Monitor Job', view: 'job' };
-  if (state === 'PAUSED') return { label: 'Resume Job', api: '/api/job/resume' };
+  if (state === 'PAUSED_INTACT') return { label: 'Resume Job', api: '/api/job/resume' };
+  if (state === 'RECOVERY_REQUIRED') return { label: 'Review Recovery', href: `${previewUrl()}#recovery` };
   if (!previewBounds()) return { label: 'Open Preview', href: previewUrl() };
   if (activeRunNeedsUpdate()) return { label: 'Update Run File', href: `${previewUrl()}#preview` };
   if (Number(jobMeta?.schemaVersion) === 3) return { label: 'Prepare & Cut', href: `${previewUrl()}#preflight` };

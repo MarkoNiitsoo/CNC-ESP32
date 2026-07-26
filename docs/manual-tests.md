@@ -175,7 +175,9 @@ Simulated or air-cut check:
 
 For each test above, confirm:
 
-1. Pause, Stop, and M5 do not send `G28`.
+1. Pause, Resume, Stop, and idle-only Advanced Manual M5 do not send `G28`.
 2. No automatic homing is introduced.
 3. No new movement command is introduced except the explicitly tested control command.
 4. Software stop is not described as a physical emergency stop.
+5. Pause sends no `M5`, `M410`, Z lift, or park command; Resume sends no repositioning command.
+6. Standalone M5 is rejected during active, intact-paused, resumable, stopping, and recovery states.

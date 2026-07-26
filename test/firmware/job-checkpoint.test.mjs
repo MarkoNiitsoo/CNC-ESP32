@@ -15,12 +15,14 @@ describe('persistent active-job checkpoint', () => {
     for (const field of [
       'activeRunFingerprint', 'lastAcknowledgedByteOffset', 'lastAcknowledgedLineNumber',
       'workZeroId', 'homingSessionId', 'toolChange', 'workPosition', 'machinePosition',
+      'directResumeValid', 'cutterState', 'projectSafeZSnapshot', 'workZeroMachine',
     ]) expect(writer).toContain(`\\"${field}\\"`);
+    expect(writer).toContain('\\"pause\\":{\\"mode\\"');
     for (const field of [
       'phase', 'parked', 'toolConfirmed', 'routerReadyConfirmed', 'nextLineNumber',
       'nextByteOffset', 'command', 'handling', 'zZeroMethod', 'returnPosition',
     ]) expect(writer).toContain(`\\"${field}\\"`);
-    expect(writer).toContain('{\\"schemaVersion\\":2');
+    expect(writer).toContain('{\\"schemaVersion\\":3');
   });
 
   it('sets the non-volatile active marker before any start path can move', () => {
@@ -44,7 +46,7 @@ describe('persistent active-job checkpoint', () => {
       firmware.indexOf('void loadPersistentJobCheckpointAtBoot()'),
     );
     expect(process).toMatch(/Completed[\s\S]*clearPersistentJobCheckpoint\(\)/);
-    expect(process).toMatch(/Stopped[\s\S]*Error[\s\S]*writePersistentJobCheckpoint\(false, true/);
+    expect(process).toMatch(/Stopped[\s\S]*RecoveryRequired[\s\S]*Error[\s\S]*writePersistentJobCheckpoint\(false, true/);
     expect(process).toContain('kJobCheckpointIntervalMs');
     expect(process).toContain('kJobCheckpointByteInterval');
     expect(process).toContain('toolChangePhaseChanged');

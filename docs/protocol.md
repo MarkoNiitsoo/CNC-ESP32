@@ -4,8 +4,8 @@
 
 Firmware `0.5.0-telemetry-transport` treats UART as a single-owner transport. A manual diagnostic
 request must not drain or consume a response that belongs to the job runner, a priority sequence,
-or Safe Jog. `/api/cmd` therefore returns HTTP `409` while those owners are active. `M5` remains a
-priority exception and is queued before this busy check.
+or Safe Jog. `/api/cmd` therefore returns HTTP `409` while those owners are active. There is no
+standalone `M5` exception during an active or resumable job.
 
 Synchronous Marlin reads finish as soon as a complete terminal response line (`ok`, `Error:`,
 `Alarm:`, or `!!`) arrives. The configured timeout is now a missing-response ceiling rather than a
@@ -13,8 +13,8 @@ fixed delay added to every command.
 
 ## WebSocket telemetry
 
-Connect to `ws://<pendant-ip>:81/`. This channel is read-only telemetry; movement, Pause, Stop, M5,
-and all other commands remain HTTP POST operations. On connect firmware sends:
+Connect to `ws://<pendant-ip>:81/`. This channel is read-only telemetry; movement, Pause, Resume,
+Stop, and advanced manual commands remain HTTP POST operations. On connect firmware sends:
 
 ```json
 {"type":"snapshot","revision":1,"data":{"job":{},"jog":{}}}
@@ -414,8 +414,8 @@ Project Safe Z. In `aircut` mode every supplied Z value must equal `safeZ`; Tool
 may follow the already browser-validated remaining Z path.
 
 The endpoint does not run the normal job-start preamble and never applies G92. It uses the existing
-SD/UART `ok`-paced runner, so `/api/job/pause`, `/api/job/stop`, priority M5, and telemetry remain
-available. Job status reports `streamMode` as `aircut`, `toolless`, or `job`.
+SD/UART `ok`-paced runner, so `/api/job/pause`, `/api/job/resume`, `/api/job/stop`, and telemetry
+remain available. Job status reports `streamMode` as `aircut`, `toolless`, or `job`.
 
 ### `POST /api/recovery/production/start`
 
@@ -472,10 +472,10 @@ Request body:
 ```
 
 Sends Marlin `M220 S<percent>` as a priority control command. Valid range is `10` to `200`; invalid
-values are rejected. Feed override is allowed while idle and during `RUNNING`, `PAUSING`, `PAUSED`,
-and `RESUMING`, but it is lower priority than Pause, Stop, and M5. It is rejected while a higher
-priority command is already in progress. Feed override changes movement speed only and does not
-change router or spindle RPM.
+values are rejected. Feed override is allowed while idle and during `RUNNING`, `PAUSING`,
+`PAUSED_INTACT`, tool-change `PAUSED`, and `RESUMING`, but it is lower priority than Pause/Resume
+state changes and Stop. It is rejected while a higher-priority command is already in progress.
+Feed override changes movement speed only and does not change router or spindle RPM.
 
 Job JSON may include:
 
@@ -496,19 +496,39 @@ jobs.
 
 ### `POST /api/job/pause`
 
-Valid from `RUNNING`. Stops sending new file lines immediately, closes the active SD stream, sets
-state `PAUSING`, queues priority `M5` and `M400`, and returns quickly. The queued priority commands
-are processed from firmware `loop()` and the state changes to `PAUSED` after they complete.
+Valid from `RUNNING`. The UI requires a continuous 500 ms hold and shows no modal. Firmware stops
+submitting new file commands and never sends `M5`, `M410`, a Z lift, or a park move.
+
+When `M115` explicitly reports both `EMERGENCY_PARSER` and realtime reporting commands, firmware
+sends `P000` and enters `PAUSED_INTACT`. The cutter remains running and the current stream, modal
+state, file offset, and in-flight acknowledgement remain intact. Firmware never assumes this
+capability from Marlin identity alone.
+
+Without that explicit capability, state remains `PAUSING` while the current command finishes.
+Firmware then sends `M400` at the acknowledged file-command boundary and enters `PAUSED_INTACT`.
+The UI identifies this as a pending boundary pause; source commands are never segmented or
+rewritten.
 
 ### `POST /api/job/resume`
 
-Valid from `PAUSED`. Reopens the G-code file, seeks to the saved byte offset, transitions through
-`RESUMING`, and continues streaming from the next unsent file line.
+Valid only from `PAUSED_INTACT` while `directResumeValid` is true. The UI requires a continuous
+500 ms hold and shows no modal. Realtime holds send `R000` and preserve the original in-flight
+acknowledgement. Boundary holds reopen at the confirmed next-unsent byte offset. Resume does not
+send modal setup, reposition, lift Z, or change cutter state.
+
+### `POST /api/job/interrupt-for-manual-motion`
+
+Valid from `PAUSED_INTACT`. This must complete before jog or another manual move can begin. It
+invalidates direct Resume, stops file execution with `M410`, sends `M5` only after the quickstop
+response, persists interrupted-run evidence and the last confirmed offsets/positions/frame/work
+zero/Project Safe Z/cutter state, clears position trust, and finishes in `RECOVERY_REQUIRED`.
+The ordinary Recovery workflow owns all continuation after this transition.
 
 ### `POST /api/job/stop`
 
-Valid from active job states such as `PREPARING`, `RUNNING`, `PAUSING`, `PAUSED`, and `RESUMING`.
-Stops sending new file lines immediately, closes the active SD stream, sets state `STOPPING`,
+Valid from active job states such as `PREPARING`, `RUNNING`, `PAUSING`, `PAUSED_INTACT`, tool-change
+`PAUSED`, and `RESUMING`. The UI requires a continuous 500 ms hold and shows no modal. Firmware
+stops sending new file lines immediately, closes the active SD stream, sets state `STOPPING`,
 replaces lower-priority controls, and transmits priority `M410` immediately from the request
 handler. Priority `M5` is transmitted only after the `M410` response, and the endpoint returns
 without waiting for the sequence to complete. The state changes to `STOPPED` after the priority
@@ -518,11 +538,11 @@ invalidated as soon as the quickstop is issued; Home All restores trust. This is
 emergency stop.
 
 Priority controls are separate from normal file streaming. Normal streaming sends one cleaned
-G-code file line at a time and waits for Marlin `ok` before sending the next file line. Pause, Stop,
-and manual `M5` during active job states do not wait behind queued file lines; they mark the stream
-as stopped/paused first and then use the priority command path. Manual `M5` is accepted during
-`RUNNING`, `PAUSING`, `PAUSED`, `RESUMING`, `STOPPING`, and `ERROR`. If a lower-priority feed
-override is queued, `M5` may replace it; Stop/Pause/M5 stay above `M220` feed override.
+G-code file line at a time and waits for Marlin `ok` before sending the next file line. Pause and
+Stop do not wait behind queued source lines. Standalone `M5` is not a primary job control and is
+rejected while a job is active, intact-paused, resumable, stopping, or in recovery. It remains an
+Advanced Manual command only while no job/automatic motion owns UART and all axes are stationary.
+If a lower-priority feed override is queued, Stop replaces it; Stop remains above `M220`.
 Stop additionally preempts an active lower-priority sequence so `M410` is never held behind its
 acknowledgement or timeout.
 
@@ -557,7 +577,7 @@ Example response:
 ```
 
 `direction` is `tx` for commands sent to Marlin and `rx` for Marlin responses. `priority` marks
-priority controls such as Pause/Stop/M5/M220 and safety/jog commands. `level` is `info`,
+controls such as realtime Pause/Resume, Stop, M220, and safety/jog commands. `level` is `info`,
 `warning`, or `error`; critical strings such as `Error:`, `ALARM`, `kill`, `Printer halted`,
 `endstops hit`, `Resend`, and `timeout` are surfaced through `lastCritical`.
 

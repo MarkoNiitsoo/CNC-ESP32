@@ -72,8 +72,7 @@ describe('compact machine drawer', () => {
   it('keeps the dry run operator UI minimal and mode-driven', () => {
     expect(previewHtml).toContain('id="send-dry-run"');
     expect(previewHtml).toContain('id="dry-run-aircut"');
-    expect(previewHtml).toContain('id="stop-m5"');
-    expect(previewHtml).toContain('Output Off (M5)');
+    expect(previewHtml).not.toContain('id="stop-m5"');
     expect(previewHtml).not.toContain('Generate Bounding Box Commands');
     expect(previewHtml).not.toContain('Generate Aircut Commands');
     expect(previewHtml).not.toContain('Copy Commands');
@@ -106,23 +105,27 @@ describe('compact machine drawer', () => {
     expect(stateMarkup).not.toContain('DEV MOCK - NO REAL MACHINE</strong>');
   });
 
-  it('makes safe pause, quickstop, and output-only M5 distinct in one compact action row', () => {
+  it('makes hold-to-pause/resume and hold-to-stop the only primary job safety actions', () => {
     expect(machineBar).not.toContain('id="mb-drawer-pause-resume"');
     expect(machineBar).not.toContain('id="mb-drawer-stop"');
     expect(machineBar).not.toContain('id="mb-drawer-m5"');
     expect(machineBar).toContain("style.setProperty('--machine-bar-height'");
     expect(machineBar).toContain("const toolChangePending = paused && STATE.job?.toolChangePending === true");
-    expect(machineBar).toContain("const pauseLabel = toolChangePending ? 'Tool Change' : paused ? 'Resume' : 'Pause Safely'");
-    expect(machineBar).toContain("setDisabled('mb-pause', !(running || paused || isUnknown()) || toolChangePending)");
-    expect(machineBar).toContain('Stop Now with M410');
-    expect(machineBar).toContain('Output Off M5; motion continues');
-    expect(previewHtml).toContain('<strong>Pause Safely</strong> finishes buffered motion.');
+    expect(machineBar).toContain("'PAUSED_INTACT'");
+    expect(machineBar).toContain("'RECOVERY_REQUIRED'");
+    expect(machineBar).toContain("'Review Recovery'");
+    expect(machineBar).toContain('Hold to Stop with M410');
+    expect(machineBar).not.toContain('id="mb-m5"');
+    expect(previewHtml).toContain('cutter remains running');
+    expect(machineBar).toContain('installCriticalHold');
+    expect(machineBar).toMatch(/setTimeout\([\s\S]*?, 500\)/);
     const machineStop = machineBar.slice(machineBar.indexOf('async function stopJob()'), machineBar.indexOf('async function refreshPosition()'));
-    expect(machineStop).toContain('abrupt M410 quickstop');
-    expect(machineStop).toContain("await sendCmd('M5').catch(() => {})");
+    expect(machineStop).not.toContain('confirm(');
+    expect(machineStop).not.toContain("sendCmd('M5')");
     expect(machineStop).not.toContain("sendCmd('M400')");
     const previewStop = preview.slice(preview.indexOf('async function stopJobRun()'), preview.indexOf('async function markLatestRunStopped'));
-    expect(previewStop).toContain('Motion may continue');
+    expect(previewStop).not.toContain('confirm(');
+    expect(previewStop).not.toContain("sendCmdBestEffort('M5')");
     expect(previewStop).not.toContain("sendCmdBestEffort('M400')");
     expect(machineBar).toMatch(/frame\.positionValid === false[\s\S]*cnc-machine-frame/);
   });

@@ -80,6 +80,25 @@ afterEach(async () => {
 });
 
 describe('mock HTTP API', () => {
+  it('rejects standalone M5 for active and recovery-required jobs', async () => {
+    const { base, env } = await start();
+    env.runner.status.state = 'RUNNING';
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'M5' }),
+    })).status).toBe(409);
+    env.runner.status.state = 'RECOVERY_REQUIRED';
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'M5' }),
+    })).status).toBe(409);
+    env.runner.status.state = 'IDLE';
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'M5' }),
+    })).ok).toBe(true);
+  });
+
   it('allows one PIN-authenticated controller while other clients stay read-only', async () => {
     const { base } = await start({ operatorLockEnabled: true });
     const locked = await fetch(`${base}/api/cmd`, {
@@ -585,7 +604,12 @@ describe('mock HTTP API', () => {
   it('serves machine info, applies M203, and saves with explicit M500', async () => {
     const { base, env } = await start();
     const info = await fetch(`${base}/api/machine/info`).then((res) => res.json());
-    expect(info).toMatchObject({ available: true, machineType: 'DEV-MOCK', full: { xMax: 1625, yMax: 5800 } });
+    expect(info).toMatchObject({
+      available: true,
+      machineType: 'DEV-MOCK',
+      full: { xMax: 1625, yMax: 5800 },
+      capabilities: { emergencyParser: true, realtimeHold: true },
+    });
     const applied = await fetch(`${base}/api/machine/apply`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group: 'M203', x: 120, y: 80, z: 6 }),

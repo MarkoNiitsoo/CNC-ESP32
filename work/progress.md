@@ -2421,3 +2421,30 @@
 - Added focused browser, recovery, mock-runner/server, and firmware contract regressions. Final
   verification passes 43 files / 383 tests, all relevant JavaScript syntax checks, `git diff
   --check`, and the AI-Thinker ESP32-CAM PlatformIO build (19.7% RAM, 72.3% flash).
+
+## 2026-07-26 - Final Pause, Resume, Stop, and M5 safety semantics
+
+- Replaced the ordinary `PAUSED` path with explicit `PAUSING -> PAUSED_INTACT -> RESUMING`.
+  Tool-change `PAUSED` remains separate. Direct Resume is valid only while the intact stream has
+  not been invalidated; manual movement transitions through `STOPPING` to `RECOVERY_REQUIRED`.
+- Added conservative Marlin realtime-hold discovery. Firmware enables `P000/R000` only when M115
+  explicitly reports realtime reporting commands together with `EMERGENCY_PARSER`; the capability
+  is persisted and exposed through machine/job telemetry.
+- Realtime Pause preserves the open stream and any in-flight acknowledgement. Fallback Pause waits
+  for the current command, sends `M400` at the confirmed command boundary, and reopens at the exact
+  next-unsent byte on Resume. Neither path sends M5/M410, lifts Z, parks, rewrites, or segments
+  source G-code, and the cutter remains running.
+- Manual motion requested from `PAUSED_INTACT` first invalidates direct Resume, sends M410, persists
+  the interrupted snapshot before clearing frame trust, sends M5 only after quickstop completion,
+  and exposes the normal Recovery workflow.
+- Stop remains immediate stream cancellation with ordered M410 then M5. Primary standalone M5
+  controls were removed; firmware and DEV MOCK reject active/recovery M5, while the idle Advanced
+  Manual terminal retains it.
+- Pause, Resume, and Stop use a real 500 ms hold without confirmation modals. Readiness, history,
+  Preview, Machine Bar, mocks, protocol, architecture, recovery, and operator test documentation
+  now use `PAUSED_INTACT` and `RECOVERY_REQUIRED`.
+- Added and updated regression coverage for realtime/fallback holds, exact Resume, tool-change
+  separation, manual-motion invalidation evidence, M410/M5 ordering, active M5 rejection, hold
+  controls, and recovery/history classification.
+- Final verification passes 43 test files / 387 tests, `git diff --check`, and the AI-Thinker
+  ESP32-CAM PlatformIO build (19.7% RAM, 72.5% flash).

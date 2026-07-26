@@ -165,6 +165,6 @@ describe('Production Resume history and UI guards', () => {
     expect(previewHtml).toContain('the ESP32 owns the cutting stream');
     expect(machineBar).toContain("detail: { type: 'pause' }");
     expect(machineBar).toContain("detail: { type: 'stop' }");
-    expect(machineBar).toContain("detail: { type: 'm5' }");
+    expect(machineBar).not.toContain("detail: { type: 'm5' }");
   });
 });

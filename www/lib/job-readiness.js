@@ -85,7 +85,8 @@ function terminalOutcome(state) {
 export function liveRunStatus(options = {}) {
   const live = stateOf(options.jobStatus || {});
   if (live === 'RUNNING' || live === 'PREPARING' || live === 'RESUMING' || live === 'PAUSING' || live === 'STOPPING') return 'running';
-  if (live === 'PAUSED') return 'paused';
+  if (live === 'PAUSED_INTACT') return 'paused';
+  if (live === 'RECOVERY_REQUIRED') return 'recovery';
   // Firmware retains terminal outcomes in job status for diagnostics. They are no
   // longer live operations and must not keep the current workflow pseudo-active.
   if (terminalOutcome(live)) return 'idle';
@@ -152,6 +153,7 @@ export function getPrimaryNextAction(job = {}, options = {}) {
   const run = liveRunStatus(options);
   if (run === 'running') return action('monitor_job', 'Monitor Job', 'run');
   if (run === 'paused') return action('resume_job', 'Resume Job', 'run', { api: '/api/job/resume' });
+  if (run === 'recovery') return action('open_recoveries', 'Review Recovery', 'recovery');
   if (!sourcePath) return action('choose_file', 'Choose G-code File', 'files');
 
   const activeCheck = assertCanUseActiveRunForExecution(current);
@@ -176,13 +178,11 @@ export function getSecondaryActions(job = {}, options = {}) {
     return [
       action('pause_job', 'Pause', 'run', { api: '/api/job/pause' }),
       action('stop_job', 'Stop', 'run', { api: '/api/job/stop' }),
-      action('m5', 'M5', 'run', { command: 'M5' }),
     ];
   }
   if (run === 'paused') {
     return [
       action('stop_job', 'Stop', 'run', { api: '/api/job/stop' }),
-      action('m5', 'M5', 'run', { command: 'M5' }),
     ];
   }
   const actions = [

@@ -2248,3 +2248,24 @@ No firmware upload is required.
 - Verification at handoff: 43 files / 383 tests, relevant JavaScript syntax checks, `git diff
   --check`, and an AI-Thinker ESP32-CAM build at 19.7% RAM / 72.3% flash. See the focused Git
   commit containing this handoff for the implementation SHA.
+
+## 2026-07-26 Pause/Resume/Stop/M5 safety handoff
+
+- Ordinary Pause must never send M5, M410, Z lift, or park motion. `PAUSED_INTACT` means the cutter
+  is still running and direct Resume is valid only until any manual-movement request.
+- Realtime `P000/R000` is allowed only after explicit M115 evidence for both realtime reporting and
+  Emergency Parser. Unknown capability must stay on the acknowledged command-boundary/M400
+  fallback; never infer support from firmware name.
+- Realtime Resume must preserve `jobWaitingForOk` and the original response buffer. Boundary Resume
+  reopens at `currentByteOffset`, which is the next unsent command after the confirmed boundary.
+- Jog and Go To Work Zero call `/api/job/interrupt-for-manual-motion` first. That transition sends
+  M410 immediately, writes schema-3 recovery evidence while positions/frame/work zero are still
+  available, then invalidates frame trust; M5 follows only after the M410 priority response.
+- Tool-change `PAUSED` is intentionally distinct and remains owned by the existing M6 confirmation
+  workflow. Generic Resume must not bypass it.
+- Standalone M5 has no primary button. Keep it in Advanced Manual only while job, recovery, jog,
+  discovery, priority, and automatic motion owners are idle; firmware remains the enforcement
+  boundary.
+- Verification at handoff: 43 files / 387 tests, `git diff --check`, and AI-Thinker ESP32-CAM build
+  at 19.7% RAM / 72.5% flash. Real-machine acceptance should verify both an M115 profile that
+  explicitly advertises realtime commands and one that does not.

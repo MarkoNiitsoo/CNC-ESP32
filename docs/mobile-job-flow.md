@@ -39,10 +39,11 @@ state model.
 
 Top action area:
 
-- The existing Machine Bar remains the first row with direct Pause, Stop, and M5 actions.
+- The existing Machine Bar remains the first row with hold-to-confirm Pause/Resume and Stop.
 - A compact workbench row shows connection, `activeRun` state, readiness, Tools, and overflow links.
 - `activeRun.path` remains execution truth. Badges are ORIGINAL, GENERATED, STALE, or BLOCKED.
-- Readiness is READY, BLOCKED, ARMED, RUNNING, or PAUSED.
+- Readiness includes READY, BLOCKED, ARMED, RUNNING, PAUSING, PAUSED_INTACT, and
+  RECOVERY_REQUIRED.
 
 Edge drawers:
 
@@ -89,7 +90,7 @@ Safety interaction policy:
 
 - Start Cut requires a continuous one-second hold after existing arm, checklist, preflight, and
   active-run checks pass.
-- Pause, Stop, and M5 remain direct one-tap actions and do not show modal confirmations.
+- Pause, Resume, and Stop require a continuous 500 ms hold and do not show modal confirmations.
 - Drawer, pan, zoom, fit, and layer interactions send no G-code.
 - No homing, zero restore, resume, or new movement behavior is introduced by the workbench.
 
@@ -138,11 +139,11 @@ It should have an always visible sticky header with:
 
 - Pause or Resume.
 - Stop.
-- Spindle/Laser Off.
 - Last known machine/job state.
 
-Pause, Stop, and Spindle/Laser Off must remain visible even when the drawer content scrolls. These
-are software controls and must never be described as a physical emergency stop.
+Pause/Resume and Stop remain visible even when the drawer content scrolls. These are software
+controls and must never be described as a physical emergency stop. Output Off (`M5`) is available
+only in Advanced Manual while no job or automatic motion is active and the axes are stationary.
 
 The drawer should contain machine controls:
 
@@ -158,7 +159,7 @@ Controls page into the drawer so it is reachable from every main view.
 
 Current implementation uses a compact layout:
 
-- one state-aware Pause/Resume button beside direct Stop and M5
+- one state-aware Pause/Resume button beside Stop, both using a 500 ms hold
 - feed current value centered between -10/-1 and +1/+10, with five presets below
 - firmware-deadman XY joystick, Z hold buttons, Safe Z, speed limits, and explicit Stop Jog
 - X/Y/Z homing on one row, then Home All and M119
@@ -172,7 +173,7 @@ that physical table location and labels the homed table edges `X-100` and `Y-500
 the physical grid.
 
 While a job is active, the latest Marlin response is visible in the Machine Bar. Critical Marlin
-messages remain globally visible even outside an active run. Pause/Resume, Stop, and M5 stay in the
+messages remain globally visible even outside an active run. Pause/Resume and Stop stay in the
 sticky drawer header while the rest scrolls.
 
 ## Files-First Home
@@ -233,8 +234,9 @@ live job status, active run state, zero state, dry-run state, arm state, and run
 
 Primary action priority:
 
-- Running jobs show Monitor Job and expose Pause, Stop, and M5 as secondary actions.
-- Paused jobs show Resume Job and expose Stop and M5.
+- Running jobs show Monitor Job and expose Pause and Stop as secondary actions.
+- `PAUSED_INTACT` jobs show Resume Job and expose Stop.
+- `RECOVERY_REQUIRED` jobs show Review Recovery; direct Resume is unavailable.
 - No selected file shows Choose G-code File.
 - Transformed placement with missing, pending, stale, or invalid generated output shows Update Run
   File and blocks Dry Run, Arm, and Start.

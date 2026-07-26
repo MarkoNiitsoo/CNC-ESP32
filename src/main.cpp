@@ -117,8 +117,10 @@ enum class JobRunnerState {
   Preparing,
   Running,
   Pausing,
+  PausedIntact,
   Paused,
   Resuming,
+  RecoveryRequired,
   Completed,
   Stopping,
   Stopped,
@@ -148,6 +150,11 @@ struct JobRunnerStatus {
   uint32_t currentLineNumber = 0;
   uint32_t lastAcknowledgedLineNumber = 0;
   bool pauseRequested = false;
+  bool pauseRealtimeHold = false;
+  bool pauseInterruptedForManualMotion = false;
+  bool directResumeValid = false;
+  bool recoveryRequired = false;
+  String pauseMode = "none";
   bool stopRequested = false;
   bool priorityCommandInProgress = false;
   int feedOverridePercent = 100;
@@ -326,6 +333,7 @@ struct MachineProfile {
   bool capEmergencyParser = false;
   bool capArcs = false;
   bool capAutoreportPos = false;
+  bool capRealtimeReporting = false;
   bool capEeprom = false;
   bool capSdCard = false;
   bool capMotionModes = false;
@@ -1193,10 +1201,14 @@ const char *jobStateName(JobRunnerState state) {
     return "RUNNING";
   case JobRunnerState::Pausing:
     return "PAUSING";
+  case JobRunnerState::PausedIntact:
+    return "PAUSED_INTACT";
   case JobRunnerState::Paused:
     return "PAUSED";
   case JobRunnerState::Resuming:
     return "RESUMING";
+  case JobRunnerState::RecoveryRequired:
+    return "RECOVERY_REQUIRED";
   case JobRunnerState::Completed:
     return "COMPLETED";
   case JobRunnerState::Stopping:
@@ -1212,7 +1224,8 @@ const char *jobStateName(JobRunnerState state) {
 
 bool jobIsActive() {
   return jobStatus.state == JobRunnerState::Preparing || jobStatus.state == JobRunnerState::Running ||
-         jobStatus.state == JobRunnerState::Pausing || jobStatus.state == JobRunnerState::Paused ||
+         jobStatus.state == JobRunnerState::Pausing || jobStatus.state == JobRunnerState::PausedIntact ||
+         jobStatus.state == JobRunnerState::Paused ||
          jobStatus.state == JobRunnerState::Resuming || jobStatus.state == JobRunnerState::Stopping;
 }
 
@@ -1339,7 +1352,7 @@ bool writePersistentJobCheckpoint(bool activeJob, bool interrupted, const String
   File file = SD_MMC.open(kSdActiveJobCheckpointTempPath, FILE_WRITE);
   if (!file) return false;
 
-  file.print("{\"schemaVersion\":2,\"activeJob\":");
+  file.print("{\"schemaVersion\":3,\"activeJob\":");
   file.print(activeJob ? "true" : "false");
   file.print(",\"interrupted\":");
   file.print(interrupted ? "true" : "false");
@@ -1369,6 +1382,26 @@ bool writePersistentJobCheckpoint(bool activeJob, bool interrupted, const String
   file.print(",\"workZeroId\":\""); file.print(jsonEscape(jobStatus.workZeroId)); file.print("\"");
   file.print(",\"homingEpoch\":"); file.print(jobStatus.homingEpoch);
   file.print(",\"homingSessionId\":\""); file.print(jsonEscape(jobStatus.homingSessionId)); file.print("\"");
+  file.print(",\"pause\":{\"mode\":\""); file.print(jsonEscape(jobStatus.pauseMode)); file.print("\"");
+  file.print(",\"directResumeValid\":"); file.print(jobStatus.directResumeValid ? "true" : "false");
+  file.print(",\"cutterState\":\"");
+  file.print(jobStatus.state == JobRunnerState::PausedIntact || jobStatus.state == JobRunnerState::Pausing
+                 ? "running_assumed"
+                 : jobStatus.state == JobRunnerState::Stopping &&
+                           jobStatus.pauseInterruptedForManualMotion
+                       ? "stopping_pending_m5"
+                       : "stopped");
+  file.print("\"}");
+  file.print(",\"projectSafeZSnapshot\":{\"effectiveSafeZ\":"); file.print(jobStatus.safeStartZ, 3);
+  file.print("}");
+  file.print(",\"workZeroMachine\":");
+  if (machineFrame.workZeroValid) {
+    file.print("{\"x\":"); file.print(machineFrame.workZeroMachineX, 3);
+    file.print(",\"y\":"); file.print(machineFrame.workZeroMachineY, 3);
+    file.print(",\"z\":"); file.print(machineFrame.workZeroMachineZ, 3); file.print("}");
+  } else {
+    file.print("null");
+  }
   file.print(",\"selectedToolNumber\":"); file.print(jobStatus.selectedToolNumber);
   file.print(",\"activeToolNumber\":"); file.print(jobStatus.activeToolNumber);
   file.print(",\"toolChange\":{\"pending\":"); file.print(jobStatus.toolChangePending ? "true" : "false");
@@ -1464,7 +1497,9 @@ void processPersistentJobCheckpoint() {
     clearPersistentJobCheckpoint();
     return;
   }
-  if (jobStatus.state == JobRunnerState::Stopped || jobStatus.state == JobRunnerState::Error) {
+  if (jobStatus.state == JobRunnerState::Stopped ||
+      jobStatus.state == JobRunnerState::RecoveryRequired ||
+      jobStatus.state == JobRunnerState::Error) {
     const String reason = jobStatus.lastError.length() > 0 ? jobStatus.lastError : jobStatus.streamingPausedReason;
     if (writePersistentJobCheckpoint(false, true, reason)) {
       setPersistentActiveJobMarker(false);
@@ -1561,6 +1596,20 @@ String jobStatusJson() {
   json += String(jobStatus.lastAcknowledgedLineNumber);
   json += ",\"pauseRequested\":";
   json += jobStatus.pauseRequested ? "true" : "false";
+  json += ",\"pauseMode\":\"" + jsonEscape(jobStatus.pauseMode) + "\"";
+  json += ",\"realtimeHoldSupported\":";
+  json += machineProfile.capRealtimeReporting ? "true" : "false";
+  json += ",\"realtimeHoldActive\":";
+  json += jobStatus.pauseRealtimeHold ? "true" : "false";
+  json += ",\"directResumeValid\":";
+  json += jobStatus.directResumeValid ? "true" : "false";
+  json += ",\"recoveryRequired\":";
+  json += jobStatus.recoveryRequired ? "true" : "false";
+  json += ",\"cutterState\":\"";
+  json += (jobStatus.state == JobRunnerState::PausedIntact || jobStatus.state == JobRunnerState::Pausing)
+              ? "running_assumed"
+              : "unknown";
+  json += "\"";
   json += ",\"stopRequested\":";
   json += jobStatus.stopRequested ? "true" : "false";
   json += ",\"priorityCommandInProgress\":";
@@ -2287,7 +2336,8 @@ void saveMachineProfile() {
                                     (machineProfile.capAutoreportPos ? 4 : 0) |
                                     (machineProfile.capEeprom ? 8 : 0) |
                                     (machineProfile.capSdCard ? 16 : 0) |
-                                    (machineProfile.capMotionModes ? 32 : 0));
+                                    (machineProfile.capMotionModes ? 32 : 0) |
+                                    (machineProfile.capRealtimeReporting ? 64 : 0));
   machinePrefs.end();
 }
 
@@ -2317,6 +2367,7 @@ void loadMachineProfile() {
   machineProfile.capEeprom = caps & 8;
   machineProfile.capSdCard = caps & 16;
   machineProfile.capMotionModes = caps & 32;
+  machineProfile.capRealtimeReporting = caps & 64;
 }
 
 String toolChangeSettingsJson() {
@@ -2379,6 +2430,11 @@ bool parseMachineProfile(const String &response) {
   machineProfile.capEeprom = responseCapability(response, "EEPROM");
   machineProfile.capSdCard = responseCapability(response, "SDCARD");
   machineProfile.capMotionModes = responseCapability(response, "MOTION_MODES");
+  machineProfile.capRealtimeReporting =
+      machineProfile.capEmergencyParser &&
+      (responseCapability(response, "REALTIME_REPORTING") ||
+       responseCapability(response, "REALTIME_REPORTING_COMMANDS") ||
+       response.indexOf("REALTIME_REPORTING_COMMANDS:1") >= 0);
 
   const int areaStart = response.indexOf("area:{full:");
   int parsed = 0;
@@ -2400,6 +2456,8 @@ bool parseMachineProfile(const String &response) {
   machineProfile.lastError = machineProfile.available ? "" : "M115 did not contain a usable area.full profile";
   logSystemEvent("Marlin EMERGENCY_PARSER detected=" +
                  String(machineProfile.capEmergencyParser ? "true" : "false"));
+  logSystemEvent("Marlin realtime hold detected=" +
+                 String(machineProfile.capRealtimeReporting ? "true" : "false"));
   if (machineProfile.available) saveMachineProfile();
   return machineProfile.available;
 }
@@ -2423,7 +2481,8 @@ String machineProfileJson() {
   json += ",\"autoreportPosition\":" + String(machineProfile.capAutoreportPos ? "true" : "false");
   json += ",\"eeprom\":" + String(machineProfile.capEeprom ? "true" : "false");
   json += ",\"sdCard\":" + String(machineProfile.capSdCard ? "true" : "false");
-  json += ",\"motionModes\":" + String(machineProfile.capMotionModes ? "true" : "false") + "}";
+  json += ",\"motionModes\":" + String(machineProfile.capMotionModes ? "true" : "false");
+  json += ",\"realtimeHold\":" + String(machineProfile.capRealtimeReporting ? "true" : "false") + "}";
   json += ",\"refreshedAtMs\":" + String(machineProfile.refreshedAtMs);
   json += ",\"lastError\":\"" + jsonEscape(machineProfile.lastError) + "\"}";
   return json;
@@ -2848,16 +2907,6 @@ void queuePriorityCommands(const char *first, const char *second = nullptr) {
   jobStatus.lastPriorityError = "";
 }
 
-bool prioritySequenceIsFeedOverrideOnly() {
-  return priorityCommandCount == 1 && isFeedOverrideCommand(priorityCommands[0]);
-}
-
-void queueManualM5Priority() {
-  if (priorityCommandCount == 0 || prioritySequenceIsFeedOverrideOnly()) {
-    queuePriorityCommands("M5");
-  }
-}
-
 void startNextPriorityCommand() {
   if (priorityCommandIndex >= priorityCommandCount) {
     jobStatus.priorityCommandInProgress = false;
@@ -2908,7 +2957,7 @@ void invalidateMachineFrameAfterQuickstop() {
 
 void startImmediateStopPrioritySequence() {
   // Stop owns the UART immediately: discard any buffered response and replace lower-priority
-  // controls (including M220 or a Pause M5/M400 sequence) before writing M410 here.
+  // controls (including M220 or a boundary-pause M400) before writing M410 here.
   queuePriorityCommands("M410", "M5");
   drainMarlinInput();
   startNextPriorityCommand();
@@ -2936,10 +2985,10 @@ void finishPrioritySequence() {
     }
     jobWaitingForOk = false;
     jobResponseBuffer = "";
-    jobStatus.state = JobRunnerState::Paused;
     jobStatus.pauseRequested = false;
     jobStatus.pausedAtMs = millis();
     if (jobStatus.toolChangePending) {
+      jobStatus.state = JobRunnerState::Paused;
       jobStatus.toolChangeReady = true;
       jobStatus.toolChangeParked = jobStatus.toolChangeHandling == "park";
       jobStatus.toolChangePhase = "WAITING_FOR_TOOL";
@@ -2954,8 +3003,10 @@ void finishPrioritySequence() {
         return;
       }
     } else {
+      jobStatus.state = JobRunnerState::PausedIntact;
+      jobStatus.directResumeValid = true;
       jobStatus.streamingPausedReason =
-          "Paused safely after Marlin completed buffered motion. Router/spindle output is off.";
+          "Motion held — cutter remains running. Direct Resume is valid until any manual movement.";
       logJobEvent("paused: " + jobStatus.gcodePath);
     }
   } else if (jobStatus.state == JobRunnerState::Stopping) {
@@ -2965,11 +3016,22 @@ void finishPrioritySequence() {
     jobWaitingForOk = false;
     jobResponseBuffer = "";
     jobRunning = false;
-    jobStatus.state = JobRunnerState::Stopped;
+    jobStatus.state = jobStatus.pauseInterruptedForManualMotion
+                          ? JobRunnerState::RecoveryRequired
+                          : JobRunnerState::Stopped;
     jobStatus.pauseRequested = false;
     jobStatus.stopRequested = false;
+    jobStatus.directResumeValid = false;
+    jobStatus.recoveryRequired = true;
+    jobStatus.pauseRealtimeHold = false;
+    jobStatus.pauseMode = "none";
     jobStatus.streamingPausedReason =
-        "Stopped now with M410 quickstop. Home All and verify recovery before further motion.";
+        jobStatus.pauseInterruptedForManualMotion
+            ? "Manual movement invalidated direct Resume. Review Recovery before continuing."
+            : "Stopped now with M410 quickstop. Home All and verify recovery before further motion.";
+    if (jobStatus.pauseInterruptedForManualMotion) {
+      setPersistentActiveJobMarker(false);
+    }
     resetFeedOverrideAfterJobIfNeeded();
     logJobEvent("stopped: " + jobStatus.gcodePath);
   }
@@ -4203,7 +4265,7 @@ void processJobRunner() {
     if (priorityCommandCount > 0) return;
   }
 
-  if (jobStatus.state == JobRunnerState::Pausing || jobStatus.state == JobRunnerState::Stopping) {
+  if (jobStatus.state == JobRunnerState::Stopping) {
     return;
   }
 
@@ -4217,11 +4279,21 @@ void processJobRunner() {
     touchJobStatus();
   }
 
-  if (jobStatus.state != JobRunnerState::Running) {
+  if (jobStatus.state != JobRunnerState::Running &&
+      jobStatus.state != JobRunnerState::Pausing) {
     return;
   }
 
-  if (jobStatus.pauseRequested || jobStatus.stopRequested) {
+  if (jobStatus.state == JobRunnerState::Running &&
+      (jobStatus.pauseRequested || jobStatus.stopRequested)) {
+    return;
+  }
+
+  if (jobStatus.state == JobRunnerState::Pausing && !jobWaitingForOk) {
+    queuePriorityCommands("M400");
+    jobStatus.streamingPausedReason =
+        "Pause pending at the next command boundary; waiting for Marlin motion to finish.";
+    touchJobStatus();
     return;
   }
 
@@ -4285,6 +4357,13 @@ void processJobRunner() {
     jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
     jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
     touchJobProgress();
+    if (jobStatus.state == JobRunnerState::Pausing) {
+      queuePriorityCommands("M400");
+      jobStatus.streamingPausedReason =
+          "Pause pending at the next command boundary; waiting for Marlin motion to finish.";
+      touchJobStatus();
+      return;
+    }
   }
 
   if (!jobFile) {
@@ -5641,23 +5720,10 @@ void handleCommand() {
   String upper = cmd;
   upper.toUpperCase();
   upper.trim();
-  if (machineDiscoveryState != MachineDiscoveryState::Idle && upper == "M5") {
-    addMarlinLog("tx", true, "M5");
-    Serial.print("M5\n");
-    server.send(200, "application/json", "{\"ok\":true,\"response\":\"M5 sent during machine discovery.\"}");
+  if (upper == "M5" && jobStatus.state == JobRunnerState::RecoveryRequired) {
+    sendJsonError(409, "standalone M5 is unavailable while interrupted-job Recovery is required");
     return;
   }
-  if ((jobStatus.state == JobRunnerState::Running || jobStatus.state == JobRunnerState::Pausing ||
-       jobStatus.state == JobRunnerState::Paused || jobStatus.state == JobRunnerState::Resuming ||
-       jobStatus.state == JobRunnerState::Stopping || jobStatus.state == JobRunnerState::Error) &&
-      upper == "M5") {
-    queueManualM5Priority();
-    logJobEvent("priority manual: M5");
-    server.send(200, "application/json",
-                "{\"ok\":true,\"response\":\"M5 output-off requested. Motion is not stopped; this is not a physical emergency stop.\"}");
-    return;
-  }
-
   if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0) {
     sendJsonError(409, "Marlin transport is busy with the active job; retry diagnostics when idle");
     return;
@@ -6601,47 +6667,70 @@ void handleJobPause() {
     return;
   }
 
-  if (jobFile) {
-    jobFile.close();
-  }
-  jobWaitingForOk = false;
-  jobResponseBuffer = "";
   jobStatus.pauseRequested = true;
   jobStatus.stopRequested = false;
+  jobStatus.directResumeValid = true;
+  jobStatus.recoveryRequired = false;
+  jobStatus.pauseInterruptedForManualMotion = false;
   jobStatus.state = JobRunnerState::Pausing;
-  jobStatus.streamingPausedReason =
-      "Pause safely requested. No new G-code will be sent; Marlin is finishing buffered motion after M5.";
-  queuePriorityCommands("M5", "M400");
+  if (machineProfile.capRealtimeReporting) {
+    addMarlinLog("tx", true, "P000");
+    Serial.print("P000\n");
+    jobStatus.pauseRealtimeHold = true;
+    jobStatus.pauseMode = "realtime";
+    jobStatus.state = JobRunnerState::PausedIntact;
+    jobStatus.pauseRequested = false;
+    jobStatus.pausedAtMs = millis();
+    jobStatus.streamingPausedReason =
+        "Motion held — cutter remains running. Direct Resume is valid until any manual movement.";
+  } else {
+    jobStatus.pauseRealtimeHold = false;
+    jobStatus.pauseMode = "boundary";
+    jobStatus.streamingPausedReason =
+        "Pause pending at the next safely resumable command boundary; cutter remains running.";
+  }
   touchJobStatus();
-  logJobEvent("pause requested: " + jobStatus.gcodePath);
+  logJobEvent("pause requested: " + jobStatus.gcodePath +
+              " mode=" + jobStatus.pauseMode);
   server.send(200, "application/json",
               jobStatusJsonWithMessage(
-                  "Pause safely requested. Buffered motion will finish before the machine is paused."));
+                  machineProfile.capRealtimeReporting
+                      ? "Realtime hold requested with P000. Motion held — cutter remains running."
+                      : "Pause pending. The current command will finish before PAUSED_INTACT."));
 }
 
 void handleJobResume() {
-  if (jobStatus.state != JobRunnerState::Paused) {
-    sendJsonError(409, "job is not paused");
+  if (jobStatus.state == JobRunnerState::Paused && jobStatus.toolChangePending) {
+    sendJsonError(409, "complete the pending tool change before resuming");
+    return;
+  }
+  if (jobStatus.state != JobRunnerState::PausedIntact || !jobStatus.directResumeValid) {
+    sendJsonError(409, "direct Resume is unavailable; review Recovery");
     return;
   }
   if (jobStatus.stopRequested) {
     sendJsonError(409, "job stop has been requested");
     return;
   }
-  if (jobStatus.toolChangePending) {
-    sendJsonError(409, "complete the pending tool change before resuming");
-    return;
-  }
-  if (!openJobFileAtOffset()) {
+  const bool realtimeHold = jobStatus.pauseRealtimeHold;
+  if (!realtimeHold && !openJobFileAtOffset()) {
     sendJsonError(500, jobStatus.lastError);
     return;
   }
 
-  jobResponseBuffer = "";
-  jobWaitingForOk = false;
   jobStatus.pauseRequested = false;
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Resuming;
+  if (realtimeHold) {
+    addMarlinLog("tx", true, "R000");
+    Serial.print("R000\n");
+  } else {
+    jobResponseBuffer = "";
+    jobWaitingForOk = false;
+  }
+  jobStatus.pauseRealtimeHold = false;
+  jobStatus.directResumeValid = false;
+  jobStatus.pauseMode = "none";
   touchJobStatus();
   logJobEvent("resume: " + jobStatus.gcodePath);
   server.send(200, "application/json", jobStatusJsonWithMessage("Resume requested."));
@@ -6729,6 +6818,51 @@ void handleToolChangeComplete() {
   server.send(200, "application/json", jobStatusJsonWithMessage("Tool change confirmed. Resume requested."));
 }
 
+bool beginPausedManualInterruption() {
+  if (jobStatus.state != JobRunnerState::PausedIntact || !jobStatus.directResumeValid) return false;
+  if (jobFile) jobFile.close();
+  jobWaitingForOk = false;
+  jobResponseBuffer = "";
+  jobRunning = false;
+  jobStatus.pauseRequested = false;
+  jobStatus.stopRequested = true;
+  jobStatus.directResumeValid = false;
+  jobStatus.recoveryRequired = true;
+  jobStatus.pauseInterruptedForManualMotion = true;
+  jobStatus.state = JobRunnerState::Stopping;
+  jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
+  jobStatus.stopWarning = machineProfile.capEmergencyParser
+                              ? ""
+                              : "Marlin EMERGENCY_PARSER was not detected. Held motion cancellation may not be immediate.";
+  jobStatus.streamingPausedReason =
+      "Manual movement requested. Cancelling direct Resume with M410; M5 follows only after motion stops.";
+  startImmediateStopPrioritySequence();
+  if (writePersistentJobCheckpoint(false, true, "manual movement invalidated intact pause")) {
+    jobCheckpointTracking = false;
+  } else {
+    logJobEvent("warning: could not persist paused manual-movement evidence");
+  }
+  invalidateMachineFrameAfterQuickstop();
+  touchJobStatus();
+  logJobEvent("paused direct Resume invalidated for manual movement");
+  return true;
+}
+
+void handlePausedManualInterruption() {
+  if (jobStatus.state == JobRunnerState::RecoveryRequired) {
+    server.send(200, "application/json",
+                jobStatusJsonWithMessage("Direct Resume is invalid. Manual movement may proceed through Recovery."));
+    return;
+  }
+  if (!beginPausedManualInterruption()) {
+    sendJsonError(409, "job is not in PAUSED_INTACT");
+    return;
+  }
+  server.send(202, "application/json",
+              jobStatusJsonWithMessage(
+                  "Direct Resume invalidated. Wait for RECOVERY_REQUIRED before manual movement."));
+}
+
 void handleJobStop() {
   if (jobStatus.state == JobRunnerState::Stopping) {
     server.send(200, "application/json",
@@ -6736,7 +6870,9 @@ void handleJobStop() {
     return;
   }
   if (jobStatus.state != JobRunnerState::Preparing && jobStatus.state != JobRunnerState::Running &&
-      jobStatus.state != JobRunnerState::Pausing && jobStatus.state != JobRunnerState::Paused &&
+      jobStatus.state != JobRunnerState::Pausing &&
+      jobStatus.state != JobRunnerState::PausedIntact &&
+      jobStatus.state != JobRunnerState::Paused &&
       jobStatus.state != JobRunnerState::Resuming) {
     sendJsonError(409, "job is not active");
     return;
@@ -6750,6 +6886,9 @@ void handleJobStop() {
   jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = true;
+  jobStatus.directResumeValid = false;
+  jobStatus.recoveryRequired = true;
+  jobStatus.pauseInterruptedForManualMotion = false;
   jobStatus.toolChangePending = false;
   jobStatus.toolChangeReady = false;
   jobStatus.toolChangeZZeroCompleted = false;
@@ -6782,6 +6921,11 @@ void handleJogStatus() {
 }
 
 void handleJogStart() {
+  if (jobStatus.state == JobRunnerState::PausedIntact) {
+    beginPausedManualInterruption();
+    sendJsonError(409, "direct Resume was invalidated; wait for RECOVERY_REQUIRED before jogging");
+    return;
+  }
   if (jobStatus.state == JobRunnerState::Running) {
     sendJsonError(409, "jog rejected while job is RUNNING");
     return;
@@ -7261,6 +7405,11 @@ void handleTouchPlateZZero() {
 }
 
 void handleGoToWorkZero() {
+  if (jobStatus.state == JobRunnerState::PausedIntact) {
+    beginPausedManualInterruption();
+    sendJsonError(409, "direct Resume was invalidated; wait for RECOVERY_REQUIRED before moving");
+    return;
+  }
   if (otaActive) {
     sendJsonError(409, "OTA update in progress");
     return;
@@ -7811,6 +7960,7 @@ void startHttpServer() {
   operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
   operatorRoute("/api/job/pause", HTTP_POST, handleJobPause);
   operatorRoute("/api/job/resume", HTTP_POST, handleJobResume);
+  operatorRoute("/api/job/interrupt-for-manual-motion", HTTP_POST, handlePausedManualInterruption);
   operatorRoute("/api/job/tool-change/complete", HTTP_POST, handleToolChangeComplete);
   operatorRoute("/api/job/stop", HTTP_POST, handleJobStop);
   operatorRoute("/api/job/feed-override", HTTP_POST, handleJobFeedOverride);

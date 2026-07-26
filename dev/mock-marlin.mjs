@@ -32,6 +32,8 @@ export class MockMarlin {
     this.feed = 0;
     this.feedOverride = 100;
     this.spindleOff = true;
+    this.realtimeHold = config.realtimeHold !== false;
+    this.realtimeHeld = false;
     this.lastCommand = '';
     this.endstops = { xMin: 'open', xMax: 'open', yMin: 'open', yMax: 'open', zMin: 'open', zMax: 'open' };
     this.log = [];
@@ -72,6 +74,16 @@ export class MockMarlin {
     const upper = command.toUpperCase();
     const args = words(upper);
     if (this.failCommands.has(upper)) return this.error(`Injected failure for ${command}`);
+    if (upper === 'P000') {
+      if (!this.realtimeHold) return this.error('Realtime hold is unavailable');
+      this.realtimeHeld = true;
+      return this.response('<Hold|Mock>');
+    }
+    if (upper === 'R000') {
+      if (!this.realtimeHeld) return this.error('Realtime hold is not active');
+      this.realtimeHeld = false;
+      return this.response('<Run|Mock>');
+    }
 
     const machineCoordinates = /\bG53\b/.test(upper);
     if (machineCoordinates && !options.allowMachineCoordinates) {
@@ -88,7 +100,7 @@ export class MockMarlin {
     }
     if (/\bM115\b/.test(upper)) {
       const m = this.machine;
-      return this.response(`FIRMWARE_NAME:MockMarlin 2.1.1 SOURCE_CODE_URL:local PROTOCOL_VERSION:1.0 MACHINE_TYPE:DEV-MOCK EXTRUDER_COUNT:0\nCap:EEPROM:1\nCap:AUTOREPORT_POS:1\nCap:EMERGENCY_PARSER:1\nCap:SDCARD:1\nCap:MOTION_MODES:1\nCap:ARCS:1\narea:{full:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}},work:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}}}\nok`);
+      return this.response(`FIRMWARE_NAME:MockMarlin 2.1.1 SOURCE_CODE_URL:local PROTOCOL_VERSION:1.0 MACHINE_TYPE:DEV-MOCK EXTRUDER_COUNT:0\nCap:EEPROM:1\nCap:AUTOREPORT_POS:1\nCap:EMERGENCY_PARSER:1\nCap:REALTIME_REPORTING:${this.realtimeHold ? 1 : 0}\nCap:SDCARD:1\nCap:MOTION_MODES:1\nCap:ARCS:1\narea:{full:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}},work:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}}}\nok`);
     }
     if (/\bM114\b/.test(upper)) {
       const p = this.position;
