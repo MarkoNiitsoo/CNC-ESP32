@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { assertCanUseActiveRunForExecution, getActiveRun, getActiveRunFingerprint } from '../www/lib/job-active-run.js';
+import { migrateProjectSafeZ } from '../www/lib/job-safe-z.js';
 
 const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
 
@@ -109,6 +110,16 @@ export class MockJobRunner {
     return safeZ;
   }
 
+  assertProjectSafeZ(job, requestedValue) {
+    const projectSafeZ = migrateProjectSafeZ(job);
+    if (!projectSafeZ.resolved) throw new Error(projectSafeZ.errors[0] || 'Project Safe Z is unresolved');
+    const requested = Number(requestedValue);
+    if (!Number.isFinite(requested) || Math.abs(requested - projectSafeZ.effectiveSafeZ) > 0.001) {
+      throw new Error('requested Safe Z does not match project metadata');
+    }
+    return this.assertSafeZ(requested);
+  }
+
   handleToolChange(command) {
     const requested = toolNumberFromCommand(command);
     if (requested !== null) this.status.selectedToolNumber = requested;
@@ -206,9 +217,7 @@ export class MockJobRunner {
         throw new Error('active work zero does not match the homed machine frame');
       }
     }
-    const safeStartZ = this.assertSafeZ(Number.isFinite(Number(request.safeStartZ))
-      ? Number(request.safeStartZ)
-      : Number(job.safeStartZ || 15));
+    const safeStartZ = this.assertProjectSafeZ(job, request.safeStartZ);
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
     this.status = {
       ...this.emptyStatus(), state: 'PREPARING', gcodePath: active.path, jobPath: request.jobPath,
@@ -236,7 +245,8 @@ export class MockJobRunner {
     const safeZ = Number(request.safeZ);
     if (!['aircut', 'toolless'].includes(mode)) throw new Error('test motion mode must be aircut or toolless');
     if (!path.startsWith('/jobs/generated/')) throw new Error('test motion path must be under /jobs/generated');
-    this.assertSafeZ(safeZ);
+    const job = JSON.parse(await this.sd.readText(request.jobPath));
+    this.assertProjectSafeZ(job, safeZ);
 
     const text = await this.sd.readText(path);
     const commands = text.split(/\r?\n/).map(cleanLine).filter(Boolean);
@@ -280,6 +290,7 @@ export class MockJobRunner {
       throw new Error('Production Resume path must be a generated .production-resume.gc file');
     }
     const job = JSON.parse(await this.sd.readText(request.jobPath));
+    this.assertProjectSafeZ(job, request.safeZ);
     const event = [...(job.recoveryHistory || [])].reverse().find((item) => item.id === request.eventId);
     const authorization = job.productionResumeAuthorization;
     if (!event || event.type !== 'production-resume' || event.state !== 'started' ||

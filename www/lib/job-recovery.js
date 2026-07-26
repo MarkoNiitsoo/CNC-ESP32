@@ -58,6 +58,7 @@ function recoveryFromRun(run, options = {}) {
     zZeroId: run.zZeroId || null,
     lastAckedCommandNumber: Number(run.lastAckedLineNumber) || null,
     lastKnownPosition: run.lastKnownPosition ? { ...run.lastKnownPosition } : null,
+    safeZSnapshot: run.safeZSnapshot ? { ...run.safeZSnapshot } : null,
     materialConfirmedAt: null,
     note: '',
   };
@@ -210,7 +211,7 @@ function emptyResult(status, reason, blockingReasons = []) {
 export function planMotionOnlyRecovery(options = {}) {
   const job = options.job || {};
   const model = options.toolpathModel;
-  const safeZ = Number(options.safeZ ?? 15);
+  const safeZ = Number(options.safeZ);
   const limits = options.limits || null;
   const workZeroMachine = options.workZeroMachine || null;
   const positionTrusted = options.positionTrusted === true;
@@ -234,6 +235,15 @@ export function planMotionOnlyRecovery(options = {}) {
 
   const blockingReasons = [];
   const warnings = [];
+  const originalSafeZ = Number(recovery?.safeZSnapshot?.effectiveSafeZ ?? run?.safeZSnapshot?.effectiveSafeZ);
+  const safeZChanged = Number.isFinite(originalSafeZ) && Number.isFinite(safeZ) &&
+    Math.abs(originalSafeZ - safeZ) > 0.001;
+  if (safeZChanged) {
+    warnings.push({
+      id: 'safeZChanged',
+      message: `Project Safe Z changed from ${originalSafeZ} to ${safeZ} mm; recovery was revalidated against the current value.`,
+    });
+  }
   if (!run.activeRunPath) {
     addBlock(blockingReasons, 'runActivePathMissing', 'Interrupted run did not record its active run file.');
   } else if (run.activeRunPath !== activeRun.path) {
@@ -267,7 +277,7 @@ export function planMotionOnlyRecovery(options = {}) {
     addBlock(blockingReasons, 'limitsMissing', 'Machine limits are missing.');
   }
   if (!finitePosition(workZeroMachine)) addBlock(blockingReasons, 'workZeroMachine', 'Saved Home-relative work zero is missing.');
-  if (!Number.isFinite(safeZ) || safeZ <= 0) addBlock(blockingReasons, 'safeZ', 'Safe Z must be a positive number.');
+  if (!Number.isFinite(safeZ) || safeZ < 0) addBlock(blockingReasons, 'safeZ', 'Safe Z must be a non-negative resolved project value.');
   if (limits && Number.isFinite(safeZ) && (safeZ < Number(limits.zMin) || safeZ > Number(limits.zMax))) {
     addBlock(blockingReasons, 'safeZLimits', `Safe Z ${safeZ} is outside configured Z limits ${limits.zMin}..${limits.zMax}.`);
   }
@@ -352,6 +362,8 @@ export function planMotionOnlyRecovery(options = {}) {
     },
     blockingReasons,
     warnings,
+    originalSafeZ: Number.isFinite(originalSafeZ) ? originalSafeZ : null,
+    safeZChanged,
     zZeroChanged: Boolean(run.zZeroId && run.zZeroId !== job.activeZZeroId),
     previousZZeroId: run.zZeroId || null,
     currentZZeroId: job.activeZZeroId || null,
@@ -373,7 +385,7 @@ export function buildMotionOnlyRecoveryCommands(plan, options = {}) {
   if (options.positionTrusted !== true) addBlock(blockingReasons, 'positionUntrusted', 'Machine position is not trusted.');
   if (plan?.status !== 'available') addBlock(blockingReasons, 'plan', plan?.reason || 'Recovery plan is not available.');
   if (!insideLimits(target, limits, workZeroMachine)) addBlock(blockingReasons, 'limits', 'Resume target is outside configured machine limits.');
-  if (!Number.isFinite(safeZ) || safeZ <= 0 || Number(target?.z) !== safeZ) {
+  if (!Number.isFinite(safeZ) || safeZ < 0 || Number(target?.z) !== safeZ) {
     addBlock(blockingReasons, 'safeZ', 'Recovery target must remain at Safe Z.');
   }
   if (!Number.isFinite(travelFeed) || travelFeed <= 0 || !Number.isFinite(zFeed) || zFeed <= 0) {

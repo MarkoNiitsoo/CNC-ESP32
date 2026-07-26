@@ -370,6 +370,40 @@ terminal state. This is intentional; the history should not invent recovery data
 Run records are immutable attempts. A recovery attempt appends a separate `recoveryHistory` event;
 it does not change a stopped/interrupted/error record to completed.
 
+## Project Safe Z
+
+Every Job JSON owns one `projectSafeZ` calculation:
+
+```json
+{
+  "projectSafeZ": {
+    "version": 1,
+    "workpieceHeightMm": 24,
+    "workZeroReference": "bottom",
+    "stockTopWorkZ": 24,
+    "safeZClearanceMm": 5,
+    "effectiveSafeZ": 29,
+    "resolved": true,
+    "errors": []
+  }
+}
+```
+
+`effectiveSafeZ = stockTopWorkZ + safeZClearanceMm`. `stockTopWorkZ` is `0` for a stock-top
+Work Zero, `workpieceHeightMm` for a stock-bottom/object-Z0 Work Zero, or an explicit work-coordinate
+value for `custom`. Clearance is additional height above stock and cannot be negative. Unknown
+geometry remains unresolved; neither browser nor firmware derives stock height from G-code Z maxima.
+
+The effective value is the only project motion height used by Job Start, Bounding Box, Aircut,
+Safe Jog, work-zero travel, recovery, Toolless Resume, and Production Resume preparation. Firmware
+recomputes the formula from Job JSON, compares the request, converts through the trusted Work Zero,
+and rejects unreachable machine Z without clamping.
+
+Loading legacy metadata derives clearance from `safeStartZ` or `dryRun.safeZ` only when stock top is
+known. A negative result is rejected, unknown geometry stays unresolved, and repeated migration is
+idempotent. Each new `runHistory` entry stores a `safeZSnapshot`; saved recoveries retain that
+snapshot for audit while execution always revalidates the current project value.
+
 ## Saved Recovery Collection
 
 `recoveries` is the collection of optional opportunities. It is separate from `recoveryHistory`,

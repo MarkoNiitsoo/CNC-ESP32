@@ -32,6 +32,12 @@ creates the trusted frame consumed by Machine Bar and Preview. Operator confirma
 additional recovery gate, not the source of machine coordinates. Firmware reboot,
 firmware identity change, Cancel/Start Over, or the explicit untrust action clears it.
 
+Recovery never owns a separate Safe Z. It uses the current Job JSON `projectSafeZ.effectiveSafeZ`
+and validates that value against current stock geometry, Work Zero, trusted machine frame, and
+physical Z limits. The interrupted run's `safeZSnapshot` is retained for audit. If the value has
+changed, Recovery marks that fact stale and rebuilds/revalidates motion at the current project
+height instead of silently executing the old snapshot.
+
 ## Collection And Lifecycle
 
 Every eligible terminal run may have a `recoveries` entry. Saved opportunities do not affect

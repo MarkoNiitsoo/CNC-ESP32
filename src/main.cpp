@@ -5719,6 +5719,58 @@ String jsonVariantString(JsonVariantConst value) {
   return String(text);
 }
 
+bool loadProjectSafeZ(const String &jobPath, float &effectiveSafeZ, String &error) {
+  File file = SD_MMC.open(jobPath, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    error = "job JSON not found for Project Safe Z";
+    return false;
+  }
+  JsonDocument filter;
+  for (const char *key : {"workpieceHeightMm", "workZeroReference", "stockTopWorkZ",
+                          "safeZClearanceMm", "effectiveSafeZ", "resolved"}) {
+    filter["projectSafeZ"][key] = true;
+  }
+  JsonDocument doc;
+  const DeserializationError parseError =
+      deserializeJson(doc, file, DeserializationOption::Filter(filter));
+  file.close();
+  if (parseError) {
+    error = "invalid Project Safe Z metadata";
+    return false;
+  }
+  JsonObjectConst safeZ = doc["projectSafeZ"];
+  const String reference = jsonVariantString(safeZ["workZeroReference"]);
+  const float clearance = safeZ["safeZClearanceMm"] | NAN;
+  float stockTop = NAN;
+  if (reference == "top") {
+    stockTop = 0.0f;
+  } else if (reference == "bottom") {
+    stockTop = safeZ["workpieceHeightMm"] | NAN;
+    if (!isfinite(stockTop) || stockTop < 0.0f) {
+      error = "Project Safe Z requires workpiece height for bottom Work Zero";
+      return false;
+    }
+  } else if (reference == "custom") {
+    stockTop = safeZ["stockTopWorkZ"] | NAN;
+  } else {
+    error = "Project Safe Z Work Zero reference is unresolved";
+    return false;
+  }
+  if (!isfinite(stockTop) || !isfinite(clearance) || clearance < 0.0f) {
+    error = "Project Safe Z stock top and non-negative clearance are required";
+    return false;
+  }
+  effectiveSafeZ = stockTop + clearance;
+  const float storedEffective = safeZ["effectiveSafeZ"] | NAN;
+  if (!(safeZ["resolved"] | false) || !isfinite(storedEffective) ||
+      fabsf(storedEffective - effectiveSafeZ) > 0.001f) {
+    error = "Project Safe Z derived value is missing or stale";
+    return false;
+  }
+  return true;
+}
+
 bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorization &authorization,
                                    String &error) {
   File file = SD_MMC.open(jobPath, FILE_READ);
@@ -6170,14 +6222,25 @@ void handleTestMotionStart() {
 
   const String body = server.arg("plain");
   const String path = normalizeSdPath(extractJsonString(body, "path"));
+  const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
   const String mode = extractJsonString(body, "mode");
-  const float safeZ = extractJsonFloat(body, "safeZ", 15.0f);
+  const float safeZ = extractJsonFloat(body, "safeZ", NAN);
   if (!isPathUnderRoot(path, "/jobs/generated")) {
     sendJsonError(400, "test motion path must be under /jobs/generated");
     return;
   }
   if (mode != "aircut" && mode != "toolless") {
     sendJsonError(400, "test motion mode must be aircut or toolless");
+    return;
+  }
+  float projectSafeZ = NAN;
+  String projectSafeZError;
+  if (!isPathUnderRoot(jobPath, "/jobs") ||
+      !loadProjectSafeZ(jobPath, projectSafeZ, projectSafeZError) ||
+      fabsf(projectSafeZ - safeZ) > 0.001f) {
+    sendJsonError(409, projectSafeZError.length() > 0
+                           ? projectSafeZError
+                           : "test motion Safe Z does not match project metadata");
     return;
   }
   String safeZError;
@@ -6249,6 +6312,7 @@ void handleProductionResumeStart() {
   const int requestedStreamSize = extractJsonInt(body, "streamSizeBytes", -1);
   const String eventId = extractJsonString(body, "eventId");
   const String interruptedRunId = extractJsonString(body, "interruptedRunId");
+  const float requestedSafeZ = extractJsonFloat(body, "safeZ", NAN);
 
   if (!isPathUnderRoot(path, "/jobs/generated") || !path.endsWith(".production-resume.gc")) {
     sendJsonError(400, "Production Resume path must be a generated .production-resume.gc file");
@@ -6262,6 +6326,16 @@ void handleProductionResumeStart() {
   String identityError;
   if (!loadProductionResumeIdentity(jobPath, eventId, identity, identityError)) {
     sendJsonError(400, identityError);
+    return;
+  }
+  float projectSafeZ = NAN;
+  String projectSafeZError;
+  if (!loadProjectSafeZ(jobPath, projectSafeZ, projectSafeZError) ||
+      !isfinite(requestedSafeZ) || fabsf(projectSafeZ - requestedSafeZ) > 0.001f ||
+      !validateSafeWorkZ(projectSafeZ, true, projectSafeZError)) {
+    sendJsonError(409, projectSafeZError.length() > 0
+                           ? projectSafeZError
+                           : "Production Resume Safe Z does not match project metadata");
     return;
   }
   if (requestedStreamSize <= 0 ||
@@ -6409,7 +6483,7 @@ void handleJobStart() {
       return;
     }
   }
-  const float safeStartZ = extractJsonFloat(body, "safeStartZ", 15.0f);
+  const float safeStartZ = extractJsonFloat(body, "safeStartZ", NAN);
   String safeZError;
   if (!validateSafeWorkZ(safeStartZ, true, safeZError)) {
     sendJsonError(400, safeZError);
@@ -6439,6 +6513,14 @@ void handleJobStart() {
   String authorizationError;
   if (!loadJobExecutionAuthorization(jobPath, authorization, authorizationError)) {
     sendJsonError(400, authorizationError);
+    return;
+  }
+  float projectSafeZ = NAN;
+  if (!loadProjectSafeZ(jobPath, projectSafeZ, authorizationError) ||
+      fabsf(projectSafeZ - safeStartZ) > 0.001f) {
+    sendJsonError(409, authorizationError.length() > 0
+                           ? authorizationError
+                           : "job start Safe Z does not match project metadata");
     return;
   }
   const uint32_t normalizedHomingEpoch = requestedHomingEpoch >= 0
@@ -6713,9 +6795,25 @@ void handleJogStart() {
   const bool continuePendingRestore = jogStatus.zRestoreAvailable && jogStatus.originalZCaptured &&
                                       !jogStatus.zChangedDuringJog;
   const float pendingOriginalZ = jogStatus.originalZ;
+  const String projectJobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  const float requestedSafeWorkZ = extractJsonFloat(body, "safeWorkZ", NAN);
   jogStatus = JogStatus();
   jogStatus.safeJog = extractJsonBool(body, "safeJog", true);
   jogStatus.safeLiftZ = extractJsonFloat(body, "safeLiftZ", machineZMax());
+  if (jogStatus.safeJog && projectJobPath.length() > 0) {
+    float projectSafeZ = NAN;
+    String projectSafeZError;
+    if (!isPathUnderRoot(projectJobPath, "/jobs") ||
+        !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
+        !loadProjectSafeZ(projectJobPath, projectSafeZ, projectSafeZError) ||
+        !isfinite(requestedSafeWorkZ) || fabsf(projectSafeZ - requestedSafeWorkZ) > 0.001f ||
+        fabsf((machineFrame.workZeroMachineZ + projectSafeZ) - jogStatus.safeLiftZ) > 0.001f) {
+      sendJsonError(409, projectSafeZError.length() > 0
+                             ? projectSafeZError
+                             : "safe jog does not match the trusted project Safe Z");
+      return;
+    }
+  }
   if (jogStatus.safeJog && (!isfinite(jogStatus.safeLiftZ) || jogStatus.safeLiftZ < machineZMin() ||
                             jogStatus.safeLiftZ > machineZMax())) {
     sendJsonError(400, "safe jog machine Z is outside the current machine limits");
@@ -7193,10 +7291,22 @@ void handleGoToWorkZero() {
   }
   const bool safeMove = extractJsonBool(body, "safeMove", true);
   const float safeZ = extractJsonFloat(body, "safeZ", 70.0f);
+  const String projectJobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
   const float travelFeedMmMin = clampFloat(
       extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   if (safeMove) {
     String safeZError;
+    if (projectJobPath.length() > 0) {
+      float projectSafeZ = NAN;
+      if (!isPathUnderRoot(projectJobPath, "/jobs") ||
+          !loadProjectSafeZ(projectJobPath, projectSafeZ, safeZError) ||
+          fabsf(projectSafeZ - safeZ) > 0.001f) {
+        sendJsonError(409, safeZError.length() > 0
+                               ? safeZError
+                               : "work-zero move Safe Z does not match project metadata");
+        return;
+      }
+    }
     if (!validateSafeWorkZ(safeZ, true, safeZError)) {
       sendJsonError(400, safeZError);
       return;

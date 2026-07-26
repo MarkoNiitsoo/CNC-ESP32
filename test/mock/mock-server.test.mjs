@@ -38,6 +38,10 @@ async function prepareAuthorizedJob(base, env, name) {
     gcodePath, sourceGcodePath: gcodePath, placement: { rotationDeg: 0 },
     activeRun: { mode: 'source', path: gcodePath, sizeBytes, sourceFingerprint: fingerprint },
     schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED', activeWorkZeroId: workZeroId,
+    projectSafeZ: {
+      version: 1, workpieceHeightMm: null, workZeroReference: 'top',
+      stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+    },
     startAuthorization: {
       state: 'authorized', activeRunMode: 'source', activeRunPath: gcodePath,
       activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes, workZeroId,
@@ -58,7 +62,8 @@ async function prepareAuthorizedJob(base, env, name) {
     jobPath,
     request: {
       gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
-      activeRunSizeBytes: sizeBytes, startMode: 'use_active_work_zero', workZeroId,
+      activeRunSizeBytes: sizeBytes, safeStartZ: 15,
+      startMode: 'use_active_work_zero', workZeroId,
       homingEpoch: zeroFrame.frame.homingEpoch, homingSessionId: zeroFrame.frame.homingSessionId,
       workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
       workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
@@ -287,6 +292,10 @@ describe('mock HTTP API', () => {
       gcodePath, sourceGcodePath: gcodePath, placement: { rotationDeg: 0 },
       activeRun: { mode: 'source', path: gcodePath, sizeBytes, sourceFingerprint: fingerprint },
       schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED',
+      projectSafeZ: {
+        version: 1, workpieceHeightMm: null, workZeroReference: 'top',
+        stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+      },
       activeWorkZeroId: 'zero-api',
       startAuthorization: {
         state: 'authorized', activeRunMode: 'source', activeRunPath: gcodePath,
@@ -301,6 +310,7 @@ describe('mock HTTP API', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+        safeStartZ: 15,
         startMode: 'use_active_work_zero', workZeroId: 'zero-api', homingEpoch: zeroFrame.frame.homingEpoch,
         homingSessionId: zeroFrame.frame.homingSessionId,
         workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
@@ -380,16 +390,23 @@ describe('mock HTTP API', () => {
   it('uploads and streams validated native-arc Aircut through one start request', async () => {
     const { base, env } = await start();
     const motionPath = '/jobs/generated/http.aircut.gc';
+    const jobPath = '/jobs/http-aircut.job.json';
     const program = 'M5\nG21\nG90\nG54\nG0 Z15 F400\nG2 X10 Y0 I5 J0 F600\nM400\n';
     const form = new FormData();
     form.append('path', '/jobs/generated');
     form.append('file', new Blob([program]), 'http.aircut.gc');
     const upload = await fetch(`${base}/api/upload?overwrite=true`, { method: 'POST', body: form });
     expect(await upload.json()).toMatchObject({ ok: true, path: motionPath });
+    await env.sd.writeText(jobPath, JSON.stringify({
+      projectSafeZ: {
+        version: 1, workpieceHeightMm: null, workZeroReference: 'top',
+        stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+      },
+    }), { overwrite: true });
 
     const response = await fetch(`${base}/api/test-motion/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: motionPath, mode: 'aircut', safeZ: 15 }),
+      body: JSON.stringify({ path: motionPath, mode: 'aircut', safeZ: 15, jobPath }),
     });
     expect(response.ok).toBe(true);
     let status;
@@ -524,6 +541,47 @@ describe('mock HTTP API', () => {
     expect(env.marlin.position.z).toBe(0);
   });
 
+  it('uses project Safe Z for Safe Jog and blocks an unreachable converted target', async () => {
+    const { base, env } = await start();
+    const jobPath = '/jobs/safe-jog.job.json';
+    Object.assign(env.frame, {
+      trusted: true,
+      absoluteFromHome: true,
+      workZeroValid: true,
+      workZeroMachine: { x: 0, y: 0, z: 30 },
+    });
+    await env.sd.writeText(jobPath, JSON.stringify({
+      projectSafeZ: {
+        version: 1, workpieceHeightMm: 24, workZeroReference: 'bottom',
+        stockTopWorkZ: 24, safeZClearanceMm: 5, effectiveSafeZ: 29, resolved: true, errors: [],
+      },
+    }));
+    const started = await fetch(`${base}/api/jog/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        safeJog: true, safeWorkZ: 29, projectSafeZ: 29, safeLiftZ: 59, jobPath,
+      }),
+    });
+    expect(started.ok).toBe(true);
+    expect(env.marlin.log.some((entry) => entry.text.startsWith('G53 G0 Z59.000'))).toBe(true);
+    await fetch(`${base}/api/jog/stop`, { method: 'POST' });
+
+    await env.sd.writeText(jobPath, JSON.stringify({
+      projectSafeZ: {
+        version: 1, workpieceHeightMm: 24, workZeroReference: 'bottom',
+        stockTopWorkZ: 24, safeZClearanceMm: 76, effectiveSafeZ: 100, resolved: true, errors: [],
+      },
+    }), { overwrite: true });
+    const unreachable = await fetch(`${base}/api/jog/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        safeJog: true, safeWorkZ: 100, projectSafeZ: 100, safeLiftZ: 130, jobPath,
+      }),
+    });
+    expect(unreachable.status).toBe(400);
+    expect(await unreachable.json()).toMatchObject({ ok: false });
+  });
+
   it('serves machine info, applies M203, and saves with explicit M500', async () => {
     const { base, env } = await start();
     const info = await fetch(`${base}/api/machine/info`).then((res) => res.json());
@@ -554,6 +612,10 @@ describe('mock HTTP API', () => {
     await env.sd.writeText(streamPath, streamText);
     await env.sd.writeText(jobPath, JSON.stringify({
       activeRun: { mode: 'source', path: activeRunPath, sourceFingerprint: fingerprint },
+      projectSafeZ: {
+        version: 1, workpieceHeightMm: null, workZeroReference: 'top',
+        stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+      },
       feedOverride: { startPercent: 100, resetTo100AfterJob: true },
       productionResumeAuthorization: {
         authorized: true, eventId, interruptedRunId: runId, activeRunPath,
@@ -573,7 +635,7 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({
         path: streamPath, jobPath, activeRunPath, activeRunMode: 'source',
         activeRunFingerprint: fingerprint, eventId, interruptedRunId: runId,
-        streamFingerprint, streamSizeBytes,
+        streamFingerprint, streamSizeBytes, safeZ: 15,
       }),
     });
     expect(response.ok).toBe(true);

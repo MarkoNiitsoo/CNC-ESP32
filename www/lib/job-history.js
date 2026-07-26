@@ -3,6 +3,7 @@ import {
   getActiveRunFingerprint,
   getSourceGcodePath,
 } from './job-active-run.js';
+import { migrateProjectSafeZ } from './job-safe-z.js';
 
 const TERMINAL_RUN_STATES = new Set(['completed', 'stopped', 'interrupted', 'error']);
 let idSequence = 0;
@@ -272,6 +273,7 @@ export function startRunHistory(job, status = {}, now = isoNow()) {
   ensureHistory(job);
   const feed = job.feedOverride || {};
   const activeRun = getActiveRun(job);
+  const projectSafeZ = migrateProjectSafeZ(job);
   const activeRunPath = activeRun.path || status.gcodePath || '';
   const activeRunFingerprint = getActiveRunFingerprint(job);
   const run = {
@@ -291,6 +293,13 @@ export function startRunHistory(job, status = {}, now = isoNow()) {
     jobPath: job.jobPath || status.jobPath || '',
     zeroId: job.activeWorkZeroId || null,
     zZeroId: job.activeZZeroId || null,
+    safeZSnapshot: projectSafeZ.resolved ? {
+      workpieceHeightMm: projectSafeZ.workpieceHeightMm,
+      workZeroReference: projectSafeZ.workZeroReference,
+      stockTopWorkZ: projectSafeZ.stockTopWorkZ,
+      safeZClearanceMm: projectSafeZ.safeZClearanceMm,
+      effectiveSafeZ: projectSafeZ.effectiveSafeZ,
+    } : null,
     feedOverrideStart: Number(feed.startPercent ?? status.feedOverridePercent ?? 100),
     feedOverrideLast: Number(status.feedOverridePercent ?? feed.lastUsedPercent ?? feed.startPercent ?? 100),
     currentLineNumber: status.currentLineNumber ?? null,

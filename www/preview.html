@@ -147,6 +147,27 @@
         <pre id="placement-result" class="dry-run-log"></pre>
       </section>
 
+      <section class="panel project-safe-z-panel preview-tab-panel active" data-preview-tab="preview">
+        <h2>Project Safe Z</h2>
+        <div class="dry-run-inputs">
+          <label for="work-zero-reference">Work Zero reference</label>
+          <select id="work-zero-reference">
+            <option value="unknown">Select reference</option>
+            <option value="top">Stock top</option>
+            <option value="bottom">Stock bottom / object Z0</option>
+            <option value="custom">Custom stock-top work Z</option>
+          </select>
+          <label for="workpiece-height">Workpiece height (mm)</label>
+          <input id="workpiece-height" type="number" inputmode="decimal" min="0" step="0.1" placeholder="Required for bottom Z0">
+          <label for="stock-top-work-z">Stock-top work Z (mm)</label>
+          <input id="stock-top-work-z" type="number" inputmode="decimal" step="0.1" placeholder="Derived from reference">
+          <label for="safe-z-clearance">Clearance above stock (mm)</label>
+          <input id="safe-z-clearance" type="number" inputmode="decimal" min="0" step="0.1" value="5">
+        </div>
+        <p class="safe-z-equation"><output id="stock-top-work-z-output">-</output> mm stock top + <output id="safe-z-clearance-output">5.0</output> mm clearance = <strong><output id="effective-safe-z">-</output> mm Safe Z</strong></p>
+        <p id="project-safe-z-status" class="form-hint">Select the Work Zero reference to resolve project Safe Z.</p>
+      </section>
+
       <section id="preview-warnings-panel" class="panel preview-tab-panel active" data-preview-tab="preview">
         <h2>Warnings</h2>
         <div id="warnings" class="warning-list"></div>
@@ -243,10 +264,8 @@
         <h3>Review Selected Recovery</h3>
         <div id="recovery-trust" class="arm-state arm-not-ready">POSITION UNTRUSTED</div>
         <div id="recovery-summary" class="job-summary"></div>
-        <details class="operator-diagnostics"><summary>Recovery settings</summary><div class="dry-run-inputs">
-          <label for="recovery-safe-z">Safe Z (mm)</label>
-          <input id="recovery-safe-z" type="number" inputmode="decimal" min="0.1" max="70" step="0.1" value="15">
-        </div>
+        <details class="operator-diagnostics"><summary>Recovery settings</summary>
+        <p class="form-hint">Recovery uses the current Project Safe Z and revalidates it against the active Work Zero and machine limits.</p>
         <div class="recovery-trust-actions job-actions">
           <button id="recovery-trust-position" type="button">I have homed / position is trusted</button>
           <button id="recovery-untrust-position" type="button">Mark position untrusted</button>
@@ -300,8 +319,6 @@
         <h2>Dry Run</h2>
         <div id="dry-run-summary" class="job-summary"></div>
         <div class="dry-run-inputs">
-          <label for="safe-z">Safe Z (mm)</label>
-          <input id="safe-z" type="number" inputmode="decimal" step="0.1" value="15">
           <label for="trace-margin">Margin (mm)</label>
           <input id="trace-margin" type="number" inputmode="decimal" step="0.1" value="0">
           <label for="dry-run-aircut">Aircut toolpath</label>
@@ -373,8 +390,7 @@
           </section>
           <div class="dry-run-inputs">
             <input id="start-mode" type="hidden" value="use_active_work_zero">
-            <label for="run-safe-start-z">Safe start Z (mm)</label>
-            <input id="run-safe-start-z" type="number" inputmode="decimal" min="0" max="200" step="0.1" value="15">
+            <p class="form-hint">Start uses the effective Project Safe Z shown in preparation.</p>
           </div>
           <button id="refresh-job-status" type="button">Refresh Status</button>
           <pre id="run-log" class="dry-run-log"></pre>

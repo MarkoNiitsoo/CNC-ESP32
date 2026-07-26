@@ -12,6 +12,7 @@
     jog: { state: 'IDLE', zLiftedForJog: false, heartbeatAgeMs: 0, lastCommand: '', lastError: '' },
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
     toolChangeSettings: null,
+    projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
     operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true },
     operatorPanelOpen: false,
   };
@@ -33,6 +34,7 @@
     return module;
   }).catch(() => null);
   const toolChangeSettingsPromise = import('/lib/tool-change-settings.js').catch(() => null);
+  const jobSafeZModulePromise = import('/lib/job-safe-z.js').catch(() => null);
 
   const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
   const BUSY_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'RESUMING', 'STOPPING']);
@@ -77,10 +79,16 @@
     const bounds = safeZBounds();
     input.min = String(bounds.min);
     input.max = String(bounds.max);
-    const value = Math.max(bounds.min, Math.min(bounds.max, Number(input.value || bounds.max)));
+    const projectValue = Number(STATE.projectSafeZ?.projectSafeZ?.effectiveSafeZ);
+    const value = STATE.projectSafeZ.active && Number.isFinite(projectValue)
+      ? projectValue
+      : Math.max(bounds.min, Math.min(bounds.max, Number(input.value || bounds.max)));
     input.value = String(value);
+    input.disabled = STATE.projectSafeZ.active;
     const output = el('mb-jog-safe-z-output');
-    if (output) output.textContent = `${value} mm`;
+    if (output) output.textContent = STATE.projectSafeZ.active
+      ? (Number.isFinite(projectValue) ? `${value} mm (project)` : 'Project Safe Z unresolved')
+      : `${value} mm (manual fallback)`;
   }
 
   function safeWorkZToMachine(workZ) {
@@ -88,6 +96,53 @@
     return STATE.frame?.safeZ?.mappedToMachine === true && Number.isFinite(zeroMachineZ)
       ? zeroMachineZ + Number(workZ)
       : Number(workZ);
+  }
+
+  async function refreshProjectSafeZ() {
+    const module = await jobSafeZModulePromise;
+    let current = null;
+    try {
+      current = JSON.parse(localStorage.getItem('lowrider.currentJob') || 'null');
+    } catch (err) {
+      current = null;
+    }
+    if (!current?.jobPath || !module) {
+      STATE.projectSafeZ = { active: false, jobPath: '', projectSafeZ: null };
+      syncSafeZControl();
+      return;
+    }
+    try {
+      const res = await fetch(`/api/download?path=${encodeURIComponent(current.jobPath)}`);
+      if (!res.ok) throw new Error('Current project metadata is not available.');
+      const job = await res.json();
+      STATE.projectSafeZ = {
+        active: true,
+        jobPath: current.jobPath,
+        projectSafeZ: module.migrateProjectSafeZ(job),
+      };
+    } catch (err) {
+      STATE.projectSafeZ = {
+        active: true,
+        jobPath: current.jobPath,
+        projectSafeZ: { resolved: false, errors: [err.message] },
+      };
+    }
+    syncSafeZControl();
+  }
+
+  function activeSafeWorkZ() {
+    if (!STATE.projectSafeZ.active) return null;
+    const safeZ = STATE.projectSafeZ.projectSafeZ;
+    if (!safeZ?.resolved) throw new Error(safeZ?.errors?.[0] || 'Project Safe Z is unresolved.');
+    if (STATE.frame?.trusted !== true || STATE.frame?.safeZ?.mappedToMachine !== true) {
+      throw new Error('Project Safe Z requires a trusted machine frame and active Work Zero.');
+    }
+    const workZ = Number(safeZ.effectiveSafeZ);
+    const bounds = safeZBounds();
+    if (!Number.isFinite(workZ) || workZ < bounds.min || workZ > bounds.max) {
+      throw new Error(`Project Safe Z ${workZ} is outside the reachable work-coordinate range ${bounds.min}..${bounds.max} mm.`);
+    }
+    return workZ;
   }
 
   function publishPosition(source) {
@@ -349,16 +404,21 @@
       throw new Error('No active work zero. Set one or restore a saved zero from Prepare first.');
     }
     if (!confirmUnknown('moving to work zero')) return;
+    await refreshProjectSafeZ();
     const safeMove = Boolean(el('mb-goto-safe')?.checked);
     const bounds = safeZBounds();
-    const safeZ = Math.max(bounds.min, Math.min(bounds.max, Number(el('mb-jog-safe-z')?.value || bounds.max)));
+    const safeZ = STATE.projectSafeZ.active
+      ? activeSafeWorkZ()
+      : Math.max(bounds.min, Math.min(bounds.max, Number(el('mb-jog-safe-z')?.value || bounds.max)));
     const label = String(axes || '').toUpperCase();
     const message = safeMove
       ? `Move ${label} to work zero after lifting to Z${safeZ.toFixed(1)} mm? Z will remain at safe height.`
       : `DIRECT ${label} MOVE AT CURRENT Z: This can drag the tool through material. Continue?`;
     if (!confirm(message)) return;
     const data = await apiPost('/api/work-zero/goto', {
-      axes, safeMove, safeZ, travelFeedMmMin: Math.round(travelSpeedMmS * 60),
+      axes, safeMove, safeZ, jobPath: STATE.projectSafeZ.jobPath,
+      projectSafeZ: STATE.projectSafeZ.active ? safeZ : null,
+      travelFeedMmMin: Math.round(travelSpeedMmS * 60),
     });
     setMessage(data.message || `${label} work-zero move complete`);
     await refreshPosition().catch(() => {});
@@ -367,11 +427,16 @@
   function jogSettings(safeJog) {
     const xySpeed = Math.max(10, Math.min(100, Number(el('mb-jog-xy-speed')?.value || travelSpeedMmS)));
     const zSpeed = Math.max(1, Math.min(10, Number(el('mb-jog-z-speed')?.value || 5)));
-    const safeWorkZ = Math.max(safeZBounds().min, Math.min(safeZBounds().max,
-      Number(el('mb-jog-safe-z')?.value || safeZBounds().max)));
+    const safeWorkZ = !safeJog ? 0 : (STATE.projectSafeZ.active
+      ? activeSafeWorkZ()
+      : Math.max(safeZBounds().min, Math.min(safeZBounds().max,
+        Number(el('mb-jog-safe-z')?.value || safeZBounds().max))));
     return {
       safeJog,
       safeLiftZ: safeWorkZToMachine(safeWorkZ),
+      safeWorkZ,
+      jobPath: STATE.projectSafeZ.jobPath,
+      projectSafeZ: STATE.projectSafeZ.active ? safeWorkZ : null,
       xyFeedMax: Math.round(xySpeed * 60),
       zFeedMax: Math.round(zSpeed * 60),
     };
@@ -637,6 +702,7 @@
   async function startJog(safeJog) {
     if (jogStartPending || jogTimer || STATE.jog?.state === 'JOGGING') return;
     const sessionId = ++jogSessionId;
+    await refreshProjectSafeZ();
     const settings = jogSettings(safeJog);
     jogStartPending = true;
     try {
@@ -1502,6 +1568,18 @@
       if (el('mb-jog-xy-speed')) el('mb-jog-xy-speed').value = travelSpeedMmS;
       if (el('mb-jog-xy-output')) el('mb-jog-xy-output').textContent = `${travelSpeedMmS} mm/s`;
     });
+    addEventListener('cnc-project-safe-z', (event) => {
+      STATE.projectSafeZ = {
+        active: Boolean(event.detail?.jobPath),
+        jobPath: event.detail?.jobPath || '',
+        projectSafeZ: event.detail?.projectSafeZ || null,
+      };
+      syncSafeZControl();
+    });
+    addEventListener('storage', (event) => {
+      if (event.key === 'lowrider.currentJob') refreshProjectSafeZ().catch(() => {});
+    });
+    refreshProjectSafeZ().catch(() => {});
 
     window.CncTelemetry?.subscribe('health', (data) => {
       STATE.health = data;

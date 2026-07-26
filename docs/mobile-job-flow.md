@@ -342,6 +342,11 @@ The SD-hosted `/www` UI now follows this direction without new firmware movement
   next action.
 - Current Job also shows active work/Z zero timestamps from `zeroHistory`, the latest
   `runHistory` state, and a stopped/interrupted badge when the last run did not complete.
+- Project preparation has one Safe Z equation: detected/entered stock-top work Z plus editable
+  non-negative clearance equals effective Safe Z. Work Zero reference may be stock top, stock
+  bottom/object Z0, or custom. Unresolved stock geometry blocks generated safety movement.
+- The effective project value feeds Start, Bounding Box, Aircut, Safe Jog, work-zero travel, and
+  all recovery tiers. Per-feature absolute Safe Z fields are no longer editable.
 - Preview Setup uses one compact Zero / Origin panel: saved Home-relative XYZ, Set Work Zero,
   single-axis X/Y/Z zero actions, and History. Capture, save, raw M114, IDs, JSON, and full run
   history are removed from the normal operator flow.

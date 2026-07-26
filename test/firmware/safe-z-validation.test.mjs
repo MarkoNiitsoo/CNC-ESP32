@@ -27,4 +27,18 @@ describe('dynamic Safe Z validation', () => {
     expect(source).toContain('toolLengthReference\\\":\\\"active-work-zero');
     expect(source).toContain('toolChangeParkIsWithinMachine(parkError)');
   });
+
+  it('recomputes Project Safe Z from stock geometry and checks every project motion request', () => {
+    const metadata = source.slice(source.indexOf('bool loadProjectSafeZ'), source.indexOf('bool loadJobExecutionAuthorization'));
+    expect(metadata).toContain('workZeroReference');
+    expect(metadata).toContain('workpieceHeightMm');
+    expect(metadata).toContain('safeZClearanceMm');
+    expect(metadata).toContain('effectiveSafeZ = stockTop + clearance');
+    expect(metadata).toContain('clearance < 0.0f');
+    for (const handler of ['handleTestMotionStart', 'handleProductionResumeStart', 'handleJobStart', 'handleJogStart', 'handleGoToWorkZero']) {
+      const start = source.indexOf(`void ${handler}()`);
+      const end = source.indexOf('\nvoid ', start + 1);
+      expect(source.slice(start, end)).toContain('loadProjectSafeZ');
+    }
+  });
 });

@@ -8,6 +8,13 @@ import {
   workflowFor,
 } from './lib/job-workflow.js';
 import { collapseRepeatedStepdownPasses } from './lib/aircut-toolpath.js';
+import {
+  calculateProjectSafeZ,
+  effectiveProjectSafeZ,
+  migrateProjectSafeZ,
+  updateProjectSafeZ,
+  validateProjectSafeZForFrame,
+} from './lib/job-safe-z.js';
 
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
@@ -28,6 +35,14 @@ const useGeneratedRunButton = document.querySelector('#use-generated-run');
 const useSourceRunButton = document.querySelector('#use-source-run');
 const placementSummaryEl = document.querySelector('#placement-summary');
 const placementResultEl = document.querySelector('#placement-result');
+const workZeroReferenceInput = document.querySelector('#work-zero-reference');
+const workpieceHeightInput = document.querySelector('#workpiece-height');
+const stockTopWorkZInput = document.querySelector('#stock-top-work-z');
+const safeZClearanceInput = document.querySelector('#safe-z-clearance');
+const stockTopWorkZOutput = document.querySelector('#stock-top-work-z-output');
+const safeZClearanceOutput = document.querySelector('#safe-z-clearance-output');
+const effectiveSafeZOutput = document.querySelector('#effective-safe-z');
+const projectSafeZStatusEl = document.querySelector('#project-safe-z-status');
 const readinessSummaryEl = document.querySelector('#readiness-summary');
 const readinessHomeAllButton = document.querySelector('#readiness-home-all');
 const readinessSetWorkZeroButton = document.querySelector('#readiness-set-work-zero');
@@ -62,7 +77,6 @@ const preflightChecksEl = document.querySelector('#preflight-checks');
 const refreshPreflightButton = document.querySelector('#refresh-preflight');
 const saveJobPreflightButton = document.querySelector('#save-job-preflight');
 const recoveryTrustEl = document.querySelector('#recovery-trust');
-const recoverySafeZInput = document.querySelector('#recovery-safe-z');
 const recoveryTrustButton = document.querySelector('#recovery-trust-position');
 const recoveryUntrustButton = document.querySelector('#recovery-untrust-position');
 const recoveryOverlayInput = document.querySelector('#show-recovery-overlay');
@@ -86,7 +100,6 @@ const productionPrepareButton = document.querySelector('#production-prepare');
 const productionRouterConfirmedInput = document.querySelector('#production-router-confirmed');
 const productionResumeHoldButton = document.querySelector('#production-resume-hold');
 const dryRunSummaryEl = document.querySelector('#dry-run-summary');
-const safeZInput = document.querySelector('#safe-z');
 const traceMarginInput = document.querySelector('#trace-margin');
 const dryRunAircutToggle = document.querySelector('#dry-run-aircut');
 const sendDryRunButton = document.querySelector('#send-dry-run');
@@ -144,7 +157,6 @@ const resumeJobButton = document.querySelector('#resume-job');
 const stopJobButton = document.querySelector('#stop-job');
 const refreshJobStatusButton = document.querySelector('#refresh-job-status');
 const startModeSelect = document.querySelector('#start-mode');
-const runSafeStartZInput = document.querySelector('#run-safe-start-z');
 const runChecklistInputs = [...document.querySelectorAll('[data-run-check]')];
 const previewTabButtons = [...document.querySelectorAll('[data-preview-tab-button]')];
 const previewTabPanels = [...document.querySelectorAll('[data-preview-tab]')];
@@ -445,6 +457,8 @@ async function handleReadinessAction(action) {
 
 function workflowHardBlockers() {
   const blockers = [...activeRunBlockers()];
+  const safeZ = jobState ? migrateProjectSafeZ(jobState) : null;
+  if (!safeZ?.resolved) blockers.push(safeZ?.errors?.[0] || 'Project Safe Z is unresolved.');
   (currentPreflight?.checks || [])
     .filter((check) => check.level === 'fail' && check.id !== 'workZero')
     .forEach((check) => blockers.push(check.message));
@@ -937,6 +951,65 @@ function refreshToolpathEstimateForFeed() {
   }
 }
 
+function projectSafeZValue() {
+  return jobState ? effectiveProjectSafeZ(jobState) : null;
+}
+
+function applyProjectSafeZToInputs() {
+  if (!jobState) return;
+  const safeZ = migrateProjectSafeZ(jobState);
+  if (workZeroReferenceInput) workZeroReferenceInput.value = safeZ.workZeroReference;
+  if (workpieceHeightInput) workpieceHeightInput.value = safeZ.workpieceHeightMm ?? '';
+  if (stockTopWorkZInput) {
+    stockTopWorkZInput.value = safeZ.stockTopWorkZ ?? '';
+    stockTopWorkZInput.disabled = safeZ.workZeroReference !== 'custom';
+  }
+  if (safeZClearanceInput) safeZClearanceInput.value = safeZ.safeZClearanceMm ?? '';
+  renderProjectSafeZ();
+}
+
+function renderProjectSafeZ() {
+  const safeZ = jobState ? migrateProjectSafeZ(jobState) : null;
+  const busy = jobIsLive();
+  [workZeroReferenceInput, workpieceHeightInput, stockTopWorkZInput, safeZClearanceInput]
+    .filter(Boolean)
+    .forEach((input) => { input.disabled = busy || (input === stockTopWorkZInput && safeZ?.workZeroReference !== 'custom'); });
+  if (stockTopWorkZOutput) stockTopWorkZOutput.textContent = Number.isFinite(safeZ?.stockTopWorkZ) ? safeZ.stockTopWorkZ.toFixed(1) : '-';
+  if (safeZClearanceOutput) safeZClearanceOutput.textContent = Number.isFinite(safeZ?.safeZClearanceMm) ? safeZ.safeZClearanceMm.toFixed(1) : '-';
+  if (effectiveSafeZOutput) effectiveSafeZOutput.textContent = Number.isFinite(safeZ?.effectiveSafeZ) ? safeZ.effectiveSafeZ.toFixed(1) : '-';
+  if (projectSafeZStatusEl) {
+    projectSafeZStatusEl.textContent = safeZ?.resolved
+      ? `All generated safety movement uses Z${safeZ.effectiveSafeZ.toFixed(1)} in project work coordinates.`
+      : (safeZ?.errors?.join(' ') || 'Project Safe Z is unresolved.');
+    projectSafeZStatusEl.classList.toggle('warning', safeZ?.resolved !== true);
+  }
+  window.dispatchEvent(new CustomEvent('cnc-project-safe-z', {
+    detail: { jobPath: jobState?.jobPath || '', projectSafeZ: safeZ },
+  }));
+}
+
+async function updateProjectSafeZFromInputs() {
+  if (!jobState) jobState = newJobState();
+  if (jobIsLive()) {
+    applyProjectSafeZToInputs();
+    setJobResult('Project Safe Z cannot be changed while motion is active.', true);
+    return;
+  }
+  const reference = workZeroReferenceInput?.value || 'unknown';
+  updateProjectSafeZ(jobState, {
+    workZeroReference: reference,
+    workpieceHeightMm: workpieceHeightInput?.value ?? null,
+    stockTopWorkZ: reference === 'custom' ? stockTopWorkZInput?.value : null,
+    safeZClearanceMm: safeZClearanceInput?.value ?? null,
+  }, { now: nowIso() });
+  applyProjectSafeZToInputs();
+  refreshDryRunCommands();
+  refreshRecoveryPlan();
+  renderPreflight();
+  renderArmPanel();
+  if (jobExists) await saveJobQuietly();
+}
+
 function newJobState() {
   const createdAt = nowIso();
   return {
@@ -969,7 +1042,11 @@ function newJobState() {
       estimate: null,
     },
     startMode: 'use_active_work_zero',
-    safeStartZ: Number(safeZInput?.value) || 15,
+    projectSafeZ: calculateProjectSafeZ({
+      workZeroReference: 'unknown',
+      workpieceHeightMm: null,
+      safeZClearanceMm: 5,
+    }),
     startChecklist: defaultRunChecklistState(),
     allowedWorkspaceCommands: false,
     feedOverride: defaultFeedOverride(),
@@ -1011,7 +1088,7 @@ function defaultPlacementState() {
 function dryRunSummary() {
   const previous = jobState?.dryRun || {};
   return {
-    safeZ: Number(safeZInput.value) || 15,
+    safeZ: projectSafeZValue(),
     margin: Number(traceMarginInput.value) || 0,
     activeRunMode: currentRunMode(),
     activeRunPath: currentRunPath(),
@@ -1500,7 +1577,7 @@ function renderRunPanel() {
         runOperatorSummaryEl.innerHTML = `
           <p class="eyebrow">READY FOR FINAL REVIEW</p>
           <strong>${html(basename(currentRunPath()) || 'Job')}</strong>
-          <p>${Number.isFinite(width) && Number.isFinite(height) ? `${width.toFixed(1)} × ${height.toFixed(1)} mm · ` : ''}Safe Z ${Number(jobState?.safeStartZ ?? runSafeStartZInput?.value ?? 15).toFixed(1)} mm · Feed ${feedStatusPercent()}%</p>
+          <p>${Number.isFinite(width) && Number.isFinite(height) ? `${width.toFixed(1)} × ${height.toFixed(1)} mm · ` : ''}Project Safe Z ${Number.isFinite(projectSafeZValue()) ? projectSafeZValue().toFixed(1) : 'unresolved'} mm · Feed ${feedStatusPercent()}%</p>
         `;
       }
     }
@@ -1512,7 +1589,7 @@ function renderRunPanel() {
         <dt>Run file</dt><dd>${html(currentRunPath())}</dd>
         <dt>Run mode</dt><dd>${html(currentRunLabel())}</dd>
         <dt>Start mode</dt><dd>use saved active work zero</dd>
-        <dt>Safe start Z</dt><dd>${Number(jobState?.safeStartZ ?? runSafeStartZInput?.value ?? 15).toFixed(1)} mm</dd>
+        <dt>Project Safe Z</dt><dd>${Number.isFinite(projectSafeZValue()) ? `${projectSafeZValue().toFixed(1)} mm` : 'Unresolved'}</dd>
         <dt>Workspace commands</dt><dd>${jobState?.allowedWorkspaceCommands ? 'G55+ allowed by job JSON' : 'Only G54 allowed by default'}</dd>
         <dt>Planned tool changes</dt><dd>${toolpathModel?.toolChanges?.length || 0}</dd>
         <dt>Progress</dt><dd>${jobRunStatus ? Number(jobRunStatus.progressPercent || 0).toFixed(1) : '0.0'}%</dd>
@@ -1864,6 +1941,7 @@ async function startJobRun() {
     homingEpoch: Number(zeroReference.homingEpoch) || 0,
     homingSessionId: zeroReference.homingSessionId || '',
     frameMode: workflow.frame.mode,
+    effectiveSafeZ: projectSafeZValue(),
     verificationType: workflow.verification.type,
     checklist: runChecklistState(),
     authorizedAt: nowIso(),
@@ -1885,7 +1963,7 @@ async function startJobRun() {
       workZeroMachineX: Number(zeroReference.position?.x),
       workZeroMachineY: Number(zeroReference.position?.y),
       workZeroMachineZ: Number(zeroReference.position?.z),
-      safeStartZ: job.safeStartZ,
+      safeStartZ: projectSafeZValue(),
       travelFeedMmMin: automaticTravelFeed(),
       activeRunMode: runMode,
       activeRunFingerprint: gcodeFingerprint,
@@ -1990,10 +2068,10 @@ function ensureJobState() {
   jobState.jobPath = jobPathFor(filePath);
   ensureActiveRunShape(jobState);
   if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
-  if (jobState.safeStartZ === undefined || jobState.safeStartZ === null) jobState.safeStartZ = Number(safeZInput?.value) || 15;
+  migrateProjectSafeZ(jobState);
+  delete jobState.safeStartZ;
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
-  if (runSafeStartZInput) jobState.safeStartZ = Number(runSafeStartZInput.value || jobState.safeStartZ || 15);
   jobState.feedOverride = {
     ...currentFeedOverride(),
     updatedAt: jobState.feedOverride?.updatedAt || null,
@@ -2293,8 +2371,7 @@ function handleRecoveryHealth(health = {}) {
 }
 
 function recoverySafeZ() {
-  const limits = activeSafeZLimits();
-  return Math.max(limits.zMin, Math.min(limits.zMax, Number(recoverySafeZInput?.value || safeZInput?.value || 15)));
+  return projectSafeZValue();
 }
 
 function automaticTravelFeed() {
@@ -3170,6 +3247,7 @@ async function startProductionResumeStream(commands) {
       streamSizeBytes,
       eventId: productionHistoryEvent.id,
       interruptedRunId: productionHistoryEvent.runId,
+      safeZ: projectSafeZValue(),
     }),
   });
   const started = await readJsonOrThrow(res);
@@ -3669,7 +3747,7 @@ function validateAircut(safeZ, commandCount) {
 
 function generateTraceCommands() {
   const bounds = generatedBounds();
-  const safeZ = Number(safeZInput.value);
+  const safeZ = projectSafeZValue();
   traceSafety = validateDryRun(bounds, safeZ);
   if (!bounds || !Number.isFinite(safeZ)) {
     traceCommands = [];
@@ -3736,7 +3814,7 @@ function ensureZeroState(job) {
 }
 
 function generateAircutCommands() {
-  const safeZ = Number(safeZInput.value);
+  const safeZ = projectSafeZValue();
   aircutCommands = [];
   aircutOptimization = { skippedPasses: 0, skippedSegments: 0, keptPasses: 0 };
   let previousPoint = null;
@@ -3820,7 +3898,7 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
   const res = await fetch('/api/test-motion/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, mode, safeZ }),
+    body: JSON.stringify({ path, mode, safeZ, jobPath: jobPathFor(filePath) }),
   });
   const started = await readJsonOrThrow(res);
   if (!res.ok) throw new Error(started.error || 'Test motion start failed');
@@ -3867,7 +3945,7 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
 
 function renderDryRunPanel() {
   const bounds = generatedBounds();
-  const safeZ = Number(safeZInput.value);
+  const safeZ = projectSafeZValue();
   const margin = Number(traceMarginInput.value);
   const width = bounds ? bounds.xMax - bounds.xMin : Number.NaN;
   const height = bounds ? bounds.yMax - bounds.yMin : Number.NaN;
@@ -4201,13 +4279,11 @@ async function loadJob() {
   ensureZeroState(jobState);
   ensureActiveRunShape(jobState);
   ensureHistoryShape(jobState);
+  migrateProjectSafeZ(jobState);
+  applyProjectSafeZToInputs();
   applyPlacementToInputs(jobState.placement);
   if (jobState.dryRun) {
-    if (jobState.dryRun.safeZ !== undefined) safeZInput.value = jobState.dryRun.safeZ;
     if (jobState.dryRun.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
-  }
-  if (runSafeStartZInput) {
-    runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
   }
   if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
@@ -4473,18 +4549,26 @@ function activeSafeZLimits() {
 }
 
 function applySafeZInputLimits() {
-  const limits = activeSafeZLimits();
-  [safeZInput, recoverySafeZInput, runSafeStartZInput].filter(Boolean).forEach((input) => {
-    input.min = String(limits.zMin);
-    input.max = String(limits.zMax);
-  });
+  renderProjectSafeZ();
 }
 
 function safeZValidationMessage(value) {
+  const projectSafeZ = jobState ? migrateProjectSafeZ(jobState) : null;
+  if (!projectSafeZ?.resolved) return projectSafeZ?.errors?.[0] || 'Project Safe Z is unresolved.';
+  if (Math.abs(Number(value) - Number(projectSafeZ.effectiveSafeZ)) > 0.001) {
+    return 'Safety movement Z does not match the effective Project Safe Z.';
+  }
   const limits = activeSafeZLimits();
   if (!Number.isFinite(value)) return 'Safe Z must be a number.';
   if (value < limits.zMin || value > limits.zMax) {
-    return `Safe Z must be within the current lift range ${limits.zMin.toFixed(3)}..${limits.zMax.toFixed(3)} mm.`;
+    return `Project Safe Z ${value.toFixed(3)} is unreachable; available work-coordinate lift range is ${limits.zMin.toFixed(3)}..${limits.zMax.toFixed(3)} mm.`;
+  }
+  const frameValidation = validateProjectSafeZForFrame(projectSafeZ, currentMachineFrame, {
+    zMin: TOOLLESS_LIMITS.zMin,
+    zMax: TOOLLESS_LIMITS.zMax,
+  });
+  if (!frameValidation.ok) {
+    return frameValidation.error;
   }
   return '';
 }
@@ -4679,7 +4763,7 @@ async function sendBoundingBoxTrace() {
       jobState.dryRun.lastBoundingBoxTraceAt = nowIso();
       jobState.dryRun.lastBoundingBoxTraceStatus = 'complete';
       await recordPhysicalVerification('bounds', {
-        safeZ: Number(safeZInput.value), margin: Number(traceMarginInput.value),
+        safeZ: projectSafeZValue(), margin: Number(traceMarginInput.value),
       });
     }
     appendDryRunLog('Bounding box trace complete; starting X/Y/Z restored');
@@ -4721,7 +4805,7 @@ async function sendAircutToolpath() {
   renderDryRunPanel();
 
   try {
-    const finalStatus = await startTestMotionStream('aircut', aircutCommands, Number(safeZInput.value), (status) => {
+    const finalStatus = await startTestMotionStream('aircut', aircutCommands, projectSafeZValue(), (status) => {
       appendDryRunLog(`Aircut stream ${Number(status.acknowledgedLineCount || 0)}/${aircutCommands.length} (${Number(status.progressPercent || 0).toFixed(1)}%)`);
     });
     dryRunStatus = 'aircut complete';
@@ -4731,7 +4815,7 @@ async function sendAircutToolpath() {
       jobState.dryRun.lastAircutStatus = 'complete';
       jobState.dryRun.lastAircutCommandCount = Number(finalStatus.acknowledgedLineCount || aircutCommands.length);
       await recordPhysicalVerification('aircut', {
-        safeZ: Number(safeZInput.value), margin: Number(traceMarginInput.value),
+        safeZ: projectSafeZValue(), margin: Number(traceMarginInput.value),
       });
     }
     appendDryRunLog('Aircut complete');
@@ -6131,13 +6215,11 @@ async function loadPreview() {
     ensureZeroState(jobState);
     ensureActiveRunShape(jobState);
     ensureHistoryShape(jobState);
+    migrateProjectSafeZ(jobState);
+    applyProjectSafeZToInputs();
     applyPlacementToInputs(jobState.placement);
     if (jobState.dryRun) {
-      if (jobState.dryRun.safeZ !== undefined) safeZInput.value = jobState.dryRun.safeZ;
       if (jobState.dryRun.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
-    }
-    if (runSafeStartZInput) {
-      runSafeStartZInput.value = jobState.safeStartZ ?? jobState.dryRun?.safeZ ?? safeZInput?.value ?? 15;
     }
     if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
     if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
@@ -6149,6 +6231,8 @@ async function loadPreview() {
     applyChecklistState(jobState.arm?.checklist);
     jobExists = true;
   }
+  if (!jobState) jobState = newJobState();
+  applyProjectSafeZToInputs();
   const sourceRun = await parseRunText(sourceGcodeText, filePath, 'source');
   sourceToolpathModel = sourceRun.model;
   sourceParsed = sourceRun.parsed;
@@ -6358,9 +6442,15 @@ feedDeltaButtons.forEach((button) => {
   button.addEventListener('click', () => setLiveFeedOverride(feedStatusPercent() + Number(button.dataset.feedDelta || 0)));
 });
 feedLiveSetButton?.addEventListener('click', () => setLiveFeedOverride(feedLivePercentInput?.value));
-safeZInput.addEventListener('input', refreshDryRunCommands);
+[workZeroReferenceInput, workpieceHeightInput, stockTopWorkZInput, safeZClearanceInput]
+  .filter(Boolean)
+  .forEach((input) => input.addEventListener('change', () => {
+    updateProjectSafeZFromInputs().catch((err) => {
+      applyProjectSafeZToInputs();
+      setJobResult(err.message, true);
+    });
+  }));
 dryRunAircutToggle?.addEventListener('change', refreshDryRunCommands);
-recoverySafeZInput?.addEventListener('input', refreshRecoveryPlan);
 recoveryOverlayInput?.addEventListener('change', () => {
   recoveryOverlayVisible = Boolean(recoveryOverlayInput.checked);
   draw();
@@ -6415,10 +6505,6 @@ traceMarginInput.addEventListener('input', refreshDryRunCommands);
 startModeSelect?.addEventListener('change', () => {
   ensureJobState();
   renderJobPanel();
-  renderRunPanel();
-});
-runSafeStartZInput?.addEventListener('input', () => {
-  ensureJobState();
   renderRunPanel();
 });
 runChecklistInputs.forEach((input) => input.addEventListener('change', () => {

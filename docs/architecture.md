@@ -106,8 +106,17 @@ or job runner functionality.
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, 50 ms relative movement ticks, and
     500 ms deadman timeout.
-  - Safe Jog mode captures current Z, sends `M5`, moves to an absolute safe Z target, and restores
-    the captured Z after jogging stops if Z was not changed.
+  - Every active project derives one work-coordinate Safe Z from stock geometry:
+    `stockTopWorkZ + safeZClearanceMm`. Top-referenced stock has a top at Z0, bottom-referenced
+    stock has a top at its workpiece height, and custom reference stores the explicit stock-top Z.
+  - Browser job start, bounds, Aircut, Safe Jog, Work Zero return, Toolless Resume, and production
+    recovery all consume that same derived value. Firmware reloads the Job JSON, recomputes it, and
+    rejects mismatches or physically unreachable targets instead of clamping.
+  - Safe Jog mode captures current Z, sends `M5`, converts the project work-coordinate Safe Z
+    through the active Work Zero to an absolute `G53` machine target, and restores the captured Z
+    after jogging stops if Z was not changed.
+  - The machine-level Safe Z setting is available only as an explicit manual-jog fallback when no
+    project is active; it is never copied into project metadata.
   - Browser requests update only the desired velocity vector. Firmware keeps at most three short
     movement ticks queued, tracks each Marlin acknowledgement, and restores `G90` on every stop.
   - The XY speed slider sets the maximum feedrate; joystick distance from center sets each tick's

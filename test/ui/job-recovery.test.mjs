@@ -143,6 +143,16 @@ describe('motion-only recovery planner', () => {
     expect(plan(jobFor(), { safeZ: 80 }).blockingReasons.map((x) => x.id)).toContain('safeZLimits');
   });
 
+  it('revalidates recovery against current Project Safe Z and reports a changed snapshot', () => {
+    const result = plan(jobFor('stopped', {
+      safeZSnapshot: { effectiveSafeZ: 10, safeZClearanceMm: 5 },
+    }), { safeZ: 15 });
+    expect(result.safeZChanged).toBe(true);
+    expect(result.originalSafeZ).toBe(10);
+    expect(result.resumeCandidate.safeZ).toBe(15);
+    expect(result.warnings.map((item) => item.id)).toContain('safeZChanged');
+  });
+
   it('does not mutate activeRun or job execution metadata', () => {
     const job = jobFor('error');
     const before = structuredClone(job);

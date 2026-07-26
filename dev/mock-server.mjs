@@ -9,6 +9,7 @@ import { MockMarlin } from './mock-marlin.mjs';
 import { MockSD } from './mock-sd.mjs';
 import { deviceIdentityLocked, localUrlForHostname, sanitizeHostnameInput } from '../www/lib/device-settings.js';
 import { DEFAULT_TOOL_CHANGE_SETTINGS, normalizeToolChangeSettings } from '../www/lib/tool-change-settings.js';
+import { migrateProjectSafeZ } from '../www/lib/job-safe-z.js';
 
 const DEV_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_ROOT = path.resolve(DEV_DIR, '..');
@@ -432,6 +433,13 @@ export async function createMockServer(options = {}) {
           });
         }
         const body = await readJson(req);
+        if (body.jobPath) {
+          const job = JSON.parse(await env.sd.readText(body.jobPath));
+          const projectSafeZ = migrateProjectSafeZ(job);
+          if (!projectSafeZ.resolved || Math.abs(Number(body.safeZ) - projectSafeZ.effectiveSafeZ) > 0.001) {
+            return json(res, 409, { ok: false, error: 'requested Safe Z does not match project metadata' });
+          }
+        }
         const axes = String(body.axes || '').toLowerCase();
         if (!['x', 'y', 'xy'].includes(axes)) throw new Error('axes must be x, y, or xy');
         const safeMove = body.safeMove !== false;
@@ -689,6 +697,17 @@ export async function createMockServer(options = {}) {
           return json(res, 409, { ok: false, error: 'jog rejected while job is active' });
         }
         const body = await readJson(req);
+        if (body.safeJog !== false && body.jobPath) {
+          const job = JSON.parse(await env.sd.readText(body.jobPath));
+          const projectSafeZ = migrateProjectSafeZ(job);
+          const expectedWorkZ = Number(projectSafeZ.effectiveSafeZ);
+          const expectedMachineZ = Number(env.frame.workZeroMachine?.z) + expectedWorkZ;
+          if (!projectSafeZ.resolved || !env.frame.trusted || !env.frame.workZeroValid ||
+              Math.abs(Number(body.safeWorkZ) - expectedWorkZ) > 0.001 ||
+              Math.abs(Number(body.safeLiftZ) - expectedMachineZ) > 0.001) {
+            return json(res, 409, { ok: false, error: 'safe jog does not match reachable project Safe Z' });
+          }
+        }
         const continuePendingRestore = env.jog.zRestoreAvailable && Number.isFinite(env.jog.originalZ) && body.safeJog !== false;
         const pendingOriginalZ = env.jog.originalZ;
         const originalZ = env.marlin.position.z;

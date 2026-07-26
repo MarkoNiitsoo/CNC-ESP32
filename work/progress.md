@@ -2398,3 +2398,26 @@
 - Final verification passes 42 test files / 369 tests, JavaScript syntax checks for Preview, App,
   Machine Bar, and DEV MOCK, `git diff --check`, and the AI-Thinker ESP32-CAM PlatformIO build
   (19.7% RAM, 72.1% flash).
+
+## 2026-07-26 - Project-derived Safe Z
+
+- Added one versioned `projectSafeZ` metadata object containing workpiece height, Work Zero
+  reference, derived stock-top work Z, operator clearance, and derived effective Safe Z.
+- The shared calculation is `effectiveSafeZ = stockTopWorkZ + safeZClearanceMm`: stock-top Work
+  Zero derives `stockTopWorkZ = 0`, stock-bottom derives it from workpiece height, and custom
+  reference requires an explicit stock-top work Z.
+- Preview exposes the stock model and one editable clearance. Unknown geometry remains unresolved;
+  changing any input stales Bounds/Aircut/validation/recovery evidence and invalidates Arm/start
+  authorization. Changing the Work Zero reference also invalidates the active saved Work Zero.
+- Start Job, Bounding Box, Aircut, Safe Jog, Go To Work Zero, Toolless Resume, Production Resume,
+  and recovery/return lifts now consume the same derived value. Safe Jog maps the work target to
+  `G53` machine Z through the active Work Zero; unreachable targets are rejected without clamping.
+- Firmware and DEV MOCK reload Job JSON, recompute the formula, and reject unresolved, stale, or
+  mismatched browser targets. Machine-level Safe Z remains only as the explicit no-project manual
+  jog fallback.
+- Legacy absolute values migrate idempotently to clearance when stock top is known; otherwise the
+  job stays unresolved rather than inferring safety from toolpath maximum Z. New run and recovery
+  records preserve a Safe Z snapshot while recovery is revalidated against the current project.
+- Added focused browser, recovery, mock-runner/server, and firmware contract regressions. Final
+  verification passes 43 files / 383 tests, all relevant JavaScript syntax checks, `git diff
+  --check`, and the AI-Thinker ESP32-CAM PlatformIO build (19.7% RAM, 72.3% flash).

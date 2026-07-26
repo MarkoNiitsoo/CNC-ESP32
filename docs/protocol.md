@@ -353,8 +353,11 @@ M114 responses and IDs remain diagnostic metadata and are not part of the normal
 Bounding Box Trace captures the current X/Y/Z before motion. After tracing at Safe Z, it returns
 to the captured X/Y while still high, restores the captured Z, and finishes with `M400`. A failed
 or stopped trace does not descend automatically because XY may no longer be at the return point.
-`safeStartZ` is a positive work-coordinate Z height before the first streamed file line and defaults
-to `15` when omitted.
+`safeStartZ` is the Job JSON `projectSafeZ.effectiveSafeZ` work-coordinate height before the first
+streamed file line. It has no independent default. Firmware recomputes
+`stockTopWorkZ + safeZClearanceMm` from the referenced `jobPath` and rejects a mismatch or
+unresolved project. The target is converted through the active Work Zero and must be physically
+reachable.
 `travelFeedMmMin` comes from the browser's automatic XY travel setting and is clamped to
 600–6000 mm/min. The feed-only G0 occurs after the Safe-Z wait, so the first file G0 does not
 inherit F400. A file line with its own F value still overrides the modal value.
@@ -371,7 +374,8 @@ Starts a firmware-owned Aircut or Toolless stream from an uploaded temporary fil
 {
   "path": "/jobs/generated/test.gc.aircut.gc",
   "mode": "aircut",
-  "safeZ": 15
+  "safeZ": 15,
+  "jobPath": "/jobs/example.job.json"
 }
 ```
 
@@ -405,7 +409,8 @@ complete file before moving and revalidates every line while streaming. The firs
 
 Allowed commands are `M5`, `M400`, `G21`, `G90`, `G54`, and `G0/G1/G2/G3` motion words using only
 X/Y/Z/F and arc I/J/R as appropriate. `G28`, `G53`, `G92`, `M3`, `M4`, and all other commands are
-rejected before streaming. In `aircut` mode every supplied Z value must equal `safeZ`; Toolless mode
+rejected before streaming. Firmware requires `safeZ` to equal the referenced job's effective
+Project Safe Z. In `aircut` mode every supplied Z value must equal `safeZ`; Toolless mode
 may follow the already browser-validated remaining Z path.
 
 The endpoint does not run the normal job-start preamble and never applies G92. It uses the existing
@@ -424,7 +429,8 @@ Starts a prepared Production Resume Phase 2 stream owned by firmware:
   "activeRunMode": "source",
   "activeRunFingerprint": "size:...",
   "eventId": "production-resume-...",
-  "interruptedRunId": "run-..."
+  "interruptedRunId": "run-...",
+  "safeZ": 29
 }
 ```
 
@@ -434,6 +440,8 @@ activeRun identity/fingerprint, non-null Phase-1 completion, and manual-router c
 generated activeRun must still be valid. A one-shot `productionResumeAuthorization.authorized=true`
 record carries the exact event/run/activeRun/stream identity; firmware searches the whole job file
 so long history metadata does not hide the authorization beyond a fixed-size read window.
+Firmware also recomputes the current Project Safe Z from `jobPath` and rejects a missing,
+unresolved, stale, or mismatched `safeZ` before accepting Phase 2.
 
 The complete file is validated before movement and each line is revalidated during streaming. It
 must begin `G21`, `G90`, `G54`, contain bounded `G0/G1/G2/G3` motion, and end `M400`. Only numeric
@@ -565,7 +573,10 @@ Request body:
 ```json
 {
   "safeJog": true,
-  "safeLiftZ": 70,
+  "safeLiftZ": 59,
+  "safeWorkZ": 29,
+  "jobPath": "/jobs/example.job.json",
+  "projectSafeZ": 29,
   "restoreZAfterJog": true,
   "restoreDelayMs": 5000,
   "xyFeedMax": 3000,
@@ -575,8 +586,11 @@ Request body:
 
 When `safeJog` is true, firmware captures the current work Z with `M400` and `M114`, sends `M5`,
 and moves to native machine coordinate `G53 G0 Z<safeLiftZ>` at `F<zFeedMax>` before allowing X/Y
-jog ticks. The configured machine ceiling is `Z70`; larger browser values are silently clamped to
-`70`, so a G92/workspace offset cannot turn Safe Z into a move beyond the physical upper limit.
+jog ticks.
+When a current project exists, `safeWorkZ` must equal its effective Project Safe Z and
+`safeLiftZ = workZeroMachineZ + safeWorkZ`. Firmware requires a trusted frame and rejects targets
+outside physical Z limits. Without a current project, the existing machine-level manual-jog
+fallback remains available and is not persisted into Job JSON.
 Firmware reads M114 again after the lift and stores the resulting work-coordinate Z for restore
 validation. If
 `restoreZAfterJog` is true, firmware schedules an automatic return to the captured Z after
@@ -631,7 +645,9 @@ Request body:
 {
   "axes": "xy",
   "safeMove": true,
-  "safeZ": 70,
+  "safeZ": 29,
+  "jobPath": "/jobs/example.job.json",
+  "projectSafeZ": 29,
   "travelFeedMmMin": 3000
 }
 ```
@@ -651,7 +667,10 @@ G0 X0 Y0 F<travelFeedMmMin>   ; selected axes only
 G90
 ```
 
-Safe Z must be greater than 0 and no more than 200 mm. Travel feed is clamped to 600–6000 mm/min.
+With a current project, firmware recomputes Project Safe Z from `jobPath` and requires the supplied
+`safeZ` to match it exactly; unreachable work- or machine-coordinate targets are rejected without
+clamping. With no current project, the Machine Bar's machine-level Safe Z remains an explicit
+manual fallback. Travel feed is clamped to 600–6000 mm/min.
 Z deliberately remains at Safe Z after the
 XY move; firmware does not automatically plunge back toward material. With `safeMove: false`, the
 selected XY move happens at current Z and the UI requires a stronger warning confirmation.

@@ -2225,3 +2225,26 @@ No firmware upload is required.
 - Legacy recovery normalization remains deterministic by stable run id and must stay idempotent.
 - Verification at handoff: 42 files / 369 tests, all relevant JavaScript syntax checks,
   `git diff --check`, and an AI-Thinker ESP32-CAM build at 19.7% RAM / 72.1% flash.
+
+## 2026-07-26 project-derived Safe Z handoff
+
+- `www/lib/job-safe-z.js` is the browser source of truth. Keep all project motion workflows on
+  `calculateProjectSafeZ()` / `effectiveProjectSafeZ()`; do not derive Safe Z from maximum G-code Z
+  or add per-workflow editable copies.
+- Persist `projectSafeZ.workpieceHeightMm`, `workZeroReference`, `stockTopWorkZ`,
+  `safeZClearanceMm`, and `effectiveSafeZ`. Only clearance is the normal safety control; the
+  effective value is always `stockTopWorkZ + safeZClearanceMm`.
+- Firmware `loadProjectSafeZ()` deliberately recomputes the value from Job JSON before Start,
+  Aircut/Toolless, Production Resume, project Safe Jog, and project Go To Work Zero. Keep physical
+  work/machine limit validation separate and reject unreachable values instead of clamping.
+- Project Safe Jog converts work Z to `G53` machine Z using the trusted active Work Zero.
+  Machine-level Safe Z is a no-project manual fallback only and must not be persisted into a job.
+- Safe Z changes stale dependent verification and authorization. Run history stores the original
+  geometry/value snapshot; recovery warns when it changed and plans against the current revalidated
+  value.
+- Legacy migration is deterministic and idempotent: derive clearance from an old absolute Safe Z
+  only when stock top is known; otherwise preserve unresolved geometry and require the operator to
+  choose the reference.
+- Verification at handoff: 43 files / 383 tests, relevant JavaScript syntax checks, `git diff
+  --check`, and an AI-Thinker ESP32-CAM build at 19.7% RAM / 72.3% flash. See the focused Git
+  commit containing this handoff for the implementation SHA.
