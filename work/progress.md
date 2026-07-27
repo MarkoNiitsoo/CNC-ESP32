@@ -1,5 +1,16 @@
 # Progress
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Repair
+
+- Implemented strict low-priority FreeRTOS network task (`telemetryNetworkTask`) pinned to Core 0 (`xTaskCreatePinnedToCore`).
+- Completely isolated the Arduino `loop()` (Core 1) from calling any WebSocket library functions (`telemetrySocket.loop()`, `sendTXT()`, `broadcastTXT()`).
+- Added thread-safe latest-value replacement (coalescing) for top-level state slices (`system`, `controller`, `machine`, `job`, `jog`, `control`) using FreeRTOS mutex (`telemetryStateMutex`). State producers serialize dirty slices into `StagedTelemetryState` without blocking (`xSemaphoreTake(..., 0)`).
+- Replaced old no-op `enqueueTelemetry` with bounded non-blocking FreeRTOS queues (`motionEventQueue` size 16, `logEventQueue` size 32) using `xQueueSend(..., 0)`. Queue saturation increments drop counters (`motionTelemetryDropped`, `logTelemetryDropped`) without applying backpressure or blocking SD/UART streaming or Jog.
+- Removed dead Phase 1 transport artifacts: `enqueueTelemetry()`, unused `TelemetryPacket`, dead queue handles, and obsolete dirty flags.
+- Updated `docs/architecture.md` to document the actual FreeRTOS task, mutex, queue, and WebSocket isolation model.
+- Updated test suites (`test/firmware/marlin-transport.test.mjs`, `test/ui/telemetry.test.mjs`) to verify network task creation, main-loop isolation, latest-value replacement, and bounded non-blocking queues.
+- Verification: `pio run -e esp32cam` succeeded with 19.6% RAM (64,228 bytes) and 73.3% Flash (1,441,273 bytes). All 45 test files and 411 tests passed in `npm test`.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Protocol Repair & Parity
 
 - Repaired Phase 1 protocol implementation on branch `feature/phase1-websocket-transport`.

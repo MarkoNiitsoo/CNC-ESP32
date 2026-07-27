@@ -123,12 +123,11 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
     the authoritative machine frame.
   - If WebSocket telemetry is unavailable, sparse job-status polling deduplicates by command number
     and starts the same animation; this is delayed but smooth rather than a point-to-point jump.
-  - The CNC runner never calls WebSocket send functions directly. It places serialized deltas and sync packets into a bounded
-    FreeRTOS queue with zero wait time.
-  - A dedicated low-priority task pinned to core 0 owns `telemetrySocket.loop()` and every socket
-    send. If a sleeping browser leaves TCP blocked, only this task and disposable UI deltas wait.
-  - Queue saturation drops telemetry rather than applying backpressure to SD/UART streaming. The
-    task caches latest job/jog/position state and sends a fresh snapshot after reconnect or resync.
+  - The main Arduino loop (Core 1) never calls WebSocket library functions (`telemetrySocket.loop()`, `sendTXT`, `broadcastTXT`).
+  - Top-level state slices (`system`, `controller`, `machine`, `job`, `jog`, `control`) use thread-safe latest-value replacement under a FreeRTOS mutex (`telemetryStateMutex`). State producers serialize updated JSON slices into staged state without blocking.
+  - A dedicated low-priority network task (`telemetryNetworkTask`) pinned to Core 0 exclusively owns `telemetrySocket.loop()`, WebSocket callbacks (`handleTelemetrySocket`), client protocol sequencing, and socket sends.
+  - Motion animation events and Marlin log entries use bounded, non-blocking FreeRTOS queues (`motionEventQueue`, `logEventQueue`) sent with zero wait time (`xQueueSend(..., 0)`).
+  - Queue saturation increments drop counters (`motionTelemetryDropped`, `logTelemetryDropped`) without applying backpressure or blocking SD/UART streaming or Jog.
   - During a long streamed G2/G3 command, complete M154 position lines are parsed as they arrive;
     firmware does not wait for the motion command's final `ok` before publishing position changes.
 - Safe analog jog:

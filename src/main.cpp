@@ -300,14 +300,7 @@ struct MachineFrameState {
 struct MotionTelemetryEvent {
   uint32_t sequence = 0;
   uint32_t sentAtMs = 0;
-  String command;
-};
-
-enum class TelemetryChannel : uint8_t { Job, Jog, Position, Motion, Log, Sync };
-
-struct TelemetryPacket {
-  TelemetryChannel channel;
-  String data;
+  char command[64] = {};
 };
 
 enum class MachineDiscoveryState { Idle, WaitingM115 };
@@ -457,20 +450,39 @@ uint32_t nextMarlinLogId = 1;
 uint32_t telemetryLastLogId = 0;
 volatile bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
-bool telemetryJobDirty = true;
-bool telemetryJogDirty = true;
-bool telemetryPositionDirty = false;
-uint32_t telemetryRevision = 0;
-QueueHandle_t telemetryQueue = nullptr;
 TaskHandle_t telemetryTaskHandle = nullptr;
-String telemetryCachedJob = "null";
-String telemetryCachedJog = "null";
-String telemetryCachedPosition = "null";
+SemaphoreHandle_t telemetryStateMutex = nullptr;
+QueueHandle_t motionEventQueue = nullptr;
+QueueHandle_t logEventQueue = nullptr;
 uint32_t telemetryLastBroadcastMs = 0;
 uint32_t telemetryLastJobProgressMs = 0;
-MotionTelemetryEvent motionTelemetry[kMotionTelemetrySize];
-size_t motionTelemetryCount = 0;
 uint32_t motionTelemetryDropped = 0;
+uint32_t logTelemetryDropped = 0;
+
+struct StagedTelemetryState {
+  uint32_t globalRevision = 0;
+  bool dirtySystem = false;
+  bool dirtyController = false;
+  bool dirtyMachine = false;
+  bool dirtyJob = false;
+  bool dirtyJog = false;
+  bool dirtyControl = false;
+
+  String systemJson;
+  String controllerJson;
+  String machineJson;
+  String jobJson;
+  String jogJson;
+  String controlJson;
+};
+
+StagedTelemetryState stagedState;
+
+inline void resetMotionTelemetry() {
+  if (motionEventQueue != nullptr) {
+    xQueueReset(motionEventQueue);
+  }
+}
 uint8_t marlinAutoreportSeconds = 0;
 String marlinAsyncLine;
 String streamMotionMode = "G0";
@@ -518,9 +530,12 @@ String machineFrameJson();
 void drainMarlinInput();
 bool sendMarlinControlCommand(const String &cmd, String &response);
 void sendJsonError(int status, const String &message);
-bool enqueueTelemetry(TelemetryChannel channel, const String &data);
 String bytesToHex(const uint8_t *bytes, size_t length);
 void logSystemEvent(const String &message);
+void touchJobStatus();
+void touchJogStatus();
+void touchPositionStatus();
+void resetMotionTelemetry();
 
 String marlinMessageLevel(String text) {
   text.toLowerCase();
@@ -555,6 +570,13 @@ void addMarlinLog(const String &direction, bool priority, const String &text, co
   marlinLogNext = (marlinLogNext + 1) % kMarlinLogSize;
   if (marlinLogCount < kMarlinLogSize) {
     marlinLogCount += 1;
+  }
+
+  if (logEventQueue != nullptr) {
+    uint32_t entryId = entry.id;
+    if (xQueueSend(logEventQueue, &entryId, 0) != pdTRUE) {
+      logTelemetryDropped++;
+    }
   }
 }
 
@@ -1231,7 +1253,7 @@ bool jobIsActive() {
 
 void touchJobStatus() {
   jobStatus.updatedAtMs = millis();
-  telemetryJobDirty = true;
+  touchJobStatus();
   if (jobCheckpointTracking) jobCheckpointDirty = true;
 }
 
@@ -1240,7 +1262,7 @@ void touchJobProgress() {
   jobStatus.updatedAtMs = now;
   if (jobCheckpointTracking) jobCheckpointDirty = true;
   if (now - telemetryLastJobProgressMs >= kJobProgressBroadcastMs) {
-    telemetryJobDirty = true;
+    touchJobStatus();
     telemetryLastJobProgressMs = now;
   }
 }
@@ -1267,16 +1289,16 @@ bool streamLineIsMotion(const String &line) {
 
 void queueMotionTelemetry(const String &command, uint32_t sequence) {
   if (!streamLineIsMotion(command)) return;
-  size_t index = motionTelemetryCount;
-  if (motionTelemetryCount >= kMotionTelemetrySize) {
-    index = kMotionTelemetrySize - 1;
-    ++motionTelemetryDropped;
-  } else {
-    ++motionTelemetryCount;
+  MotionTelemetryEvent ev;
+  ev.sequence = sequence;
+  ev.sentAtMs = millis();
+  snprintf(ev.command, sizeof(ev.command), "%s", command.c_str());
+
+  if (motionEventQueue != nullptr) {
+    if (xQueueSend(motionEventQueue, &ev, 0) != pdTRUE) {
+      motionTelemetryDropped++;
+    }
   }
-  motionTelemetry[index].sequence = sequence;
-  motionTelemetry[index].sentAtMs = millis();
-  motionTelemetry[index].command = command;
 }
 
 void logJobEvent(const String &event) {
@@ -1540,7 +1562,7 @@ void loadPersistentJobCheckpointAtBoot() {
   recoveryCheckpointResetReason = resetReasonName(esp_reset_reason());
   machineFrame = MachineFrameState();
   marlinPosition.valid = false;
-  telemetryPositionDirty = true;
+  touchPositionStatus();
   sendImmediateJobSafetyM5("active job marker found during boot; position invalidated");
   logJobEvent("boot interrupted job: reset=" + recoveryCheckpointResetReason +
               " gcode=" + recoveryCheckpointGcodePath +
@@ -1956,6 +1978,8 @@ struct CachedAuthoritativeSlices {
   bool wallClockValid = false;
 };
 CachedAuthoritativeSlices cachedSlices;
+inline void touchJogStatus() { cachedSlices.jogState = ""; }
+inline void touchPositionStatus() { cachedSlices.positionX = -999999.0f; }
 
 bool dirtySystem = false;
 bool dirtyController = false;
@@ -2092,19 +2116,82 @@ String makeClientEnvelope(uint8_t client, const char *type, const String &bodyFi
   return makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
 }
 
-bool enqueueTelemetry(TelemetryChannel channel, const String &data) {
-  // Non-blocking queue: xQueueSend(telemetryQueue, &packet, 0)
-  // enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())
-  // enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())
-  // enqueueTelemetry(TelemetryChannel::Position, machineFrameJson())
-  // enqueueTelemetry(TelemetryChannel::Motion, data)
-  (void)channel;
-  (void)data;
-  return true;
+String buildSystemSliceJson() {
+  String patchJson = "{\"bootId\":\"esp-";
+  patchJson += bootSessionId;
+  patchJson += "\",\"protocolVersion\":1,\"health\":";
+  patchJson += healthStatusJson();
+  patchJson += ",\"time\":{\"utcMs\":";
+  if (protocolState.wallClockValid) {
+    uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + protocolState.wallClockOffsetMs);
+    patchJson += String(nowUtc);
+  } else {
+    patchJson += "null";
+  }
+  patchJson += ",\"timezoneOffsetMinutes\":";
+  patchJson += String(protocolState.wallClockTimezoneOffsetMinutes);
+  patchJson += ",\"timeZone\":\"";
+  patchJson += jsonEscape(protocolState.wallClockTimeZone);
+  patchJson += "\",\"valid\":";
+  patchJson += protocolState.wallClockValid ? "true" : "false";
+  patchJson += "}}";
+  return patchJson;
 }
 
-void updateAuthoritativeStateRevisionIfNeeded() {
-  bool changed = false;
+String buildControllerSliceJson() {
+  String patchJson = "{\"type\":\"";
+  patchJson += controllerAdapter.type;
+  patchJson += "\",\"identity\":\"";
+  patchJson += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : controllerAdapter.identity);
+  patchJson += "\",\"connected\":true,\"state\":\"";
+  patchJson += controllerStateNormalized();
+  patchJson += "\",\"lastError\":";
+  patchJson += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
+  patchJson += ",\"capabilities\":{\"homing\":true,\"absoluteMachineMove\":true,\"positionReports\":true,\"pause\":true,\"resume\":true,\"stop\":true,\"feedOverride\":true,\"arcs\":true,\"toolChange\":true}}";
+  return patchJson;
+}
+
+String buildMachineSliceJson() {
+  String patchJson = "{\"position\":{\"work\":{\"x\":";
+  patchJson += String(marlinPosition.x, 3);
+  patchJson += ",\"y\":";
+  patchJson += String(marlinPosition.y, 3);
+  patchJson += ",\"z\":";
+  patchJson += String(marlinPosition.z, 3);
+  patchJson += "},\"machine\":{\"x\":";
+  patchJson += String(machineFrame.machineX, 3);
+  patchJson += ",\"y\":";
+  patchJson += String(machineFrame.machineY, 3);
+  patchJson += ",\"z\":";
+  patchJson += String(machineFrame.machineZ, 3);
+  patchJson += "}},\"frame\":";
+  patchJson += machineFrameJson();
+  patchJson += ",\"homedAxes\":{\"x\":";
+  patchJson += machineFrame.homedX ? "true" : "false";
+  patchJson += ",\"y\":";
+  patchJson += machineFrame.homedY ? "true" : "false";
+  patchJson += ",\"z\":";
+  patchJson += machineFrame.homedZ ? "true" : "false";
+  patchJson += "},\"homingEpoch\":";
+  patchJson += String(machineFrame.homingEpoch);
+  patchJson += "}";
+  return patchJson;
+}
+
+String buildControlSliceJson() {
+  String patchJson = "{\"owner\":";
+  patchJson += operatorSessionOwner.length() > 0 ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+  patchJson += "}";
+  return patchJson;
+}
+
+void stageTelemetryUpdates() {
+  bool dirtyMachine = false;
+  bool dirtyController = false;
+  bool dirtyJob = false;
+  bool dirtyJog = false;
+  bool dirtyControl = false;
+  bool dirtySystem = false;
 
   if (fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
       fabs(marlinPosition.y - cachedSlices.positionY) > 0.0005f ||
@@ -2127,7 +2214,6 @@ void updateAuthoritativeStateRevisionIfNeeded() {
     cachedSlices.homedZ = machineFrame.homedZ;
     cachedSlices.homingEpoch = machineFrame.homingEpoch;
     dirtyMachine = true;
-    changed = true;
   }
 
   String currCtrlState = controllerStateNormalized();
@@ -2135,7 +2221,6 @@ void updateAuthoritativeStateRevisionIfNeeded() {
     cachedSlices.controllerState = currCtrlState;
     cachedSlices.controllerError = jobStatus.lastError;
     dirtyController = true;
-    changed = true;
   }
 
   String currJobState = jobStateName(jobStatus.state);
@@ -2148,7 +2233,6 @@ void updateAuthoritativeStateRevisionIfNeeded() {
     cachedSlices.feedOverride = jobStatus.feedOverridePercent;
     cachedSlices.jobError = jobStatus.lastError;
     dirtyJob = true;
-    changed = true;
   }
 
   String currJogState = jogStateName(jogStatus.state);
@@ -2156,23 +2240,57 @@ void updateAuthoritativeStateRevisionIfNeeded() {
     cachedSlices.jogState = currJogState;
     cachedSlices.jogError = jogStatus.lastError;
     dirtyJog = true;
-    changed = true;
   }
 
   if (operatorSessionOwner != cachedSlices.controlOwner) {
     cachedSlices.controlOwner = operatorSessionOwner;
     dirtyControl = true;
-    changed = true;
   }
 
   if (protocolState.wallClockValid != cachedSlices.wallClockValid) {
     cachedSlices.wallClockValid = protocolState.wallClockValid;
     dirtySystem = true;
-    changed = true;
   }
 
-  if (changed) {
+  if (!dirtyMachine && !dirtyController && !dirtyJob && !dirtyJog && !dirtyControl && !dirtySystem) {
+    return;
+  }
+
+  String machineStr = dirtyMachine ? buildMachineSliceJson() : "";
+  String controllerStr = dirtyController ? buildControllerSliceJson() : "";
+  String jobStr = dirtyJob ? jobStatusJson() : "";
+  String jogStr = dirtyJog ? jogStatusJson() : "";
+  String controlStr = dirtyControl ? buildControlSliceJson() : "";
+  String systemStr = dirtySystem ? buildSystemSliceJson() : "";
+
+  if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, 0) == pdTRUE) {
+    if (dirtyMachine) {
+      stagedState.machineJson = machineStr;
+      stagedState.dirtyMachine = true;
+    }
+    if (dirtyController) {
+      stagedState.controllerJson = controllerStr;
+      stagedState.dirtyController = true;
+    }
+    if (dirtyJob) {
+      stagedState.jobJson = jobStr;
+      stagedState.dirtyJob = true;
+    }
+    if (dirtyJog) {
+      stagedState.jogJson = jogStr;
+      stagedState.dirtyJog = true;
+    }
+    if (dirtyControl) {
+      stagedState.controlJson = controlStr;
+      stagedState.dirtyControl = true;
+    }
+    if (dirtySystem) {
+      stagedState.systemJson = systemStr;
+      stagedState.dirtySystem = true;
+    }
     protocolState.globalStateRevision++;
+    stagedState.globalRevision = protocolState.globalStateRevision;
+    xSemaphoreGive(telemetryStateMutex);
   }
 }
 
@@ -2188,11 +2306,12 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     cs.lastServerSeqAcknowledgedByClient = 0;
     cs.lastOutboundAtMs = millis();
     telemetryLogSubscribed[client] = false;
-    // Wait for hello before sending snapshot!
+    telemetryClientConnected[client] = true;
   } else if (type == WStype_DISCONNECTED) {
     cs.connected = false;
     cs.handshakeComplete = false;
     telemetryLogSubscribed[client] = false;
+    telemetryClientConnected[client] = false;
   } else if (type == WStype_TEXT) {
     String message;
     message.reserve(length);
@@ -2221,7 +2340,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       if (seqVal == cs.lastContiguousClientSeq + 1) {
         cs.lastContiguousClientSeq = seqVal;
       } else if (seqVal <= cs.lastContiguousClientSeq) {
-        return; // Duplicate/old packet; ignore payload
+        return;
       } else {
         String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"sequence gap detected\"");
         telemetrySocket.sendTXT(client, errPacket);
@@ -2260,7 +2379,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       String snapshot = makeClientEnvelope(client, "snapshot", "state", normalizedAuthoritativeStateJson());
       telemetrySocket.sendTXT(client, snapshot);
     } else if (msgType == "log") {
-      telemetryLogSubscribed[client] = doc["log"] == true || doc["subscribe"]["log"] == true; // message.indexOf("\"log\":true")
+      telemetryLogSubscribed[client] = doc["log"] == true || doc["subscribe"]["log"] == true;
     }
   }
 }
@@ -2289,159 +2408,6 @@ bool telemetryHasLogSubscriber() {
   return false;
 }
 
-void broadcastPendingLogEntries() {
-  if (!telemetryHasLogSubscriber()) return;
-  for (size_t i = 0; i < marlinLogCount; ++i) {
-    const size_t index = (marlinLogNext + kMarlinLogSize - marlinLogCount + i) % kMarlinLogSize;
-    const MarlinLogEntry &entry = marlinLog[index];
-    if (entry.id <= telemetryLastLogId) continue;
-    String data = "{\"entries\":[";
-    data += marlinLogEntryJson(entry);
-    data += "],\"nextId\":";
-    data += String(entry.id);
-    data += ",\"lastCritical\":";
-    data += lastCriticalMarlinMessage.length() > 0 ? "\"" + jsonEscape(lastCriticalMarlinMessage) + "\"" : "null";
-    data += "}";
-
-    for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
-      if (telemetryLogSubscribed[c] && protocolState.clients[c].connected && protocolState.clients[c].handshakeComplete) {
-        String logPacket = makeClientEnvelope(c, "patch", "patch", "{\"log\":" + data + "}");
-        telemetrySocket.sendTXT(c, logPacket);
-      }
-    }
-    telemetryLastLogId = entry.id;
-  }
-}
-
-void broadcastPendingMotionEvents() {
-  if (motionTelemetryCount == 0) return;
-  String data = "{\"events\":[";
-  for (size_t i = 0; i < motionTelemetryCount; ++i) {
-    if (i > 0) data += ',';
-    const MotionTelemetryEvent &event = motionTelemetry[i];
-    data += "{\"sequence\":" + String(event.sequence);
-    data += ",\"sentAtMs\":" + String(event.sentAtMs);
-    data += ",\"command\":\"" + jsonEscape(event.command) + "\"}";
-  }
-  data += "],\"dropped\":" + String(motionTelemetryDropped);
-  data += ",\"feedOverridePercent\":" + String(jobStatus.feedOverridePercent) + "}";
-
-  for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
-    if (protocolState.clients[c].connected && protocolState.clients[c].handshakeComplete) {
-      String motionPacket = makeClientEnvelope(c, "patch", "patch", "{\"motion\":" + data + "}");
-      telemetrySocket.sendTXT(c, motionPacket);
-    }
-  }
-
-  motionTelemetryCount = 0;
-  motionTelemetryDropped = 0;
-}
-
-void broadcastDirtyPatches() {
-  if (!dirtySystem && !dirtyController && !dirtyMachine && !dirtyJob && !dirtyJog && !dirtyControl) {
-    return;
-  }
-
-  String patchJson = "{";
-  bool first = true;
-  if (dirtySystem) {
-    patchJson += "\"system\":{\"bootId\":\"esp-";
-    patchJson += bootSessionId;
-    patchJson += "\",\"protocolVersion\":1,\"health\":";
-    patchJson += healthStatusJson();
-    patchJson += ",\"time\":{\"utcMs\":";
-    if (protocolState.wallClockValid) {
-      uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + protocolState.wallClockOffsetMs);
-      patchJson += String(nowUtc);
-    } else {
-      patchJson += "null";
-    }
-    patchJson += ",\"timezoneOffsetMinutes\":";
-    patchJson += String(protocolState.wallClockTimezoneOffsetMinutes);
-    patchJson += ",\"timeZone\":\"";
-    patchJson += jsonEscape(protocolState.wallClockTimeZone);
-    patchJson += "\",\"valid\":";
-    patchJson += protocolState.wallClockValid ? "true" : "false";
-    patchJson += "}}";
-    first = false;
-  }
-  if (dirtyController) {
-    if (!first) patchJson += ",";
-    patchJson += "\"controller\":{\"type\":\"";
-    patchJson += controllerAdapter.type;
-    patchJson += "\",\"identity\":\"";
-    patchJson += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : controllerAdapter.identity);
-    patchJson += "\",\"connected\":true,\"state\":\"";
-    patchJson += controllerStateNormalized();
-    patchJson += "\",\"lastError\":";
-    patchJson += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
-    patchJson += ",\"capabilities\":{\"homing\":true,\"absoluteMachineMove\":true,\"positionReports\":true,\"pause\":true,\"resume\":true,\"stop\":true,\"feedOverride\":true,\"arcs\":true,\"toolChange\":true}}";
-    first = false;
-  }
-  if (dirtyMachine) {
-    if (!first) patchJson += ",";
-    patchJson += "\"machine\":{\"position\":{\"work\":{\"x\":";
-    patchJson += String(marlinPosition.x, 3);
-    patchJson += ",\"y\":";
-    patchJson += String(marlinPosition.y, 3);
-    patchJson += ",\"z\":";
-    patchJson += String(marlinPosition.z, 3);
-    patchJson += "},\"machine\":{\"x\":";
-    patchJson += String(machineFrame.machineX, 3);
-    patchJson += ",\"y\":";
-    patchJson += String(machineFrame.machineY, 3);
-    patchJson += ",\"z\":";
-    patchJson += String(machineFrame.machineZ, 3);
-    patchJson += "}},\"frame\":";
-    patchJson += machineFrameJson();
-    patchJson += ",\"homedAxes\":{\"x\":";
-    patchJson += machineFrame.homedX ? "true" : "false";
-    patchJson += ",\"y\":";
-    patchJson += machineFrame.homedY ? "true" : "false";
-    patchJson += ",\"z\":";
-    patchJson += machineFrame.homedZ ? "true" : "false";
-    patchJson += "},\"homingEpoch\":";
-    patchJson += String(machineFrame.homingEpoch);
-    patchJson += "}";
-    first = false;
-  }
-  if (dirtyJob) {
-    if (!first) patchJson += ",";
-    patchJson += "\"job\":";
-    patchJson += jobStatusJson();
-    first = false;
-  }
-  if (dirtyJog) {
-    if (!first) patchJson += ",";
-    patchJson += "\"jog\":";
-    patchJson += jogStatusJson();
-    first = false;
-  }
-  if (dirtyControl) {
-    if (!first) patchJson += ",";
-    patchJson += "\"control\":{\"owner\":";
-    patchJson += operatorSessionOwner.length() > 0 ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
-    patchJson += "}";
-    first = false;
-  }
-  patchJson += "}";
-
-  dirtySystem = false;
-  dirtyController = false;
-  dirtyMachine = false;
-  dirtyJob = false;
-  dirtyJog = false;
-  dirtyControl = false;
-
-  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
-    TelemetryClientState &cs = protocolState.clients[i];
-    if (cs.connected && cs.handshakeComplete) {
-      String patchPacket = makeClientEnvelope(i, "patch", "patch", patchJson);
-      telemetrySocket.sendTXT(i, patchPacket);
-    }
-  }
-}
-
 void checkClientIdleSync(uint32_t now) {
   for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
     TelemetryClientState &cs = protocolState.clients[i];
@@ -2454,20 +2420,149 @@ void checkClientIdleSync(uint32_t now) {
   }
 }
 
-void processTelemetrySocket() {
-  // Non-blocking decoupled queue helper: enqueueTelemetry
+void processNetworkTelemetry() {
   const uint32_t now = millis();
   if (now - telemetryLastBroadcastMs < kTelemetryMinBroadcastMs) {
     return;
   }
-
-  updateAuthoritativeStateRevisionIfNeeded();
-  broadcastDirtyPatches();
-  broadcastPendingMotionEvents();
-  broadcastPendingLogEntries();
-  checkClientIdleSync(now);
-
   telemetryLastBroadcastMs = now;
+
+  StagedTelemetryState snapshotCopy;
+  bool hasPatch = false;
+
+  if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    if (stagedState.dirtySystem || stagedState.dirtyController || stagedState.dirtyMachine ||
+        stagedState.dirtyJob || stagedState.dirtyJog || stagedState.dirtyControl) {
+      snapshotCopy = stagedState;
+      stagedState.dirtySystem = false;
+      stagedState.dirtyController = false;
+      stagedState.dirtyMachine = false;
+      stagedState.dirtyJob = false;
+      stagedState.dirtyJog = false;
+      stagedState.dirtyControl = false;
+      hasPatch = true;
+    }
+    xSemaphoreGive(telemetryStateMutex);
+  }
+
+  if (hasPatch) {
+    String patchJson = "{";
+    bool first = true;
+    if (snapshotCopy.dirtySystem) {
+      patchJson += "\"system\":" + snapshotCopy.systemJson;
+      first = false;
+    }
+    if (snapshotCopy.dirtyController) {
+      if (!first) patchJson += ",";
+      patchJson += "\"controller\":" + snapshotCopy.controllerJson;
+      first = false;
+    }
+    if (snapshotCopy.dirtyMachine) {
+      if (!first) patchJson += ",";
+      patchJson += "\"machine\":" + snapshotCopy.machineJson;
+      first = false;
+    }
+    if (snapshotCopy.dirtyJob) {
+      if (!first) patchJson += ",";
+      patchJson += "\"job\":" + snapshotCopy.jobJson;
+      first = false;
+    }
+    if (snapshotCopy.dirtyJog) {
+      if (!first) patchJson += ",";
+      patchJson += "\"jog\":" + snapshotCopy.jogJson;
+      first = false;
+    }
+    if (snapshotCopy.dirtyControl) {
+      if (!first) patchJson += ",";
+      patchJson += "\"control\":" + snapshotCopy.controlJson;
+      first = false;
+    }
+    patchJson += "}";
+
+    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
+      TelemetryClientState &cs = protocolState.clients[i];
+      if (cs.connected && cs.handshakeComplete) {
+        String patchPacket = makeClientEnvelope(i, "patch", "patch", patchJson);
+        telemetrySocket.sendTXT(i, patchPacket);
+      }
+    }
+  }
+
+  if (motionEventQueue != nullptr && uxQueueMessagesWaiting(motionEventQueue) > 0) {
+    MotionTelemetryEvent events[16];
+    size_t count = 0;
+    MotionTelemetryEvent ev;
+    while (count < 16 && xQueueReceive(motionEventQueue, &ev, 0) == pdTRUE) {
+      events[count++] = ev;
+    }
+    if (count > 0) {
+      String data = "{\"events\":[";
+      for (size_t i = 0; i < count; ++i) {
+        if (i > 0) data += ',';
+        data += "{\"sequence\":" + String(events[i].sequence);
+        data += ",\"sentAtMs\":" + String(events[i].sentAtMs);
+        data += ",\"command\":\"" + jsonEscape(events[i].command) + "\"}";
+      }
+      data += "],\"dropped\":" + String(motionTelemetryDropped);
+      data += ",\"feedOverridePercent\":" + String(jobStatus.feedOverridePercent) + "}";
+
+      for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
+        TelemetryClientState &cs = protocolState.clients[c];
+        if (cs.connected && cs.handshakeComplete) {
+          String motionPacket = makeClientEnvelope(c, "patch", "patch", "{\"motion\":" + data + "}");
+          telemetrySocket.sendTXT(c, motionPacket);
+        }
+      }
+    }
+  }
+
+  if (logEventQueue != nullptr && uxQueueMessagesWaiting(logEventQueue) > 0 && telemetryHasLogSubscriber()) {
+    uint32_t logIds[32];
+    size_t count = 0;
+    uint32_t lid;
+    while (count < 32 && xQueueReceive(logEventQueue, &lid, 0) == pdTRUE) {
+      logIds[count++] = lid;
+    }
+    if (count > 0) {
+      for (size_t k = 0; k < count; ++k) {
+        uint32_t logId = logIds[k];
+        const MarlinLogEntry *entryPtr = nullptr;
+        for (size_t i = 0; i < marlinLogCount; ++i) {
+          const size_t index = (marlinLogNext + kMarlinLogSize - marlinLogCount + i) % kMarlinLogSize;
+          if (marlinLog[index].id == logId) {
+            entryPtr = &marlinLog[index];
+            break;
+          }
+        }
+        if (entryPtr != nullptr) {
+          String data = "{\"entries\":[";
+          data += marlinLogEntryJson(*entryPtr);
+          data += "],\"nextId\":" + String(entryPtr->id);
+          data += ",\"lastCritical\":" + (lastCriticalMarlinMessage.length() > 0 ? "\"" + jsonEscape(lastCriticalMarlinMessage) + "\"" : "null");
+          data += "}";
+
+          for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
+            TelemetryClientState &cs = protocolState.clients[c];
+            if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
+              String logPacket = makeClientEnvelope(c, "patch", "patch", "{\"log\":" + data + "}");
+              telemetrySocket.sendTXT(c, logPacket);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  checkClientIdleSync(now);
+}
+
+void telemetryNetworkTask(void *arg) {
+  (void)arg;
+  for (;;) {
+    telemetrySocket.loop();
+    processNetworkTelemetry();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 void rotateSystemLogIfNeeded() {
@@ -3415,7 +3510,7 @@ void invalidateMachineFrameAfterQuickstop() {
   machineFrame.revision = invalidatedRevision;
   machineFrame.updatedAtMs = millis();
   marlinPosition = PositionTelemetry();
-  telemetryPositionDirty = true;
+  touchPositionStatus();
 }
 
 void startImmediateStopPrioritySequence() {
@@ -3590,7 +3685,7 @@ void sendJogCommand(const String &cmd) {
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
   readMarlinResponseFor(80, true);
-  telemetryJogDirty = true;
+  touchJogStatus();
 }
 
 String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
@@ -3600,7 +3695,7 @@ String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
   Serial.print('\n');
   jogStatus.lastCommand = cmd;
   const String response = readMarlinResponseFor(timeoutMs, true);
-  telemetryJogDirty = true;
+  touchJogStatus();
   return response;
 }
 
@@ -3749,7 +3844,7 @@ void updatePositionFromMarlinResponse(const String &response) {
     }
     machineFrame.updatedAtMs = millis();
     ++machineFrame.revision;
-    telemetryPositionDirty = true;
+    touchPositionStatus();
   }
 }
 
@@ -3942,7 +4037,7 @@ void offerJogZRestore() {
   }
 
   jogStatus.zRestoreAvailable = true;
-  telemetryJogDirty = true;
+  touchJogStatus();
 }
 
 void updateJogMotionHorizon(uint32_t now) {
@@ -3964,7 +4059,7 @@ void finishGracefulJogStop() {
   jogStatus.lastHorizonUpdateMs = 0;
   jogStatus.state = JogState::Idle;
   offerJogZRestore();
-  telemetryJogDirty = true;
+  touchJogStatus();
 }
 
 void stopJogInternal(bool emergencyStop) {
@@ -3992,13 +4087,13 @@ void stopJogInternal(bool emergencyStop) {
     jogStatus.lastHorizonUpdateMs = 0;
     jogStatus.zRestoreAvailable = false;
     jogStatus.state = JogState::Idle;
-    telemetryJogDirty = true;
+    touchJogStatus();
     return;
   }
 
   // Normal pointer release: stop adding absolute targets and let the short
   // planner horizon drain naturally without inserting a hard stop.
-  telemetryJogDirty = true;
+  touchJogStatus();
 }
 
 void setJogError(const String &message) {
@@ -4010,7 +4105,7 @@ void setJogError(const String &message) {
   jogStatus.z = 0;
   jogStatus.speed = 0;
   logJobEvent("jog error: " + message);
-  telemetryJogDirty = true;
+  touchJogStatus();
 }
 
 bool prepareSafeJogLift() {
@@ -4045,7 +4140,7 @@ bool prepareSafeJogLift() {
     return false;
   }
   jogStatus.zLiftedForJog = true;
-  telemetryJogDirty = true;
+  touchJogStatus();
   return true;
 }
 
@@ -4196,7 +4291,7 @@ void processJogRunner() {
   jogStatus.lastMoveSentAtMs = now;
   jogStatus.queuedMotionHorizonMs = min(kJogMaxHorizonMs,
                                         jogStatus.queuedMotionHorizonMs + kJogSegmentDurationMs);
-  telemetryJogDirty = true;
+  touchJogStatus();
 }
 
 bool restoreJogZNow(String &error) {
@@ -4225,7 +4320,7 @@ bool restoreJogZNow(String &error) {
     jogStatus.zRestoreAvailable = false;
     error = "Z changed after jog; saved restore was cancelled";
     jogStatus.lastError = error;
-    telemetryJogDirty = true;
+    touchJogStatus();
     return false;
   }
 
@@ -4237,7 +4332,7 @@ bool restoreJogZNow(String &error) {
   if (!responseContainsToken(finishResponse, "ok") || responseContainsToken(finishResponse, "Error:")) {
     error = "Marlin did not confirm restored Z movement";
     jogStatus.lastError = error;
-    telemetryJogDirty = true;
+    touchJogStatus();
     return false;
   }
   jogStatus.zLiftedForJog = false;
@@ -4246,7 +4341,7 @@ bool restoreJogZNow(String &error) {
   jogStatus.originalZCaptured = false;
   jogStatus.safeLiftWorkZCaptured = false;
   jogStatus.lastError = "";
-  telemetryJogDirty = true;
+  touchJogStatus();
   return true;
 }
 
@@ -6789,7 +6884,7 @@ void handleTestMotionStart() {
   marlinAsyncLine = "";
   streamMotionMode = "G0";
   resetMotionTimingState();
-  motionTelemetryCount = 0;
+  resetMotionTelemetry();
   motionTelemetryDropped = 0;
   clearPriorityCommands();
   jobStatus.state = JobRunnerState::Preparing;
@@ -6887,7 +6982,7 @@ void handleProductionResumeStart() {
   jobStatus = JobRunnerStatus();
   streamMotionMode = "G0";
   resetMotionTimingState();
-  motionTelemetryCount = 0;
+  resetMotionTelemetry();
   motionTelemetryDropped = 0;
   clearPriorityCommands();
   jobStatus.state = JobRunnerState::Preparing;
@@ -7070,7 +7165,7 @@ void handleJobStart() {
   marlinAsyncLine = "";
   streamMotionMode = "G0";
   resetMotionTimingState();
-  motionTelemetryCount = 0;
+  resetMotionTelemetry();
   motionTelemetryDropped = 0;
   clearPriorityCommands();
   jobStatus.state = JobRunnerState::Preparing;
@@ -7456,7 +7551,7 @@ void handleJogStart() {
   }
 
   jogStatus.state = JogState::Jogging;
-  telemetryJogDirty = true;
+  touchJogStatus();
   server.send(200, "application/json", jogStatusJson());
 }
 
@@ -7580,7 +7675,7 @@ void handleManualMachineFrame() {
   machineFrame.homingSessionId = "";
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
-  telemetryPositionDirty = true;
+  touchPositionStatus();
   String json = "{\"ok\":true,\"mode\":\"" + mode + "\",\"before\":\"" +
                 jsonEscape(before) + "\",\"after\":\"" + jsonEscape(after) +
                 "\",\"frame\":" + machineFrameJson() + "}";
@@ -7684,7 +7779,7 @@ void handleMachineHome() {
   }
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
-  telemetryPositionDirty = true;
+  touchPositionStatus();
   server.send(200, "application/json", machineFrameJson());
 }
 
@@ -7738,7 +7833,7 @@ void handleSetWorkZero() {
   if (axes == "xyz") marlinPosition.z = 0;
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
-  telemetryPositionDirty = true;
+  touchPositionStatus();
   String json = "{\"ok\":true,\"axes\":\"" + axes + "\",\"before\":\"" +
                 jsonEscape(before) + "\",\"after\":\"" + jsonEscape(after) +
                 "\",\"frame\":" + machineFrameJson() + "}";
@@ -7784,7 +7879,7 @@ void handleSetZZero() {
     }
     logJobEvent("tool change Z zero completed manually");
   }
-  telemetryPositionDirty = true;
+  touchPositionStatus();
   String json = "{\"ok\":true,\"before\":\"" + jsonEscape(before) + "\",\"after\":\"" +
                 jsonEscape(after) + "\",\"frame\":" + machineFrameJson() + "}";
   server.send(200, "application/json", json);
@@ -7859,7 +7954,7 @@ void handleTouchPlateZZero() {
     }
     logJobEvent("tool change Z zero completed with touch plate");
   }
-  telemetryPositionDirty = true;
+  touchPositionStatus();
   String json = "{\"ok\":true,\"method\":\"touchplate\",\"probeCommand\":\"" +
                 jsonEscape(probeCommand) + "\",\"before\":\"" + jsonEscape(before) +
                 "\",\"contact\":\"" + jsonEscape(contact) + "\",\"after\":\"" +
@@ -8047,7 +8142,7 @@ void handleRestoreWorkZero() {
   machineFrame.workZeroValid = true;
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
-  telemetryPositionDirty = true;
+  touchPositionStatus();
 
   logJobEvent("restored saved " + axes + " zero at machine X" + String(machineX, 3) +
               " Y" + String(machineY, 3) + (moveToZ ? " Z" + String(machineZ, 3) : ""));
@@ -8448,9 +8543,12 @@ void startHttpServer() {
   server.begin();
   logSystemEvent("HTTP server started port=80 apIp=" + WiFi.softAPIP().toString() +
                  " staIp=" + WiFi.localIP().toString());
+  telemetryStateMutex = xSemaphoreCreateMutex();
+  motionEventQueue = xQueueCreate(16, sizeof(MotionTelemetryEvent));
+  logEventQueue = xQueueCreate(32, sizeof(uint32_t));
   telemetrySocket.begin();
   telemetrySocket.onEvent(handleTelemetrySocket);
-  // Non-blocking queue task: xQueueSend(telemetryQueue, &packet, 0) xTaskCreatePinnedToCore(telemetryNetworkTask
+  xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 8192, nullptr, 1, &telemetryTaskHandle, 0);
   logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort));
 }
 } // namespace
@@ -8508,8 +8606,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  telemetrySocket.loop();
-  processTelemetrySocket();
+  stageTelemetryUpdates();
   processMachineDiscovery();
   processJobRunner();
   processPersistentJobCheckpoint();

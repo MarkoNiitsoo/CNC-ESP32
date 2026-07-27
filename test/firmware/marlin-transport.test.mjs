@@ -250,31 +250,30 @@ describe('delta telemetry transport', () => {
   it('keeps WebSocket telemetry separate from HTTP controls', () => {
     expect(source).toContain('WebSocketsServer telemetrySocket(kTelemetryWebSocketPort)');
     expect(source).toContain('telemetrySocket.onEvent(handleTelemetrySocket)');
-    expect(source).toContain('xQueueSend(telemetryQueue, &packet, 0)');
     expect(source).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
-    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())');
-    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())');
+    expect(source).toContain('xSemaphoreTake(telemetryStateMutex');
+    expect(source).toContain('xQueueSend(motionEventQueue');
+    expect(source).toContain('xQueueSend(logEventQueue');
     expect(source).toContain('constexpr uint32_t kTelemetryMinBroadcastMs = 100');
+    expect(source).not.toContain('enqueueTelemetry');
   });
 
   it('marks job changes for a later non-blocking broadcast', () => {
-    expect(source).toMatch(/void touchJobStatus\(\)[\s\S]*telemetryJobDirty = true/);
-    expect(source).toMatch(/void loop\(\)[\s\S]*server\.handleClient\(\);[\s\S]*processTelemetrySocket\(\);/);
+    expect(source).toContain('void stageTelemetryUpdates()');
+    expect(source).toMatch(/void loop\(\)[\s\S]*server\.handleClient\(\);[\s\S]*stageTelemetryUpdates\(\);/);
   });
 
   it('broadcasts position only when an M114 response changes XYZ', () => {
     expect(source).toContain('void updatePositionFromMarlinResponse(const String &response)');
     expect(source).toMatch(/addMarlinLog\("rx", priority, response\);[\s\S]*updatePositionFromMarlinResponse\(response\)/);
     expect(source).toContain('fabs(marlinPosition.x - x) > 0.0005f');
-    expect(source).toContain('telemetryPositionDirty = true');
-    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Position, machineFrameJson())');
+    expect(source).toContain('touchPositionStatus()');
   });
 
   it('streams only new log entries to clients that requested logs', () => {
     expect(source).toContain('uint32_t nextMarlinLogId = 1');
     expect(source).toContain('telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX]');
-    expect(source).toContain('message.indexOf("\\\"log\\\":true")');
-    expect(source).toMatch(/entry\.id <= telemetryLastLogId/);
+    expect(source).toContain('xQueueSend(logEventQueue, &entryId, 0)');
     expect(source).toContain('server.arg("after").toInt()');
     expect(source).toContain('\\\"nextId\\\"');
   });
@@ -282,7 +281,7 @@ describe('delta telemetry transport', () => {
   it('batches compact motion events and throttles full job progress telemetry', () => {
     expect(source).toContain('constexpr uint32_t kJobProgressBroadcastMs = 500');
     expect(source).toContain('void queueMotionTelemetry(const String &command, uint32_t sequence)');
-    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Motion, data)');
+    expect(source).toContain('xQueueSend(motionEventQueue, &ev, 0)');
     expect(source).toContain('queueMotionTelemetry(line, jobStatus.currentLineNumber)');
     expect(source).toMatch(/void touchJobProgress\(\)[\s\S]*kJobProgressBroadcastMs/);
   });

@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Handoff
+
+- Completed transport-isolation repair on `feature/phase1-websocket-transport`.
+- Architecture highlights:
+  - Core 0 network task `telemetryNetworkTask` exclusively owns `telemetrySocket.loop()`, WebSocket callbacks (`handleTelemetrySocket`), client protocol sequencing, and socket sends (`sendTXT`).
+  - Arduino main `loop()` on Core 1 never invokes WebSocket functions.
+  - Latest-value replacement (coalescing) via `telemetryStateMutex` for top-level state slices (`system`, `controller`, `machine`, `job`, `jog`, `control`). Main loop calls `stageTelemetryUpdates()` non-blockingly (`xSemaphoreTake(..., 0)`). Network task locks mutex for 5ms, copies staged state, clears dirty flags, releases lock, and sends patch packets outside the lock.
+  - Bounded non-blocking event queues (`motionEventQueue` max 16, `logEventQueue` max 32) using `xQueueSend(..., 0)` for ordered motion events and Marlin logs.
+  - Removed obsolete `enqueueTelemetry()`, dead queue handles, and dead dirty flag variables.
+- Verification: `pio run -e esp32cam` succeeded with 0 errors (19.6% RAM, 73.3% Flash). All 45 test files and 411 tests passed in `npm test`.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Protocol Handoff
 
 - Fixed Phase 1 full-duplex protocol foundation on `feature/phase1-websocket-transport`.

@@ -85,11 +85,12 @@ describe('shared browser telemetry', () => {
   });
 
   it('keeps cutting independent from browser WebSocket delivery', () => {
-    const producer = firmware.slice(firmware.indexOf('void processTelemetrySocket()'), firmware.indexOf('bool initializeSdCard()'));
+    const producer = firmware.slice(firmware.indexOf('void stageTelemetryUpdates()'), firmware.indexOf('void handleTelemetrySocket('));
     expect(producer).not.toContain('telemetrySocket.broadcastTXT');
     expect(producer).not.toContain('telemetrySocket.sendTXT');
-    expect(producer).toContain('enqueueTelemetry');
-    expect(firmware).toContain('xQueueSend(telemetryQueue, &packet, 0)');
+    expect(firmware).toContain('xSemaphoreTake(telemetryStateMutex, 0)');
+    expect(firmware).toContain('xQueueSend(motionEventQueue, &ev, 0)');
+    expect(firmware).toContain('xQueueSend(logEventQueue, &entryId, 0)');
     expect(firmware).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
     expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
     expect(telemetry).toContain("schedule('job')");
