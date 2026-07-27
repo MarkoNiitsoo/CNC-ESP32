@@ -1,5 +1,14 @@
 # Progress
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation 3 Correctness Fixes
+
+- Completed final 3 transport-isolation correctness fixes on `feature/phase1-websocket-transport`:
+  1. Reduced Mutex Critical-Section Scope: Candidate `systemBaseJson` string is built completely on main task stack (`buildSystemBaseJson()`) BEFORE acquiring `telemetryStateMutex` in `stageTelemetryUpdates()`. Mutex is held only to copy staged strings, dirty flags, and revision. Removed unused `diffSystem`.
+  2. Monotonic Revision Fallback: Maintained `netLastObservedRevision` (initialized to 1 and updated whenever `stagedState.globalRevision > netLastObservedRevision` under lock). On mutex timeout, `getStagedStateRevision()` returns `netLastObservedRevision` instead of regressing to 1.
+  3. Verified Snapshot Send Success: In `hello`, `resync`, and pending snapshot retry handlers, checked `bool sentOK = telemetrySocket.sendTXT(...)`. Set `cs.handshakeComplete = true` and cleared `snapshotPending`/`resyncPending` ONLY AFTER `sentOK` returns true. Preserved `snapshotPending`/`resyncPending` on send failure for automatic retry.
+  4. Added 3 focused source-architecture regression tests in `test/firmware/transport-protocol.test.mjs`.
+  5. Verification: `pio run -e esp32cam` succeeded (19.6% RAM, 73.4% Flash). `npm test` passed with 45 test files and 430 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Correctness Fixes
 
 - Implemented final transport-isolation correctness fixes on `feature/phase1-websocket-transport`:

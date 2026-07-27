@@ -2096,13 +2096,16 @@ String makeProtocolEnvelope(const char *type, uint32_t seq, uint32_t ack, uint32
   return json;
 }
 
+static uint32_t netLastObservedRevision = 1;
+
 uint32_t getStagedStateRevision() {
-  uint32_t rev = 1;
   if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-    rev = stagedState.globalRevision;
+    if (stagedState.globalRevision > netLastObservedRevision) {
+      netLastObservedRevision = stagedState.globalRevision;
+    }
     xSemaphoreGive(telemetryStateMutex);
   }
-  return rev;
+  return netLastObservedRevision;
 }
 
 String makeClientEnvelope(uint8_t client, const char *type, const String &bodyFieldKey, const String &bodyJson) {
@@ -2245,6 +2248,9 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
     jog = stagedState.jogJson;
     cntrl = stagedState.controlJson;
     outRevision = stagedState.globalRevision;
+    if (outRevision > netLastObservedRevision) {
+      netLastObservedRevision = outRevision;
+    }
     xSemaphoreGive(telemetryStateMutex);
   } else {
     return "";
@@ -2277,7 +2283,6 @@ void stageTelemetryUpdates() {
   bool diffJob = false;
   bool diffJog = false;
   bool diffControl = false;
-  bool diffSystem = false;
 
   if (fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
       fabs(marlinPosition.y - cachedSlices.positionY) > 0.0005f ||
@@ -2318,6 +2323,7 @@ void stageTelemetryUpdates() {
     return;
   }
 
+  String sysBaseStr = buildSystemBaseJson();
   String machineStr = diffMachine ? buildMachineSliceJson() : "";
   String controllerStr = diffController ? buildControllerSliceJson() : "";
   String jobStr = diffJob ? jobStatusJson() : "";
@@ -2328,7 +2334,7 @@ void stageTelemetryUpdates() {
     return; // Lock busy! Retries on next loop iteration without losing state.
   }
 
-  stagedState.systemBaseJson = buildSystemBaseJson();
+  stagedState.systemBaseJson = sysBaseStr;
 
   if (diffMachine) {
     stagedState.machineJson = machineStr;
@@ -2476,10 +2482,15 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
-        cs.handshakeComplete = true;
-        cs.snapshotPending = false;
         String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);
-        telemetrySocket.sendTXT(client, snapshot);
+        bool sentOK = telemetrySocket.sendTXT(client, snapshot);
+        if (sentOK) {
+          cs.handshakeComplete = true;
+          cs.snapshotPending = false;
+        } else {
+          cs.handshakeComplete = false;
+          cs.snapshotPending = true;
+        }
       } else {
         cs.handshakeComplete = false;
         cs.snapshotPending = true;
@@ -2491,9 +2502,13 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
-        cs.resyncPending = false;
         String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);
-        telemetrySocket.sendTXT(client, snapshot);
+        bool sentOK = telemetrySocket.sendTXT(client, snapshot);
+        if (sentOK) {
+          cs.resyncPending = false;
+        } else {
+          cs.resyncPending = true;
+        }
       } else {
         cs.resyncPending = true;
       }
@@ -2536,13 +2551,15 @@ void processNetworkTelemetry() {
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
-        if (cs.snapshotPending) {
-          cs.handshakeComplete = true;
-          cs.snapshotPending = false;
-        }
-        cs.resyncPending = false;
         String snapshot = makeClientEnvelopeWithRevision(i, "snapshot", "state", snapshotData, snapshotRev);
-        telemetrySocket.sendTXT(i, snapshot);
+        bool sentOK = telemetrySocket.sendTXT(i, snapshot);
+        if (sentOK) {
+          if (cs.snapshotPending) {
+            cs.handshakeComplete = true;
+            cs.snapshotPending = false;
+          }
+          cs.resyncPending = false;
+        }
       }
     }
   }

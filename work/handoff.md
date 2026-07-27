@@ -1,5 +1,14 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation 3 Correctness Fixes Handoff
+
+- Completed final 3 transport-isolation correctness fixes on `feature/phase1-websocket-transport`.
+- Architecture & Correctness highlights:
+  1. Reduced Mutex Critical-Section Scope: Candidate `systemBaseJson` is constructed completely on main task stack (`buildSystemBaseJson()`) BEFORE acquiring `telemetryStateMutex`. Mutex is held only for atomic copy of staged strings, dirty flags, and revision. Removed unused `diffSystem`.
+  2. Monotonic Revision Fallback: Maintained `netLastObservedRevision` (initialized to 1 and updated whenever `stagedState.globalRevision > netLastObservedRevision` under lock). On mutex timeout, `getStagedStateRevision()` returns `netLastObservedRevision` instead of regressing to 1.
+  3. Verified Snapshot Send Success: Handshake completion (`cs.handshakeComplete = true`) and pending flag clears (`snapshotPending`, `resyncPending`) occur ONLY AFTER `telemetrySocket.sendTXT()` returns `true`. On send failure, pending flags are retained for automatic retry.
+- Verification: `pio run -e esp32cam` succeeded (19.6% RAM, 73.4% Flash). `npm test` passed with 45 test files and 430 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Correctness Fixes Handoff
 
 - Completed final transport-isolation correctness fixes on `feature/phase1-websocket-transport`.

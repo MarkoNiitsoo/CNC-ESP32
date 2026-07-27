@@ -196,6 +196,22 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(mainCppCode).toContain('uint32_t droppedLogs = fetchAndResetLogTelemetryDropped();');
       expect(mainCppCode).toContain('data += ",\\\"dropped\\\":" + String(droppedLogs);');
     });
+
+    it('verifies buildSystemBaseJson is called before telemetryStateMutex acquisition in main task', () => {
+      const stageBlock = mainCppCode.match(/void stageTelemetryUpdates\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      const buildPos = stageBlock.indexOf('buildSystemBaseJson()');
+      const mutexPos = stageBlock.indexOf('xSemaphoreTake(telemetryStateMutex, 0)');
+      expect(buildPos).toBeGreaterThan(-1);
+      expect(mutexPos).toBeGreaterThan(-1);
+      expect(buildPos).toBeLessThan(mutexPos);
+      expect(stageBlock).not.toContain('bool diffSystem');
+    });
+
+    it('verifies monotonic revision fallback and sendTXT success handling for handshake/resync', () => {
+      expect(mainCppCode).toContain('static uint32_t netLastObservedRevision = 1;');
+      expect(mainCppCode).toContain('bool sentOK = telemetrySocket.sendTXT(client, snapshot);');
+      expect(mainCppCode).toContain('bool sentOK = telemetrySocket.sendTXT(i, snapshot);');
+    });
   });
 
 });
