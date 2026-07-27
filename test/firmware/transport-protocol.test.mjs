@@ -30,7 +30,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
   describe('2. Controller Independence & Authoritative State', () => {
     it('provides a normalized controller state and capabilities schema', () => {
       expect(mainCppCode).toContain('controllerStateNormalized');
-      expect(mainCppCode).toContain('normalizedAuthoritativeStateJson');
+      expect(mainCppCode).toContain('buildSnapshotFromStagedState');
       expect(mainCppCode).toContain('capabilities');
       expect(mainCppCode).toContain('homingEpoch');
       expect(telemetryCode).toContain('mirroredState');
@@ -46,9 +46,8 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
   describe('3. Clock Synchronization', () => {
     it('establishes wall-clock offset during hello without altering monotonic uptime', () => {
       expect(telemetryCode).toContain('utcMs: Date.now()');
-      expect(telemetryCode).toContain('timezoneOffsetMinutes');
-      expect(mainCppCode).toContain('protocolState.wallClockOffsetMs');
-      expect(mainCppCode).toContain('protocolState.wallClockValid = true');
+      expect(mainCppCode).toContain('stagedState.wallClock.offsetMs');
+      expect(mainCppCode).toContain('stagedState.wallClock.valid = true');
     });
 
     it('preserves monotonic motion timing independently from wall-clock updates', () => {
@@ -143,6 +142,30 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(mainCppCode).toContain('if (telemetryStateMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr)');
       expect(mainCppCode).toContain('if (taskRes != pdPASS)');
       expect(mainCppCode).toContain('telemetryStarted = false;');
+    });
+
+    it('ensures normalizedAuthoritativeStateJson is completely removed and no fallback reads business state', () => {
+      expect(mainCppCode).not.toContain('String normalizedAuthoritativeStateJson()');
+    });
+
+    it('stages wall clock under mutex on hello and uses staged time in initial snapshot', () => {
+      expect(mainCppCode).toContain('struct StagedWallClockState {');
+      expect(mainCppCode).toContain('stagedState.wallClock.valid = true;');
+      expect(mainCppCode).toContain('stagedState.systemJson = buildSystemSliceJsonFromWallClock(stagedState.wallClock);');
+      expect(mainCppCode).toContain('String snapshotData = buildSnapshotFromStagedState(snapshotRev);');
+    });
+
+    it('ensures telemetrySocket.begin is owned by network task and not called in startHttpServer before task creation', () => {
+      const netTaskBlock = mainCppCode.match(/void telemetryNetworkTask\(\s*void\s*\*arg\s*\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      expect(netTaskBlock).toContain('telemetrySocket.begin()');
+
+      const startHttpBlock = mainCppCode.match(/void startHttpServer\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      expect(startHttpBlock).not.toContain('telemetrySocket.begin()');
+    });
+
+    it('includes log drop counter in outbound log telemetry packet', () => {
+      expect(mainCppCode).toContain('uint32_t droppedLogs = fetchAndResetLogTelemetryDropped();');
+      expect(mainCppCode).toContain('data += ",\\\"dropped\\\":" + String(droppedLogs);');
     });
   });
 

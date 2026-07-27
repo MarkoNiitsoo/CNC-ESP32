@@ -1,5 +1,16 @@
 # Progress
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Final Cleanup
+
+- Completed final transport-isolation cleanup on `feature/phase1-websocket-transport`:
+  1. Removed unsafe snapshot fallback: deleted `normalizedAuthoritativeStateJson()` completely. All WebSocket snapshots originate strictly from `stagedState` under mutex via `buildSnapshotFromStagedState(snapshotRev)`.
+  2. Established single-source cross-task safe wall-clock state: created `StagedWallClockState` POD struct with fixed-size `char timeZone[64]` inside `StagedTelemetryState` protected by `telemetryStateMutex`. Removed duplicate un-synchronized wall-clock variables from `TelemetryProtocolState` and `CachedAuthoritativeSlices`.
+  3. First-hello snapshot time synchronization: network task validates incoming `hello` browser time, acquires `telemetryStateMutex`, updates `stagedState.wallClock`, updates `stagedState.systemJson`, increments state revision, and immediately sends the initial `snapshot` carrying valid browser time.
+  4. Moved WebSocket startup ownership: `telemetrySocket.begin()` and `telemetrySocket.onEvent(handleTelemetrySocket)` are owned exclusively by `telemetryNetworkTask` on Core 0 after task creation succeeds. If task creation fails, no WebSocket server remains started (`telemetryStarted = false`).
+  5. Log drop counter integration: updated `processNetworkTelemetry()` to fetch and reset `logTelemetryDropped` via `fetchAndResetLogTelemetryDropped()` and include `"dropped": <count>` in outbound log patch packets.
+  6. Added 5 focused source-architecture regression tests in `test/firmware/transport-protocol.test.mjs`.
+  7. Verification: `pio run -e esp32cam` succeeded with 0 errors (19.6% RAM, 73.3% Flash). All 45 test files and 423 tests passed in `npm test`.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Runtime & Safety Defect Repairs
 
 - Repaired all runtime and cross-task safety defects in the transport-isolation implementation:

@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Final Cleanup Handoff
+
+- Completed final transport-isolation cleanup on `feature/phase1-websocket-transport`.
+- Architecture & Safety highlights:
+  1. Removed unsafe snapshot fallback: deleted `normalizedAuthoritativeStateJson()` completely. All WebSocket snapshots use `buildSnapshotFromStagedState(snapshotRev)` under mutex.
+  2. Single-source wall-clock ownership: wall clock is stored strictly in `stagedState.wallClock` (`StagedWallClockState` POD struct) under `telemetryStateMutex`. Duplicate un-synchronized wall-clock fields in `TelemetryProtocolState` and `CachedAuthoritativeSlices` were removed.
+  3. First-hello snapshot time: browser time from `hello` is staged under mutex and immediately serialized into the initial `snapshot` sent back to the client.
+  4. Network task socket ownership: `telemetrySocket.begin()` and `telemetrySocket.onEvent(...)` are called inside `telemetryNetworkTask` on Core 0 after task creation succeeds. On task creation failure, no WebSocket server remains started.
+  5. Log drop counter: `fetchAndResetLogTelemetryDropped()` is called in `processNetworkTelemetry()` and included as `"dropped": <count>` in outbound log patches.
+- Verification: `pio run -e esp32cam` succeeded with 0 errors (19.6% RAM, 73.3% Flash). All 45 test files and 423 tests passed in `npm test`.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Runtime & Safety Repair Handoff
 
 - Completed all 10 transport-isolation runtime & cross-task safety defect repairs on `feature/phase1-websocket-transport`.

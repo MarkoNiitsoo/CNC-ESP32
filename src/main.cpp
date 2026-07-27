@@ -500,6 +500,15 @@ inline uint32_t fetchAndResetLogTelemetryDropped() {
   return count;
 }
 
+struct StagedWallClockState {
+  bool valid = false;
+  int64_t offsetMs = 0;
+  int timezoneOffsetMinutes = 0;
+  char timeZone[64] = {};
+  uint32_t syncUptimeMs = 0;
+  char source[16] = "browser";
+};
+
 struct StagedTelemetryState {
   uint32_t globalRevision = 0;
   bool dirtySystem = false;
@@ -508,6 +517,8 @@ struct StagedTelemetryState {
   bool dirtyJob = false;
   bool dirtyJog = false;
   bool dirtyControl = false;
+
+  StagedWallClockState wallClock;
 
   String systemJson;
   String controllerJson;
@@ -1992,10 +2003,6 @@ struct TelemetryClientState {
 struct TelemetryProtocolState {
   uint32_t protocolVersion = 1;
   uint32_t globalStateRevision = 1;
-  int64_t wallClockOffsetMs = 0;
-  int wallClockTimezoneOffsetMinutes = 0;
-  String wallClockTimeZone;
-  bool wallClockValid = false;
   TelemetryClientState clients[WEBSOCKETS_SERVER_CLIENT_MAX];
 };
 TelemetryProtocolState protocolState;
@@ -2023,8 +2030,6 @@ struct CachedAuthoritativeSlices {
   String controlOwner;
   String controllerState;
   String controllerError;
-
-  bool wallClockValid = false;
 };
 CachedAuthoritativeSlices cachedSlices;
 inline void touchJogStatus() { cachedSlices.jogState = ""; }
@@ -2086,26 +2091,36 @@ String makeClientEnvelope(uint8_t client, const char *type, const String &bodyFi
   return makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
 }
 
-String buildSystemSliceJson() {
+String buildSystemSliceJsonFromWallClock(const StagedWallClockState &clock) {
   String patchJson = "{\"bootId\":\"esp-";
   patchJson += bootSessionId;
   patchJson += "\",\"protocolVersion\":1,\"health\":";
   patchJson += healthStatusJson();
   patchJson += ",\"time\":{\"utcMs\":";
-  if (protocolState.wallClockValid) {
-    uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + protocolState.wallClockOffsetMs);
+  if (clock.valid) {
+    uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + clock.offsetMs);
     patchJson += String(nowUtc);
   } else {
     patchJson += "null";
   }
   patchJson += ",\"timezoneOffsetMinutes\":";
-  patchJson += String(protocolState.wallClockTimezoneOffsetMinutes);
+  patchJson += String(clock.timezoneOffsetMinutes);
   patchJson += ",\"timeZone\":\"";
-  patchJson += jsonEscape(protocolState.wallClockTimeZone);
+  patchJson += jsonEscape(clock.timeZone);
   patchJson += "\",\"valid\":";
-  patchJson += protocolState.wallClockValid ? "true" : "false";
+  patchJson += clock.valid ? "true" : "false";
   patchJson += "}}";
   return patchJson;
+}
+
+String buildSystemSliceJson() {
+  if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+    StagedWallClockState clockCopy = stagedState.wallClock;
+    xSemaphoreGive(telemetryStateMutex);
+    return buildSystemSliceJsonFromWallClock(clockCopy);
+  }
+  StagedWallClockState emptyClock;
+  return buildSystemSliceJsonFromWallClock(emptyClock);
 }
 
 String buildControllerSliceJson() {
@@ -2156,7 +2171,8 @@ String buildControlSliceJson() {
 }
 
 void initializeStagedState() {
-  stagedState.systemJson = buildSystemSliceJson();
+  stagedState.wallClock = StagedWallClockState{};
+  stagedState.systemJson = buildSystemSliceJsonFromWallClock(stagedState.wallClock);
   stagedState.controllerJson = buildControllerSliceJson();
   stagedState.machineJson = buildMachineSliceJson();
   stagedState.jobJson = jobStatusJson();
@@ -2189,7 +2205,6 @@ void initializeStagedState() {
   cachedSlices.jogState = jogStateName(jogStatus.state);
   cachedSlices.jogError = jogStatus.lastError;
   cachedSlices.controlOwner = operatorSessionOwner;
-  cachedSlices.wallClockValid = protocolState.wallClockValid;
 }
 
 String buildSnapshotFromStagedState(uint32_t &outRevision) {
@@ -2211,26 +2226,6 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
   }
 
   String json = "{\"system\":" + sys + ",\"controller\":" + ctrl + ",\"machine\":" + mach + ",\"job\":" + job + ",\"jog\":" + jog + ",\"control\":" + cntrl + "}";
-  return json;
-}
-
-String normalizedAuthoritativeStateJson() {
-  uint32_t rev = 0;
-  String snapshot = buildSnapshotFromStagedState(rev);
-  if (snapshot.length() > 0) return snapshot;
-  String json = "{\"system\":";
-  json += buildSystemSliceJson();
-  json += ",\"controller\":";
-  json += buildControllerSliceJson();
-  json += ",\"machine\":";
-  json += buildMachineSliceJson();
-  json += ",\"job\":";
-  json += jobStatusJson();
-  json += ",\"jog\":";
-  json += jogStatusJson();
-  json += ",\"control\":";
-  json += buildControlSliceJson();
-  json += "}";
   return json;
 }
 
@@ -2293,11 +2288,7 @@ void stageTelemetryUpdates() {
     diffControl = true;
   }
 
-  if (protocolState.wallClockValid != cachedSlices.wallClockValid) {
-    diffSystem = true;
-  }
-
-  if (!diffMachine && !diffController && !diffJob && !diffJog && !diffControl && !diffSystem) {
+  if (!diffMachine && !diffController && !diffJob && !diffJog && !diffControl) {
     return;
   }
 
@@ -2306,7 +2297,6 @@ void stageTelemetryUpdates() {
   String jobStr = diffJob ? jobStatusJson() : "";
   String jogStr = diffJog ? jogStatusJson() : "";
   String controlStr = diffControl ? buildControlSliceJson() : "";
-  String systemStr = diffSystem ? buildSystemSliceJson() : "";
 
   if (xSemaphoreTake(telemetryStateMutex, 0) != pdTRUE) {
     return; // Lock busy! Retries on next loop iteration without losing state.
@@ -2331,10 +2321,6 @@ void stageTelemetryUpdates() {
   if (diffControl) {
     stagedState.controlJson = controlStr;
     stagedState.dirtyControl = true;
-  }
-  if (diffSystem) {
-    stagedState.systemJson = systemStr;
-    stagedState.dirtySystem = true;
   }
 
   protocolState.globalStateRevision++;
@@ -2372,11 +2358,7 @@ void stageTelemetryUpdates() {
   if (diffControl) {
     cachedSlices.controlOwner = operatorSessionOwner;
   }
-  if (diffSystem) {
-    cachedSlices.wallClockValid = protocolState.wallClockValid;
-  }
 }
-
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
   if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return;
   TelemetryClientState &cs = protocolState.clients[client];
@@ -2442,13 +2424,22 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       int tzOffset = doc["timezoneOffsetMinutes"] | 0;
       String timeZoneStr = doc["timeZone"] | "";
 
-      if (utcMs > 1000000000000ULL) {
+      if (utcMs > 1000000000000ULL && telemetryStateMutex != nullptr) {
         int64_t newOffset = static_cast<int64_t>(utcMs) - static_cast<int64_t>(millis());
-        if (!protocolState.wallClockValid || llabs(newOffset - protocolState.wallClockOffsetMs) < 60000LL) {
-          protocolState.wallClockOffsetMs = newOffset;
-          protocolState.wallClockTimezoneOffsetMinutes = tzOffset;
-          if (timeZoneStr.length() > 0) protocolState.wallClockTimeZone = timeZoneStr;
-          protocolState.wallClockValid = true;
+        if (xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          if (!stagedState.wallClock.valid || llabs(newOffset - stagedState.wallClock.offsetMs) < 60000LL) {
+            stagedState.wallClock.valid = true;
+            stagedState.wallClock.offsetMs = newOffset;
+            stagedState.wallClock.timezoneOffsetMinutes = tzOffset;
+            snprintf(stagedState.wallClock.timeZone, sizeof(stagedState.wallClock.timeZone), "%s", timeZoneStr.c_str());
+            stagedState.wallClock.syncUptimeMs = millis();
+            snprintf(stagedState.wallClock.source, sizeof(stagedState.wallClock.source), "browser");
+
+            stagedState.systemJson = buildSystemSliceJsonFromWallClock(stagedState.wallClock);
+            protocolState.globalStateRevision++;
+            stagedState.globalRevision = protocolState.globalStateRevision;
+          }
+          xSemaphoreGive(telemetryStateMutex);
         }
       }
 
@@ -2600,6 +2591,7 @@ void processNetworkTelemetry() {
       events[count++] = lev;
     }
     if (count > 0) {
+      uint32_t droppedLogs = fetchAndResetLogTelemetryDropped();
       for (size_t k = 0; k < count; ++k) {
         const LogTelemetryEvent &logEv = events[k];
         String data = "{\"entries\":[{\"id\":";
@@ -2618,6 +2610,7 @@ void processNetworkTelemetry() {
         data += String(logEv.id);
         data += ",\"lastCritical\":";
         data += logEv.lastCriticalMessage[0] != '\0' ? "\"" + jsonEscape(logEv.lastCriticalMessage) + "\"" : "null";
+        data += ",\"dropped\":" + String(droppedLogs);
         data += "}";
 
         for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
@@ -2636,6 +2629,11 @@ void processNetworkTelemetry() {
 
 void telemetryNetworkTask(void *arg) {
   (void)arg;
+  telemetrySocket.begin();
+  telemetrySocket.onEvent(handleTelemetrySocket);
+  telemetryStarted = true;
+  logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort));
+
   for (;;) {
     telemetrySocket.loop();
     processNetworkTelemetry();
@@ -8653,9 +8651,6 @@ void startHttpServer() {
 
   initializeStagedState();
 
-  telemetrySocket.begin();
-  telemetrySocket.onEvent(handleTelemetrySocket);
-
   BaseType_t taskRes = xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 8192, nullptr, 1, &telemetryTaskHandle, 0);
   if (taskRes != pdPASS) {
     logSystemEvent("Telemetry initialization failed: task creation error");
@@ -8666,9 +8661,6 @@ void startHttpServer() {
     telemetryStarted = false;
     return;
   }
-
-  telemetryStarted = true;
-  logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort));
 }
 } // namespace
 
