@@ -303,7 +303,7 @@ struct MotionTelemetryEvent {
   String command;
 };
 
-enum class TelemetryChannel : uint8_t { Job, Jog, Position, Motion, Log };
+enum class TelemetryChannel : uint8_t { Job, Jog, Position, Motion, Log, Sync };
 
 struct TelemetryPacket {
   TelemetryChannel channel;
@@ -1833,18 +1833,166 @@ String jogStatusJson() {
   return json;
 }
 
-String telemetryMessage(const char *type, const char *channel, const String &data) {
-  String json = "{\"type\":\"";
+  json += ",\"uptimeMs\":";
+  json += String(now);
+  json += "}";
+  return json;
+}
+
+struct TelemetryProtocolState {
+  uint32_t protocolVersion = 1;
+  uint32_t serverSeq = 0;
+  uint32_t clientAck[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+  uint32_t stateRevision = 0;
+  int64_t wallClockOffsetMs = 0;
+  int wallClockTimezoneOffsetMinutes = 0;
+  String wallClockTimeZone;
+  bool wallClockValid = false;
+  uint32_t lastSyncMs = 0;
+};
+TelemetryProtocolState protocolState;
+
+String controllerStateNormalized() {
+  switch (jobStatus.state) {
+  case JobRunnerState::Idle: return "idle";
+  case JobRunnerState::Preparing: return "preparing";
+  case JobRunnerState::Running: return "running";
+  case JobRunnerState::Pausing: return "pausing";
+  case JobRunnerState::PausedIntact:
+  case JobRunnerState::Paused: return "paused";
+  case JobRunnerState::Resuming: return "resuming";
+  case JobRunnerState::Stopping: return "stopping";
+  case JobRunnerState::Stopped: return "stopped";
+  case JobRunnerState::Completed: return "completed";
+  case JobRunnerState::RecoveryRequired: return "recovery_required";
+  case JobRunnerState::Error: return "error";
+  }
+  return "idle";
+}
+
+String normalizedAuthoritativeStateJson() {
+  String json = "{\"system\":{\"bootId\":\"esp-";
+  json += bootSessionId;
+  json += "\",\"protocolVersion\":1,\"health\":";
+  json += healthStatusJson();
+  json += ",\"time\":{\"utcMs\":";
+  if (protocolState.wallClockValid) {
+    uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + protocolState.wallClockOffsetMs);
+    json += String(nowUtc);
+  } else {
+    json += "null";
+  }
+  json += ",\"timezoneOffsetMinutes\":";
+  json += String(protocolState.wallClockTimezoneOffsetMinutes);
+  json += ",\"timeZone\":\"";
+  json += jsonEscape(protocolState.wallClockTimeZone);
+  json += "\",\"valid\":";
+  json += protocolState.wallClockValid ? "true" : "false";
+  json += "}},\"connection\":{\"connected\":true,\"lastError\":null}";
+  json += ",\"controller\":{\"type\":\"marlin\",\"identity\":\"";
+  json += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : "Marlin");
+  json += "\",\"connected\":true,\"state\":\"";
+  json += controllerStateNormalized();
+  json += "\",\"lastError\":";
+  json += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
+  json += ",\"capabilities\":{\"homing\":true,\"absoluteMachineMove\":true,\"positionReports\":true,\"pause\":true,\"resume\":true,\"stop\":true,\"feedOverride\":true,\"arcs\":true,\"toolChange\":true}}";
+  json += ",\"machine\":{\"position\":{\"work\":{\"x\":";
+  json += String(marlinPosition.x, 3);
+  json += ",\"y\":";
+  json += String(marlinPosition.y, 3);
+  json += ",\"z\":";
+  json += String(marlinPosition.z, 3);
+  json += "},\"machine\":{\"x\":";
+  json += String(machineFrame.machineX, 3);
+  json += ",\"y\":";
+  json += String(machineFrame.machineY, 3);
+  json += ",\"z\":";
+  json += String(machineFrame.machineZ, 3);
+  json += "}},\"frame\":";
+  json += machineFrameJson();
+  json += ",\"homedAxes\":{\"x\":";
+  json += machineFrame.homedX ? "true" : "false";
+  json += ",\"y\":";
+  json += machineFrame.homedY ? "true" : "false";
+  json += ",\"z\":";
+  json += machineFrame.homedZ ? "true" : "false";
+  json += "},\"homingEpoch\":";
+  json += String(machineFrame.homingEpoch);
+  json += "}";
+  json += ",\"job\":";
+  json += jobStatusJson();
+  json += ",\"jog\":";
+  json += jogStatusJson();
+  json += ",\"control\":{\"owner\":";
+  json += operatorSessionOwner.length() > 0 ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+  json += "}}";
+  return json;
+}
+
+String makeProtocolEnvelope(const char *type, uint32_t seq, uint32_t ack, uint32_t revision, const String &bodyFieldKey, const String &bodyJson) {
+  String json = "{\"protocolVersion\":1,\"type\":\"";
   json += type;
-  json += "\",\"revision\":";
-  json += String(++telemetryRevision);
+  json += "\",\"seq\":";
+  json += String(seq);
+  json += ",\"ack\":";
+  json += String(ack);
+  json += ",\"bootId\":\"esp-";
+  json += bootSessionId;
+  json += "\",\"stateRevision\":";
+  json += String(revision);
+  if (bodyFieldKey.length() > 0 && bodyJson.length() > 0) {
+    json += ",\"";
+    json += bodyFieldKey;
+    json += "\":";
+    json += bodyJson;
+  }
+  json += "}";
+  return json;
+}
+
+String telemetryMessage(const char *type, const char *channel, const String &data) {
+  uint32_t seq = ++protocolState.serverSeq;
+  uint32_t ack = 0;
+  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
+    if (telemetryClientConnected[i] && protocolState.clientAck[i] > ack) {
+      ack = protocolState.clientAck[i];
+    }
+  }
+  uint32_t revision = ++protocolState.stateRevision;
+  String json = "{\"protocolVersion\":1,\"type\":\"";
+  json += type;
+  json += "\",\"seq\":";
+  json += String(seq);
+  json += ",\"ack\":";
+  json += String(ack);
+  json += ",\"bootId\":\"esp-";
+  json += bootSessionId;
+  json += "\",\"stateRevision\":";
+  json += String(revision);
+  json += ",\"revision\":";
+  json += String(revision);
   if (channel != nullptr) {
     json += ",\"channel\":\"";
     json += channel;
     json += "\"";
   }
-  json += ",\"data\":";
-  json += data;
+  if (strcmp(type, "snapshot") == 0) {
+    json += ",\"state\":";
+    json += normalizedAuthoritativeStateJson();
+  } else if (strcmp(type, "delta") == 0 || strcmp(type, "patch") == 0) {
+    json += ",\"patch\":{";
+    if (channel != nullptr) {
+      json += "\"";
+      json += channel;
+      json += "\":";
+      json += data;
+    }
+    json += "}";
+  }
+  if (data.length() > 0) {
+    json += ",\"data\":";
+    json += data;
+  }
   json += "}";
   return json;
 }
@@ -1864,16 +2012,54 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
   if (type == WStype_CONNECTED) {
     telemetryClientConnected[client] = true;
     telemetryLogSubscribed[client] = false;
+    protocolState.clientAck[client] = 0;
     String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
     telemetrySocket.sendTXT(client, snapshot);
   } else if (type == WStype_DISCONNECTED) {
     telemetryClientConnected[client] = false;
     telemetryLogSubscribed[client] = false;
+    protocolState.clientAck[client] = 0;
   } else if (type == WStype_TEXT) {
     String message;
     message.reserve(length);
     for (size_t i = 0; i < length; ++i) message += static_cast<char>(payload[i]);
-    telemetryLogSubscribed[client] = message.indexOf("\"log\":true") >= 0;
+
+    int versionVal = extractJsonInt(message, "protocolVersion", 1);
+    String msgType = extractJsonString(message, "type");
+    int seqVal = extractJsonInt(message, "seq", 0);
+    if (seqVal > 0) {
+      protocolState.clientAck[client] = static_cast<uint32_t>(seqVal);
+    }
+
+    if (versionVal != 1) {
+      String errPacket = makeProtocolEnvelope("protocol-error", ++protocolState.serverSeq, protocolState.clientAck[client], protocolState.stateRevision, "error", "\"unsupported protocol version\"");
+      telemetrySocket.sendTXT(client, errPacket);
+      return;
+    }
+
+    if (msgType == "hello") {
+      float utcMsFloat = extractJsonFloat(message, "utcMs", 0.0f);
+      int tzOffset = extractJsonInt(message, "timezoneOffsetMinutes", 0);
+      String timeZoneStr = extractJsonString(message, "timeZone");
+      if (utcMsFloat > 1000.0f) {
+        int64_t newOffset = static_cast<int64_t>(utcMsFloat) - static_cast<int64_t>(millis());
+        if (!protocolState.wallClockValid || llabs(newOffset - protocolState.wallClockOffsetMs) < 60000LL) {
+          protocolState.wallClockOffsetMs = newOffset;
+          protocolState.wallClockTimezoneOffsetMinutes = tzOffset;
+          if (timeZoneStr.length() > 0) protocolState.wallClockTimeZone = timeZoneStr;
+          protocolState.wallClockValid = true;
+        }
+      }
+      String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
+      telemetrySocket.sendTXT(client, snapshot);
+    } else if (msgType == "resync") {
+      String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
+      telemetrySocket.sendTXT(client, snapshot);
+    } else if (msgType == "log") {
+      telemetryLogSubscribed[client] = message.indexOf("\"log\":true") >= 0 || message.indexOf("\"subscribe\":{\"log\":true}") >= 0;
+    } else {
+      telemetryLogSubscribed[client] = message.indexOf("\"log\":true") >= 0;
+    }
   }
 }
 
@@ -1943,6 +2129,7 @@ const char *telemetryChannelName(TelemetryChannel channel) {
   case TelemetryChannel::Position: return "position";
   case TelemetryChannel::Motion: return "motion";
   case TelemetryChannel::Log: return "log";
+  case TelemetryChannel::Sync: return "sync";
   }
   return "unknown";
 }
@@ -1960,6 +2147,13 @@ bool enqueueTelemetry(TelemetryChannel channel, const String &data) {
 
 void processTelemetryPacket(TelemetryPacket *packet) {
   if (packet == nullptr) return;
+  if (packet->channel == TelemetryChannel::Sync) {
+    String syncPacket = makeProtocolEnvelope("sync", ++protocolState.serverSeq, 0, protocolState.stateRevision, "", "");
+    telemetrySocket.broadcastTXT(syncPacket);
+    delete packet;
+    return;
+  }
+
   if (packet->channel == TelemetryChannel::Job) telemetryCachedJob = packet->data;
   if (packet->channel == TelemetryChannel::Jog) telemetryCachedJog = packet->data;
   if (packet->channel == TelemetryChannel::Position) telemetryCachedPosition = packet->data;
@@ -1993,17 +2187,40 @@ void processTelemetrySocket() {
     return;
   }
 
+  bool broadcasted = false;
   if (telemetryJobDirty) {
-    telemetryJobDirty = !enqueueTelemetry(TelemetryChannel::Job, jobStatusJson());
+    if (enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())) {
+      telemetryJobDirty = false;
+      broadcasted = true;
+    }
   }
   if (telemetryJogDirty) {
-    telemetryJogDirty = !enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson());
+    if (enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())) {
+      telemetryJogDirty = false;
+      broadcasted = true;
+    }
   }
   if (telemetryPositionDirty) {
-    telemetryPositionDirty = !enqueueTelemetry(TelemetryChannel::Position, machineFrameJson());
+    if (enqueueTelemetry(TelemetryChannel::Position, machineFrameJson())) {
+      telemetryPositionDirty = false;
+      broadcasted = true;
+    }
   }
   broadcastPendingMotionEvents();
   broadcastPendingLogEntries();
+
+  if (broadcasted) {
+    protocolState.lastSyncMs = now;
+  } else if (now - protocolState.lastSyncMs >= 3000) {
+    bool hasClients = false;
+    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
+      if (telemetryClientConnected[i]) { hasClients = true; break; }
+    }
+    if (hasClients) {
+      enqueueTelemetry(TelemetryChannel::Sync, "");
+      protocolState.lastSyncMs = now;
+    }
+  }
   telemetryLastBroadcastMs = now;
 }
 

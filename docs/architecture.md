@@ -106,27 +106,29 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Captures recent Marlin commands/responses in a bounded log for global UI visibility.
   - Scans safety-critical job metadata with a bounded streaming window, so ARMED and active-run
     checks do not fail when run history grows the JSON beyond an earlier snippet size.
-- Delta telemetry:
-  - Keeps command and safety actions on HTTP.
-  - Publishes an initial job/jog snapshot and revisioned state changes over WebSocket port `81`.
+- Full-duplex WebSocket transport (Phase 1):
+  - Keeps machine commands (Home, Zero, Pause, Resume, Stop, Start, Bounding Box, Jog) on HTTP in Phase 1.
+  - Carries authoritative live state, synchronization, monotonic packet sequencing, piggybacked ACKs, and ESP boot identity.
+  - Establishes a controller-independent state schema normalizing system, connection, controller, machine, job, jog, and control states.
+  - Maintains separate monotonic uptime time (for motion/timeouts) and browser-synchronized wall-clock time (for file/log metadata).
   - Throttles broadcasts to at most 10 Hz and falls back to sparse HTTP polling when disconnected.
   - Batches compact motion-command events for browser-side animation instead of broadcasting full
     job status for every send/ack transition; full progress is limited to 2 Hz.
   - Uses Marlin M154 only while a visible telemetry client exists: 1 second during motion, 2
     seconds while idle, and disabled when no client remains.
-  - Position reports are change-filtered. Predictive animation is deliberately not corrected by
+  - Position reports are change-filtered with a 0.001 mm tolerance threshold. Predictive animation is deliberately not corrected by
     reported-position error in this phase.
   - Preview preserves each parsed segment's streamed command number. Motion deltas animate the
     commanded segment immediately using its retained length and feed, while `M154 S1` reports update
     the authoritative machine frame.
   - If WebSocket telemetry is unavailable, sparse job-status polling deduplicates by command number
     and starts the same animation; this is delayed but smooth rather than a point-to-point jump.
-  - The CNC runner never calls WebSocket send functions. It places serialized deltas into a bounded
+  - The CNC runner never calls WebSocket send functions directly. It places serialized deltas and sync packets into a bounded
     FreeRTOS queue with zero wait time.
   - A dedicated low-priority task pinned to core 0 owns `telemetrySocket.loop()` and every socket
     send. If a sleeping browser leaves TCP blocked, only this task and disposable UI deltas wait.
   - Queue saturation drops telemetry rather than applying backpressure to SD/UART streaming. The
-    task caches latest job/jog/position state and sends a fresh snapshot after reconnect.
+    task caches latest job/jog/position state and sends a fresh snapshot after reconnect or resync.
   - During a long streamed G2/G3 command, complete M154 position lines are parsed as they arrive;
     firmware does not wait for the motion command's final `ok` before publishing position changes.
 - Safe analog jog:

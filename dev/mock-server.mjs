@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MockJobRunner } from './mock-job-runner.mjs';
@@ -856,6 +856,207 @@ export async function createMockServer(options = {}) {
       return json(res, errorStatus(error.message), { ok: false, error: error.message });
     }
   });
+
+  const wsClients = new Set();
+  let mockServerSeq = 0;
+  let mockStateRevision = 0;
+  let mockClientAck = 0;
+
+  function mockNormalizedAuthoritativeState() {
+    return {
+      system: {
+        bootId: env.frame.bootSessionId || `mock-boot-${env.startedAt}`,
+        protocolVersion: 1,
+        health: {
+          firmware: 'CNC-ESP32 Mock Dev Server',
+          firmwareVersion: 'mock-dev',
+          buildDate: new Date().toISOString().slice(0, 10),
+          buildTime: 'local',
+          uptimeMs: Date.now() - env.startedAt,
+          wifiMode: 'mock',
+          ipAddress: '127.0.0.1',
+        },
+        time: {
+          utcMs: env.clockOffsetMs ? Date.now() + env.clockOffsetMs : Date.now(),
+          timezoneOffsetMinutes: env.timezoneOffsetMinutes || 0,
+          timeZone: env.timeZone || 'UTC',
+          valid: Boolean(env.clockOffsetMs),
+        },
+      },
+      connection: { connected: true, lastError: null },
+      controller: {
+        type: 'marlin',
+        identity: 'MockMarlin 2.1.1',
+        connected: true,
+        state: env.runner.status.state.toLowerCase(),
+        lastError: env.runner.status.lastError || null,
+        capabilities: {
+          homing: true, absoluteMachineMove: true, positionReports: true,
+          pause: true, resume: true, stop: true, feedOverride: true,
+          arcs: true, toolChange: true,
+        },
+      },
+      machine: {
+        position: {
+          work: { ...env.marlin.position },
+          machine: { ...env.marlin.machinePosition },
+        },
+        frame: { ...env.frame },
+        homedAxes: { ...env.frame.homedAxes },
+        homingEpoch: env.frame.homingEpoch,
+      },
+      job: env.runner.snapshot(),
+      jog: { ...env.jog },
+      control: { owner: env.operator.owner || null },
+    };
+  }
+
+  function makeMockEnvelope(type, extra = {}) {
+    mockServerSeq += 1;
+    mockStateRevision += 1;
+    return {
+      protocolVersion: 1,
+      type,
+      seq: mockServerSeq,
+      ack: mockClientAck,
+      bootId: env.frame.bootSessionId || `mock-boot-${env.startedAt}`,
+      stateRevision: mockStateRevision,
+      ...extra,
+    };
+  }
+
+  function parseWsFrame(buffer) {
+    if (buffer.length < 2) return null;
+    const secondByte = buffer[1];
+    const isMasked = (secondByte & 0x80) === 0x80;
+    let payloadLen = secondByte & 0x7f;
+    let offset = 2;
+
+    if (payloadLen === 126) {
+      if (buffer.length < 4) return null;
+      payloadLen = buffer.readUInt16BE(2);
+      offset = 4;
+    } else if (payloadLen === 127) {
+      if (buffer.length < 10) return null;
+      payloadLen = Number(buffer.readBigUInt64BE(2));
+      offset = 10;
+    }
+
+    if (isMasked && buffer.length < offset + 4) return null;
+    const maskingKey = isMasked ? buffer.subarray(offset, offset + 4) : null;
+    if (isMasked) offset += 4;
+
+    if (buffer.length < offset + payloadLen) return null;
+    const payload = Buffer.from(buffer.subarray(offset, offset + payloadLen));
+    if (isMasked && maskingKey) {
+      for (let i = 0; i < payload.length; i++) {
+        payload[i] ^= maskingKey[i % 4];
+      }
+    }
+
+    return { payload: payload.toString('utf8'), frameLength: offset + payloadLen };
+  }
+
+  function buildWsFrame(textPayload) {
+    const payloadBuf = Buffer.from(textPayload, 'utf8');
+    const len = payloadBuf.length;
+    let header;
+
+    if (len <= 125) {
+      header = Buffer.from([0x81, len]);
+    } else if (len <= 65535) {
+      header = Buffer.alloc(4);
+      header[0] = 0x81;
+      header[1] = 126;
+      header.writeUInt16BE(len, 2);
+    } else {
+      header = Buffer.alloc(10);
+      header[0] = 0x81;
+      header[1] = 127;
+      header.writeBigUInt64BE(BigInt(len), 2);
+    }
+
+    return Buffer.concat([header, payloadBuf]);
+  }
+
+  function sendMockWs(socket, msgObj) {
+    if (!socket.destroyed) {
+      socket.write(buildWsFrame(JSON.stringify(msgObj)));
+    }
+  }
+
+  function broadcastMockWs(msgObj) {
+    const frame = buildWsFrame(JSON.stringify(msgObj));
+    for (const socket of wsClients) {
+      if (!socket.destroyed) socket.write(frame);
+    }
+  }
+
+  server.on('upgrade', (req, socket) => {
+    const key = req.headers['sec-websocket-key'];
+    if (!key) {
+      socket.destroy();
+      return;
+    }
+    const acceptKey = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write([
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${acceptKey}`,
+      '', '',
+    ].join('\r\n'));
+
+    wsClients.add(socket);
+    let buf = Buffer.alloc(0);
+
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length > 0) {
+        const parsed = parseWsFrame(buf);
+        if (!parsed) break;
+        buf = buf.subarray(parsed.frameLength);
+        try {
+          const msg = JSON.parse(parsed.payload);
+          if (msg.seq) mockClientAck = Number(msg.seq);
+          if (msg.protocolVersion && Number(msg.protocolVersion) !== 1) {
+            sendMockWs(socket, makeMockEnvelope('protocol-error', { error: 'unsupported protocol version' }));
+            return;
+          }
+          if (msg.type === 'hello') {
+            if (msg.utcMs) {
+              env.clockOffsetMs = Number(msg.utcMs) - Date.now();
+              env.timezoneOffsetMinutes = Number(msg.timezoneOffsetMinutes || 0);
+              env.timeZone = String(msg.timeZone || 'UTC');
+            }
+            sendMockWs(socket, makeMockEnvelope('snapshot', {
+              state: mockNormalizedAuthoritativeState(),
+              data: { job: env.runner.snapshot(), jog: env.jog, position: env.marlin.position },
+            }));
+          } else if (msg.type === 'resync') {
+            sendMockWs(socket, makeMockEnvelope('snapshot', {
+              state: mockNormalizedAuthoritativeState(),
+              data: { job: env.runner.snapshot(), jog: env.jog, position: env.marlin.position },
+            }));
+          }
+        } catch {
+          // ignore malformed ws message
+        }
+      }
+    });
+
+    socket.on('close', () => wsClients.delete(socket));
+    socket.on('error', () => wsClients.delete(socket));
+  });
+
+  const mockSyncTimer = setInterval(() => {
+    if (wsClients.size > 0) {
+      broadcastMockWs(makeMockEnvelope('sync'));
+    }
+  }, 3000);
+
+  server.on('close', () => clearInterval(mockSyncTimer));
+
   return { server, env };
 }
 

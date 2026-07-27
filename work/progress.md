@@ -2464,3 +2464,31 @@
   passes 4 files / 43 tests.
 - Final automated verification passes 44 test files / 400 tests. JavaScript syntax checks for
   `www/preview.js` and `www/lib/preview-job-metadata.js` and `git diff --check` also pass.
+
+## 2026-07-27 - Phase 1 Full-Duplex WebSocket Protocol & State Foundation
+
+- Implemented versioned full-duplex WebSocket application protocol (`protocolVersion: 1`) shared across firmware, browser UI, dev mock server, and test suites.
+- Added common packet envelope (`protocolVersion`, `type`, `seq`, `ack`, `bootId`, `stateRevision`).
+- Implemented independent monotonic sequence counters per direction, assigned only upon wire transmission.
+- Implemented piggybacked ACKs, ESP boot ID tracking, and browser mirrored state invalidation when `bootId` changes.
+- Defined firmware-side `ControllerAdapter` boundary and controller-independent authoritative state schema normalizing `system`, `connection`, `controller`, `machine`, `job`, `jog`, and `control`.
+- Implemented 0.001 mm floating-point tolerance on coordinate change detection to suppress parser noise.
+- Added browser-to-ESP wall-clock synchronization derived from browser UTC timestamp, preserving independent monotonic uptime for motion timing.
+- Added idle `sync` heartbeat broadcast after 3000 ms of inactivity over FreeRTOS queue without blocking the main execution/cutting loop.
+- Implemented full protocol parity and HTTP upgrade handler in `dev/mock-server.mjs`.
+- Removed non-port-80 WebSocket restrictions from `www/telemetry.js`.
+- Added dedicated transport protocol Vitest test suite (`test/firmware/transport-protocol.test.mjs`). All 45 test files / 411 tests pass cleanly.
+
+### Temporary Coexistence & Deletion Manifest Checklist
+
+The following legacy endpoints and assumptions are retained temporarily during Phase 1 for safety and will be removed in subsequent migration phases:
+
+- `[ ]` Health HTTP polling (`GET /api/health` polling fallback)
+- `[ ]` Job status HTTP polling (`GET /api/job/status` fallback polling)
+- `[ ]` Jog status HTTP polling (`GET /api/jog/status` fallback polling)
+- `[ ]` Marlin log HTTP fallback (`GET /api/marlin/log?after=...`)
+- `[ ]` Read-only WebSocket assumptions in legacy event handlers
+- `[ ]` Legacy telemetry event channel aliases (`job`, `jog`, `position`)
+- `[ ]` Hardcoded WebSocket port/origin behavior in legacy docs
+- `[ ]` Duplicated legacy state serializers (`telemetrySnapshotData()`)
+

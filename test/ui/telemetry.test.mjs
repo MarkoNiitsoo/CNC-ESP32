@@ -30,7 +30,7 @@ describe('shared browser telemetry', () => {
     expect(preview).toContain("setDemand('job', 'preview-page', true)");
     expect(preview).toContain("setDemand('health', 'preview-page', true)");
     expect(telemetry).toContain("`${config.url}?after=${logCursor}`");
-    expect(telemetry).toContain("socket.send(JSON.stringify({ subscribe: { log: isWanted('log') } }))");
+    expect(telemetry).toContain("subscribe: { log: isWanted('log') }");
     expect(telemetry).toContain('entries: [...byId.values()]');
   });
 
@@ -72,13 +72,11 @@ describe('shared browser telemetry', () => {
   });
 
   it('uses revisioned WebSocket deltas with HTTP fallback', () => {
-    expect(telemetry).toContain('new WebSocket(`ws://${location.hostname}:81/`)');
-    expect(telemetry).toContain("message.type === 'snapshot'");
-    expect(telemetry).toContain("message.type === 'delta'");
-    expect(telemetry).toContain("message.channel === 'position'");
-    expect(telemetry).toContain("message.channel === 'motion'");
+    expect(telemetry).toContain('getWebSocketUrl()');
+    expect(telemetry).toContain("msgType === 'snapshot'");
+    expect(telemetry).toContain("msgType === 'patch'");
     expect(telemetry).toContain("emit('position', message.data.position)");
-    expect(telemetry).toContain('Number(message.revision) <= lastRevision');
+    expect(telemetry).toContain('lastStateRevision');
     expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
     expect(telemetry).toContain("schedule('job')");
     expect(preview).toContain("subscribe('motion', handleMotionTelemetry)");

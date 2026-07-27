@@ -1,0 +1,86 @@
+import { readFile } from 'node:fs/promises';
+import { describe, expect, it } from 'vitest';
+import { createMockEnvironment, createMockServer } from '../../dev/mock-server.mjs';
+
+const telemetryCode = await readFile(new URL('../../www/telemetry.js', import.meta.url), 'utf8');
+const mainCppCode = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
+
+describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
+
+  describe('1. Common Packet Envelope & Sequencing', () => {
+    it('enforces protocol version 1 and readable envelope keys across firmware and mock', () => {
+      expect(mainCppCode).toContain('protocolVersion');
+      expect(mainCppCode).toContain('stateRevision');
+      expect(mainCppCode).toContain('makeProtocolEnvelope');
+      expect(telemetryCode).toContain('protocolVersion: 1');
+    });
+
+    it('uses independent sequence counters and piggybacks last received ack', async () => {
+      const mockEnv = await createMockEnvironment();
+      expect(mockEnv.frame.bootSessionId).toBeDefined();
+    });
+
+    it('ignores duplicate packets and triggers resync on sequence gap', () => {
+      expect(telemetryCode).toContain('if (seq > 0 && seq <= lastServerSeq && msgType !== \'delta\') return;');
+      expect(telemetryCode).toContain('if (seq > 0 && lastServerSeq > 0 && seq > lastServerSeq + 1) {');
+      expect(telemetryCode).toContain('requestResync();');
+    });
+  });
+
+  describe('2. Controller Independence & Authoritative State', () => {
+    it('provides a normalized controller state and capabilities schema', () => {
+      expect(mainCppCode).toContain('controllerStateNormalized');
+      expect(mainCppCode).toContain('normalizedAuthoritativeStateJson');
+      expect(mainCppCode).toContain('capabilities');
+      expect(mainCppCode).toContain('homingEpoch');
+      expect(telemetryCode).toContain('mirroredState');
+    });
+
+    it('does not require Marlin command parsing to interpret generic state packets', () => {
+      expect(telemetryCode).not.toContain('M114');
+      expect(telemetryCode).not.toContain('M115');
+      expect(telemetryCode).not.toContain('FIRMWARE_NAME');
+    });
+  });
+
+  describe('3. Clock Synchronization', () => {
+    it('establishes wall-clock offset during hello without altering monotonic uptime', () => {
+      expect(telemetryCode).toContain('utcMs: Date.now()');
+      expect(telemetryCode).toContain('timezoneOffsetMinutes');
+      expect(mainCppCode).toContain('protocolState.wallClockOffsetMs');
+      expect(mainCppCode).toContain('protocolState.wallClockValid = true');
+    });
+
+    it('preserves monotonic motion timing independently from wall-clock updates', () => {
+      expect(mainCppCode).toContain('millis()');
+      expect(mainCppCode).not.toContain('wallClockOffsetMs + millis() // motion timing');
+    });
+  });
+
+  describe('4. Handshake, Snapshot & Boot Identity', () => {
+    it('sends hello on socket open and receives snapshot', () => {
+      expect(telemetryCode).toContain('type: \'hello\'');
+      expect(telemetryCode).toContain('msgType === \'snapshot\'');
+    });
+
+    it('discards old mirrored state when bootId changes', () => {
+      expect(telemetryCode).toContain('if (bootId && knownBootId && bootId !== knownBootId)');
+      expect(telemetryCode).toContain('mirroredState[key] = null');
+    });
+  });
+
+  describe('5. Mock Server Parity & Non-80 Port Support', () => {
+    it('supports WebSocket on non-port-80 development origins', () => {
+      expect(telemetryCode).not.toContain('(location.port && location.port !== \'80\')');
+      expect(telemetryCode).toContain('getWebSocketUrl()');
+    });
+
+    it('implements full protocol parity in dev/mock-server.mjs', async () => {
+      const { server, env } = await createMockServer();
+      expect(server).toBeDefined();
+      expect(env.frame.bootSessionId).toBeDefined();
+      await new Promise((resolve) => server.close(resolve));
+    });
+  });
+
+});

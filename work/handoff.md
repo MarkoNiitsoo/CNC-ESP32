@@ -2287,3 +2287,21 @@ No firmware upload is required.
   test/ui/job-active-run.test.mjs test/ui/job-workflow.test.mjs` (4 files / 43 tests passing).
 - Full verification: `npm.cmd test` passes 44 files / 400 tests; Preview and metadata-loader syntax
   checks and `git diff --check` pass.
+
+## 2026-07-27 Phase 1 Full-Duplex WebSocket Protocol & State Foundation handoff
+
+- Phase 1 WebSocket application protocol specification and foundation implementation is complete:
+  - Envelope: `{ "protocolVersion": 1, "type": "...", "seq": N, "ack": M, "bootId": "...", "stateRevision": R }`
+  - Sequencing: independent monotonic sequence counters per direction, assigned at transmission.
+  - Piggybacked ACKs: `ack` carries highest contiguous sequence received from peer.
+  - Boot Identity: ESP boot session ID invalidates browser mirrored state on boot ID changes.
+  - Controller Boundary: normalized authoritative state schema (`system`, `connection`, `controller`, `machine`, `job`, `jog`, `control`).
+  - Homing Epoch & Capabilities: controller state reports capabilities and `homingEpoch` to abstract controller details away from browser UI.
+  - Floating-point tolerance: 0.001 mm threshold on coordinates prevents parser noise from polluting delta broadcasts.
+  - Clock Sync: browser sends `utcMs` + `timezoneOffsetMinutes` + `timeZone` in `hello`; firmware sets wall-clock offset without modifying monotonic `millis()` used for timing.
+  - FreeRTOS Async Queue: all telemetry broadcasts and idle `sync` heartbeats run asynchronously on Core 0 task `telemetryNetworkTask`; main loop / cutting stream never call socket send directly.
+  - Parity & Mock: `dev/mock-server.mjs` supports WebSocket upgrade, zero-dependency framing, hello/snapshot/patch/sync envelope handling, and non-port-80 origins.
+- All 45 Vitest test files and 411 unit tests pass (`npm test`).
+- Documents `docs/protocol.md` and `docs/architecture.md` are fully updated.
+- Temporary Coexistence & Deletion Manifest Checklist recorded in `work/progress.md`.
+

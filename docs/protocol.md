@@ -11,41 +11,101 @@ Synchronous Marlin reads finish as soon as a complete terminal response line (`o
 `Alarm:`, or `!!`) arrives. The configured timeout is now a missing-response ceiling rather than a
 fixed delay added to every command.
 
-## WebSocket telemetry
+## Phase 1 WebSocket Application Protocol
 
-Connect to `ws://<pendant-ip>:81/`. This channel is read-only telemetry; movement, Pause, Resume,
-Stop, and advanced manual commands remain HTTP POST operations. On connect firmware sends:
+The application-level WebSocket protocol operates full-duplex on `ws://<pendant-ip>:81/` (or relative `/ws` on dev origins).
 
-```json
-{"type":"snapshot","revision":1,"data":{"job":{},"jog":{}}}
-```
+### Architectural Transport Division
 
-Changed state is sent as a revisioned delta, throttled to at most 10 Hz:
+- **WebSocket**: authoritative live state, synchronization, (later machine-control commands and absolute Jog).
+- **HTTP**: static UI resources, file listing and file transfer, G-code and job JSON, generated files and thumbnails, Aircut workflow, OTA, Wi-Fi and device management.
 
-```json
-{"type":"delta","revision":2,"channel":"job","data":{}}
-```
+Phase 1 migrates state and synchronization. Machine commands (Home, Zero, Pause, Resume, Stop, Start, Bounding Box, Jog) remain on HTTP in Phase 1.
 
-Motion commands use a compact batched delta. `sequence` is the cleaned G-code command number and
-maps to the browser ToolpathModel without using source-file line numbers:
+### Packet Envelope & Sequencing
+
+Every application packet uses readable JSON keys and the common envelope:
 
 ```json
-{"type":"delta","channel":"motion","data":{"events":[{"sequence":12,"sentAtMs":1234,"command":"G1 X10 Y20 F1200"}],"dropped":0,"feedOverridePercent":100}}
+{
+  "protocolVersion": 1,
+  "type": "sync",
+  "seq": 12,
+  "ack": 41,
+  "bootId": "esp-A1B2C3D4-E5F60708",
+  "stateRevision": 106
+}
 ```
 
-Clients ignore duplicate/out-of-order revisions. If the socket disconnects, the SD UI resumes its
-sparse HTTP fallback automatically. Health remains a low-rate HTTP channel.
+- `protocolVersion`: integer `1`.
+- `type`: string.
+  - Browser to ESP: `"hello"`, `"sync"`, `"resync"`, `"log"`.
+  - ESP to Browser: `"snapshot"`, `"patch"`, `"sync"`, `"protocol-error"`.
+- `seq`: monotonic integer counter per direction, assigned only when transmitted over the wire.
+- `ack`: highest contiguous packet sequence number received from the peer.
+- `bootId`: unique string per ESP boot. Browser discards mirrored state when `bootId` changes.
+- `stateRevision`: version counter of authoritative ESP state. Intermediate revisions may disappear through coalescing.
 
-Marlin log delivery is opt-in. A client sends `{"subscribe":{"log":true}}` while its log UI is
-visible and `false` when hidden. Each entry has a monotonic `id`; live deltas contain only new rows.
-HTTP fallback uses `/api/marlin/log?after=<id>` and returns `nextId`, so it also avoids retransmitting
-the full ring buffer.
+### Handshake & Clock Sync
 
-Position telemetry is emitted only after firmware receives an M114/M154-shaped X/Y/Z response and
-the parsed coordinates differ from cached values. A visible WebSocket client enables M154 at one
-second during job/jog motion and two seconds while idle; no client disables it. The browser
-interpolates G0/G1/G2/G3 locally and uses reports for idle/external movement. Prediction error is
-not measured or corrected in this phase. Homing still performs one deliberate M114 after G28.
+On connection, browser sends:
+
+```json
+{
+  "protocolVersion": 1,
+  "type": "hello",
+  "seq": 1,
+  "ack": 0,
+  "knownBootId": null,
+  "lastStateRevision": 0,
+  "utcMs": 1785162634123,
+  "timezoneOffsetMinutes": 180,
+  "timeZone": "Europe/Tallinn"
+}
+```
+
+Firmware sets its wall-clock offset derived from `utcMs` relative to monotonic `millis()`, and replies with a complete authoritative `snapshot`.
+
+### Controller-Independent Authoritative State Schema
+
+```json
+{
+  "system": {
+    "bootId": "esp-...",
+    "protocolVersion": 1,
+    "health": { ... },
+    "time": { "utcMs": 1785162634123, "timezoneOffsetMinutes": 180, "timeZone": "Europe/Tallinn", "valid": true }
+  },
+  "connection": { "connected": true, "lastError": null },
+  "controller": {
+    "type": "marlin",
+    "identity": "Marlin 2.1.1",
+    "connected": true,
+    "state": "idle",
+    "lastError": null,
+    "capabilities": {
+      "homing": true, "absoluteMachineMove": true, "positionReports": true,
+      "pause": true, "resume": true, "stop": true, "feedOverride": true,
+      "arcs": true, "toolChange": true
+    }
+  },
+  "machine": {
+    "position": { "work": { "x": 0, "y": 0, "z": 0 }, "machine": { "x": 0, "y": 0, "z": 0 } },
+    "frame": { ... },
+    "homedAxes": { "x": false, "y": false, "z": false },
+    "homingEpoch": 0
+  },
+  "job": { ... },
+  "jog": { ... },
+  "control": { "owner": null }
+}
+```
+
+### Idle Sync & Resync
+
+- When active traffic occurs, no redundant heartbeats are sent.
+- After 3000 ms of idle time, firmware broadcasts a minimal `sync` packet.
+- On sequence gaps, browser sends `resync`, and ESP replies with a fresh `snapshot`.
 
 ## Browser API
 

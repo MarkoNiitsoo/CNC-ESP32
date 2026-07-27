@@ -252,8 +252,8 @@ describe('delta telemetry transport', () => {
     expect(source).toContain('telemetrySocket.onEvent(handleTelemetrySocket)');
     expect(source).toContain('xQueueSend(telemetryQueue, &packet, 0)');
     expect(source).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
-    expect(source).toContain('telemetryJobDirty = !enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())');
-    expect(source).toContain('telemetryJogDirty = !enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())');
+    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())');
+    expect(source).toContain('enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())');
     expect(source).toContain('constexpr uint32_t kTelemetryMinBroadcastMs = 100');
   });
 
