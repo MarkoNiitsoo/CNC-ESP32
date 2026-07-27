@@ -41,10 +41,12 @@ Every application packet uses readable JSON keys and the common envelope:
 - `type`: string.
   - Browser to ESP: `"hello"`, `"sync"`, `"resync"`, `"log"`.
   - ESP to Browser: `"snapshot"`, `"patch"`, `"sync"`, `"protocol-error"`.
-- `seq`: monotonic integer counter per direction, assigned only when transmitted over the wire.
-- `ack`: highest contiguous packet sequence number received from the peer.
+- `seq`: monotonic integer counter per connection and per direction. Assigned and committed ONLY AFTER successful transmission over the transport (`sendTXT`). Failed sends do not consume sequence numbers.
+- `ack`: highest contiguous packet sequence number successfully processed from the peer. ACKs must advance monotonically (`lastAck <= ack <= highestSent`). ACKs beyond the highest sent sequence generate a protocol error and trigger resync.
 - `bootId`: unique string per ESP boot. Browser discards mirrored state when `bootId` changes.
-- `stateRevision`: version counter of authoritative ESP state. Intermediate revisions may disappear through coalescing.
+- `stateRevision`: global authoritative state version counter. Increments ONLY when authoritative state slices change. `snapshot`, `resync`, `sync`, `log`, `motion`, and retries do NOT increment `stateRevision`.
+- `patch`: contains complete top-level replacement slices (`system`, `controller`, `machine`, `job`, `jog`, `control`). Complete slices replace mirrored state without shallow recursive merging of nested properties. Log and motion events are ordered streaming events, not state slices.
+- `commands & jog`: Phase 1 machine commands and Jog remain on HTTP endpoints.
 
 ### Handshake & Clock Sync
 

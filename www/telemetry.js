@@ -28,6 +28,8 @@
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let clientSeq = 1;
+  let highestClientSeqSuccessfullySent = 0;
+  let highestClientSeqAcknowledgedByESP = 0;
   let lastServerSeq = 0;
   let knownBootId = null;
   let lastStateRevision = 0;
@@ -140,15 +142,22 @@
     schedule(name);
   }
 
+  function sendSocketPacket(packet) {
+    if (!socketConnected || socket?.readyState !== WebSocket.OPEN) return false;
+    const seq = clientSeq++;
+    packet.seq = seq;
+    packet.ack = lastServerSeq;
+    socket.send(JSON.stringify(packet));
+    highestClientSeqSuccessfullySent = seq;
+    return true;
+  }
+
   function sendSocketDemand() {
-    if (!socketConnected || socket?.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({
+    sendSocketPacket({
       protocolVersion: 1,
       type: 'log',
-      seq: clientSeq++,
-      ack: lastServerSeq,
       subscribe: { log: isWanted('log') },
-    }));
+    });
   }
 
   function subscribe(name, listener) {
@@ -160,15 +169,12 @@
   }
 
   function requestResync() {
-    if (!socketConnected || socket?.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({
+    sendSocketPacket({
       protocolVersion: 1,
       type: 'resync',
-      seq: clientSeq++,
-      ack: lastServerSeq,
       knownBootId,
       lastStateRevision,
-    }));
+    });
   }
 
   function applySocketMessage(message) {
@@ -176,9 +182,22 @@
     if (message.protocolVersion && Number(message.protocolVersion) !== 1) return;
 
     const seq = Number(message.seq || 0);
+    const ack = Number(message.ack || 0);
     const bootId = message.bootId || null;
     const stateRevision = Number(message.stateRevision || message.revision || 0);
     const msgType = message.type;
+
+    if (ack > 0) {
+      if (ack > highestClientSeqSuccessfullySent && highestClientSeqSuccessfullySent > 0) {
+        mirroredState.connection.lastError = 'received ACK for unsent packet';
+        window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: { error: 'invalid future ACK' } }));
+        window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
+        requestResync();
+        return;
+      } else if (ack >= highestClientSeqAcknowledgedByESP) {
+        highestClientSeqAcknowledgedByESP = ack;
+      }
+    }
 
     if (msgType === 'protocol-error') {
       mirroredState.connection.lastError = message.error || 'protocol error';
@@ -195,9 +214,22 @@
     }
     if (bootId) knownBootId = bootId;
 
-    if (msgType === 'snapshot') {
+    if (seq > 0) {
+      if (seq <= lastServerSeq && msgType !== 'snapshot') {
+        return;
+      }
+      if (seq > lastServerSeq + 1 && lastServerSeq > 0) {
+        requestResync();
+        return;
+      }
       lastServerSeq = seq;
+    }
+
+    if (stateRevision > 0) {
       lastStateRevision = stateRevision;
+    }
+
+    if (msgType === 'snapshot') {
       if (message.state) {
         ['system', 'controller', 'machine', 'job', 'jog', 'control'].forEach((sliceKey) => {
           if (message.state[sliceKey] !== undefined) {
@@ -213,30 +245,13 @@
     }
 
     if (msgType === 'sync') {
-      if (seq > 0 && lastServerSeq > 0 && seq > lastServerSeq + 1) {
-        requestResync();
-        return;
-      }
-      if (seq > 0) lastServerSeq = seq;
-      if (stateRevision > 0) lastStateRevision = stateRevision;
       return;
     }
 
     if (msgType === 'patch' || msgType === 'delta') {
-      if (seq > 0 && lastServerSeq > 0 && seq > lastServerSeq + 1) {
-        requestResync();
-        return;
-      }
-      if (seq > 0 && seq <= lastServerSeq && msgType !== 'delta') return;
-      if (seq > 0) lastServerSeq = seq;
-      if (stateRevision > 0) lastStateRevision = stateRevision;
-
       if (message.patch) {
         Object.keys(message.patch).forEach((key) => {
-          const updatedSlice = typeof message.patch[key] === 'object' && message.patch[key] !== null
-            ? { ...(mirroredState[key] || {}), ...message.patch[key] }
-            : message.patch[key];
-          emit(key, updatedSlice);
+          emit(key, message.patch[key]);
         });
       }
       if (message.channel && message.data) {
@@ -273,11 +288,13 @@
       });
 
       clientSeq = 1;
-      const helloPacket = {
+      highestClientSeqSuccessfullySent = 0;
+      highestClientSeqAcknowledgedByESP = 0;
+      lastServerSeq = 0;
+
+      sendSocketPacket({
         protocolVersion: 1,
         type: 'hello',
-        seq: clientSeq++,
-        ack: lastServerSeq,
         knownBootId: knownBootId || null,
         lastStateRevision,
         utcMs: Date.now(),
@@ -285,8 +302,7 @@
         timeZone: typeof Intl !== 'undefined' && Intl.DateTimeFormat
           ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
           : 'UTC',
-      };
-      socket.send(JSON.stringify(helloPacket));
+      });
       sendSocketDemand();
     });
     socket.addEventListener('message', (event) => {

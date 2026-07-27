@@ -1,5 +1,17 @@
 # Progress
 
+## 2026-07-27 - Phase 1 WebSocket Protocol Correctness Pass
+
+- Completed Phase 1 WebSocket Protocol Correctness Pass on `feature/phase1-websocket-transport`:
+  1. Firmware Outbound Helper & Sequence Invariant: Refactored all outbound sends (`snapshot`, `patch`, `sync`, `protocol-error`, `motion`, `log`) behind `sendClientPacket()`. Sequence numbers (`nextServerSeq`) are committed and incremented ONLY AFTER `telemetrySocket.sendTXT()` returns `true`.
+  2. ACK Validation & Monotonicity: Enforced `lastServerSeqAcknowledgedByClient <= ack <= highestServerSeqSuccessfullySent`. Out-of-bounds/future ACKs generate a `protocol-error` and trigger resync. Old ACKs are ignored without regressing.
+  3. Browser Client Alignment (`www/telemetry.js`): Added outbound `sendSocketPacket()` helper, sequence gap/duplicate detection, monotonic ACK tracking (`highestClientSeqSuccessfullySent`, `highestClientSeqAcknowledgedByESP`), top-level slice replacement on `patch` without recursive shallow merge, and `cnc-telemetry-protocol-error` event dispatching.
+  4. Mock Dev Server Parity & Framing (`dev/mock-server.mjs`): Added per-client sequence and monotonic ACK validation, outbound write sequence commitment, `/` and `/ws` upgrade paths, and framing support (masked frames, length > 125, multi-frame chunks, split frames, control frames).
+  5. Real Executable Runtime WebSocket Tests (`test/firmware/websocket-runtime.test.mjs`): Created dedicated runtime WebSocket test suite connecting real socket clients to mock server covering 22 protocol runtime scenarios.
+  6. Schema & Slice Alignment: Fixed `machine` schema so `homingEpoch` is consistently positioned in snapshot and patch. Compare complete top-level slice JSON strings in `stageTelemetryUpdates()`.
+  7. Documentation: Updated `docs/protocol.md`.
+  8. Verification: `pio run -e esp32cam` compiled cleanly (19.6% RAM, 73.3% Flash). `npm test` passed 46 test files and 441 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation 3 Correctness Fixes
 
 - Completed final 3 transport-isolation correctness fixes on `feature/phase1-websocket-transport`:

@@ -858,9 +858,7 @@ export async function createMockServer(options = {}) {
   });
 
   const wsClients = new Set();
-  let mockServerSeq = 0;
-  let mockStateRevision = 0;
-  let mockClientAck = 0;
+  let mockStateRevision = 1;
 
   function mockNormalizedAuthoritativeState() {
     return {
@@ -877,10 +875,10 @@ export async function createMockServer(options = {}) {
           ipAddress: '127.0.0.1',
         },
         time: {
-          utcMs: env.clockOffsetMs ? Date.now() + env.clockOffsetMs : Date.now(),
+          utcMs: env.clockOffsetMs !== undefined && env.clockOffsetMs !== null ? Date.now() + env.clockOffsetMs : Date.now(),
           timezoneOffsetMinutes: env.timezoneOffsetMinutes || 0,
           timeZone: env.timeZone || 'UTC',
-          valid: Boolean(env.clockOffsetMs),
+          valid: env.clockValid !== false,
         },
       },
       connection: { connected: true, lastError: null },
@@ -913,24 +911,10 @@ export async function createMockServer(options = {}) {
 
   const wsClientStates = new Map();
 
-  function makeMockClientEnvelope(socket, type, extra = {}) {
-    const cs = wsClientStates.get(socket) || { nextServerSeq: 1, lastContiguousClientSeq: 0 };
-    const seq = cs.nextServerSeq++;
-    const ack = cs.lastContiguousClientSeq;
-    cs.lastOutboundAtMs = Date.now();
-    return {
-      protocolVersion: 1,
-      type,
-      seq,
-      ack,
-      bootId: env.frame.bootSessionId || `mock-boot-${env.startedAt}`,
-      stateRevision: mockStateRevision,
-      ...extra,
-    };
-  }
-
   function parseWsFrame(buffer) {
     if (buffer.length < 2) return null;
+    const firstByte = buffer[0];
+    const opcode = firstByte & 0x0f;
     const secondByte = buffer[1];
     const isMasked = (secondByte & 0x80) === 0x80;
     let payloadLen = secondByte & 0x7f;
@@ -958,24 +942,24 @@ export async function createMockServer(options = {}) {
       }
     }
 
-    return { payload: payload.toString('utf8'), frameLength: offset + payloadLen };
+    return { opcode, payload: payload.toString('utf8'), frameLength: offset + payloadLen };
   }
 
-  function buildWsFrame(textPayload) {
+  function buildWsFrame(textPayload, opcode = 0x1) {
     const payloadBuf = Buffer.from(textPayload, 'utf8');
     const len = payloadBuf.length;
     let header;
 
     if (len <= 125) {
-      header = Buffer.from([0x81, len]);
+      header = Buffer.from([0x80 | (opcode & 0x0f), len]);
     } else if (len <= 65535) {
       header = Buffer.alloc(4);
-      header[0] = 0x81;
+      header[0] = 0x80 | (opcode & 0x0f);
       header[1] = 126;
       header.writeUInt16BE(len, 2);
     } else {
       header = Buffer.alloc(10);
-      header[0] = 0x81;
+      header[0] = 0x80 | (opcode & 0x0f);
       header[1] = 127;
       header.writeBigUInt64BE(BigInt(len), 2);
     }
@@ -983,10 +967,36 @@ export async function createMockServer(options = {}) {
     return Buffer.concat([header, payloadBuf]);
   }
 
-  function sendMockWs(socket, msgObj) {
-    if (!socket.destroyed) {
-      socket.write(buildWsFrame(JSON.stringify(msgObj)));
+  function sendMockWsPacket(socket, type, extra = {}) {
+    if (!socket || socket.destroyed) return false;
+    const cs = wsClientStates.get(socket);
+    if (!cs) return false;
+
+    const seq = cs.nextServerSeq;
+    const ack = cs.lastContiguousClientSeq;
+    const msgObj = {
+      protocolVersion: 1,
+      type,
+      seq,
+      ack,
+      bootId: env.frame.bootSessionId || `mock-boot-${env.startedAt}`,
+      stateRevision: mockStateRevision,
+      ...extra,
+    };
+
+    try {
+      const frame = buildWsFrame(JSON.stringify(msgObj));
+      const writeResult = socket.write(frame);
+      if (writeResult !== false) {
+        cs.highestServerSeqSuccessfullySent = seq;
+        cs.nextServerSeq++;
+        cs.lastOutboundAtMs = Date.now();
+        return true;
+      }
+    } catch {
+      // socket write failed
     }
+    return false;
   }
 
   function broadcastMockPatch(patchData) {
@@ -994,12 +1004,17 @@ export async function createMockServer(options = {}) {
     for (const socket of wsClients) {
       const cs = wsClientStates.get(socket);
       if (cs && cs.handshakeComplete && !socket.destroyed) {
-        sendMockWs(socket, makeMockClientEnvelope(socket, 'patch', { patch: patchData }));
+        sendMockWsPacket(socket, 'patch', { patch: patchData });
       }
     }
   }
 
   server.on('upgrade', (req, socket) => {
+    const url = new URL(req.url || '/', 'http://localhost');
+    if (url.pathname !== '/' && url.pathname !== '/ws') {
+      socket.destroy();
+      return;
+    }
     const key = req.headers['sec-websocket-key'];
     if (!key) {
       socket.destroy();
@@ -1018,6 +1033,8 @@ export async function createMockServer(options = {}) {
       connected: true,
       handshakeComplete: false,
       nextServerSeq: 1,
+      highestServerSeqSuccessfullySent: 0,
+      lastServerSeqAcknowledgedByClient: 0,
       lastContiguousClientSeq: 0,
       lastOutboundAtMs: Date.now(),
     };
@@ -1032,13 +1049,34 @@ export async function createMockServer(options = {}) {
         const parsed = parseWsFrame(buf);
         if (!parsed) break;
         buf = buf.subarray(parsed.frameLength);
+
+        if (parsed.opcode === 0x8) { // Close frame
+          try { socket.write(buildWsFrame('', 0x8)); } catch {}
+          socket.destroy();
+          break;
+        }
+        if (parsed.opcode === 0x9) { // Ping frame
+          try { socket.write(buildWsFrame(parsed.payload, 0xa)); } catch {}
+          continue;
+        }
+
         try {
           const msg = JSON.parse(parsed.payload);
           const versionVal = Number(msg.protocolVersion || 1);
           const seqVal = Number(msg.seq || 0);
+          const ackVal = Number(msg.ack || 0);
+
+          if (ackVal > 0) {
+            if (ackVal > clientState.highestServerSeqSuccessfullySent) {
+              sendMockWsPacket(socket, 'protocol-error', { error: 'future sequence ack received' });
+              return;
+            } else if (ackVal >= clientState.lastServerSeqAcknowledgedByClient) {
+              clientState.lastServerSeqAcknowledgedByClient = ackVal;
+            }
+          }
 
           if (versionVal !== 1) {
-            sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'unsupported protocol version' }));
+            sendMockWsPacket(socket, 'protocol-error', { error: 'unsupported protocol version' });
             return;
           }
 
@@ -1048,14 +1086,14 @@ export async function createMockServer(options = {}) {
             } else if (seqVal <= clientState.lastContiguousClientSeq) {
               return;
             } else {
-              sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'sequence gap detected' }));
+              sendMockWsPacket(socket, 'protocol-error', { error: 'sequence gap detected' });
               return;
             }
           }
 
           if (msg.type === 'hello') {
             if (seqVal !== 1) {
-              sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'hello must have seq 1' }));
+              sendMockWsPacket(socket, 'protocol-error', { error: 'hello must have seq 1' });
               return;
             }
             if (msg.utcMs !== undefined && msg.utcMs !== null) {
@@ -1065,15 +1103,15 @@ export async function createMockServer(options = {}) {
               env.clockValid = true;
             }
             clientState.handshakeComplete = true;
-            sendMockWs(socket, makeMockClientEnvelope(socket, 'snapshot', {
+            sendMockWsPacket(socket, 'snapshot', {
               state: mockNormalizedAuthoritativeState(),
-            }));
+            });
           } else if (!clientState.handshakeComplete) {
-            sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'handshake incomplete; send hello first' }));
+            sendMockWsPacket(socket, 'protocol-error', { error: 'handshake incomplete; send hello first' });
           } else if (msg.type === 'resync') {
-            sendMockWs(socket, makeMockClientEnvelope(socket, 'snapshot', {
+            sendMockWsPacket(socket, 'snapshot', {
               state: mockNormalizedAuthoritativeState(),
-            }));
+            });
           }
         } catch {
           // ignore malformed ws message
@@ -1096,7 +1134,7 @@ export async function createMockServer(options = {}) {
     for (const socket of wsClients) {
       const cs = wsClientStates.get(socket);
       if (cs && cs.handshakeComplete && now - cs.lastOutboundAtMs >= 3000) {
-        sendMockWs(socket, makeMockClientEnvelope(socket, 'sync'));
+        sendMockWsPacket(socket, 'sync');
       }
     }
   }, 1000);

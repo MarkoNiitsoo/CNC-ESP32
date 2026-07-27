@@ -1325,9 +1325,29 @@ bool jobIsActive() {
          jobStatus.state == JobRunnerState::Resuming || jobStatus.state == JobRunnerState::Stopping;
 }
 
+struct CachedAuthoritativeSlices {
+  float positionX = -9999.0f;
+  float positionY = -9999.0f;
+  float positionZ = -9999.0f;
+  float machineX = -9999.0f;
+  float machineY = -9999.0f;
+  float machineZ = -9999.0f;
+  bool homedX = false;
+  bool homedY = false;
+  bool homedZ = false;
+  uint32_t homingEpoch = 0;
+
+  String controllerJson;
+  String jobJson;
+  String jogJson;
+  String controlJson;
+};
+extern CachedAuthoritativeSlices cachedSlices;
+
 void touchJobStatus() {
   jobStatus.updatedAtMs = millis();
   if (jobCheckpointTracking) jobCheckpointDirty = true;
+  cachedSlices.jobJson = "";
 }
 
 void touchJobProgress() {
@@ -2011,6 +2031,7 @@ struct TelemetryClientState {
   bool snapshotPending = false;
   bool resyncPending = false;
   uint32_t nextServerSeq = 1;
+  uint32_t highestServerSeqSuccessfullySent = 0;
   uint32_t lastContiguousClientSeq = 0;
   uint32_t lastServerSeqAcknowledgedByClient = 0;
   uint32_t lastOutboundAtMs = 0;
@@ -2022,32 +2043,9 @@ struct TelemetryProtocolState {
 };
 TelemetryProtocolState protocolState;
 
-struct CachedAuthoritativeSlices {
-  float positionX = -9999.0f;
-  float positionY = -9999.0f;
-  float positionZ = -9999.0f;
-  float machineX = -9999.0f;
-  float machineY = -9999.0f;
-  float machineZ = -9999.0f;
-  bool homedX = false;
-  bool homedY = false;
-  bool homedZ = false;
-  uint32_t homingEpoch = 0;
-
-  String jobState;
-  uint32_t jobLine = 0;
-  uint16_t feedOverride = 100;
-  String jobError;
-
-  String jogState;
-  String jogError;
-
-  String controlOwner;
-  String controllerState;
-  String controllerError;
-};
 CachedAuthoritativeSlices cachedSlices;
-inline void touchJogStatus() { cachedSlices.jogState = ""; }
+
+inline void touchJogStatus() { cachedSlices.jogJson = ""; }
 inline void touchPositionStatus() { cachedSlices.positionX = -999999.0f; }
 
 bool dirtySystem = false;
@@ -2108,14 +2106,25 @@ uint32_t getStagedStateRevision() {
   return netLastObservedRevision;
 }
 
-String makeClientEnvelope(uint8_t client, const char *type, const String &bodyFieldKey, const String &bodyJson) {
-  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return "";
+bool sendClientPacket(uint8_t client, const char *type, const String &bodyFieldKey, const String &bodyJson, uint32_t overrideRevision = 0) {
+  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return false;
   TelemetryClientState &cs = protocolState.clients[client];
-  uint32_t seq = cs.nextServerSeq++;
+  if (!cs.connected) return false;
+
+  uint32_t seq = cs.nextServerSeq;
   uint32_t ack = cs.lastContiguousClientSeq;
-  uint32_t revision = getStagedStateRevision();
-  cs.lastOutboundAtMs = millis();
-  return makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
+  uint32_t revision = overrideRevision > 0 ? overrideRevision : getStagedStateRevision();
+
+  String packet = makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
+
+  bool sentOK = telemetrySocket.sendTXT(client, packet);
+  if (sentOK) {
+    cs.highestServerSeqSuccessfullySent = seq;
+    cs.nextServerSeq++;
+    cs.lastOutboundAtMs = millis();
+    return true;
+  }
+  return false;
 }
 
 String buildSystemBaseJson() {
@@ -2183,7 +2192,7 @@ String buildMachineSliceJson() {
   patchJson += machineFrame.homedY ? "true" : "false";
   patchJson += ",\"z\":";
   patchJson += machineFrame.homedZ ? "true" : "false";
-  patchJson += "},\"homingEpoch\":";
+  patchJson += ",\"homingEpoch\":";
   patchJson += String(machineFrame.homingEpoch);
   patchJson += "}";
   return patchJson;
@@ -2222,15 +2231,10 @@ void initializeStagedState() {
   cachedSlices.homedY = machineFrame.homedY;
   cachedSlices.homedZ = machineFrame.homedZ;
   cachedSlices.homingEpoch = machineFrame.homingEpoch;
-  cachedSlices.controllerState = controllerStateNormalized();
-  cachedSlices.controllerError = jobStatus.lastError;
-  cachedSlices.jobState = jobStateName(jobStatus.state);
-  cachedSlices.jobLine = jobStatus.currentLineNumber;
-  cachedSlices.feedOverride = jobStatus.feedOverridePercent;
-  cachedSlices.jobError = jobStatus.lastError;
-  cachedSlices.jogState = jogStateName(jogStatus.state);
-  cachedSlices.jogError = jogStatus.lastError;
-  cachedSlices.controlOwner = operatorSessionOwner;
+  cachedSlices.controllerJson = stagedState.controllerJson;
+  cachedSlices.jobJson = stagedState.jobJson;
+  cachedSlices.jogJson = stagedState.jogJson;
+  cachedSlices.controlJson = stagedState.controlJson;
 }
 
 String buildSnapshotFromStagedState(uint32_t &outRevision) {
@@ -2261,20 +2265,6 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
   return json;
 }
 
-String makeClientEnvelopeWithRevision(uint8_t client, const char *type, const String &bodyFieldKey, const String &bodyJson, uint32_t revision) {
-  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return "";
-  TelemetryClientState &cs = protocolState.clients[client];
-  uint32_t seq = cs.nextServerSeq++;
-  uint32_t ack = cs.lastContiguousClientSeq;
-  cs.lastOutboundAtMs = millis();
-  return makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
-}
-
-// INVARIANT (Commit-After-Stage):
-// Cached business slice states are updated ONLY AFTER staged state is successfully
-// acquired and written under telemetryStateMutex. If mutex acquisition fails with 0 wait time,
-// cachedSlices remains untouched, allowing the next main-loop iteration to retry staging.
-
 void stageTelemetryUpdates() {
   if (!isTelemetryStarted() || telemetryStateMutex == nullptr) return;
 
@@ -2297,25 +2287,23 @@ void stageTelemetryUpdates() {
     diffMachine = true;
   }
 
-  String currCtrlState = controllerStateNormalized();
-  if (currCtrlState != cachedSlices.controllerState || jobStatus.lastError != cachedSlices.controllerError) {
+  String controllerStr = buildControllerSliceJson();
+  if (controllerStr != cachedSlices.controllerJson) {
     diffController = true;
   }
 
-  String currJobState = jobStateName(jobStatus.state);
-  if (currJobState != cachedSlices.jobState ||
-      jobStatus.currentLineNumber != cachedSlices.jobLine ||
-      jobStatus.feedOverridePercent != cachedSlices.feedOverride ||
-      jobStatus.lastError != cachedSlices.jobError) {
+  String jobStr = jobStatusJson();
+  if (jobStr != cachedSlices.jobJson) {
     diffJob = true;
   }
 
-  String currJogState = jogStateName(jogStatus.state);
-  if (currJogState != cachedSlices.jogState || jogStatus.lastError != cachedSlices.jogError) {
+  String jogStr = jogStatusJson();
+  if (jogStr != cachedSlices.jogJson) {
     diffJog = true;
   }
 
-  if (operatorSessionOwner != cachedSlices.controlOwner) {
+  String controlStr = buildControlSliceJson();
+  if (controlStr != cachedSlices.controlJson) {
     diffControl = true;
   }
 
@@ -2325,10 +2313,6 @@ void stageTelemetryUpdates() {
 
   String sysBaseStr = buildSystemBaseJson();
   String machineStr = diffMachine ? buildMachineSliceJson() : "";
-  String controllerStr = diffController ? buildControllerSliceJson() : "";
-  String jobStr = diffJob ? jobStatusJson() : "";
-  String jogStr = diffJog ? jogStatusJson() : "";
-  String controlStr = diffControl ? buildControlSliceJson() : "";
 
   if (xSemaphoreTake(telemetryStateMutex, 0) != pdTRUE) {
     return; // Lock busy! Retries on next loop iteration without losing state.
@@ -2375,21 +2359,16 @@ void stageTelemetryUpdates() {
     cachedSlices.homingEpoch = machineFrame.homingEpoch;
   }
   if (diffController) {
-    cachedSlices.controllerState = currCtrlState;
-    cachedSlices.controllerError = jobStatus.lastError;
+    cachedSlices.controllerJson = controllerStr;
   }
   if (diffJob) {
-    cachedSlices.jobState = currJobState;
-    cachedSlices.jobLine = jobStatus.currentLineNumber;
-    cachedSlices.feedOverride = jobStatus.feedOverridePercent;
-    cachedSlices.jobError = jobStatus.lastError;
+    cachedSlices.jobJson = jobStr;
   }
   if (diffJog) {
-    cachedSlices.jogState = currJogState;
-    cachedSlices.jogError = jogStatus.lastError;
+    cachedSlices.jogJson = jogStr;
   }
   if (diffControl) {
-    cachedSlices.controlOwner = operatorSessionOwner;
+    cachedSlices.controlJson = controlStr;
   }
 }
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
@@ -2402,6 +2381,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     cs.snapshotPending = false;
     cs.resyncPending = false;
     cs.nextServerSeq = 1;
+    cs.highestServerSeqSuccessfullySent = 0;
     cs.lastContiguousClientSeq = 0;
     cs.lastServerSeqAcknowledgedByClient = 0;
     cs.lastOutboundAtMs = millis();
@@ -2428,13 +2408,18 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     uint32_t seqVal = doc["seq"] | 0;
     uint32_t ackVal = doc["ack"] | 0;
 
-    if (ackVal > 0 && ackVal <= cs.nextServerSeq) {
-      cs.lastServerSeqAcknowledgedByClient = ackVal;
+    if (ackVal > 0) {
+      if (ackVal > cs.highestServerSeqSuccessfullySent) {
+        sendClientPacket(client, "protocol-error", "error", "\"future sequence ack received\"");
+        cs.resyncPending = true;
+        return;
+      } else if (ackVal >= cs.lastServerSeqAcknowledgedByClient) {
+        cs.lastServerSeqAcknowledgedByClient = ackVal;
+      }
     }
 
     if (versionVal != 1) {
-      String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"unsupported protocol version\"");
-      telemetrySocket.sendTXT(client, errPacket);
+      sendClientPacket(client, "protocol-error", "error", "\"unsupported protocol version\"");
       return;
     }
 
@@ -2442,18 +2427,17 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       if (seqVal == cs.lastContiguousClientSeq + 1) {
         cs.lastContiguousClientSeq = seqVal;
       } else if (seqVal <= cs.lastContiguousClientSeq) {
-        return;
+        return; // Duplicate packet; ignore without executing or advancing ACK.
       } else {
-        String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"sequence gap detected\"");
-        telemetrySocket.sendTXT(client, errPacket);
+        sendClientPacket(client, "protocol-error", "error", "\"sequence gap detected\"");
+        cs.resyncPending = true;
         return;
       }
     }
 
     if (msgType == "hello") {
       if (seqVal != 1) {
-        String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"hello must have seq 1\"");
-        telemetrySocket.sendTXT(client, errPacket);
+        sendClientPacket(client, "protocol-error", "error", "\"hello must have seq 1\"");
         return;
       }
 
@@ -2482,8 +2466,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
-        String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);
-        bool sentOK = telemetrySocket.sendTXT(client, snapshot);
+        bool sentOK = sendClientPacket(client, "snapshot", "state", snapshotData, snapshotRev);
         if (sentOK) {
           cs.handshakeComplete = true;
           cs.snapshotPending = false;
@@ -2496,14 +2479,12 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
         cs.snapshotPending = true;
       }
     } else if (!cs.handshakeComplete) {
-      String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"handshake incomplete; send hello first\"");
-      telemetrySocket.sendTXT(client, errPacket);
+      sendClientPacket(client, "protocol-error", "error", "\"handshake incomplete; send hello first\"");
     } else if (msgType == "resync") {
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
-        String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);
-        bool sentOK = telemetrySocket.sendTXT(client, snapshot);
+        bool sentOK = sendClientPacket(client, "snapshot", "state", snapshotData, snapshotRev);
         if (sentOK) {
           cs.resyncPending = false;
         } else {
@@ -2531,8 +2512,7 @@ void checkClientIdleSync(uint32_t now) {
     TelemetryClientState &cs = protocolState.clients[i];
     if (cs.connected && cs.handshakeComplete) {
       if (now - cs.lastOutboundAtMs >= 3000) {
-        String syncPacket = makeClientEnvelope(i, "sync", "", "");
-        telemetrySocket.sendTXT(i, syncPacket);
+        sendClientPacket(i, "sync", "", "");
       }
     }
   }
@@ -2551,8 +2531,7 @@ void processNetworkTelemetry() {
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
-        String snapshot = makeClientEnvelopeWithRevision(i, "snapshot", "state", snapshotData, snapshotRev);
-        bool sentOK = telemetrySocket.sendTXT(i, snapshot);
+        bool sentOK = sendClientPacket(i, "snapshot", "state", snapshotData, snapshotRev);
         if (sentOK) {
           if (cs.snapshotPending) {
             cs.handshakeComplete = true;
@@ -2620,8 +2599,7 @@ void processNetworkTelemetry() {
     for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
       TelemetryClientState &cs = protocolState.clients[i];
       if (cs.connected && cs.handshakeComplete) {
-        String patchPacket = makeClientEnvelopeWithRevision(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
-        telemetrySocket.sendTXT(i, patchPacket);
+        sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
       }
     }
   }
@@ -2649,8 +2627,7 @@ void processNetworkTelemetry() {
       for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
         TelemetryClientState &cs = protocolState.clients[c];
         if (cs.connected && cs.handshakeComplete) {
-          String motionPacket = makeClientEnvelopeWithRevision(c, "patch", "patch", "{\"motion\":" + data + "}", activeRev);
-          telemetrySocket.sendTXT(c, motionPacket);
+          sendClientPacket(c, "patch", "patch", "{\"motion\":" + data + "}", activeRev);
         }
       }
     }
@@ -2690,8 +2667,7 @@ void processNetworkTelemetry() {
         for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
           TelemetryClientState &cs = protocolState.clients[c];
           if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
-            String logPacket = makeClientEnvelopeWithRevision(c, "patch", "patch", "{\"log\":" + data + "}", activeRev);
-            telemetrySocket.sendTXT(c, logPacket);
+            sendClientPacket(c, "patch", "patch", "{\"log\":" + data + "}", activeRev);
           }
         }
       }

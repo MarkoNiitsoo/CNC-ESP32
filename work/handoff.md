@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Protocol Correctness Pass Handoff
+
+- Completed Phase 1 WebSocket Protocol Correctness Pass on `feature/phase1-websocket-transport`.
+- Key Architectural Highlights:
+  - Firmware outbound helper `sendClientPacket` commits sequence numbers ONLY on `sendTXT()` success.
+  - Strict monotonic ACK validation across firmware, browser (`www/telemetry.js`), and mock server (`dev/mock-server.mjs`).
+  - Top-level slice patches replace complete slices without recursive shallow merging.
+  - Executable WebSocket runtime tests in `test/firmware/websocket-runtime.test.mjs`.
+  - Machine commands and Jog remain on HTTP for Phase 1.
+- Verification: `pio run -e esp32cam` compiled cleanly (19.6% RAM, 73.3% Flash). `npm test` passed 46 test files and 441 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation 3 Correctness Fixes Handoff
 
 - Completed final 3 transport-isolation correctness fixes on `feature/phase1-websocket-transport`.

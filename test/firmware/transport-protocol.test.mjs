@@ -21,8 +21,8 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
 
     it('ignores duplicate packets and triggers resync on sequence gap', () => {
-      expect(telemetryCode).toContain('if (seq > 0 && seq <= lastServerSeq && msgType !== \'delta\') return;');
-      expect(telemetryCode).toContain('if (seq > 0 && lastServerSeq > 0 && seq > lastServerSeq + 1) {');
+      expect(telemetryCode).toContain('if (seq <= lastServerSeq && msgType !== \'snapshot\')');
+      expect(telemetryCode).toContain('if (seq > lastServerSeq + 1 && lastServerSeq > 0)');
       expect(telemetryCode).toContain('requestResync();');
     });
   });
@@ -102,7 +102,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
 
     it('uses stagedState under mutex for WebSocket hello and resync snapshots', () => {
       expect(mainCppCode).toContain('String snapshotData = buildSnapshotFromStagedState(snapshotRev);');
-      expect(mainCppCode).toContain('String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);');
+      expect(mainCppCode).toContain('bool sentOK = sendClientPacket(client, "snapshot", "state", snapshotData, snapshotRev);');
     });
 
     it('isolates network task from direct main business state reads during patch/snapshot processing', () => {
@@ -175,7 +175,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
 
     it('ensures outbound packets use revision copied under synchronization', () => {
-      expect(mainCppCode).toContain('uint32_t revision = getStagedStateRevision();');
+      expect(mainCppCode).toContain('uint32_t revision = overrideRevision > 0 ? overrideRevision : getStagedStateRevision();');
     });
 
     it('guards transport readiness with task-safe spinlock helpers', () => {
@@ -207,10 +207,11 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(stageBlock).not.toContain('bool diffSystem');
     });
 
-    it('verifies monotonic revision fallback and sendTXT success handling for handshake/resync', () => {
+    it('verifies monotonic revision fallback and sendClientPacket success handling for handshake/resync', () => {
       expect(mainCppCode).toContain('static uint32_t netLastObservedRevision = 1;');
-      expect(mainCppCode).toContain('bool sentOK = telemetrySocket.sendTXT(client, snapshot);');
-      expect(mainCppCode).toContain('bool sentOK = telemetrySocket.sendTXT(i, snapshot);');
+      expect(mainCppCode).toContain('bool sendClientPacket(uint8_t client, const char *type');
+      expect(mainCppCode).toContain('bool sentOK = sendClientPacket(client, "snapshot"');
+      expect(mainCppCode).toContain('bool sentOK = sendClientPacket(i, "snapshot"');
     });
   });
 
