@@ -1,5 +1,19 @@
 # Progress
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Runtime & Safety Defect Repairs
+
+- Repaired all runtime and cross-task safety defects in the transport-isolation implementation:
+  1. Fixed fatal `touchJobStatus()` infinite recursion by removing recursive self-call; verified no `touch*Status()` helper calls itself directly or indirectly.
+  2. Implemented strict Commit-After-Stage invariant in `stageTelemetryUpdates()`: business slice cache (`cachedSlices`) is updated ONLY AFTER `xSemaphoreTake(telemetryStateMutex, 0)` succeeds and writes to `stagedState`. Failed zero-wait mutex acquisitions leave changes uncommitted and retryable on subsequent main-loop ticks.
+  3. Isolated network task from direct main business state reads: `handleTelemetrySocket` hello and resync build snapshots strictly from `stagedState` under mutex (`buildSnapshotFromStagedState`), and initialized `stagedState` in single-threaded `initializeStagedState()`.
+  4. Redefined `LogTelemetryEvent` as a POD struct with fixed-size char arrays (`id`, `timeMs`, `direction`, `priority`, `level`, `text`, `lastCriticalMessage`) to enqueue immutable log snapshots via `xQueueSend(logEventQueue, &ev, 0)`. Network task formats log JSON directly from queued POD items without touching `marlinLog` ring buffer or `lastCriticalMarlinMessage`.
+  5. Added `feedOverridePercent` snapshot to `MotionTelemetryEvent` POD struct so network task formats motion JSON without touching `jobStatus`.
+  6. Protected drop counters (`motionTelemetryDropped`, `logTelemetryDropped`) with FreeRTOS spinlock critical sections (`portENTER_CRITICAL(&telemetryDropMux)` / `portEXIT_CRITICAL(&telemetryDropMux)`).
+  7. Added comprehensive resource allocation and task creation checks (`telemetryStateMutex`, `motionEventQueue`, `logEventQueue`, `xTaskCreatePinnedToCore`) in `startHttpServer()`, setting `telemetryStarted = false` and logging errors on failure.
+  8. Cleaned up obsolete helper declarations and duplicate code blocks.
+  9. Added focused source-architecture regression tests in `test/firmware/transport-protocol.test.mjs`.
+  10. Verification: `pio run -e esp32cam` succeeded with 0 errors (19.6% RAM, 73.3% Flash). All 45 test files and 419 tests passed in `npm test`.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Repair
 
 - Implemented strict low-priority FreeRTOS network task (`telemetryNetworkTask`) pinned to Core 0 (`xTaskCreatePinnedToCore`).

@@ -90,7 +90,7 @@ describe('shared browser telemetry', () => {
     expect(producer).not.toContain('telemetrySocket.sendTXT');
     expect(firmware).toContain('xSemaphoreTake(telemetryStateMutex, 0)');
     expect(firmware).toContain('xQueueSend(motionEventQueue, &ev, 0)');
-    expect(firmware).toContain('xQueueSend(logEventQueue, &entryId, 0)');
+    expect(firmware).toContain('xQueueSend(logEventQueue, &ev, 0)');
     expect(firmware).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
     expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
     expect(telemetry).toContain("schedule('job')");

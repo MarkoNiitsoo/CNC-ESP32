@@ -83,4 +83,67 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
   });
 
+  describe('6. Transport Isolation & Cross-Task Safety', () => {
+    it('ensures touchJobStatus and touch*Status helpers contain no recursive calls', () => {
+      const touchJobStatusBlock = mainCppCode.match(/void touchJobStatus\(\)\s*\{([^}]*)\}/)?.[1] || '';
+      expect(touchJobStatusBlock).not.toContain('touchJobStatus()');
+
+      const touchJogStatusBlock = mainCppCode.match(/void touchJogStatus\(\)\s*\{([^}]*)\}/)?.[1] || '';
+      expect(touchJogStatusBlock).not.toContain('touchJogStatus()');
+
+      const touchPositionStatusBlock = mainCppCode.match(/void touchPositionStatus\(\)\s*\{([^}]*)\}/)?.[1] || '';
+      expect(touchPositionStatusBlock).not.toContain('touchPositionStatus()');
+    });
+
+    it('enforces Commit-After-Stage: cachedSlices updated ONLY after xSemaphoreTake succeeds', () => {
+      expect(mainCppCode).toContain('if (xSemaphoreTake(telemetryStateMutex, 0) != pdTRUE) {');
+      expect(mainCppCode).toContain('return; // Lock busy! Retries on next loop iteration without losing state.');
+      expect(mainCppCode).toContain('// Commit to cachedSlices ONLY AFTER successfully updating stagedState under mutex:');
+    });
+
+    it('uses stagedState under mutex for WebSocket hello and resync snapshots', () => {
+      expect(mainCppCode).toContain('String snapshotData = buildSnapshotFromStagedState(snapshotRev);');
+      expect(mainCppCode).toContain('String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);');
+    });
+
+    it('isolates network task from direct main business state reads during patch/snapshot processing', () => {
+      const processNetBlock = mainCppCode.match(/void processNetworkTelemetry\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      expect(processNetBlock).not.toContain('jobStatusJson()');
+      expect(processNetBlock).not.toContain('jogStatusJson()');
+      expect(processNetBlock).not.toContain('machineFrameJson()');
+      expect(processNetBlock).not.toContain('buildControllerSliceJson()');
+      expect(processNetBlock).not.toContain('buildMachineSliceJson()');
+      expect(processNetBlock).not.toContain('marlinLog[');
+    });
+
+    it('queues immutable LogTelemetryEvent POD structs instead of ring-buffer log IDs', () => {
+      expect(mainCppCode).toContain('struct LogTelemetryEvent {');
+      expect(mainCppCode).toContain('char direction[8] = {};');
+      expect(mainCppCode).toContain('char text[128] = {};');
+      expect(mainCppCode).toContain('char lastCriticalMessage[128] = {};');
+      expect(mainCppCode).toContain('xQueueSend(logEventQueue, &ev, 0)');
+    });
+
+    it('includes feedOverridePercent snapshot inside MotionTelemetryEvent POD struct', () => {
+      expect(mainCppCode).toContain('struct MotionTelemetryEvent {');
+      expect(mainCppCode).toContain('uint16_t feedOverridePercent = 100;');
+      expect(mainCppCode).toContain('ev.feedOverridePercent = jobStatus.feedOverridePercent;');
+      expect(mainCppCode).toContain('events[count - 1].feedOverridePercent');
+    });
+
+    it('protects drop counter updates using spinlock critical sections', () => {
+      expect(mainCppCode).toContain('static portMUX_TYPE telemetryDropMux = portMUX_INITIALIZER_UNLOCKED;');
+      expect(mainCppCode).toContain('portENTER_CRITICAL(&telemetryDropMux);');
+      expect(mainCppCode).toContain('incrementMotionTelemetryDropped();');
+      expect(mainCppCode).toContain('incrementLogTelemetryDropped();');
+      expect(mainCppCode).toContain('fetchAndResetMotionTelemetryDropped()');
+    });
+
+    it('handles resource allocation and task creation failures safely without starting transport', () => {
+      expect(mainCppCode).toContain('if (telemetryStateMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr)');
+      expect(mainCppCode).toContain('if (taskRes != pdPASS)');
+      expect(mainCppCode).toContain('telemetryStarted = false;');
+    });
+  });
+
 });

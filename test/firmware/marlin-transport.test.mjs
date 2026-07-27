@@ -273,7 +273,7 @@ describe('delta telemetry transport', () => {
   it('streams only new log entries to clients that requested logs', () => {
     expect(source).toContain('uint32_t nextMarlinLogId = 1');
     expect(source).toContain('telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX]');
-    expect(source).toContain('xQueueSend(logEventQueue, &entryId, 0)');
+    expect(source).toContain('xQueueSend(logEventQueue, &ev, 0)');
     expect(source).toContain('server.arg("after").toInt()');
     expect(source).toContain('\\\"nextId\\\"');
   });

@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Runtime & Safety Repair Handoff
+
+- Completed all 10 transport-isolation runtime & cross-task safety defect repairs on `feature/phase1-websocket-transport`.
+- Architecture & Safety highlights:
+  1. Fixed `touchJobStatus()` infinite recursion by removing recursive self-call on line 1305. Verified no recursive calls in any `touch*Status()` helper.
+  2. Implemented Commit-After-Stage invariant in `stageTelemetryUpdates()`: business slice cache (`cachedSlices`) is updated ONLY AFTER `xSemaphoreTake(telemetryStateMutex, 0)` succeeds and updates `stagedState`. Lock failures leave pending diffs uncommitted for retry on next tick.
+  3. Network task strictly owns copy of staged state: `handleTelemetrySocket` hello and resync build snapshots under mutex (`buildSnapshotFromStagedState`), preventing network task from reading main business state variables (`jobStatus`, `jogStatus`, `machineFrame`, `marlinPosition`, `operatorSessionOwner`, `machineProfile`).
+  4. Redefined `LogTelemetryEvent` POD struct with fixed-size char arrays (`id`, `timeMs`, `direction`, `priority`, `level`, `text`, `lastCriticalMessage`) enqueued via `xQueueSend(logEventQueue, &ev, 0)`. Network task formats log JSON directly from queue items without inspecting `marlinLog` ring buffer.
+  5. Added `feedOverridePercent` snapshot to `MotionTelemetryEvent` POD struct so network task formats motion JSON without touching `jobStatus`.
+  6. Protected `motionTelemetryDropped` and `logTelemetryDropped` counter updates with `portENTER_CRITICAL(&telemetryDropMux)`.
+  7. Added full allocation and task creation failure checks (`telemetryStateMutex`, `motionEventQueue`, `logEventQueue`, `xTaskCreatePinnedToCore`) in `startHttpServer()`, cleanly setting `telemetryStarted = false` on error.
+- Verification: `pio run -e esp32cam` succeeded with 0 errors (19.6% RAM, 73.3% Flash). All 45 test files and 419 tests passed in `npm test`.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Handoff
 
 - Completed transport-isolation repair on `feature/phase1-websocket-transport`.
