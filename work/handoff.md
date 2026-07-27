@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Transport Isolation Correctness Fixes Handoff
+
+- Completed final transport-isolation correctness fixes on `feature/phase1-websocket-transport`.
+- Architecture & Correctness highlights:
+  1. Staged System-Base Design: Main task serializes `stagedState.systemBaseJson` (`buildSystemBaseJson()`). Pure string helper `buildSystemSliceJsonFromBaseAndClock()` combines `systemBaseJson` and `stagedState.wallClock` under mutex without reading main business state (`healthStatusJson()`). Network task never queries WiFi, SD, or main business state.
+  2. Published Clock Changes: Valid browser time updates `stagedState.wallClock`, sets `stagedState.dirtySystem = true`, and increments `stagedState.globalRevision` once under mutex. Connected clients receive system patch and connecting client receives initial snapshot with updated clock.
+  3. Reliable Handshake & Resync Snapshot Delivery: `cs.handshakeComplete` is marked true ONLY AFTER snapshot envelope is successfully built and sent. If mutex acquisition fails, `cs.snapshotPending` or `cs.resyncPending` is retained and retried automatically in `processNetworkTelemetry()`.
+  4. Single-Task SD Logging: Removed `logSystemEvent()` call from `telemetryNetworkTask`. SD logging remains 100% single-task owned by main loop on Core 1.
+  5. Unified Authoritative Revision: Removed `protocolState.globalStateRevision`. `stagedState.globalRevision` under `telemetryStateMutex` is the sole revision representation. Revision is read under mutex via `getStagedStateRevision()` or snapshot copy.
+  6. Task-Safe Transport Readiness: Replaced unprotected bool with spinlock-guarded helpers `isTelemetryStarted()` and `setTelemetryStarted(bool)` using `portENTER_CRITICAL(&telemetryDropMux)`.
+  7. Cleanup: Removed `buildSystemSliceJson()` compatibility wrapper and duplicate revision variables.
+- Verification: `pio run -e esp32cam` succeeded (19.6% RAM, 73.4% Flash). `npm test` passed with 45 test files and 428 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Transport Isolation Final Cleanup Handoff
 
 - Completed final transport-isolation cleanup on `feature/phase1-websocket-transport`.

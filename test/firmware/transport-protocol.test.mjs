@@ -141,18 +141,47 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     it('handles resource allocation and task creation failures safely without starting transport', () => {
       expect(mainCppCode).toContain('if (telemetryStateMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr)');
       expect(mainCppCode).toContain('if (taskRes != pdPASS)');
-      expect(mainCppCode).toContain('telemetryStarted = false;');
+      expect(mainCppCode).toContain('setTelemetryStarted(false);');
     });
 
-    it('ensures normalizedAuthoritativeStateJson is completely removed and no fallback reads business state', () => {
+    it('ensures normalizedAuthoritativeStateJson and buildSystemSliceJson are completely removed', () => {
       expect(mainCppCode).not.toContain('String normalizedAuthoritativeStateJson()');
+      expect(mainCppCode).not.toContain('String buildSystemSliceJson()');
     });
 
-    it('stages wall clock under mutex on hello and uses staged time in initial snapshot', () => {
-      expect(mainCppCode).toContain('struct StagedWallClockState {');
-      expect(mainCppCode).toContain('stagedState.wallClock.valid = true;');
-      expect(mainCppCode).toContain('stagedState.systemJson = buildSystemSliceJsonFromWallClock(stagedState.wallClock);');
-      expect(mainCppCode).toContain('String snapshotData = buildSnapshotFromStagedState(snapshotRev);');
+    it('proves network-task paths do not call healthStatusJson()', () => {
+      const netTaskBlock = mainCppCode.match(/void telemetryNetworkTask\(\s*void\s*\*arg\s*\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      const processNetBlock = mainCppCode.match(/void processNetworkTelemetry\(\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      const handleSocketBlock = mainCppCode.match(/void handleTelemetrySocket\([\s\S]*?\n\}/)?.[1] || '';
+      expect(netTaskBlock).not.toContain('healthStatusJson()');
+      expect(processNetBlock).not.toContain('healthStatusJson()');
+      expect(handleSocketBlock).not.toContain('healthStatusJson()');
+    });
+
+    it('verifies browser-time update sets dirtySystem and increments revision under mutex', () => {
+      expect(mainCppCode).toContain('stagedState.dirtySystem = true;');
+      expect(mainCppCode).toContain('stagedState.globalRevision++;');
+    });
+
+    it('ensures handshake is not completed before successful initial snapshot delivery and includes pending retry path', () => {
+      expect(mainCppCode).toContain('cs.snapshotPending = true;');
+      expect(mainCppCode).toContain('cs.resyncPending = true;');
+      expect(mainCppCode).toContain('if (cs.connected && (cs.snapshotPending || cs.resyncPending))');
+    });
+
+    it('verifies telemetryNetworkTask does not call logSystemEvent()', () => {
+      const netTaskBlock = mainCppCode.match(/void telemetryNetworkTask\(\s*void\s*\*arg\s*\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+      expect(netTaskBlock).not.toContain('logSystemEvent(');
+    });
+
+    it('ensures outbound packets use revision copied under synchronization', () => {
+      expect(mainCppCode).toContain('uint32_t revision = getStagedStateRevision();');
+    });
+
+    it('guards transport readiness with task-safe spinlock helpers', () => {
+      expect(mainCppCode).toContain('inline bool isTelemetryStarted()');
+      expect(mainCppCode).toContain('inline void setTelemetryStarted(bool ready)');
+      expect(mainCppCode).not.toContain('bool telemetryStarted = false;');
     });
 
     it('ensures telemetrySocket.begin is owned by network task and not called in startHttpServer before task creation', () => {

@@ -465,12 +465,26 @@ TaskHandle_t telemetryTaskHandle = nullptr;
 SemaphoreHandle_t telemetryStateMutex = nullptr;
 QueueHandle_t motionEventQueue = nullptr;
 QueueHandle_t logEventQueue = nullptr;
-bool telemetryStarted = false;
+static portMUX_TYPE telemetryDropMux = portMUX_INITIALIZER_UNLOCKED;
+static bool volatile telemetryStartedFlag = false;
+
+inline bool isTelemetryStarted() {
+  portENTER_CRITICAL(&telemetryDropMux);
+  bool ready = telemetryStartedFlag;
+  portEXIT_CRITICAL(&telemetryDropMux);
+  return ready;
+}
+
+inline void setTelemetryStarted(bool ready) {
+  portENTER_CRITICAL(&telemetryDropMux);
+  telemetryStartedFlag = ready;
+  portEXIT_CRITICAL(&telemetryDropMux);
+}
+
 uint32_t telemetryLastBroadcastMs = 0;
 uint32_t telemetryLastJobProgressMs = 0;
 uint32_t motionTelemetryDropped = 0;
 uint32_t logTelemetryDropped = 0;
-static portMUX_TYPE telemetryDropMux = portMUX_INITIALIZER_UNLOCKED;
 
 inline void incrementMotionTelemetryDropped() {
   portENTER_CRITICAL(&telemetryDropMux);
@@ -510,7 +524,7 @@ struct StagedWallClockState {
 };
 
 struct StagedTelemetryState {
-  uint32_t globalRevision = 0;
+  uint32_t globalRevision = 1;
   bool dirtySystem = false;
   bool dirtyController = false;
   bool dirtyMachine = false;
@@ -520,7 +534,7 @@ struct StagedTelemetryState {
 
   StagedWallClockState wallClock;
 
-  String systemJson;
+  String systemBaseJson;
   String controllerJson;
   String machineJson;
   String jobJson;
@@ -624,7 +638,7 @@ void addMarlinLog(const String &direction, bool priority, const String &text, co
     marlinLogCount += 1;
   }
 
-  if (telemetryStarted && logEventQueue != nullptr) {
+  if (isTelemetryStarted() && logEventQueue != nullptr) {
     LogTelemetryEvent ev;
     ev.id = entry.id;
     ev.timeMs = entry.timeMs;
@@ -1354,7 +1368,7 @@ void queueMotionTelemetry(const String &command, uint32_t sequence) {
   snprintf(ev.command, sizeof(ev.command), "%s", command.c_str());
   ev.feedOverridePercent = jobStatus.feedOverridePercent;
 
-  if (telemetryStarted && motionEventQueue != nullptr) {
+  if (isTelemetryStarted() && motionEventQueue != nullptr) {
     if (xQueueSend(motionEventQueue, &ev, 0) != pdTRUE) {
       incrementMotionTelemetryDropped();
     }
@@ -1994,6 +2008,8 @@ ControllerAdapter controllerAdapter;
 struct TelemetryClientState {
   bool connected = false;
   bool handshakeComplete = false;
+  bool snapshotPending = false;
+  bool resyncPending = false;
   uint32_t nextServerSeq = 1;
   uint32_t lastContiguousClientSeq = 0;
   uint32_t lastServerSeqAcknowledgedByClient = 0;
@@ -2002,7 +2018,6 @@ struct TelemetryClientState {
 
 struct TelemetryProtocolState {
   uint32_t protocolVersion = 1;
-  uint32_t globalStateRevision = 1;
   TelemetryClientState clients[WEBSOCKETS_SERVER_CLIENT_MAX];
 };
 TelemetryProtocolState protocolState;
@@ -2081,46 +2096,54 @@ String makeProtocolEnvelope(const char *type, uint32_t seq, uint32_t ack, uint32
   return json;
 }
 
+uint32_t getStagedStateRevision() {
+  uint32_t rev = 1;
+  if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    rev = stagedState.globalRevision;
+    xSemaphoreGive(telemetryStateMutex);
+  }
+  return rev;
+}
+
 String makeClientEnvelope(uint8_t client, const char *type, const String &bodyFieldKey, const String &bodyJson) {
   if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return "";
   TelemetryClientState &cs = protocolState.clients[client];
   uint32_t seq = cs.nextServerSeq++;
   uint32_t ack = cs.lastContiguousClientSeq;
-  uint32_t revision = protocolState.globalStateRevision;
+  uint32_t revision = getStagedStateRevision();
   cs.lastOutboundAtMs = millis();
   return makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
 }
 
-String buildSystemSliceJsonFromWallClock(const StagedWallClockState &clock) {
+String buildSystemBaseJson() {
   String patchJson = "{\"bootId\":\"esp-";
   patchJson += bootSessionId;
   patchJson += "\",\"protocolVersion\":1,\"health\":";
   patchJson += healthStatusJson();
-  patchJson += ",\"time\":{\"utcMs\":";
-  if (clock.valid) {
-    uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + clock.offsetMs);
-    patchJson += String(nowUtc);
-  } else {
-    patchJson += "null";
-  }
-  patchJson += ",\"timezoneOffsetMinutes\":";
-  patchJson += String(clock.timezoneOffsetMinutes);
-  patchJson += ",\"timeZone\":\"";
-  patchJson += jsonEscape(clock.timeZone);
-  patchJson += "\",\"valid\":";
-  patchJson += clock.valid ? "true" : "false";
-  patchJson += "}}";
+  patchJson += "}";
   return patchJson;
 }
 
-String buildSystemSliceJson() {
-  if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    StagedWallClockState clockCopy = stagedState.wallClock;
-    xSemaphoreGive(telemetryStateMutex);
-    return buildSystemSliceJsonFromWallClock(clockCopy);
+String buildSystemSliceJsonFromBaseAndClock(const String &baseJson, const StagedWallClockState &clock) {
+  if (baseJson.length() < 2 || baseJson.charAt(baseJson.length() - 1) != '}') {
+    return "{}";
   }
-  StagedWallClockState emptyClock;
-  return buildSystemSliceJsonFromWallClock(emptyClock);
+  String json = baseJson.substring(0, baseJson.length() - 1);
+  json += ",\"time\":{\"utcMs\":";
+  if (clock.valid) {
+    uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + clock.offsetMs);
+    json += String(nowUtc);
+  } else {
+    json += "null";
+  }
+  json += ",\"timezoneOffsetMinutes\":";
+  json += String(clock.timezoneOffsetMinutes);
+  json += ",\"timeZone\":\"";
+  json += jsonEscape(clock.timeZone);
+  json += "\",\"valid\":";
+  json += clock.valid ? "true" : "false";
+  json += "}}";
+  return json;
 }
 
 String buildControllerSliceJson() {
@@ -2172,13 +2195,13 @@ String buildControlSliceJson() {
 
 void initializeStagedState() {
   stagedState.wallClock = StagedWallClockState{};
-  stagedState.systemJson = buildSystemSliceJsonFromWallClock(stagedState.wallClock);
+  stagedState.systemBaseJson = buildSystemBaseJson();
   stagedState.controllerJson = buildControllerSliceJson();
   stagedState.machineJson = buildMachineSliceJson();
   stagedState.jobJson = jobStatusJson();
   stagedState.jogJson = jogStatusJson();
   stagedState.controlJson = buildControlSliceJson();
-  stagedState.globalRevision = protocolState.globalStateRevision;
+  stagedState.globalRevision = 1;
   stagedState.dirtySystem = false;
   stagedState.dirtyController = false;
   stagedState.dirtyMachine = false;
@@ -2211,9 +2234,11 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
   outRevision = 0;
   if (telemetryStateMutex == nullptr) return "";
 
-  String sys, ctrl, mach, job, jog, cntrl;
+  String sysBase, ctrl, mach, job, jog, cntrl;
+  StagedWallClockState wallClock;
   if (xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    sys = stagedState.systemJson;
+    sysBase = stagedState.systemBaseJson;
+    wallClock = stagedState.wallClock;
     ctrl = stagedState.controllerJson;
     mach = stagedState.machineJson;
     job = stagedState.jobJson;
@@ -2225,7 +2250,8 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
     return "";
   }
 
-  String json = "{\"system\":" + sys + ",\"controller\":" + ctrl + ",\"machine\":" + mach + ",\"job\":" + job + ",\"jog\":" + jog + ",\"control\":" + cntrl + "}";
+  String sysJson = buildSystemSliceJsonFromBaseAndClock(sysBase, wallClock);
+  String json = "{\"system\":" + sysJson + ",\"controller\":" + ctrl + ",\"machine\":" + mach + ",\"job\":" + job + ",\"jog\":" + jog + ",\"control\":" + cntrl + "}";
   return json;
 }
 
@@ -2244,7 +2270,7 @@ String makeClientEnvelopeWithRevision(uint8_t client, const char *type, const St
 // cachedSlices remains untouched, allowing the next main-loop iteration to retry staging.
 
 void stageTelemetryUpdates() {
-  if (!telemetryStarted || telemetryStateMutex == nullptr) return;
+  if (!isTelemetryStarted() || telemetryStateMutex == nullptr) return;
 
   bool diffMachine = false;
   bool diffController = false;
@@ -2302,6 +2328,8 @@ void stageTelemetryUpdates() {
     return; // Lock busy! Retries on next loop iteration without losing state.
   }
 
+  stagedState.systemBaseJson = buildSystemBaseJson();
+
   if (diffMachine) {
     stagedState.machineJson = machineStr;
     stagedState.dirtyMachine = true;
@@ -2323,8 +2351,7 @@ void stageTelemetryUpdates() {
     stagedState.dirtyControl = true;
   }
 
-  protocolState.globalStateRevision++;
-  stagedState.globalRevision = protocolState.globalStateRevision;
+  stagedState.globalRevision++;
 
   xSemaphoreGive(telemetryStateMutex);
 
@@ -2366,6 +2393,8 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
   if (type == WStype_CONNECTED) {
     cs.connected = true;
     cs.handshakeComplete = false;
+    cs.snapshotPending = false;
+    cs.resyncPending = false;
     cs.nextServerSeq = 1;
     cs.lastContiguousClientSeq = 0;
     cs.lastServerSeqAcknowledgedByClient = 0;
@@ -2375,6 +2404,8 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
   } else if (type == WStype_DISCONNECTED) {
     cs.connected = false;
     cs.handshakeComplete = false;
+    cs.snapshotPending = false;
+    cs.resyncPending = false;
     telemetryLogSubscribed[client] = false;
     telemetryClientConnected[client] = false;
   } else if (type == WStype_TEXT) {
@@ -2435,20 +2466,23 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
             stagedState.wallClock.syncUptimeMs = millis();
             snprintf(stagedState.wallClock.source, sizeof(stagedState.wallClock.source), "browser");
 
-            stagedState.systemJson = buildSystemSliceJsonFromWallClock(stagedState.wallClock);
-            protocolState.globalStateRevision++;
-            stagedState.globalRevision = protocolState.globalStateRevision;
+            stagedState.dirtySystem = true;
+            stagedState.globalRevision++;
           }
           xSemaphoreGive(telemetryStateMutex);
         }
       }
 
-      cs.handshakeComplete = true;
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
+        cs.handshakeComplete = true;
+        cs.snapshotPending = false;
         String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);
         telemetrySocket.sendTXT(client, snapshot);
+      } else {
+        cs.handshakeComplete = false;
+        cs.snapshotPending = true;
       }
     } else if (!cs.handshakeComplete) {
       String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"handshake incomplete; send hello first\"");
@@ -2457,8 +2491,11 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       uint32_t snapshotRev = 0;
       String snapshotData = buildSnapshotFromStagedState(snapshotRev);
       if (snapshotData.length() > 0) {
+        cs.resyncPending = false;
         String snapshot = makeClientEnvelopeWithRevision(client, "snapshot", "state", snapshotData, snapshotRev);
         telemetrySocket.sendTXT(client, snapshot);
+      } else {
+        cs.resyncPending = true;
       }
     } else if (msgType == "log") {
       telemetryLogSubscribed[client] = doc["log"] == true || doc["subscribe"]["log"] == true;
@@ -2467,7 +2504,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
 }
 
 bool telemetryHasLogSubscriber() {
-  if (!telemetryStarted) return false;
+  if (!isTelemetryStarted()) return false;
   for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
     if (telemetryLogSubscribed[client]) return true;
   }
@@ -2493,6 +2530,23 @@ void processNetworkTelemetry() {
   }
   telemetryLastBroadcastMs = now;
 
+  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
+    TelemetryClientState &cs = protocolState.clients[i];
+    if (cs.connected && (cs.snapshotPending || cs.resyncPending)) {
+      uint32_t snapshotRev = 0;
+      String snapshotData = buildSnapshotFromStagedState(snapshotRev);
+      if (snapshotData.length() > 0) {
+        if (cs.snapshotPending) {
+          cs.handshakeComplete = true;
+          cs.snapshotPending = false;
+        }
+        cs.resyncPending = false;
+        String snapshot = makeClientEnvelopeWithRevision(i, "snapshot", "state", snapshotData, snapshotRev);
+        telemetrySocket.sendTXT(i, snapshot);
+      }
+    }
+  }
+
   StagedTelemetryState snapshotCopy;
   bool hasPatch = false;
 
@@ -2515,7 +2569,8 @@ void processNetworkTelemetry() {
     String patchJson = "{";
     bool first = true;
     if (snapshotCopy.dirtySystem) {
-      patchJson += "\"system\":" + snapshotCopy.systemJson;
+      String sysJson = buildSystemSliceJsonFromBaseAndClock(snapshotCopy.systemBaseJson, snapshotCopy.wallClock);
+      patchJson += "\"system\":" + sysJson;
       first = false;
     }
     if (snapshotCopy.dirtyController) {
@@ -2573,10 +2628,11 @@ void processNetworkTelemetry() {
       data += "],\"dropped\":" + String(dropped);
       data += ",\"feedOverridePercent\":" + String(events[count - 1].feedOverridePercent) + "}";
 
+      uint32_t activeRev = snapshotCopy.globalRevision > 0 ? snapshotCopy.globalRevision : getStagedStateRevision();
       for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
         TelemetryClientState &cs = protocolState.clients[c];
         if (cs.connected && cs.handshakeComplete) {
-          String motionPacket = makeClientEnvelopeWithRevision(c, "patch", "patch", "{\"motion\":" + data + "}", snapshotCopy.globalRevision > 0 ? snapshotCopy.globalRevision : protocolState.globalStateRevision);
+          String motionPacket = makeClientEnvelopeWithRevision(c, "patch", "patch", "{\"motion\":" + data + "}", activeRev);
           telemetrySocket.sendTXT(c, motionPacket);
         }
       }
@@ -2613,10 +2669,11 @@ void processNetworkTelemetry() {
         data += ",\"dropped\":" + String(droppedLogs);
         data += "}";
 
+        uint32_t activeRev = snapshotCopy.globalRevision > 0 ? snapshotCopy.globalRevision : getStagedStateRevision();
         for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
           TelemetryClientState &cs = protocolState.clients[c];
           if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
-            String logPacket = makeClientEnvelopeWithRevision(c, "patch", "patch", "{\"log\":" + data + "}", snapshotCopy.globalRevision > 0 ? snapshotCopy.globalRevision : protocolState.globalStateRevision);
+            String logPacket = makeClientEnvelopeWithRevision(c, "patch", "patch", "{\"log\":" + data + "}", activeRev);
             telemetrySocket.sendTXT(c, logPacket);
           }
         }
@@ -2631,8 +2688,7 @@ void telemetryNetworkTask(void *arg) {
   (void)arg;
   telemetrySocket.begin();
   telemetrySocket.onEvent(handleTelemetrySocket);
-  telemetryStarted = true;
-  logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort));
+  setTelemetryStarted(true);
 
   for (;;) {
     telemetrySocket.loop();
@@ -8645,7 +8701,7 @@ void startHttpServer() {
     if (telemetryStateMutex) { vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr; }
     if (motionEventQueue) { vQueueDelete(motionEventQueue); motionEventQueue = nullptr; }
     if (logEventQueue) { vQueueDelete(logEventQueue); logEventQueue = nullptr; }
-    telemetryStarted = false;
+    setTelemetryStarted(false);
     return;
   }
 
@@ -8658,7 +8714,7 @@ void startHttpServer() {
     vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr;
     vQueueDelete(motionEventQueue); motionEventQueue = nullptr;
     vQueueDelete(logEventQueue); logEventQueue = nullptr;
-    telemetryStarted = false;
+    setTelemetryStarted(false);
     return;
   }
 }
