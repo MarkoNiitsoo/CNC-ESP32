@@ -1,5 +1,17 @@
 # Progress
 
+## 2026-07-27 - Phase 1 WebSocket Transport Protocol Repair & Parity
+
+- Repaired Phase 1 protocol implementation on branch `feature/phase1-websocket-transport`.
+- Removed orphaned duplicate code in `src/main.cpp`.
+- Implemented per-WebSocket-client protocol state in firmware (`connected`, `handshakeComplete`, `nextServerSeq`, `lastContiguousClientSeq`, `lastServerSeqAcknowledgedByClient`, `lastOutboundAtMs`).
+- Enforced required `hello` handshake on socket open; server sends `snapshot` only after receiving `hello` with `protocolVersion: 1` and `seq: 1`.
+- Added wall-clock time sync (`utcMs`, `timezoneOffsetMinutes`, `timeZone`) with `wallClockValid` flag.
+- Ensured authoritative `stateRevision` increments on state slice changes, and idle `sync` timers check per-client idle intervals without modifying state revision.
+- Implemented client state coalescing in `updateAuthoritativeStateRevisionIfNeeded()` to avoid sending redundant WebSocket packets when state is unchanged.
+- Updated `dev/mock-server.mjs` and `www/telemetry.js` to match identical protocol semantics (per-connection sequence tracking, handshake requirement, clock validity, deep slice equality checks).
+- Verification: `pio run -e esp32cam` succeeded with 19.8% RAM (64,740 bytes) and 73.1% Flash (1,437,301 bytes). All 45 test files and 411 tests passed in `npm test`.
+
 ## 2026-07-19 - Recovery import order and in-place repairs
 
 - SD evidence showed the rebooted firmware retained a valid production checkpoint at acknowledged

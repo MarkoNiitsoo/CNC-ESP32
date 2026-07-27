@@ -1,5 +1,26 @@
 # Handoff
 
+## 2026-07-27 - Phase 1 WebSocket Transport Protocol Handoff
+
+- Fixed Phase 1 full-duplex protocol foundation on `feature/phase1-websocket-transport`.
+- Firmware compiles cleanly with `pio run -e esp32cam` (19.8% RAM, 73.1% Flash).
+- All 411 tests pass cleanly (`npm test`).
+- Firmware WebSocket protocol (`src/main.cpp`) features:
+  - Per-connection state tracking (`ProtocolState` with client array `TelemetryClientState`).
+  - Required `hello` handshake on socket connect before any `snapshot` is sent.
+  - Sequenced transport envelope with connection-specific sequence numbers (`seq`), peer acknowledgments (`ack`), global state revision (`stateRevision`), and boot session ID (`bootId`).
+  - Wall-clock sync during handshake (`utcMs`, `timezoneOffsetMinutes`, `timeZone`).
+  - Non-blocking coalesced state revision updates (`updateAuthoritativeStateRevisionIfNeeded`) emitting unified JSON patch broadcasts (`broadcastDirtyPatches`) when state slices change.
+  - Dynamic motion and log event broadcasting over WebSocket for active subscribers.
+  - Idle sync pinging every 3 seconds for active client connections.
+- Mock server parity (`dev/mock-server.mjs`) features identical per-connection client state, sequence tracking, required handshake, wall-clock validity, and coalesced patch broadcasts.
+- Browser telemetry client (`www/telemetry.js`) features:
+  - Connection sequence counters reset per socket lifecycle.
+  - Handshake `hello` payload on connect with UTC timestamp and timezone offset.
+  - Sequence gap detection (`seq > lastServerSeq + 1`) triggering resync request.
+  - Protocol error surface (`protocol-error` handling and event emission).
+  - Deep slice equality checks (`isSliceEqual`) preventing duplicate event dispatches.
+
 ## 2026-07-19 - Recovery workflow repair handoff
 
 - Keep recovery evidence durable in this order: read checkpoint, update matching job history,

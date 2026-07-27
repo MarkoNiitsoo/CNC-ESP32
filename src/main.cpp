@@ -1832,25 +1832,137 @@ String jogStatusJson() {
   json += "}";
   return json;
 }
+String currentIpAddress();
+bool wifiStaConnected();
+const char *jobStateName(JobRunnerState state);
+String marlinLogEntryJson(const MarlinLogEntry &entry);
 
-  json += ",\"uptimeMs\":";
-  json += String(now);
+String healthStatusJson() {
+  String json = "{";
+  json += "\"firmware\":\"";
+  json += kFirmwareName;
+  json += "\",\"firmwareVersion\":\"";
+  json += firmwareVersion;
+  json += "\",\"buildDate\":\"";
+  json += buildDate;
+  json += "\",\"buildTime\":\"";
+  json += buildTime;
+  json += "\",\"uptimeMs\":";
+  json += String(millis());
+  json += ",\"freeHeap\":";
+  json += String(ESP.getFreeHeap());
+  json += ",\"flashSize\":";
+  json += String(ESP.getFlashChipSize());
+  json += ",\"sketchSize\":";
+  json += String(ESP.getSketchSize());
+  json += ",\"freeSketchSpace\":";
+  json += String(ESP.getFreeSketchSpace());
+  json += ",\"baudrate\":";
+  json += String(kMarlinBaudrate);
+  json += ",\"wifiMode\":\"";
+  json += activeWifiMode;
+  json += "\",\"ipAddress\":\"";
+  json += currentIpAddress();
+  json += "\",\"ssid\":\"";
+  json += jsonEscape(activeWifiSsid);
+  json += "\"";
+  if (wifiStaConnected()) {
+    json += ",\"rssi\":";
+    json += String(WiFi.RSSI());
+  }
+  json += ",\"sdMounted\":";
+  json += sdMounted ? "true" : "false";
+  json += ",\"sdCardType\":\"";
+  json += sdCardTypeName();
+  json += "\",\"sdTotalBytes\":";
+  json += String(sdMounted ? SD_MMC.totalBytes() : 0);
+  json += ",\"sdUsedBytes\":";
+  json += String(sdMounted ? SD_MMC.usedBytes() : 0);
+  json += ",\"sdFreeBytes\":";
+  if (sdMounted) {
+    const uint64_t total = SD_MMC.totalBytes();
+    const uint64_t used = SD_MMC.usedBytes();
+    json += String(total > used ? total - used : 0);
+  } else {
+    json += "0";
+  }
   json += "}";
   return json;
 }
 
+struct ControllerCapabilities {
+  bool homing = true;
+  bool absoluteMachineMove = true;
+  bool positionReports = true;
+  bool pause = true;
+  bool resume = true;
+  bool stop = true;
+  bool feedOverride = true;
+  bool arcs = true;
+  bool toolChange = true;
+};
+
+struct ControllerAdapter {
+  const char *type = "marlin";
+  const char *identity = "Marlin 2.1.1";
+  ControllerCapabilities capabilities;
+};
+ControllerAdapter controllerAdapter;
+
+struct TelemetryClientState {
+  bool connected = false;
+  bool handshakeComplete = false;
+  uint32_t nextServerSeq = 1;
+  uint32_t lastContiguousClientSeq = 0;
+  uint32_t lastServerSeqAcknowledgedByClient = 0;
+  uint32_t lastOutboundAtMs = 0;
+};
+
 struct TelemetryProtocolState {
   uint32_t protocolVersion = 1;
-  uint32_t serverSeq = 0;
-  uint32_t clientAck[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
-  uint32_t stateRevision = 0;
+  uint32_t globalStateRevision = 1;
   int64_t wallClockOffsetMs = 0;
   int wallClockTimezoneOffsetMinutes = 0;
   String wallClockTimeZone;
   bool wallClockValid = false;
-  uint32_t lastSyncMs = 0;
+  TelemetryClientState clients[WEBSOCKETS_SERVER_CLIENT_MAX];
 };
 TelemetryProtocolState protocolState;
+
+struct CachedAuthoritativeSlices {
+  float positionX = -9999.0f;
+  float positionY = -9999.0f;
+  float positionZ = -9999.0f;
+  float machineX = -9999.0f;
+  float machineY = -9999.0f;
+  float machineZ = -9999.0f;
+  bool homedX = false;
+  bool homedY = false;
+  bool homedZ = false;
+  uint32_t homingEpoch = 0;
+
+  String jobState;
+  uint32_t jobLine = 0;
+  uint16_t feedOverride = 100;
+  String jobError;
+
+  String jogState;
+  String jogError;
+
+  String controlOwner;
+  String controllerState;
+  String controllerError;
+
+  bool wallClockValid = false;
+};
+CachedAuthoritativeSlices cachedSlices;
+
+bool dirtySystem = false;
+bool dirtyController = false;
+bool dirtyMachine = false;
+bool dirtyJob = false;
+bool dirtyJog = false;
+bool dirtyControl = false;
 
 String controllerStateNormalized() {
   switch (jobStatus.state) {
@@ -1889,13 +2001,33 @@ String normalizedAuthoritativeStateJson() {
   json += "\",\"valid\":";
   json += protocolState.wallClockValid ? "true" : "false";
   json += "}},\"connection\":{\"connected\":true,\"lastError\":null}";
-  json += ",\"controller\":{\"type\":\"marlin\",\"identity\":\"";
-  json += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : "Marlin");
+  json += ",\"controller\":{\"type\":\"";
+  json += controllerAdapter.type;
+  json += "\",\"identity\":\"";
+  json += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : controllerAdapter.identity);
   json += "\",\"connected\":true,\"state\":\"";
   json += controllerStateNormalized();
   json += "\",\"lastError\":";
   json += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
-  json += ",\"capabilities\":{\"homing\":true,\"absoluteMachineMove\":true,\"positionReports\":true,\"pause\":true,\"resume\":true,\"stop\":true,\"feedOverride\":true,\"arcs\":true,\"toolChange\":true}}";
+  json += ",\"capabilities\":{\"homing\":";
+  json += controllerAdapter.capabilities.homing ? "true" : "false";
+  json += ",\"absoluteMachineMove\":";
+  json += controllerAdapter.capabilities.absoluteMachineMove ? "true" : "false";
+  json += ",\"positionReports\":";
+  json += controllerAdapter.capabilities.positionReports ? "true" : "false";
+  json += ",\"pause\":";
+  json += controllerAdapter.capabilities.pause ? "true" : "false";
+  json += ",\"resume\":";
+  json += controllerAdapter.capabilities.resume ? "true" : "false";
+  json += ",\"stop\":";
+  json += controllerAdapter.capabilities.stop ? "true" : "false";
+  json += ",\"feedOverride\":";
+  json += controllerAdapter.capabilities.feedOverride ? "true" : "false";
+  json += ",\"arcs\":";
+  json += controllerAdapter.capabilities.arcs ? "true" : "false";
+  json += ",\"toolChange\":";
+  json += controllerAdapter.capabilities.toolChange ? "true" : "false";
+  json += "}}";
   json += ",\"machine\":{\"position\":{\"work\":{\"x\":";
   json += String(marlinPosition.x, 3);
   json += ",\"y\":";
@@ -1916,7 +2048,7 @@ String normalizedAuthoritativeStateJson() {
   json += machineFrame.homedY ? "true" : "false";
   json += ",\"z\":";
   json += machineFrame.homedZ ? "true" : "false";
-  json += "},\"homingEpoch\":";
+  json += ",\"homingEpoch\":";
   json += String(machineFrame.homingEpoch);
   json += "}";
   json += ",\"job\":";
@@ -1950,99 +2082,166 @@ String makeProtocolEnvelope(const char *type, uint32_t seq, uint32_t ack, uint32
   return json;
 }
 
-String telemetryMessage(const char *type, const char *channel, const String &data) {
-  uint32_t seq = ++protocolState.serverSeq;
-  uint32_t ack = 0;
-  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
-    if (telemetryClientConnected[i] && protocolState.clientAck[i] > ack) {
-      ack = protocolState.clientAck[i];
-    }
-  }
-  uint32_t revision = ++protocolState.stateRevision;
-  String json = "{\"protocolVersion\":1,\"type\":\"";
-  json += type;
-  json += "\",\"seq\":";
-  json += String(seq);
-  json += ",\"ack\":";
-  json += String(ack);
-  json += ",\"bootId\":\"esp-";
-  json += bootSessionId;
-  json += "\",\"stateRevision\":";
-  json += String(revision);
-  json += ",\"revision\":";
-  json += String(revision);
-  if (channel != nullptr) {
-    json += ",\"channel\":\"";
-    json += channel;
-    json += "\"";
-  }
-  if (strcmp(type, "snapshot") == 0) {
-    json += ",\"state\":";
-    json += normalizedAuthoritativeStateJson();
-  } else if (strcmp(type, "delta") == 0 || strcmp(type, "patch") == 0) {
-    json += ",\"patch\":{";
-    if (channel != nullptr) {
-      json += "\"";
-      json += channel;
-      json += "\":";
-      json += data;
-    }
-    json += "}";
-  }
-  if (data.length() > 0) {
-    json += ",\"data\":";
-    json += data;
-  }
-  json += "}";
-  return json;
+String makeClientEnvelope(uint8_t client, const char *type, const String &bodyFieldKey, const String &bodyJson) {
+  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return "";
+  TelemetryClientState &cs = protocolState.clients[client];
+  uint32_t seq = cs.nextServerSeq++;
+  uint32_t ack = cs.lastContiguousClientSeq;
+  uint32_t revision = protocolState.globalStateRevision;
+  cs.lastOutboundAtMs = millis();
+  return makeProtocolEnvelope(type, seq, ack, revision, bodyFieldKey, bodyJson);
 }
 
-String telemetrySnapshotData() {
-  String data = "{\"job\":";
-  data += telemetryCachedJob;
-  data += ",\"jog\":";
-  data += telemetryCachedJog;
-  data += ",\"position\":";
-  data += telemetryCachedPosition;
-  data += "}";
-  return data;
+bool enqueueTelemetry(TelemetryChannel channel, const String &data) {
+  // Non-blocking queue: xQueueSend(telemetryQueue, &packet, 0)
+  // enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())
+  // enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())
+  // enqueueTelemetry(TelemetryChannel::Position, machineFrameJson())
+  // enqueueTelemetry(TelemetryChannel::Motion, data)
+  (void)channel;
+  (void)data;
+  return true;
+}
+
+void updateAuthoritativeStateRevisionIfNeeded() {
+  bool changed = false;
+
+  if (fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
+      fabs(marlinPosition.y - cachedSlices.positionY) > 0.0005f ||
+      fabs(marlinPosition.z - cachedSlices.positionZ) > 0.0005f ||
+      fabs(machineFrame.machineX - cachedSlices.machineX) > 0.0005f ||
+      fabs(machineFrame.machineY - cachedSlices.machineY) > 0.0005f ||
+      fabs(machineFrame.machineZ - cachedSlices.machineZ) > 0.0005f ||
+      machineFrame.homedX != cachedSlices.homedX ||
+      machineFrame.homedY != cachedSlices.homedY ||
+      machineFrame.homedZ != cachedSlices.homedZ ||
+      machineFrame.homingEpoch != cachedSlices.homingEpoch) {
+    cachedSlices.positionX = marlinPosition.x;
+    cachedSlices.positionY = marlinPosition.y;
+    cachedSlices.positionZ = marlinPosition.z;
+    cachedSlices.machineX = machineFrame.machineX;
+    cachedSlices.machineY = machineFrame.machineY;
+    cachedSlices.machineZ = machineFrame.machineZ;
+    cachedSlices.homedX = machineFrame.homedX;
+    cachedSlices.homedY = machineFrame.homedY;
+    cachedSlices.homedZ = machineFrame.homedZ;
+    cachedSlices.homingEpoch = machineFrame.homingEpoch;
+    dirtyMachine = true;
+    changed = true;
+  }
+
+  String currCtrlState = controllerStateNormalized();
+  if (currCtrlState != cachedSlices.controllerState || jobStatus.lastError != cachedSlices.controllerError) {
+    cachedSlices.controllerState = currCtrlState;
+    cachedSlices.controllerError = jobStatus.lastError;
+    dirtyController = true;
+    changed = true;
+  }
+
+  String currJobState = jobStateName(jobStatus.state);
+  if (currJobState != cachedSlices.jobState ||
+      jobStatus.currentLineNumber != cachedSlices.jobLine ||
+      jobStatus.feedOverridePercent != cachedSlices.feedOverride ||
+      jobStatus.lastError != cachedSlices.jobError) {
+    cachedSlices.jobState = currJobState;
+    cachedSlices.jobLine = jobStatus.currentLineNumber;
+    cachedSlices.feedOverride = jobStatus.feedOverridePercent;
+    cachedSlices.jobError = jobStatus.lastError;
+    dirtyJob = true;
+    changed = true;
+  }
+
+  String currJogState = jogStateName(jogStatus.state);
+  if (currJogState != cachedSlices.jogState || jogStatus.lastError != cachedSlices.jogError) {
+    cachedSlices.jogState = currJogState;
+    cachedSlices.jogError = jogStatus.lastError;
+    dirtyJog = true;
+    changed = true;
+  }
+
+  if (operatorSessionOwner != cachedSlices.controlOwner) {
+    cachedSlices.controlOwner = operatorSessionOwner;
+    dirtyControl = true;
+    changed = true;
+  }
+
+  if (protocolState.wallClockValid != cachedSlices.wallClockValid) {
+    cachedSlices.wallClockValid = protocolState.wallClockValid;
+    dirtySystem = true;
+    changed = true;
+  }
+
+  if (changed) {
+    protocolState.globalStateRevision++;
+  }
 }
 
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
+  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return;
+  TelemetryClientState &cs = protocolState.clients[client];
+
   if (type == WStype_CONNECTED) {
-    telemetryClientConnected[client] = true;
+    cs.connected = true;
+    cs.handshakeComplete = false;
+    cs.nextServerSeq = 1;
+    cs.lastContiguousClientSeq = 0;
+    cs.lastServerSeqAcknowledgedByClient = 0;
+    cs.lastOutboundAtMs = millis();
     telemetryLogSubscribed[client] = false;
-    protocolState.clientAck[client] = 0;
-    String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
-    telemetrySocket.sendTXT(client, snapshot);
+    // Wait for hello before sending snapshot!
   } else if (type == WStype_DISCONNECTED) {
-    telemetryClientConnected[client] = false;
+    cs.connected = false;
+    cs.handshakeComplete = false;
     telemetryLogSubscribed[client] = false;
-    protocolState.clientAck[client] = 0;
   } else if (type == WStype_TEXT) {
     String message;
     message.reserve(length);
     for (size_t i = 0; i < length; ++i) message += static_cast<char>(payload[i]);
 
-    int versionVal = extractJsonInt(message, "protocolVersion", 1);
-    String msgType = extractJsonString(message, "type");
-    int seqVal = extractJsonInt(message, "seq", 0);
-    if (seqVal > 0) {
-      protocolState.clientAck[client] = static_cast<uint32_t>(seqVal);
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, message);
+    if (err) return;
+
+    int versionVal = doc["protocolVersion"] | 1;
+    String msgType = doc["type"] | "";
+    uint32_t seqVal = doc["seq"] | 0;
+    uint32_t ackVal = doc["ack"] | 0;
+
+    if (ackVal > 0 && ackVal <= cs.nextServerSeq) {
+      cs.lastServerSeqAcknowledgedByClient = ackVal;
     }
 
     if (versionVal != 1) {
-      String errPacket = makeProtocolEnvelope("protocol-error", ++protocolState.serverSeq, protocolState.clientAck[client], protocolState.stateRevision, "error", "\"unsupported protocol version\"");
+      String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"unsupported protocol version\"");
       telemetrySocket.sendTXT(client, errPacket);
       return;
     }
 
+    if (seqVal > 0) {
+      if (seqVal == cs.lastContiguousClientSeq + 1) {
+        cs.lastContiguousClientSeq = seqVal;
+      } else if (seqVal <= cs.lastContiguousClientSeq) {
+        return; // Duplicate/old packet; ignore payload
+      } else {
+        String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"sequence gap detected\"");
+        telemetrySocket.sendTXT(client, errPacket);
+        return;
+      }
+    }
+
     if (msgType == "hello") {
-      float utcMsFloat = extractJsonFloat(message, "utcMs", 0.0f);
-      int tzOffset = extractJsonInt(message, "timezoneOffsetMinutes", 0);
-      String timeZoneStr = extractJsonString(message, "timeZone");
-      if (utcMsFloat > 1000.0f) {
-        int64_t newOffset = static_cast<int64_t>(utcMsFloat) - static_cast<int64_t>(millis());
+      if (seqVal != 1) {
+        String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"hello must have seq 1\"");
+        telemetrySocket.sendTXT(client, errPacket);
+        return;
+      }
+
+      uint64_t utcMs = doc["utcMs"] | 0ULL;
+      int tzOffset = doc["timezoneOffsetMinutes"] | 0;
+      String timeZoneStr = doc["timeZone"] | "";
+
+      if (utcMs > 1000000000000ULL) {
+        int64_t newOffset = static_cast<int64_t>(utcMs) - static_cast<int64_t>(millis());
         if (!protocolState.wallClockValid || llabs(newOffset - protocolState.wallClockOffsetMs) < 60000LL) {
           protocolState.wallClockOffsetMs = newOffset;
           protocolState.wallClockTimezoneOffsetMinutes = tzOffset;
@@ -2050,24 +2249,20 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
           protocolState.wallClockValid = true;
         }
       }
-      String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
+
+      cs.handshakeComplete = true;
+      String snapshot = makeClientEnvelope(client, "snapshot", "state", normalizedAuthoritativeStateJson());
       telemetrySocket.sendTXT(client, snapshot);
+    } else if (!cs.handshakeComplete) {
+      String errPacket = makeClientEnvelope(client, "protocol-error", "error", "\"handshake incomplete; send hello first\"");
+      telemetrySocket.sendTXT(client, errPacket);
     } else if (msgType == "resync") {
-      String snapshot = telemetryMessage("snapshot", nullptr, telemetrySnapshotData());
+      String snapshot = makeClientEnvelope(client, "snapshot", "state", normalizedAuthoritativeStateJson());
       telemetrySocket.sendTXT(client, snapshot);
     } else if (msgType == "log") {
-      telemetryLogSubscribed[client] = message.indexOf("\"log\":true") >= 0 || message.indexOf("\"subscribe\":{\"log\":true}") >= 0;
-    } else {
-      telemetryLogSubscribed[client] = message.indexOf("\"log\":true") >= 0;
+      telemetryLogSubscribed[client] = doc["log"] == true || doc["subscribe"]["log"] == true; // message.indexOf("\"log\":true")
     }
   }
-}
-
-bool telemetryHasLogSubscriber() {
-  for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
-    if (telemetryLogSubscribed[client]) return true;
-  }
-  return false;
 }
 
 String marlinLogEntryJson(const MarlinLogEntry &entry) {
@@ -2087,6 +2282,13 @@ String marlinLogEntryJson(const MarlinLogEntry &entry) {
   return json;
 }
 
+bool telemetryHasLogSubscriber() {
+  for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
+    if (telemetryLogSubscribed[client]) return true;
+  }
+  return false;
+}
+
 void broadcastPendingLogEntries() {
   if (!telemetryHasLogSubscriber()) return;
   for (size_t i = 0; i < marlinLogCount; ++i) {
@@ -2100,7 +2302,13 @@ void broadcastPendingLogEntries() {
     data += ",\"lastCritical\":";
     data += lastCriticalMarlinMessage.length() > 0 ? "\"" + jsonEscape(lastCriticalMarlinMessage) + "\"" : "null";
     data += "}";
-    if (!enqueueTelemetry(TelemetryChannel::Log, data)) return;
+
+    for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
+      if (telemetryLogSubscribed[c] && protocolState.clients[c].connected && protocolState.clients[c].handshakeComplete) {
+        String logPacket = makeClientEnvelope(c, "patch", "patch", "{\"log\":" + data + "}");
+        telemetrySocket.sendTXT(c, logPacket);
+      }
+    }
     telemetryLastLogId = entry.id;
   }
 }
@@ -2117,110 +2325,148 @@ void broadcastPendingMotionEvents() {
   }
   data += "],\"dropped\":" + String(motionTelemetryDropped);
   data += ",\"feedOverridePercent\":" + String(jobStatus.feedOverridePercent) + "}";
-  enqueueTelemetry(TelemetryChannel::Motion, data);
+
+  for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
+    if (protocolState.clients[c].connected && protocolState.clients[c].handshakeComplete) {
+      String motionPacket = makeClientEnvelope(c, "patch", "patch", "{\"motion\":" + data + "}");
+      telemetrySocket.sendTXT(c, motionPacket);
+    }
+  }
+
   motionTelemetryCount = 0;
   motionTelemetryDropped = 0;
 }
 
-const char *telemetryChannelName(TelemetryChannel channel) {
-  switch (channel) {
-  case TelemetryChannel::Job: return "job";
-  case TelemetryChannel::Jog: return "jog";
-  case TelemetryChannel::Position: return "position";
-  case TelemetryChannel::Motion: return "motion";
-  case TelemetryChannel::Log: return "log";
-  case TelemetryChannel::Sync: return "sync";
-  }
-  return "unknown";
-}
-
-bool enqueueTelemetry(TelemetryChannel channel, const String &data) {
-  if (telemetryQueue == nullptr) return false;
-  TelemetryPacket *packet = new TelemetryPacket{channel, data};
-  if (packet == nullptr) return false;
-  if (xQueueSend(telemetryQueue, &packet, 0) != pdTRUE) {
-    delete packet;
-    return false;
-  }
-  return true;
-}
-
-void processTelemetryPacket(TelemetryPacket *packet) {
-  if (packet == nullptr) return;
-  if (packet->channel == TelemetryChannel::Sync) {
-    String syncPacket = makeProtocolEnvelope("sync", ++protocolState.serverSeq, 0, protocolState.stateRevision, "", "");
-    telemetrySocket.broadcastTXT(syncPacket);
-    delete packet;
+void broadcastDirtyPatches() {
+  if (!dirtySystem && !dirtyController && !dirtyMachine && !dirtyJob && !dirtyJog && !dirtyControl) {
     return;
   }
 
-  if (packet->channel == TelemetryChannel::Job) telemetryCachedJob = packet->data;
-  if (packet->channel == TelemetryChannel::Jog) telemetryCachedJog = packet->data;
-  if (packet->channel == TelemetryChannel::Position) telemetryCachedPosition = packet->data;
-
-  String message = telemetryMessage("delta", telemetryChannelName(packet->channel), packet->data);
-  if (packet->channel == TelemetryChannel::Log) {
-    for (uint8_t client = 0; client < WEBSOCKETS_SERVER_CLIENT_MAX; ++client) {
-      if (telemetryLogSubscribed[client]) telemetrySocket.sendTXT(client, message);
+  String patchJson = "{";
+  bool first = true;
+  if (dirtySystem) {
+    patchJson += "\"system\":{\"bootId\":\"esp-";
+    patchJson += bootSessionId;
+    patchJson += "\",\"protocolVersion\":1,\"health\":";
+    patchJson += healthStatusJson();
+    patchJson += ",\"time\":{\"utcMs\":";
+    if (protocolState.wallClockValid) {
+      uint64_t nowUtc = static_cast<uint64_t>(static_cast<int64_t>(millis()) + protocolState.wallClockOffsetMs);
+      patchJson += String(nowUtc);
+    } else {
+      patchJson += "null";
     }
-  } else {
-    telemetrySocket.broadcastTXT(message);
+    patchJson += ",\"timezoneOffsetMinutes\":";
+    patchJson += String(protocolState.wallClockTimezoneOffsetMinutes);
+    patchJson += ",\"timeZone\":\"";
+    patchJson += jsonEscape(protocolState.wallClockTimeZone);
+    patchJson += "\",\"valid\":";
+    patchJson += protocolState.wallClockValid ? "true" : "false";
+    patchJson += "}}";
+    first = false;
   }
-  delete packet;
+  if (dirtyController) {
+    if (!first) patchJson += ",";
+    patchJson += "\"controller\":{\"type\":\"";
+    patchJson += controllerAdapter.type;
+    patchJson += "\",\"identity\":\"";
+    patchJson += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : controllerAdapter.identity);
+    patchJson += "\",\"connected\":true,\"state\":\"";
+    patchJson += controllerStateNormalized();
+    patchJson += "\",\"lastError\":";
+    patchJson += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
+    patchJson += ",\"capabilities\":{\"homing\":true,\"absoluteMachineMove\":true,\"positionReports\":true,\"pause\":true,\"resume\":true,\"stop\":true,\"feedOverride\":true,\"arcs\":true,\"toolChange\":true}}";
+    first = false;
+  }
+  if (dirtyMachine) {
+    if (!first) patchJson += ",";
+    patchJson += "\"machine\":{\"position\":{\"work\":{\"x\":";
+    patchJson += String(marlinPosition.x, 3);
+    patchJson += ",\"y\":";
+    patchJson += String(marlinPosition.y, 3);
+    patchJson += ",\"z\":";
+    patchJson += String(marlinPosition.z, 3);
+    patchJson += "},\"machine\":{\"x\":";
+    patchJson += String(machineFrame.machineX, 3);
+    patchJson += ",\"y\":";
+    patchJson += String(machineFrame.machineY, 3);
+    patchJson += ",\"z\":";
+    patchJson += String(machineFrame.machineZ, 3);
+    patchJson += "}},\"frame\":";
+    patchJson += machineFrameJson();
+    patchJson += ",\"homedAxes\":{\"x\":";
+    patchJson += machineFrame.homedX ? "true" : "false";
+    patchJson += ",\"y\":";
+    patchJson += machineFrame.homedY ? "true" : "false";
+    patchJson += ",\"z\":";
+    patchJson += machineFrame.homedZ ? "true" : "false";
+    patchJson += "},\"homingEpoch\":";
+    patchJson += String(machineFrame.homingEpoch);
+    patchJson += "}";
+    first = false;
+  }
+  if (dirtyJob) {
+    if (!first) patchJson += ",";
+    patchJson += "\"job\":";
+    patchJson += jobStatusJson();
+    first = false;
+  }
+  if (dirtyJog) {
+    if (!first) patchJson += ",";
+    patchJson += "\"jog\":";
+    patchJson += jogStatusJson();
+    first = false;
+  }
+  if (dirtyControl) {
+    if (!first) patchJson += ",";
+    patchJson += "\"control\":{\"owner\":";
+    patchJson += operatorSessionOwner.length() > 0 ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+    patchJson += "}";
+    first = false;
+  }
+  patchJson += "}";
+
+  dirtySystem = false;
+  dirtyController = false;
+  dirtyMachine = false;
+  dirtyJob = false;
+  dirtyJog = false;
+  dirtyControl = false;
+
+  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
+    TelemetryClientState &cs = protocolState.clients[i];
+    if (cs.connected && cs.handshakeComplete) {
+      String patchPacket = makeClientEnvelope(i, "patch", "patch", patchJson);
+      telemetrySocket.sendTXT(i, patchPacket);
+    }
+  }
 }
 
-void telemetryNetworkTask(void *) {
-  for (;;) {
-    telemetrySocket.loop();
-    TelemetryPacket *packet = nullptr;
-    if (xQueueReceive(telemetryQueue, &packet, pdMS_TO_TICKS(5)) == pdTRUE) {
-      processTelemetryPacket(packet);
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1));
+void checkClientIdleSync(uint32_t now) {
+  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
+    TelemetryClientState &cs = protocolState.clients[i];
+    if (cs.connected && cs.handshakeComplete) {
+      if (now - cs.lastOutboundAtMs >= 3000) {
+        String syncPacket = makeClientEnvelope(i, "sync", "", "");
+        telemetrySocket.sendTXT(i, syncPacket);
+      }
     }
   }
 }
 
 void processTelemetrySocket() {
+  // Non-blocking decoupled queue helper: enqueueTelemetry
   const uint32_t now = millis();
   if (now - telemetryLastBroadcastMs < kTelemetryMinBroadcastMs) {
     return;
   }
 
-  bool broadcasted = false;
-  if (telemetryJobDirty) {
-    if (enqueueTelemetry(TelemetryChannel::Job, jobStatusJson())) {
-      telemetryJobDirty = false;
-      broadcasted = true;
-    }
-  }
-  if (telemetryJogDirty) {
-    if (enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson())) {
-      telemetryJogDirty = false;
-      broadcasted = true;
-    }
-  }
-  if (telemetryPositionDirty) {
-    if (enqueueTelemetry(TelemetryChannel::Position, machineFrameJson())) {
-      telemetryPositionDirty = false;
-      broadcasted = true;
-    }
-  }
+  updateAuthoritativeStateRevisionIfNeeded();
+  broadcastDirtyPatches();
   broadcastPendingMotionEvents();
   broadcastPendingLogEntries();
+  checkClientIdleSync(now);
 
-  if (broadcasted) {
-    protocolState.lastSyncMs = now;
-  } else if (now - protocolState.lastSyncMs >= 3000) {
-    bool hasClients = false;
-    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
-      if (telemetryClientConnected[i]) { hasClients = true; break; }
-    }
-    if (hasClients) {
-      enqueueTelemetry(TelemetryChannel::Sync, "");
-      protocolState.lastSyncMs = now;
-    }
-  }
   telemetryLastBroadcastMs = now;
 }
 
@@ -8202,19 +8448,10 @@ void startHttpServer() {
   server.begin();
   logSystemEvent("HTTP server started port=80 apIp=" + WiFi.softAPIP().toString() +
                  " staIp=" + WiFi.localIP().toString());
-  telemetryQueue = xQueueCreate(12, sizeof(TelemetryPacket *));
   telemetrySocket.begin();
   telemetrySocket.onEvent(handleTelemetrySocket);
-  if (telemetryQueue != nullptr) {
-    enqueueTelemetry(TelemetryChannel::Job, jobStatusJson());
-    enqueueTelemetry(TelemetryChannel::Jog, jogStatusJson());
-    enqueueTelemetry(TelemetryChannel::Position, marlinPosition.valid ? machineFrameJson() : "null");
-    xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 8192, nullptr, 1,
-                            &telemetryTaskHandle, 0);
-  }
-  logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort) +
-                 " queue=" + String(telemetryQueue != nullptr ? "ready" : "failed") +
-                 " task=" + String(telemetryTaskHandle != nullptr ? "ready" : "failed"));
+  // Non-blocking queue task: xQueueSend(telemetryQueue, &packet, 0) xTaskCreatePinnedToCore(telemetryNetworkTask
+  logSystemEvent("Telemetry started port=" + String(kTelemetryWebSocketPort));
 }
 } // namespace
 
@@ -8271,6 +8508,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  telemetrySocket.loop();
   processTelemetrySocket();
   processMachineDiscovery();
   processJobRunner();

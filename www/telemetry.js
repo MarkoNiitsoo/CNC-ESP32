@@ -45,6 +45,12 @@
     return data;
   }
 
+  function isSliceEqual(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
   function emit(name, data) {
     if (name === 'log') {
       const existing = Array.isArray(state.log?.entries) ? state.log.entries : [];
@@ -58,6 +64,9 @@
       };
       logCursor = Math.max(logCursor, Number(data.nextId) || 0);
     }
+    const oldSlice = state[name];
+    if (isSliceEqual(oldSlice, data)) return;
+
     state[name] = data;
     if (mirroredState[name] !== undefined) {
       mirroredState[name] = data;
@@ -171,6 +180,13 @@
     const stateRevision = Number(message.stateRevision || message.revision || 0);
     const msgType = message.type;
 
+    if (msgType === 'protocol-error') {
+      mirroredState.connection.lastError = message.error || 'protocol error';
+      window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: message }));
+      window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
+      return;
+    }
+
     if (bootId && knownBootId && bootId !== knownBootId) {
       Object.keys(mirroredState).forEach((key) => {
         if (key !== 'connection' && key !== 'log') mirroredState[key] = null;
@@ -183,17 +199,16 @@
       lastServerSeq = seq;
       lastStateRevision = stateRevision;
       if (message.state) {
-        Object.assign(mirroredState, message.state);
-        if (message.state.system) emit('system', message.state.system);
-        if (message.state.controller) emit('controller', message.state.controller);
-        if (message.state.machine) emit('machine', message.state.machine);
-        if (message.state.job) emit('job', message.state.job);
-        if (message.state.jog) emit('jog', message.state.jog);
-        if (message.state.control) emit('control', message.state.control);
+        ['system', 'controller', 'machine', 'job', 'jog', 'control'].forEach((sliceKey) => {
+          if (message.state[sliceKey] !== undefined) {
+            emit(sliceKey, message.state[sliceKey]);
+          }
+        });
+      } else {
+        if (message.data?.job) emit('job', message.data.job);
+        if (message.data?.jog) emit('jog', message.data.jog);
+        if (message.data?.position) emit('position', message.data.position);
       }
-      if (message.data?.job) emit('job', message.data.job);
-      if (message.data?.jog) emit('jog', message.data.jog);
-      if (message.data?.position) emit('position', message.data.position);
       return;
     }
 
@@ -218,10 +233,10 @@
 
       if (message.patch) {
         Object.keys(message.patch).forEach((key) => {
-          mirroredState[key] = typeof message.patch[key] === 'object' && message.patch[key] !== null
+          const updatedSlice = typeof message.patch[key] === 'object' && message.patch[key] !== null
             ? { ...(mirroredState[key] || {}), ...message.patch[key] }
             : message.patch[key];
-          emit(key, mirroredState[key]);
+          emit(key, updatedSlice);
         });
       }
       if (message.channel && message.data) {

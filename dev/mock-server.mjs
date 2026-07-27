@@ -911,14 +911,18 @@ export async function createMockServer(options = {}) {
     };
   }
 
-  function makeMockEnvelope(type, extra = {}) {
-    mockServerSeq += 1;
-    mockStateRevision += 1;
+  const wsClientStates = new Map();
+
+  function makeMockClientEnvelope(socket, type, extra = {}) {
+    const cs = wsClientStates.get(socket) || { nextServerSeq: 1, lastContiguousClientSeq: 0 };
+    const seq = cs.nextServerSeq++;
+    const ack = cs.lastContiguousClientSeq;
+    cs.lastOutboundAtMs = Date.now();
     return {
       protocolVersion: 1,
       type,
-      seq: mockServerSeq,
-      ack: mockClientAck,
+      seq,
+      ack,
       bootId: env.frame.bootSessionId || `mock-boot-${env.startedAt}`,
       stateRevision: mockStateRevision,
       ...extra,
@@ -985,10 +989,13 @@ export async function createMockServer(options = {}) {
     }
   }
 
-  function broadcastMockWs(msgObj) {
-    const frame = buildWsFrame(JSON.stringify(msgObj));
+  function broadcastMockPatch(patchData) {
+    mockStateRevision += 1;
     for (const socket of wsClients) {
-      if (!socket.destroyed) socket.write(frame);
+      const cs = wsClientStates.get(socket);
+      if (cs && cs.handshakeComplete && !socket.destroyed) {
+        sendMockWs(socket, makeMockClientEnvelope(socket, 'patch', { patch: patchData }));
+      }
     }
   }
 
@@ -1007,7 +1014,16 @@ export async function createMockServer(options = {}) {
       '', '',
     ].join('\r\n'));
 
+    const clientState = {
+      connected: true,
+      handshakeComplete: false,
+      nextServerSeq: 1,
+      lastContiguousClientSeq: 0,
+      lastOutboundAtMs: Date.now(),
+    };
     wsClients.add(socket);
+    wsClientStates.set(socket, clientState);
+
     let buf = Buffer.alloc(0);
 
     socket.on('data', (chunk) => {
@@ -1018,25 +1034,45 @@ export async function createMockServer(options = {}) {
         buf = buf.subarray(parsed.frameLength);
         try {
           const msg = JSON.parse(parsed.payload);
-          if (msg.seq) mockClientAck = Number(msg.seq);
-          if (msg.protocolVersion && Number(msg.protocolVersion) !== 1) {
-            sendMockWs(socket, makeMockEnvelope('protocol-error', { error: 'unsupported protocol version' }));
+          const versionVal = Number(msg.protocolVersion || 1);
+          const seqVal = Number(msg.seq || 0);
+
+          if (versionVal !== 1) {
+            sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'unsupported protocol version' }));
             return;
           }
+
+          if (seqVal > 0) {
+            if (seqVal === clientState.lastContiguousClientSeq + 1) {
+              clientState.lastContiguousClientSeq = seqVal;
+            } else if (seqVal <= clientState.lastContiguousClientSeq) {
+              return;
+            } else {
+              sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'sequence gap detected' }));
+              return;
+            }
+          }
+
           if (msg.type === 'hello') {
-            if (msg.utcMs) {
+            if (seqVal !== 1) {
+              sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'hello must have seq 1' }));
+              return;
+            }
+            if (msg.utcMs !== undefined && msg.utcMs !== null) {
               env.clockOffsetMs = Number(msg.utcMs) - Date.now();
               env.timezoneOffsetMinutes = Number(msg.timezoneOffsetMinutes || 0);
               env.timeZone = String(msg.timeZone || 'UTC');
+              env.clockValid = true;
             }
-            sendMockWs(socket, makeMockEnvelope('snapshot', {
+            clientState.handshakeComplete = true;
+            sendMockWs(socket, makeMockClientEnvelope(socket, 'snapshot', {
               state: mockNormalizedAuthoritativeState(),
-              data: { job: env.runner.snapshot(), jog: env.jog, position: env.marlin.position },
             }));
+          } else if (!clientState.handshakeComplete) {
+            sendMockWs(socket, makeMockClientEnvelope(socket, 'protocol-error', { error: 'handshake incomplete; send hello first' }));
           } else if (msg.type === 'resync') {
-            sendMockWs(socket, makeMockEnvelope('snapshot', {
+            sendMockWs(socket, makeMockClientEnvelope(socket, 'snapshot', {
               state: mockNormalizedAuthoritativeState(),
-              data: { job: env.runner.snapshot(), jog: env.jog, position: env.marlin.position },
             }));
           }
         } catch {
@@ -1045,15 +1081,25 @@ export async function createMockServer(options = {}) {
       }
     });
 
-    socket.on('close', () => wsClients.delete(socket));
-    socket.on('error', () => wsClients.delete(socket));
+    socket.on('close', () => {
+      wsClients.delete(socket);
+      wsClientStates.delete(socket);
+    });
+    socket.on('error', () => {
+      wsClients.delete(socket);
+      wsClientStates.delete(socket);
+    });
   });
 
   const mockSyncTimer = setInterval(() => {
-    if (wsClients.size > 0) {
-      broadcastMockWs(makeMockEnvelope('sync'));
+    const now = Date.now();
+    for (const socket of wsClients) {
+      const cs = wsClientStates.get(socket);
+      if (cs && cs.handshakeComplete && now - cs.lastOutboundAtMs >= 3000) {
+        sendMockWs(socket, makeMockClientEnvelope(socket, 'sync'));
+      }
     }
-  }, 3000);
+  }, 1000);
 
   server.on('close', () => clearInterval(mockSyncTimer));
 
