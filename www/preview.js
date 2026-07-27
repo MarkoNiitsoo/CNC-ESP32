@@ -15,6 +15,11 @@ import {
   updateProjectSafeZ,
   validateProjectSafeZForFrame,
 } from './lib/job-safe-z.js';
+import {
+  loadPreviewJobMetadata,
+  previewMetadataWarning,
+} from './lib/preview-job-metadata.js';
+import { jobPathForUpload as jobPathFor } from './lib/upload-thumbnail.js';
 
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
@@ -201,6 +206,7 @@ let sourceToolpathModel = null;
 let sourcePreviewSummaryData = null;
 let sourceGcodeText = '';
 let sourceGcodeSizeBytes = 0;
+let metadataWarningMessage = '';
 let activeRunText = '';
 let activeRunPath = filePath;
 let activeRunMode = 'source';
@@ -690,16 +696,6 @@ function basename(path) {
   return index >= 0 ? path.slice(index + 1) : path;
 }
 
-function safeJobName(path) {
-  const normalized = String(path || '').replace(/^\/+/, '');
-  const readable = normalized.replace(/[^A-Za-z0-9._-]/g, '_').slice(-72) || 'job';
-  return `${readable}-${fnv1a32(normalized)}`;
-}
-
-function jobPathFor(path) {
-  return `/jobs/${safeJobName(path)}.job.json`;
-}
-
 function nowIso() {
   return new Date().toISOString();
 }
@@ -954,6 +950,11 @@ function projectSafeZValue() {
   return jobState ? effectiveProjectSafeZ(jobState) : null;
 }
 
+function jobIsLive() {
+  return ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']
+    .includes(String(jobRunStatus?.state || '').toUpperCase());
+}
+
 function applyProjectSafeZToInputs() {
   if (!jobState) return;
   const safeZ = migrateProjectSafeZ(jobState);
@@ -1047,6 +1048,12 @@ function newJobState() {
       safeZClearanceMm: 5,
     }),
     startChecklist: defaultRunChecklistState(),
+    arm: {
+      state: 'NOT_ARMED',
+      armedAt: null,
+      disarmedAt: null,
+      checklist: {},
+    },
     allowedWorkspaceCommands: false,
     feedOverride: defaultFeedOverride(),
     preview: previewSummary(),
@@ -2314,14 +2321,19 @@ function formatFileSize(bytes) {
 function renderPreviewFileWarning() {
   if (!previewFileWarningEl) return;
   const messages = [];
-  if (sourceGcodeSizeBytes > PREVIEW_SOFT_WARNING_BYTES) {
+  const largePreview = sourceGcodeSizeBytes > PREVIEW_SOFT_WARNING_BYTES;
+  const largeTransform = sourceGcodeSizeBytes > TRANSFORM_SOFT_WARNING_BYTES;
+  if (metadataWarningMessage) messages.push(metadataWarningMessage);
+  if (largePreview) {
     messages.push(`Large preview file (${formatFileSize(sourceGcodeSizeBytes)}): browser parsing may be slow or memory intensive.`);
   }
-  if (sourceGcodeSizeBytes > TRANSFORM_SOFT_WARNING_BYTES) {
+  if (largeTransform) {
     messages.push('Rotation/transform may require additional browser memory.');
   }
-  if (messages.length) {
+  if (largePreview || largeTransform) {
     messages.push('Firmware job execution remains SD-streamed and is not limited by preview size.');
+  }
+  if (messages.length) {
     previewFileWarningEl.textContent = messages.join(' ');
     previewFileWarningEl.hidden = false;
   } else {
@@ -4341,15 +4353,34 @@ async function saveJob() {
   renderArmPanel();
 }
 
-async function loadExistingJobJson() {
-  try {
-    const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(filePath))}`);
-    if (!res.ok) return null;
-    const loaded = await res.json();
-    return isJobV3(loaded) && loaded.sourceGcodePath === filePath ? loaded : null;
-  } catch (err) {
-    return null;
-  }
+async function loadExistingJobResult() {
+  return loadPreviewJobMetadata({
+    fetchImpl: fetch,
+    jobPath: jobPathFor(filePath),
+    sourcePath: filePath,
+    isValidJob: isJobV3,
+  });
+}
+
+function applyLoadedJobState(loaded) {
+  jobState = loaded;
+  Object.assign(jobState, workflowFor(jobState));
+  ensureZeroState(jobState);
+  ensureActiveRunShape(jobState);
+  ensureHistoryShape(jobState);
+  migrateProjectSafeZ(jobState);
+  applyProjectSafeZToInputs();
+  applyPlacementToInputs(jobState.placement);
+  if (jobState.dryRun?.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
+  if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
+  if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
+  if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
+  jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
+  if (feedStartPercentInput) feedStartPercentInput.value = clampFeedPercent(jobState.feedOverride.startPercent, 100);
+  if (startModeSelect) startModeSelect.value = jobState.startMode;
+  applyRunChecklistState(jobState.startChecklist);
+  applyChecklistState(jobState.arm?.checklist);
+  jobExists = true;
 }
 
 async function parseRunText(text, path, mode) {
@@ -4510,15 +4541,20 @@ async function selectSourceRunInUi() {
   await refreshActiveRunUi();
 }
 
-async function uploadJobJson(job) {
+async function uploadJobJson(job, options = {}) {
   const json = JSON.stringify(job);
   const file = new File([json], basename(job.jobPath), { type: 'application/json' });
   const form = new FormData();
   form.append('path', '/jobs');
   form.append('file', file);
-  const res = await fetch('/api/upload?overwrite=true', { method: 'POST', body: form });
+  const overwrite = options.overwrite !== false;
+  const res = await fetch(`/api/upload?overwrite=${overwrite}`, { method: 'POST', body: form });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) throw new Error(data.error || 'Preview metadata save failed');
+  if (!res.ok || data.ok === false) {
+    const error = new Error(data.error || 'Preview metadata save failed');
+    error.httpStatus = res.status;
+    throw error;
+  }
 }
 
 function previewCanvasPngBlob(canvas) {
@@ -4618,31 +4654,65 @@ async function createMissingPreviewThumbnail(existingPath = '') {
   return thumbnailPath;
 }
 
-async function syncPreviewMetadata() {
-  if (!toolpathModel || !previewSummaryData) return;
+async function syncPreviewMetadata(metadataResult) {
+  if (!toolpathModel || !previewSummaryData) return { saved: false };
+  if (metadataResult.status === 'invalid' || metadataResult.status === 'error') {
+    return { saved: false, metadataResult };
+  }
   try {
     const { adapter } = await toolpathModulesPromise;
-    const existing = await loadExistingJobJson();
-    const base = existing || ensureJobState();
+    let latest = metadataResult.status === 'missing'
+      ? await loadExistingJobResult()
+      : metadataResult;
+    if (latest.status === 'invalid' || latest.status === 'error') {
+      metadataWarningMessage = previewMetadataWarning(latest);
+      renderPreviewFileWarning();
+      return { saved: false, metadataResult: latest };
+    }
+    let base = latest.status === 'loaded' ? latest.job : ensureJobState();
     let thumbnailPath = base.thumbnailPath || '';
     try {
       thumbnailPath = await createMissingPreviewThumbnail(thumbnailPath);
     } catch (err) {
       appendRunLog(`Thumbnail was not saved: ${err.message}`);
     }
-    const merged = adapter.mergePreviewIntoJob({
+    let merged = adapter.mergePreviewIntoJob({
       ...base,
       updatedAt: nowIso(),
       gcodePath: filePath,
+      sourceGcodePath: base.sourceGcodePath || filePath,
       jobPath: jobPathFor(filePath),
     }, toolpathModel, thumbnailPath || null);
-    await uploadJobJson(merged);
+    try {
+      await uploadJobJson(merged, { overwrite: latest.status === 'loaded' });
+    } catch (error) {
+      if (latest.status !== 'missing' || error.httpStatus !== 409) throw error;
+      latest = await loadExistingJobResult();
+      if (latest.status !== 'loaded') {
+        metadataWarningMessage = previewMetadataWarning(latest.status === 'missing'
+          ? { status: 'error', httpStatus: 409 }
+          : latest);
+        renderPreviewFileWarning();
+        return { saved: false, metadataResult: latest };
+      }
+      base = latest.job;
+      merged = adapter.mergePreviewIntoJob({
+        ...base,
+        updatedAt: nowIso(),
+        gcodePath: filePath,
+        sourceGcodePath: base.sourceGcodePath || filePath,
+        jobPath: jobPathFor(filePath),
+      }, toolpathModel, thumbnailPath || base.thumbnailPath || null);
+      await uploadJobJson(merged, { overwrite: true });
+    }
     jobState = merged;
     Object.assign(jobState, workflowFor(jobState));
     jobExists = true;
     // Routine preview persistence stays silent; this status area is reserved for operator actions.
+    return { saved: true, metadataResult: latest, job: merged };
   } catch (err) {
     appendRunLog(`Preview metadata was not saved: ${err.message}`);
+    return { saved: false, error: err };
   }
 }
 
@@ -6112,8 +6182,9 @@ async function markPlacementChangedAndScheduleUpdate() {
   renderArmPanel();
 }
 
-async function reconcilePlacementIntentOnLoad() {
+async function reconcilePlacementIntentOnLoad(options = {}) {
   if (!jobState || !sourceToolpathModel) return;
+  if (options.preserveGeneratedActiveRun && jobState.activeRun?.mode === 'generated') return;
   const active = await jobActiveRunPromise;
   const transform = await toolpathTransformPromise;
   const placement = resolvedPlacement(transform, sourceToolpathModel);
@@ -6208,35 +6279,28 @@ async function loadPreview() {
     renderPreviewFileWarning();
   }
   gcodeText = sourceGcodeText;
-  const existingJob = await loadExistingJobJson();
-  if (existingJob) {
-    jobState = existingJob;
-    ensureZeroState(jobState);
-    ensureActiveRunShape(jobState);
-    ensureHistoryShape(jobState);
-    migrateProjectSafeZ(jobState);
-    applyProjectSafeZToInputs();
-    applyPlacementToInputs(jobState.placement);
-    if (jobState.dryRun) {
-      if (jobState.dryRun.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
+  let metadataResult = await loadExistingJobResult();
+  if (metadataResult.status === 'loaded') {
+    try {
+      applyLoadedJobState(metadataResult.job);
+    } catch (error) {
+      metadataResult = { status: 'invalid', error };
     }
-    if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
-    if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
-    if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
-    jobState.feedOverride = { ...defaultFeedOverride(), ...(jobState.feedOverride || {}) };
-    if (feedStartPercentInput) feedStartPercentInput.value = clampFeedPercent(jobState.feedOverride.startPercent, 100);
-    if (startModeSelect) startModeSelect.value = jobState.startMode;
-    applyRunChecklistState(jobState.startChecklist);
-    applyChecklistState(jobState.arm?.checklist);
-    jobExists = true;
   }
-  if (!jobState) jobState = newJobState();
+  if (metadataResult.status !== 'loaded') {
+    jobState = newJobState();
+    jobExists = false;
+  }
+  metadataWarningMessage = previewMetadataWarning(metadataResult);
+  renderPreviewFileWarning();
   applyProjectSafeZToInputs();
   const sourceRun = await parseRunText(sourceGcodeText, filePath, 'source');
   sourceToolpathModel = sourceRun.model;
   sourceParsed = sourceRun.parsed;
   sourcePreviewSummaryData = sourceRun.summary;
-  await reconcilePlacementIntentOnLoad();
+  await reconcilePlacementIntentOnLoad({
+    preserveGeneratedActiveRun: metadataResult.status === 'loaded',
+  });
   await loadActiveRunPreview();
   if (jobState) jobState.preview = previewSummary();
   renderStats();
@@ -6253,8 +6317,7 @@ async function loadPreview() {
   jobRecoveryModule.normalizeRecoveries(jobState);
   refreshRecoveryPlan();
   draw();
-  await syncPreviewMetadata();
-  if (!jobExists) await checkJobExists();
+  await syncPreviewMetadata(metadataResult);
 }
 
 function refreshDryRunCommands() {

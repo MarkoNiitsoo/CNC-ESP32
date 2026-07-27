@@ -90,7 +90,7 @@ describe('compact machine drawer', () => {
     expect(preview).toContain('function ensureZeroState(job)');
     expect(preview).toMatch(/function ensureJobState\(\)[\s\S]*?ensureZeroState\(jobState\)/);
     expect(preview).toMatch(/jobState = loaded;[\s\S]*?ensureZeroState\(jobState\)/);
-    expect(preview).toMatch(/jobState = existingJob;\s*ensureZeroState\(jobState\)/);
+    expect(preview).toMatch(/function applyLoadedJobState\(loaded\)[\s\S]*?ensureZeroState\(jobState\)/);
     expect(preview).toContain('beforeG92: normalizedCapture(workZero.beforeG92)');
     expect(preview).toContain('beforeG92Z: normalizedCapture(toolZero.beforeG92Z)');
   });

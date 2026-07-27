@@ -12,6 +12,7 @@ import {
 const filesSource = await readFile(new URL('../../www/files.js', import.meta.url), 'utf8');
 const appSource = await readFile(new URL('../../www/app.js', import.meta.url), 'utf8');
 const previewSource = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+const metadataSource = await readFile(new URL('../../www/lib/preview-job-metadata.js', import.meta.url), 'utf8');
 const toolpathSource = await readFile(new URL('../../www/lib/toolpath-model.js', import.meta.url), 'utf8');
 
 describe('upload-time PNG thumbnails', () => {
@@ -28,7 +29,7 @@ describe('upload-time PNG thumbnails', () => {
     const second = jobPathForUpload('/gcode/customer-b/part.gc');
     expect(first).not.toBe(second);
     expect(first).toMatch(/^\/jobs\/.*-[0-9a-f]{8}\.job\.json$/);
-    expect(previewSource).toContain('loaded.sourceGcodePath === filePath');
+    expect(metadataSource).toContain('job.sourceGcodePath !== sourcePath');
     expect(filesSource).toContain('loaded?.sourceGcodePath === item.path');
   });
 
@@ -72,7 +73,7 @@ describe('upload-time PNG thumbnails', () => {
     expect(previewSource).toContain("const thumbnailModulePromise = import('/lib/upload-thumbnail.js')");
     expect(previewSource).toMatch(/async function createMissingPreviewThumbnail[\s\S]*sourceToolpathModel \|\| toolpathModel[\s\S]*renderToolpathToCanvas[\s\S]*previewCanvasPngBlob[\s\S]*\/api\/upload\?overwrite=true/);
     expect(previewSource).toMatch(/syncPreviewMetadata[\s\S]*createMissingPreviewThumbnail\(thumbnailPath\)[\s\S]*thumbnailPath \|\| null/);
-    expect(previewSource).toContain('await syncPreviewMetadata();');
+    expect(previewSource).toContain('await syncPreviewMetadata(metadataResult);');
   });
 
   it('loads stored thumbnail paths through the SD download API', () => {

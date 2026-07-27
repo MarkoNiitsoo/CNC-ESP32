@@ -2269,3 +2269,21 @@ No firmware upload is required.
 - Verification at handoff: 43 files / 387 tests, `git diff --check`, and AI-Thinker ESP32-CAM build
   at 19.7% RAM / 72.5% flash. Real-machine acceptance should verify both an M115 profile that
   explicitly advertises realtime commands and one that does not.
+
+## 2026-07-27 Preview first-open metadata handoff
+
+- Preview source G-code is the required artifact; hash-based Job JSON is optional persisted
+  metadata. Only a missing/unreadable source redirects to Files.
+- Treat only HTTP 404 from the canonical sidecar as first-open. Invalid JSON, wrong-source/schema
+  metadata, non-404 HTTP failures, and network failures keep the source preview visible, display a
+  concise warning, and must not trigger automatic overwrite.
+- First-open persistence happens after parsing and includes the source fingerprint and preview
+  metadata. The initial create does not overwrite; a 409 reloads and merges a concurrently created
+  valid sidecar before retrying.
+- Keep Preview on the shared `jobPathForUpload()` resolver so file selection and Preview cannot
+  diverge on canonical sidecar identity.
+- Focused regression command:
+  `npm.cmd test -- --run test/ui/preview-first-open.test.mjs test/ui/upload-thumbnail.test.mjs
+  test/ui/job-active-run.test.mjs test/ui/job-workflow.test.mjs` (4 files / 43 tests passing).
+- Full verification: `npm.cmd test` passes 44 files / 400 tests; Preview and metadata-loader syntax
+  checks and `git diff --check` pass.

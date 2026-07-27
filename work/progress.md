@@ -2448,3 +2448,19 @@
   controls, and recovery/history classification.
 - Final verification passes 43 test files / 387 tests, `git diff --check`, and the AI-Thinker
   ESP32-CAM PlatformIO build (19.7% RAM, 72.5% flash).
+
+## 2026-07-27 - Preview first-open metadata implementation
+
+- Fixed Preview startup calling the missing `jobIsLive()` helper before loading the source file.
+- Preview metadata loading now distinguishes loaded, missing (HTTP 404), invalid, and non-404/error
+  results. Invalid or unavailable metadata shows a non-fatal warning and is not overwritten.
+- A genuine 404 now initializes the existing full schema-3 source-mode job, parses the source,
+  merges complete preview/fingerprint data, and uses a create-with-conflict-reload save path.
+- Preview now uses the shared canonical hash-based job-path resolver; `/gcode/KAR.gc` remains
+  `/jobs/gcode_KAR.gc-7390e1b6.job.json`.
+- Added focused regressions for canonical identity, 404, invalid JSON/API objects, wrong ownership,
+  old schema, HTTP 403/409/500, network failure, bootstrap ordering, conflict reload, and persisted
+  state preservation, including keeping a valid generated active run selected. Focused verification
+  passes 4 files / 43 tests.
+- Final automated verification passes 44 test files / 400 tests. JavaScript syntax checks for
+  `www/preview.js` and `www/lib/preview-job-metadata.js` and `git diff --check` also pass.
