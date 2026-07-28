@@ -110,4 +110,12 @@ describe('UI skin loading and persistence', () => {
       }
     });
   });
+
+  it('styles select option elements with a dark background to prevent white-on-white text in dropdown popups', () => {
+    const auroraCss = readFileSync(join('www', 'skins', 'aurora-glass', 'theme.css'), 'utf8');
+    const styleCss = readFileSync(join('www', 'style.css'), 'utf8');
+
+    expect(auroraCss).toMatch(/option\s*\{[^}]*background-color:/);
+    expect(styleCss).toMatch(/option\s*\{[^}]*background-color:/);
+  });
 });

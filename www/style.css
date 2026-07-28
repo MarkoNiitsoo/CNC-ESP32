@@ -54,6 +54,11 @@ select {
   font: inherit;
 }
 
+option {
+  background-color: var(--cnc-panel-strong);
+  color: var(--cnc-text);
+}
+
 .app {
   width: min(100%, 860px);
   min-height: 100vh;
