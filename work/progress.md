@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-07-28 - Project Safe Z Redesign & Hardware Test Repair Pass
+
+- Completed hardware-test repair and Project Safe Z redesign on `feature/phase1-websocket-transport`:
+  1. Project Safe Z Redesign Version 2 (`www/lib/job-safe-z.js`, `www/lib/toolpath-model.js`, `www/preview.html`, `www/preview.js`): Redesigned Project Safe Z around G-code program height. Prioritized program Z detection: 1. rapid travel height (`source: "rapid"`, `confidence: "high"`), 2. pure upward retract height (`source: "retract"`, `confidence: "medium"`), 3. explicit Z word (`source: "explicit"`, `confidence: "medium"`), 4. machine-max fallback (`zMax - workZeroMachineZ`, `source: "machine-max"`, `confidence: "fallback"`). Default extra clearance set to `0mm`. Machine limit validation rejects unreachable values without clamping. Implemented idempotent Version 1 to Version 2 migration.
+  2. Cut Bounds Repair & Diagnostics (`www/preview.js`): Fixed Cut Bounds button by wiring browser diagnostics, using active run placed/transformed cut bounds (`parsed.toolpathBounds.placementBounds`), and displaying explicit blocker messages in `dryRunLog` and `setJobResult` instead of returning silently.
+  3. Firmware Telemetry Stack Overflow Repair & Resync Gating (`src/main.cpp`): Preserved 12KB task stack, single-item log event processing, and FreeRTOS stack overflow hooks. Updated `processNetworkTelemetry()` to set `cs.resyncPending = true` when `sendClientPacket` fails for a connected patch client.
+  4. HTTP Jog & System Bounded Diagnostics (`src/main.cpp`): Added bounded system event logs (`logSystemEvent`) to `handleJogStart`, `handleJogUpdate`, `handleJogStop`, and `sendJogCommand` for HTTP Jog operations without altering Jog command semantics.
+  5. UI Select Dropdown Styling Fix (`www/style.css`, `www/skins/aurora-glass/theme.css`): Fixed white-on-white dropdown option text across all UI themes by explicitly styling `option, select option` with dark background (`#0f172a` / `#0c0f1a`) and white text (`#f8fafc`).
+  6. Unit Test & Firmware Verification: Updated test suite (`test/ui/job-safe-z.test.mjs`, `test/mock/mock-server.test.mjs`, `test/firmware/safe-z-validation.test.mjs`, `www/lib/job-history.js`). `npm test` passed all 47 test files and 472 tests. `pio run -e esp32cam` compiled cleanly (19.6% RAM, 73.5% Flash).
+
 ## 2026-07-28 - ESP32 Panic Reboot Loop Investigation & Fix
 
 - Investigated and resolved ESP32 panic reboot loop on `feature/phase1-websocket-transport`:

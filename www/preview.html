@@ -150,22 +150,11 @@
       <section class="panel project-safe-z-panel preview-tab-panel active" data-preview-tab="preview">
         <h2>Project Safe Z</h2>
         <div class="dry-run-inputs">
-          <label for="work-zero-reference">Work Zero reference</label>
-          <select id="work-zero-reference">
-            <option value="unknown">Select reference</option>
-            <option value="top">Stock top</option>
-            <option value="bottom">Stock bottom / object Z0</option>
-            <option value="custom">Custom stock-top work Z</option>
-          </select>
-          <label for="workpiece-height">Workpiece height (mm)</label>
-          <input id="workpiece-height" type="number" inputmode="decimal" min="0" step="0.1" placeholder="Required for bottom Z0">
-          <label for="stock-top-work-z">Stock-top work Z (mm)</label>
-          <input id="stock-top-work-z" type="number" inputmode="decimal" step="0.1" placeholder="Derived from reference">
-          <label for="safe-z-clearance">Clearance above stock (mm)</label>
-          <input id="safe-z-clearance" type="number" inputmode="decimal" min="0" step="0.1" value="5">
+          <label for="safe-z-clearance">Extra clearance above detected Safe Z (mm)</label>
+          <input id="safe-z-clearance" type="number" inputmode="decimal" min="0" step="0.1" value="0">
         </div>
-        <p class="safe-z-equation"><output id="stock-top-work-z-output">-</output> mm stock top + <output id="safe-z-clearance-output">5.0</output> mm clearance = <strong><output id="effective-safe-z">-</output> mm Safe Z</strong></p>
-        <p id="project-safe-z-status" class="form-hint">Select the Work Zero reference to resolve project Safe Z.</p>
+        <p class="safe-z-equation">Detected: <strong><output id="stock-top-work-z-output">-</output> mm</strong> (<span id="safe-z-source-output">G-code program Z</span>) + <output id="safe-z-clearance-output">0.0</output> mm extra clearance = <strong><output id="effective-safe-z">-</output> mm Safe Z</strong></p>
+        <p id="project-safe-z-status" class="form-hint">Safe Z derived automatically from G-code program Z height.</p>
       </section>
 
       <section id="preview-warnings-panel" class="panel preview-tab-panel active" data-preview-tab="preview">

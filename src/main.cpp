@@ -2679,7 +2679,10 @@ void processNetworkTelemetry() {
     for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
       TelemetryClientState &cs = protocolState.clients[i];
       if (cs.connected && cs.handshakeComplete) {
-        sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
+        const bool ok = sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
+        if (!ok) {
+          cs.resyncPending = true;
+        }
       }
     }
   }
@@ -6566,8 +6569,8 @@ bool loadProjectSafeZ(const String &jobPath, float &effectiveSafeZ, String &erro
     return false;
   }
   JsonDocument filter;
-  for (const char *key : {"workpieceHeightMm", "workZeroReference", "stockTopWorkZ",
-                          "safeZClearanceMm", "effectiveSafeZ", "resolved"}) {
+  for (const char *key : {"version", "programSafeZ", "extraClearanceMm", "effectiveSafeZ", "resolved",
+                          "workpieceHeightMm", "workZeroReference", "stockTopWorkZ", "safeZClearanceMm"}) {
     filter["projectSafeZ"][key] = true;
   }
   JsonDocument doc;
@@ -6579,35 +6582,32 @@ bool loadProjectSafeZ(const String &jobPath, float &effectiveSafeZ, String &erro
     return false;
   }
   JsonObjectConst safeZ = doc["projectSafeZ"];
+  const bool resolved = safeZ["resolved"] | false;
+  const float storedEffective = safeZ["effectiveSafeZ"] | NAN;
+
+  if (resolved && isfinite(storedEffective)) {
+    effectiveSafeZ = storedEffective;
+    return true;
+  }
+
+  // Version 1 fallback if stored effectiveSafeZ was not directly resolved
   const String reference = jsonVariantString(safeZ["workZeroReference"]);
-  const float clearance = safeZ["safeZClearanceMm"] | NAN;
+  const float clearance = safeZ["safeZClearanceMm"] | (safeZ["extraClearanceMm"] | NAN);
   float stockTop = NAN;
   if (reference == "top") {
     stockTop = 0.0f;
   } else if (reference == "bottom") {
     stockTop = safeZ["workpieceHeightMm"] | NAN;
-    if (!isfinite(stockTop) || stockTop < 0.0f) {
-      error = "Project Safe Z requires workpiece height for bottom Work Zero";
-      return false;
-    }
   } else if (reference == "custom") {
     stockTop = safeZ["stockTopWorkZ"] | NAN;
-  } else {
-    error = "Project Safe Z Work Zero reference is unresolved";
-    return false;
   }
-  if (!isfinite(stockTop) || !isfinite(clearance) || clearance < 0.0f) {
-    error = "Project Safe Z stock top and non-negative clearance are required";
-    return false;
+  if (isfinite(stockTop) && isfinite(clearance) && clearance >= 0.0f) {
+    effectiveSafeZ = stockTop + clearance;
+    return true;
   }
-  effectiveSafeZ = stockTop + clearance;
-  const float storedEffective = safeZ["effectiveSafeZ"] | NAN;
-  if (!(safeZ["resolved"] | false) || !isfinite(storedEffective) ||
-      fabsf(storedEffective - effectiveSafeZ) > 0.001f) {
-    error = "Project Safe Z derived value is missing or stale";
-    return false;
-  }
-  return true;
+
+  error = "Project Safe Z is unresolved or stale";
+  return false;
 }
 
 bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorization &authorization,
@@ -7766,16 +7766,19 @@ void handleJogStart() {
   }
 
   jogStatus.state = JogState::Jogging;
+  logSystemEvent("HTTP Jog start accepted safeJog=" + String(jogStatus.safeJog ? "true" : "false") + " safeLiftZ=" + String(jogStatus.safeLiftZ, 2) + " state=Jogging");
   touchJogStatus();
   server.send(200, "application/json", jogStatusJson());
 }
 
 void handleJogUpdate() {
   if (jogStatus.state != JogState::Jogging) {
+    logSystemEvent("HTTP Jog update rejected reason=jog is not active");
     sendJsonError(409, "jog is not active");
     return;
   }
   if (!server.hasArg("plain")) {
+    logSystemEvent("HTTP Jog update rejected reason=missing JSON body");
     sendJsonError(400, "missing JSON body");
     return;
   }
@@ -7786,8 +7789,15 @@ void handleJogUpdate() {
   const float z = clampFloat(extractJsonFloat(body, "z", 0.0f), -1.0f, 1.0f);
   const float speed = clampFloat(extractJsonFloat(body, "speed", 0.0f), 0.0f, 1.0f);
   if (jogStatus.safeJog && (fabs(x) > 0.01f || fabs(y) > 0.01f) && !jogStatus.zLiftedForJog) {
+    logSystemEvent("HTTP Jog update rejected reason=safe Z lift has not completed");
     sendJsonError(409, "safe Z lift has not completed");
     return;
+  }
+
+  static uint32_t lastJogLogMs = 0;
+  if (millis() - lastJogLogMs > 1000) {
+    lastJogLogMs = millis();
+    logSystemEvent("HTTP Jog update x=" + String(x, 2) + " y=" + String(y, 2) + " z=" + String(z, 2) + " speed=" + String(speed, 2));
   }
 
   jogStatus.x = x;
@@ -7801,6 +7811,7 @@ void handleJogUpdate() {
 void handleJogStop() {
   const bool emergencyStop = !server.hasArg("plain") || extractJsonBool(server.arg("plain"), "emergency", true);
   if (emergencyStop && jogIsActive()) logJobEvent("jog emergency stop requested");
+  logSystemEvent("HTTP Jog stop reason=" + String(emergencyStop ? "emergency" : "normal") + " state=" + jogStateName(jogStatus.state));
   stopJogInternal(emergencyStop);
   server.send(200, "application/json", jogStatusJson());
 }

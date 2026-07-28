@@ -955,27 +955,29 @@ function jobIsLive() {
     .includes(String(jobRunStatus?.state || '').toUpperCase());
 }
 
+function safeZSourceLabel(safeZ) {
+  if (safeZ?.source === 'rapid') return 'G-code rapid/travel height';
+  if (safeZ?.source === 'retract') return 'G-code retract height';
+  if (safeZ?.source === 'explicit') return 'G-code explicit height';
+  if (safeZ?.source === 'machine-max') return 'highest reachable machine position';
+  return 'G-code program Z';
+}
+
 function applyProjectSafeZToInputs() {
   if (!jobState) return;
-  const safeZ = migrateProjectSafeZ(jobState);
-  if (workZeroReferenceInput) workZeroReferenceInput.value = safeZ.workZeroReference;
-  if (workpieceHeightInput) workpieceHeightInput.value = safeZ.workpieceHeightMm ?? '';
-  if (stockTopWorkZInput) {
-    stockTopWorkZInput.value = safeZ.stockTopWorkZ ?? '';
-    stockTopWorkZInput.disabled = safeZ.workZeroReference !== 'custom';
-  }
-  if (safeZClearanceInput) safeZClearanceInput.value = safeZ.safeZClearanceMm ?? '';
+  const safeZ = migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} });
+  if (safeZClearanceInput) safeZClearanceInput.value = safeZ.extraClearanceMm ?? 0;
   renderProjectSafeZ();
 }
 
 function renderProjectSafeZ() {
-  const safeZ = jobState ? migrateProjectSafeZ(jobState) : null;
+  const safeZ = jobState ? migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} }) : null;
   const busy = jobIsLive();
-  [workZeroReferenceInput, workpieceHeightInput, stockTopWorkZInput, safeZClearanceInput]
-    .filter(Boolean)
-    .forEach((input) => { input.disabled = busy || (input === stockTopWorkZInput && safeZ?.workZeroReference !== 'custom'); });
-  if (stockTopWorkZOutput) stockTopWorkZOutput.textContent = Number.isFinite(safeZ?.stockTopWorkZ) ? safeZ.stockTopWorkZ.toFixed(1) : '-';
-  if (safeZClearanceOutput) safeZClearanceOutput.textContent = Number.isFinite(safeZ?.safeZClearanceMm) ? safeZ.safeZClearanceMm.toFixed(1) : '-';
+  if (safeZClearanceInput) safeZClearanceInput.disabled = busy;
+  const sourceEl = document.querySelector('#safe-z-source-output');
+  if (sourceEl) sourceEl.textContent = safeZSourceLabel(safeZ);
+  if (stockTopWorkZOutput) stockTopWorkZOutput.textContent = Number.isFinite(safeZ?.programSafeZ) ? safeZ.programSafeZ.toFixed(1) : '-';
+  if (safeZClearanceOutput) safeZClearanceOutput.textContent = Number.isFinite(safeZ?.extraClearanceMm) ? safeZ.extraClearanceMm.toFixed(1) : '0.0';
   if (effectiveSafeZOutput) effectiveSafeZOutput.textContent = Number.isFinite(safeZ?.effectiveSafeZ) ? safeZ.effectiveSafeZ.toFixed(1) : '-';
   if (projectSafeZStatusEl) {
     projectSafeZStatusEl.textContent = safeZ?.resolved
@@ -995,13 +997,9 @@ async function updateProjectSafeZFromInputs() {
     setJobResult('Project Safe Z cannot be changed while motion is active.', true);
     return;
   }
-  const reference = workZeroReferenceInput?.value || 'unknown';
   updateProjectSafeZ(jobState, {
-    workZeroReference: reference,
-    workpieceHeightMm: workpieceHeightInput?.value ?? null,
-    stockTopWorkZ: reference === 'custom' ? stockTopWorkZInput?.value : null,
-    safeZClearanceMm: safeZClearanceInput?.value ?? null,
-  }, { now: nowIso() });
+    extraClearanceMm: safeZClearanceInput?.value ?? 0,
+  }, { now: nowIso(), frame: currentMachineFrame || {} });
   applyProjectSafeZToInputs();
   refreshDryRunCommands();
   refreshRecoveryPlan();
@@ -4806,19 +4804,32 @@ function disarmJob() {
 }
 
 async function sendBoundingBoxTrace() {
+  console.log('[Cut Bounds] Click received');
   generateTraceCommands();
   if (!traceSafety.ok) {
-    appendDryRunLog(`Blocked: ${traceSafety.messages.join(' ')}`);
+    const blocker = traceSafety.messages.join(' ');
+    console.log('[Cut Bounds] Blocked:', blocker);
+    appendDryRunLog(`Blocked: ${blocker}`);
+    setJobResult(`Cut Bounds blocked: ${blocker}`, true);
     return;
   }
+
+  const effectiveZ = projectSafeZValue();
+  console.log(`[Cut Bounds] Accepted. Effective Safe Z: ${effectiveZ} mm. Transport: HTTP POST /api/cmd`);
 
   let confirmText = 'This will move the CNC around the job bounding box at safe Z, return to the starting X/Y, and then restore the starting Z. Keep your hand near the physical emergency stop.';
   const hasPreflightFail = currentPreflight?.checks?.some((check) => check.level === 'fail');
   if (hasPreflightFail) {
     confirmText += '\n\nPreflight has failed checks. Review them before continuing.';
   }
-  if (!confirm(confirmText)) return;
-  if (hasPreflightFail && !confirm('Preflight has failed checks. Continue with bounding box trace anyway?')) return;
+  if (!confirm(confirmText)) {
+    console.log('[Cut Bounds] User cancelled trace confirmation dialog.');
+    return;
+  }
+  if (hasPreflightFail && !confirm('Preflight has failed checks. Continue with bounding box trace anyway?')) {
+    console.log('[Cut Bounds] User cancelled preflight warning dialog.');
+    return;
+  }
 
   const returnCapture = await captureM114();
   const executionCommands = traceCommandsWithReturnPosition(traceCommands, returnCapture);
@@ -4828,6 +4839,7 @@ async function sendBoundingBoxTrace() {
   dryRunLogEl.textContent = '';
   renderDryRunPanel();
   appendDryRunLog(`Return position: X${fmtMm(returnCapture.position.x)} Y${fmtMm(returnCapture.position.y)} Z${fmtMm(returnCapture.position.z)}`);
+  console.log(`[Cut Bounds] Sending ${executionCommands.length} HTTP commands...`);
 
   try {
     for (let i = 0; i < executionCommands.length; i += 1) {
@@ -4846,6 +4858,8 @@ async function sendBoundingBoxTrace() {
       });
     }
     appendDryRunLog('Bounding box trace complete; starting X/Y/Z restored');
+    setJobResult('Bounding box trace complete.');
+    console.log('[Cut Bounds] Complete. Restored starting position.');
   } catch (err) {
     dryRunStatus = 'failed';
     if (jobState) {
@@ -4853,6 +4867,8 @@ async function sendBoundingBoxTrace() {
       jobState.dryRun.lastBoundingBoxTraceStatus = 'failed';
     }
     appendDryRunLog(`Stopped: ${err.message}`);
+    setJobResult(`Cut Bounds failed: ${err.message}`, true);
+    console.error('[Cut Bounds] Failed:', err.message);
   } finally {
     setDryRunRunning(false);
     renderDryRunPanel();

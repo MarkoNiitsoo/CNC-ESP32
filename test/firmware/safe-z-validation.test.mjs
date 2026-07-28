@@ -24,17 +24,16 @@ describe('dynamic Safe Z validation', () => {
 
   it('publishes work-frame Safe Z limits and rechecks tool-change park coordinates at execution time', () => {
     expect(source).toContain('safeZMinimum');
-    expect(source).toContain('toolLengthReference\\\":\\\"active-work-zero');
+    expect(source).toContain('toolLengthReference\\":\\"active-work-zero');
     expect(source).toContain('toolChangeParkIsWithinMachine(parkError)');
   });
 
-  it('recomputes Project Safe Z from stock geometry and checks every project motion request', () => {
+  it('reads Project Safe Z and checks every project motion request', () => {
     const metadata = source.slice(source.indexOf('bool loadProjectSafeZ'), source.indexOf('bool loadJobExecutionAuthorization'));
-    expect(metadata).toContain('workZeroReference');
-    expect(metadata).toContain('workpieceHeightMm');
-    expect(metadata).toContain('safeZClearanceMm');
-    expect(metadata).toContain('effectiveSafeZ = stockTop + clearance');
-    expect(metadata).toContain('clearance < 0.0f');
+    expect(metadata).toContain('effectiveSafeZ');
+    expect(metadata).toContain('resolved');
+    expect(metadata).toContain('programSafeZ');
+    expect(metadata).toContain('extraClearanceMm');
     for (const handler of ['handleTestMotionStart', 'handleProductionResumeStart', 'handleJobStart', 'handleJogStart', 'handleGoToWorkZero']) {
       const start = source.indexOf(`void ${handler}()`);
       const end = source.indexOf('\nvoid ', start + 1);

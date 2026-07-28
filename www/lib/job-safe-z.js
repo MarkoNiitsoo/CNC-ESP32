@@ -1,7 +1,5 @@
-export const DEFAULT_SAFE_Z_CLEARANCE_MM = 5;
-export const PROJECT_SAFE_Z_VERSION = 1;
-
-const REFERENCES = new Set(['top', 'bottom', 'custom', 'unknown']);
+export const DEFAULT_SAFE_Z_CLEARANCE_MM = 0;
+export const PROJECT_SAFE_Z_VERSION = 2;
 
 function finiteOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -9,53 +7,68 @@ function finiteOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function legacyAbsoluteSafeZ(job = {}) {
-  for (const value of [job.safeStartZ, job.dryRun?.safeZ]) {
-    const number = finiteOrNull(value);
-    if (number !== null) return number;
-  }
-  return null;
-}
-
 export function calculateProjectSafeZ(input = {}) {
-  const workZeroReference = REFERENCES.has(input.workZeroReference)
-    ? input.workZeroReference
-    : 'unknown';
-  const workpieceHeightMm = finiteOrNull(input.workpieceHeightMm);
-  const safeZClearanceMm = finiteOrNull(input.safeZClearanceMm);
-  let stockTopWorkZ = finiteOrNull(input.stockTopWorkZ);
+  const extraClearanceMm = finiteOrNull(input.extraClearanceMm ?? input.safeZClearanceMm) ?? 0;
   const errors = [];
 
-  if (safeZClearanceMm === null) errors.push('Safe Z clearance is required.');
-  else if (safeZClearanceMm < 0) errors.push('Safe Z clearance cannot be negative.');
-
-  if (workZeroReference === 'top') {
-    stockTopWorkZ = 0;
-  } else if (workZeroReference === 'bottom') {
-    if (workpieceHeightMm === null || workpieceHeightMm < 0) {
-      errors.push('Workpiece height is required when Work Zero is at the stock bottom.');
-      stockTopWorkZ = null;
-    } else {
-      stockTopWorkZ = workpieceHeightMm;
-    }
-  } else if (workZeroReference === 'custom') {
-    if (stockTopWorkZ === null) errors.push('Stock-top work Z is required for a custom Work Zero reference.');
-  } else {
-    errors.push('Select where Work Zero is located relative to the stock.');
-    stockTopWorkZ = null;
+  if (extraClearanceMm < 0) {
+    errors.push('Extra clearance cannot be negative.');
   }
 
-  const effectiveSafeZ = errors.length === 0
-    ? stockTopWorkZ + safeZClearanceMm
+  const pZ = input.programZ || input.job?.programZ || input.preview?.programZ || input.toolpath?.programZ ||
+             (input.projectSafeZ?.programSafeZ !== undefined ? { selectedSafeZ: input.projectSafeZ.programSafeZ, selectedSource: input.projectSafeZ.source, confidence: input.projectSafeZ.confidence, evidence: input.projectSafeZ.evidence } : null) ||
+             (input.job?.projectSafeZ?.programSafeZ !== undefined ? { selectedSafeZ: input.job.projectSafeZ.programSafeZ, selectedSource: input.job.projectSafeZ.source, confidence: input.job.projectSafeZ.confidence, evidence: input.job.projectSafeZ.evidence } : null);
+  let programSafeZ = finiteOrNull(pZ?.selectedSafeZ);
+  let source = pZ?.selectedSource || (programSafeZ !== null ? 'gcode' : 'machine-max');
+  let confidence = pZ?.confidence || (programSafeZ !== null ? 'high' : 'fallback');
+  const evidence = {
+    highestExplicitZ: finiteOrNull(pZ?.highestExplicitZ),
+    highestRapidZ: finiteOrNull(pZ?.highestRapidZ),
+    highestRetractZ: finiteOrNull(pZ?.highestRetractZ),
+    lineNumbers: Array.isArray(pZ?.evidenceLineNumbers)
+      ? [...pZ.evidenceLineNumbers]
+      : (Array.isArray(pZ?.evidence?.lineNumbers) ? [...pZ.evidence.lineNumbers] : []),
+  };
+
+  const frame = input.frame || input.machineFrame || {};
+  const limits = input.limits || input.machineLimits || frame.limits || {};
+  const zMax = Number(limits.zMax ?? limits.machineZMax ?? frame.safeZ?.machineMax ?? 70);
+
+  if (programSafeZ === null) {
+    source = 'machine-max';
+    confidence = 'fallback';
+    const zeroMachineZ = Number(frame.workZeroMachine?.z);
+    if (frame.trusted === true && frame.workZeroValid === true && Number.isFinite(zeroMachineZ) && Number.isFinite(zMax)) {
+      programSafeZ = zMax - zeroMachineZ;
+    } else {
+      errors.push('Safe Z is waiting for a trusted machine position and active Work Zero. Home the machine and restore or set Work Zero.');
+    }
+  }
+
+  let effectiveSafeZ = (programSafeZ !== null && errors.length === 0)
+    ? programSafeZ + extraClearanceMm
     : null;
+
+  if (effectiveSafeZ !== null && frame.trusted === true && frame.workZeroValid === true) {
+    const zeroMachineZ = Number(frame.workZeroMachine?.z);
+    if (Number.isFinite(zeroMachineZ) && Number.isFinite(zMax)) {
+      const effectiveMachineZ = zeroMachineZ + effectiveSafeZ;
+      if (effectiveMachineZ > zMax + 0.001) {
+        errors.push(`Requested Safe Z Z${effectiveSafeZ.toFixed(1)} maps to machine Z${effectiveMachineZ.toFixed(1)}, but the machine maximum is Z${zMax.toFixed(1)}.`);
+        effectiveSafeZ = null;
+      }
+    }
+  }
+
   return {
     version: PROJECT_SAFE_Z_VERSION,
-    workpieceHeightMm,
-    workZeroReference,
-    stockTopWorkZ,
-    safeZClearanceMm,
+    source,
+    programSafeZ,
+    extraClearanceMm,
     effectiveSafeZ,
-    resolved: Number.isFinite(effectiveSafeZ),
+    confidence,
+    evidence,
+    resolved: Number.isFinite(effectiveSafeZ) && errors.length === 0,
     errors,
   };
 }
@@ -64,26 +77,39 @@ export function migrateProjectSafeZ(job = {}, options = {}) {
   const existing = job.projectSafeZ && typeof job.projectSafeZ === 'object'
     ? job.projectSafeZ
     : {};
-  const input = {
-    workpieceHeightMm: existing.workpieceHeightMm ?? job.workpieceHeightMm ?? null,
-    workZeroReference: existing.workZeroReference ?? job.workZeroReference ?? 'unknown',
-    stockTopWorkZ: existing.stockTopWorkZ ?? job.stockTopWorkZ ?? null,
-    safeZClearanceMm: existing.safeZClearanceMm ?? job.safeZClearanceMm ?? null,
-  };
-  const stock = calculateProjectSafeZ({ ...input, safeZClearanceMm: 0 });
-  const legacySafeZ = legacyAbsoluteSafeZ(job);
-  if (input.safeZClearanceMm === null || input.safeZClearanceMm === undefined) {
-    if (stock.stockTopWorkZ !== null && legacySafeZ !== null) {
-      input.safeZClearanceMm = legacySafeZ - stock.stockTopWorkZ;
-    } else {
-      input.safeZClearanceMm = options.defaultClearanceMm ?? DEFAULT_SAFE_Z_CLEARANCE_MM;
+
+  let oldAbsoluteSafeZ = finiteOrNull(existing.effectiveSafeZ ?? existing.safeZClearanceMm ?? job.safeStartZ ?? job.dryRun?.safeZ);
+  if (existing.version === 1) {
+    if (existing.stockTopWorkZ !== null && existing.safeZClearanceMm !== null) {
+      oldAbsoluteSafeZ = existing.stockTopWorkZ + existing.safeZClearanceMm;
     }
   }
-  const calculated = calculateProjectSafeZ(input);
+
+  let extraClearanceMm = finiteOrNull(existing.extraClearanceMm);
+  let legacyProgramZ = null;
+  if (extraClearanceMm === null) {
+    const pZ = job.programZ || job.preview?.programZ || job.toolpath?.programZ || null;
+    const progZ = finiteOrNull(pZ?.selectedSafeZ);
+    if (oldAbsoluteSafeZ !== null && progZ !== null) {
+      extraClearanceMm = Math.max(0, oldAbsoluteSafeZ - progZ);
+    } else if (oldAbsoluteSafeZ !== null) {
+      extraClearanceMm = 0;
+      legacyProgramZ = { selectedSafeZ: oldAbsoluteSafeZ, selectedSource: 'explicit', confidence: 'medium' };
+    } else {
+      extraClearanceMm = options.defaultClearanceMm ?? DEFAULT_SAFE_Z_CLEARANCE_MM;
+    }
+  }
+
+  const calculated = calculateProjectSafeZ({
+    ...options,
+    job,
+    programZ: job.programZ || job.preview?.programZ || job.toolpath?.programZ || legacyProgramZ,
+    extraClearanceMm,
+  });
+
   job.projectSafeZ = {
     ...calculated,
-    migratedFromAbsoluteSafeZ: existing.migratedFromAbsoluteSafeZ === true ||
-      (legacySafeZ !== null && stock.stockTopWorkZ !== null),
+    migratedFromVersion1: existing.migratedFromVersion1 || existing.version === 1 || existing.workZeroReference !== undefined,
   };
   return job.projectSafeZ;
 }
@@ -95,23 +121,31 @@ export function effectiveProjectSafeZ(job = {}) {
 
 export function updateProjectSafeZ(job = {}, changes = {}, options = {}) {
   const previous = migrateProjectSafeZ(job, options);
-  if (Object.prototype.hasOwnProperty.call(changes, 'safeZClearanceMm')) {
-    const raw = changes.safeZClearanceMm;
+  if (Object.prototype.hasOwnProperty.call(changes, 'extraClearanceMm') ||
+      Object.prototype.hasOwnProperty.call(changes, 'safeZClearanceMm')) {
+    const raw = changes.extraClearanceMm ?? changes.safeZClearanceMm;
     const clearance = finiteOrNull(raw);
     if (clearance === null || clearance < 0) {
       throw new RangeError('Safe Z clearance must be a finite non-negative number.');
     }
   }
-  const calculated = calculateProjectSafeZ({ ...previous, ...changes });
-  const changed = ['workpieceHeightMm', 'workZeroReference', 'stockTopWorkZ', 'safeZClearanceMm']
-    .some((key) => calculated[key] !== previous[key]);
+
+  const clearance = changes.extraClearanceMm ?? changes.safeZClearanceMm ?? previous.extraClearanceMm;
+  const calculated = calculateProjectSafeZ({
+    ...options,
+    job,
+    programZ: job.programZ || job.preview?.programZ || job.toolpath?.programZ,
+    extraClearanceMm: clearance,
+  });
+
+  const changed = calculated.effectiveSafeZ !== previous.effectiveSafeZ || calculated.extraClearanceMm !== previous.extraClearanceMm;
   job.projectSafeZ = {
     ...calculated,
-    migratedFromAbsoluteSafeZ: previous.migratedFromAbsoluteSafeZ === true,
+    migratedFromVersion1: previous.migratedFromVersion1 === true,
   };
+
   if (changed) {
     markSafeZDependentsStale(job, options);
-    if (calculated.workZeroReference !== previous.workZeroReference) job.activeWorkZeroId = null;
   }
   return job.projectSafeZ;
 }
@@ -158,7 +192,7 @@ export function validateProjectSafeZForFrame(projectSafeZ, frame = {}, limits = 
     return { ok: false, workZ, machineZ, error: `Project Safe Z maps to machine Z ${machineZ.toFixed(3)}, below limit ${zMin.toFixed(3)} mm.` };
   }
   if (Number.isFinite(zMax) && machineZ > zMax + 0.001) {
-    return { ok: false, workZ, machineZ, error: `Project Safe Z requires machine Z ${machineZ.toFixed(3)}, but only ${zMax.toFixed(3)} mm is available.` };
+    return { ok: false, workZ, machineZ, error: `Requested Safe Z Z${workZ.toFixed(1)} maps to machine Z${machineZ.toFixed(1)}, but the machine maximum is Z${zMax.toFixed(1)}.` };
   }
   return { ok: true, workZ, machineZ };
 }

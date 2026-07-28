@@ -75,6 +75,7 @@ export function adaptToolpathForPreview(model) {
     analysis: legacyAnalysis(model),
     feedStats: { ...model.feed },
     estimate: { ...model.estimate },
+    programZ: model.programZ ? { ...model.programZ } : null,
     toolpathModel: model,
   };
 }

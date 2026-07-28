@@ -115,7 +115,7 @@ export class MockJobRunner {
   }
 
   assertProjectSafeZ(job, requestedValue) {
-    const projectSafeZ = migrateProjectSafeZ(job);
+    const projectSafeZ = migrateProjectSafeZ(job, { frame: this.frame });
     if (!projectSafeZ.resolved) throw new Error(projectSafeZ.errors[0] || 'Project Safe Z is unresolved');
     const requested = Number(requestedValue);
     if (!Number.isFinite(requested) || Math.abs(requested - projectSafeZ.effectiveSafeZ) > 0.001) {

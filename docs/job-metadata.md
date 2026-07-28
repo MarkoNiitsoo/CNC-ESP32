@@ -377,32 +377,31 @@ Every Job JSON owns one `projectSafeZ` calculation:
 ```json
 {
   "projectSafeZ": {
-    "version": 1,
-    "workpieceHeightMm": 24,
-    "workZeroReference": "bottom",
-    "stockTopWorkZ": 24,
-    "safeZClearanceMm": 5,
-    "effectiveSafeZ": 29,
+    "version": 2,
+    "source": "rapid",
+    "programSafeZ": 15,
+    "extraClearanceMm": 0,
+    "effectiveSafeZ": 15,
     "resolved": true,
     "errors": []
   }
 }
 ```
 
-`effectiveSafeZ = stockTopWorkZ + safeZClearanceMm`. `stockTopWorkZ` is `0` for a stock-top
-Work Zero, `workpieceHeightMm` for a stock-bottom/object-Z0 Work Zero, or an explicit work-coordinate
-value for `custom`. Clearance is additional height above stock and cannot be negative. Unknown
-geometry remains unresolved; neither browser nor firmware derives stock height from G-code Z maxima.
+`effectiveSafeZ = programSafeZ + extraClearanceMm`. `programSafeZ` is automatically derived from explicit program Z evidence in G-code:
+1. Highest rapid travel height (`source: "rapid"`, `confidence: "high"`)
+2. Highest pure upward retract height (`source: "retract"`, `confidence: "medium"`)
+3. Highest explicit Z word (`source: "explicit"`, `confidence: "medium"`)
+4. Machine maximum fallback (`zMax - workZeroMachineZ`, `source: "machine-max"`, `confidence: "fallback"`)
+
+`extraClearanceMm` defaults to `0` and is an optional extra clearance added to the program safe height.
+Clearance cannot be negative. Unreachable machine Z values are rejected without clamping.
 
 The effective value is the only project motion height used by Job Start, Bounding Box, Aircut,
 Safe Jog, work-zero travel, recovery, Toolless Resume, and Production Resume preparation. Firmware
-recomputes the formula from Job JSON, compares the request, converts through the trusted Work Zero,
-and rejects unreachable machine Z without clamping.
+reads `effectiveSafeZ` from Job JSON, converts through the trusted Work Zero, and rejects unreachable machine Z without clamping.
 
-Loading legacy metadata derives clearance from `safeStartZ` or `dryRun.safeZ` only when stock top is
-known. A negative result is rejected, unknown geometry stays unresolved, and repeated migration is
-idempotent. Each new `runHistory` entry stores a `safeZSnapshot`; saved recoveries retain that
-snapshot for audit while execution always revalidates the current project value.
+Loading legacy Version 1 metadata derives `extraClearanceMm` from legacy `effectiveSafeZ` and `programSafeZ`. Legacy stock reference fields are retained for audit but no longer required for resolution. Each new `runHistory` entry stores a `safeZSnapshot`.
 
 ## Saved Recovery Collection
 

@@ -39,8 +39,7 @@ async function prepareAuthorizedJob(base, env, name) {
     activeRun: { mode: 'source', path: gcodePath, sizeBytes, sourceFingerprint: fingerprint },
     schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED', activeWorkZeroId: workZeroId,
     projectSafeZ: {
-      version: 1, workpieceHeightMm: null, workZeroReference: 'top',
-      stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+      version: 2, source: 'rapid', programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: true, errors: [],
     },
     startAuthorization: {
       state: 'authorized', activeRunMode: 'source', activeRunPath: gcodePath,
@@ -312,8 +311,7 @@ describe('mock HTTP API', () => {
       activeRun: { mode: 'source', path: gcodePath, sizeBytes, sourceFingerprint: fingerprint },
       schemaVersion: 3, startAuthorizationToken: 'AUTHORIZED',
       projectSafeZ: {
-        version: 1, workpieceHeightMm: null, workZeroReference: 'top',
-        stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+        version: 2, source: 'rapid', programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: true, errors: [],
       },
       activeWorkZeroId: 'zero-api',
       startAuthorization: {
@@ -418,8 +416,7 @@ describe('mock HTTP API', () => {
     expect(await upload.json()).toMatchObject({ ok: true, path: motionPath });
     await env.sd.writeText(jobPath, JSON.stringify({
       projectSafeZ: {
-        version: 1, workpieceHeightMm: null, workZeroReference: 'top',
-        stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+        version: 2, source: 'rapid', programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: true, errors: [],
       },
     }), { overwrite: true });
 
@@ -571,8 +568,7 @@ describe('mock HTTP API', () => {
     });
     await env.sd.writeText(jobPath, JSON.stringify({
       projectSafeZ: {
-        version: 1, workpieceHeightMm: 24, workZeroReference: 'bottom',
-        stockTopWorkZ: 24, safeZClearanceMm: 5, effectiveSafeZ: 29, resolved: true, errors: [],
+        version: 2, source: 'rapid', programSafeZ: 29, extraClearanceMm: 0, effectiveSafeZ: 29, resolved: true, errors: [],
       },
     }));
     const started = await fetch(`${base}/api/jog/start`, {
@@ -587,8 +583,7 @@ describe('mock HTTP API', () => {
 
     await env.sd.writeText(jobPath, JSON.stringify({
       projectSafeZ: {
-        version: 1, workpieceHeightMm: 24, workZeroReference: 'bottom',
-        stockTopWorkZ: 24, safeZClearanceMm: 76, effectiveSafeZ: 100, resolved: true, errors: [],
+        version: 2, source: 'rapid', programSafeZ: 100, extraClearanceMm: 0, effectiveSafeZ: 100, resolved: true, errors: [],
       },
     }), { overwrite: true });
     const unreachable = await fetch(`${base}/api/jog/start`, {
@@ -637,8 +632,7 @@ describe('mock HTTP API', () => {
     await env.sd.writeText(jobPath, JSON.stringify({
       activeRun: { mode: 'source', path: activeRunPath, sourceFingerprint: fingerprint },
       projectSafeZ: {
-        version: 1, workpieceHeightMm: null, workZeroReference: 'top',
-        stockTopWorkZ: 0, safeZClearanceMm: 15, effectiveSafeZ: 15, resolved: true, errors: [],
+        version: 2, source: 'rapid', programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: true, errors: [],
       },
       feedOverride: { startPercent: 100, resetTo100AfterJob: true },
       productionResumeAuthorization: {

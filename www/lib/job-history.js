@@ -296,10 +296,8 @@ export function startRunHistory(job, status = {}, now = isoNow()) {
     zeroId: job.activeWorkZeroId || null,
     zZeroId: job.activeZZeroId || null,
     safeZSnapshot: projectSafeZ.resolved ? {
-      workpieceHeightMm: projectSafeZ.workpieceHeightMm,
-      workZeroReference: projectSafeZ.workZeroReference,
-      stockTopWorkZ: projectSafeZ.stockTopWorkZ,
-      safeZClearanceMm: projectSafeZ.safeZClearanceMm,
+      programSafeZ: projectSafeZ.programSafeZ,
+      extraClearanceMm: projectSafeZ.extraClearanceMm,
       effectiveSafeZ: projectSafeZ.effectiveSafeZ,
     } : null,
     feedOverrideStart: Number(feed.startPercent ?? status.feedOverridePercent ?? 100),

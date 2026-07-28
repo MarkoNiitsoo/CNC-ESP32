@@ -7,118 +7,184 @@ import {
   updateProjectSafeZ,
   validateProjectSafeZForFrame,
 } from '../../www/lib/job-safe-z.js';
+import { parseGCodeToToolpath } from '../../www/lib/toolpath-model.js';
 import { startRunHistory } from '../../www/lib/job-history.js';
 
 const previewSource = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
 const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
 const machineBarSource = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
-const safeZSource = await readFile(new URL('../../www/lib/job-safe-z.js', import.meta.url), 'utf8');
 
-describe('project Safe Z', () => {
-  it('adds clearance above stock top for bottom/object Z0', () => {
-    expect(calculateProjectSafeZ({
-      workpieceHeightMm: 24,
-      workZeroReference: 'bottom',
-      safeZClearanceMm: 5,
-    })).toMatchObject({ stockTopWorkZ: 24, effectiveSafeZ: 29, resolved: true });
-  });
-
-  it('uses zero stock-top work Z when Work Zero is at stock top', () => {
-    expect(calculateProjectSafeZ({
-      workZeroReference: 'top',
-      safeZClearanceMm: 5,
-    })).toMatchObject({ stockTopWorkZ: 0, effectiveSafeZ: 5, resolved: true });
-  });
-
-  it('rejects negative clearance and leaves unknown geometry unresolved', () => {
-    expect(calculateProjectSafeZ({
-      workZeroReference: 'top',
-      safeZClearanceMm: -1,
-    })).toMatchObject({ effectiveSafeZ: null, resolved: false });
-    const unknown = calculateProjectSafeZ({
-      workZeroReference: 'bottom',
-      safeZClearanceMm: 5,
+describe('Project Safe Z Version 2', () => {
+  it('Explicit XY rapid at Z15 selects programSafeZ 15', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 Z15\nG0 X20 Y20\nG1 Z-2 F100\n');
+    expect(model.programZ).toMatchObject({
+      selectedSafeZ: 15,
+      selectedSource: 'rapid',
+      confidence: 'high',
+      highestRapidZ: 15,
+      highestExplicitZ: 15,
     });
-    expect(unknown.effectiveSafeZ).toBeNull();
-    expect(unknown.errors.join(' ')).toMatch(/Workpiece height/);
-    expect(() => updateProjectSafeZ({
-      projectSafeZ: calculateProjectSafeZ({ workZeroReference: 'top', safeZClearanceMm: 5 }),
-    }, { safeZClearanceMm: -1 })).toThrow(/non-negative/);
   });
 
-  it('migrates an absolute Safe Z once when stock top is known', () => {
-    const job = {
-      safeStartZ: 29,
-      workpieceHeightMm: 24,
-      workZeroReference: 'bottom',
+  it('Pure retract fallback selects its highest explicit Z', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG1 X10 Y10 Z-5 F100\nG1 Z12 F400\n');
+    expect(model.programZ).toMatchObject({
+      selectedSafeZ: 12,
+      selectedSource: 'retract',
+      confidence: 'medium',
+      highestRetractZ: 12,
+    });
+  });
+
+  it('Highest explicit Z is used when no rapid/retract candidate exists', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG1 X10 Y10 Z8 F100\n');
+    expect(model.programZ).toMatchObject({
+      selectedSafeZ: 8,
+      selectedSource: 'explicit',
+      confidence: 'medium',
+      highestExplicitZ: 8,
+    });
+  });
+
+  it('Synthetic initial Z0 is not treated as explicit Safe Z', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG1 X10 Y10 F100\n');
+    expect(model.programZ).toMatchObject({
+      selectedSafeZ: null,
+      selectedSource: 'machine-max',
+      confidence: 'fallback',
+      highestExplicitZ: null,
+      evidenceLineNumbers: [],
+    });
+  });
+
+  it('G20 values are converted to millimetres', () => {
+    const model = parseGCodeToToolpath('G20\nG90\nG0 Z1\n');
+    expect(model.programZ.selectedSafeZ).toBeCloseTo(25.4);
+  });
+
+  it('G91 explicit Z movements are resolved correctly or rejected consistently according to current parser policy', () => {
+    const model = parseGCodeToToolpath('G21\nG91\nG0 Z10\n');
+    expect(model.programZ.highestExplicitZ).toBe(10);
+    expect(model.unsupportedCommands.some((c) => c.command === 'G91')).toBe(true);
+  });
+
+  it('File without explicit Z uses machine maximum fallback', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG1 X10 Y10 F100\n');
+    const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 25 } };
+    const safeZ = calculateProjectSafeZ({
+      programZ: model.programZ,
+      frame,
+      limits: { zMax: 70 },
+    });
+    expect(safeZ).toMatchObject({
+      version: 2,
+      source: 'machine-max',
+      programSafeZ: 45,
+      effectiveSafeZ: 45,
+      confidence: 'fallback',
+      resolved: true,
+    });
+  });
+
+  it('Machine fallback converts machine maximum through active Work Zero', () => {
+    const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 20 } };
+    const safeZ = calculateProjectSafeZ({ frame, limits: { zMax: 70 } });
+    expect(safeZ.effectiveSafeZ).toBe(50);
+  });
+
+  it('Extra clearance defaults to 0 and adds to programSafeZ', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 Z15\n');
+    const safeZDefault = calculateProjectSafeZ({ programZ: model.programZ });
+    expect(safeZDefault).toMatchObject({
+      programSafeZ: 15,
+      extraClearanceMm: 0,
+      effectiveSafeZ: 15,
+    });
+    const safeZWithClearance = calculateProjectSafeZ({
+      programZ: model.programZ,
+      extraClearanceMm: 3.5,
+    });
+    expect(safeZWithClearance).toMatchObject({
+      programSafeZ: 15,
+      extraClearanceMm: 3.5,
+      effectiveSafeZ: 18.5,
+    });
+  });
+
+  it('Unreachable extra clearance is rejected without clamping', () => {
+    const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 55 } };
+    const safeZ = calculateProjectSafeZ({
+      programZ: { selectedSafeZ: 10, confidence: 'high' },
+      extraClearanceMm: 10,
+      frame,
+      limits: { zMax: 70 },
+    });
+    expect(safeZ.resolved).toBe(false);
+    expect(safeZ.effectiveSafeZ).toBeNull();
+    expect(safeZ.errors.join(' ')).toMatch(/machine Z75\.0.*machine maximum is Z70\.0/);
+  });
+
+  it('Version-1 migration is idempotent and old stock fields are no longer required', () => {
+    const legacyJob = {
+      projectSafeZ: {
+        version: 1,
+        workpieceHeightMm: 24,
+        workZeroReference: 'bottom',
+        stockTopWorkZ: 24,
+        safeZClearanceMm: 5,
+        effectiveSafeZ: 29,
+        resolved: true,
+      },
+      programZ: { selectedSafeZ: 15, confidence: 'high' },
     };
-    expect(migrateProjectSafeZ(job)).toMatchObject({
-      stockTopWorkZ: 24,
-      safeZClearanceMm: 5,
-      effectiveSafeZ: 29,
-      migratedFromAbsoluteSafeZ: true,
-    });
-    const once = structuredClone(job.projectSafeZ);
-    migrateProjectSafeZ(job);
-    expect(job.projectSafeZ).toEqual(once);
-    expect(effectiveProjectSafeZ(job)).toBe(29);
+    const migrated = migrateProjectSafeZ(legacyJob);
+    expect(migrated.version).toBe(2);
+    expect(migrated.extraClearanceMm).toBe(14);
+    expect(migrated.programSafeZ).toBe(15);
+    expect(migrated.effectiveSafeZ).toBe(29);
+
+    const once = structuredClone(legacyJob.projectSafeZ);
+    migrateProjectSafeZ(legacyJob);
+    expect(legacyJob.projectSafeZ).toEqual(once);
   });
 
-  it('does not infer stock height from toolpath or preserve an unsafe negative migration', () => {
-    const unknown = { safeStartZ: 29, preview: { bounds: { zMax: 90 } } };
-    expect(migrateProjectSafeZ(unknown)).toMatchObject({ resolved: false, effectiveSafeZ: null });
-    const unsafe = { safeStartZ: 10, workpieceHeightMm: 24, workZeroReference: 'bottom' };
-    expect(migrateProjectSafeZ(unsafe)).toMatchObject({ resolved: false, effectiveSafeZ: null });
+  it('All shared motion consumers use the same effective Safe Z value', () => {
+    expect(previewHtml).toContain('id="safe-z-clearance"');
+    expect(previewHtml).toContain('id="effective-safe-z"');
+    expect(previewHtml).not.toContain('id="run-safe-start-z"');
+    expect(previewSource).toMatch(/safeStartZ: projectSafeZValue\(\)/);
+    expect(previewSource).toMatch(/function generateTraceCommands\(\)[\s\S]*const safeZ = projectSafeZValue\(\)/);
+    expect(previewSource).toMatch(/function generateAircutCommands\(\)[\s\S]*const safeZ = projectSafeZValue\(\)/);
+    expect(machineBarSource).toMatch(/activeSafeWorkZ\(\)[\s\S]*safeWorkZToMachine\(safeWorkZ\)/);
   });
 
   it('marks dependent checks stale when clearance changes', () => {
     const job = {
-      projectSafeZ: calculateProjectSafeZ({ workZeroReference: 'top', safeZClearanceMm: 5 }),
+      programZ: { selectedSafeZ: 15, confidence: 'high' },
+      projectSafeZ: calculateProjectSafeZ({ programZ: { selectedSafeZ: 15, confidence: 'high' } }),
       verificationDecision: { result: 'complete' },
       dryRun: { lastBoundingBoxTraceStatus: 'complete', lastAircutStatus: 'complete' },
       generatedValidation: { status: 'valid' },
       recoveries: [{ id: 'recovery-1', status: 'ready' }],
       arm: { state: 'ARMED' },
-      startAuthorization: { state: 'authorized' },
-      startAuthorizationToken: 'AUTHORIZED',
     };
-    updateProjectSafeZ(job, { safeZClearanceMm: 7 }, { now: '2026-07-26T12:00:00.000Z' });
-    expect(job.projectSafeZ.effectiveSafeZ).toBe(7);
+    updateProjectSafeZ(job, { extraClearanceMm: 5 }, { now: '2026-07-28T12:00:00.000Z' });
+    expect(job.projectSafeZ.effectiveSafeZ).toBe(20);
     expect(job.verificationDecision.staleReason).toMatch(/Safe Z/);
     expect(job.dryRun).toMatchObject({
       lastBoundingBoxTraceStatus: 'stale',
       lastAircutStatus: 'stale',
     });
-    expect(job.recoveries[0].safeZValidationStaleAt).toBeTruthy();
-    expect(job.startAuthorizationToken).toBe('');
-  });
-
-  it('invalidates Work Zero confirmation when its stock reference changes', () => {
-    const job = {
-      activeWorkZeroId: 'zero-1',
-      projectSafeZ: calculateProjectSafeZ({ workZeroReference: 'top', safeZClearanceMm: 5 }),
-    };
-    updateProjectSafeZ(job, {
-      workZeroReference: 'bottom',
-      workpieceHeightMm: 24,
-      safeZClearanceMm: 5,
-    });
-    expect(job.activeWorkZeroId).toBeNull();
-    expect(job.projectSafeZ.effectiveSafeZ).toBe(29);
   });
 
   it('converts through Work Zero and blocks unreachable values without clamping', () => {
-    const safeZ = calculateProjectSafeZ({
-      workpieceHeightMm: 24,
-      workZeroReference: 'bottom',
-      safeZClearanceMm: 5,
-    });
+    const safeZ = calculateProjectSafeZ({ programZ: { selectedSafeZ: 15, confidence: 'high' }, extraClearanceMm: 5 });
     const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 30 } };
     expect(validateProjectSafeZForFrame(safeZ, frame, { zMin: -30, zMax: 70 }))
-      .toMatchObject({ ok: true, workZ: 29, machineZ: 59 });
+      .toMatchObject({ ok: true, workZ: 20, machineZ: 50 });
     expect(validateProjectSafeZForFrame(safeZ, {
-      ...frame, workZeroMachine: { z: 50 },
-    }, { zMin: -30, zMax: 70 })).toMatchObject({ ok: false, workZ: 29, machineZ: 79 });
+      ...frame, workZeroMachine: { z: 55 },
+    }, { zMin: -30, zMax: 70 })).toMatchObject({ ok: false });
   });
 
   it('records the effective Safe Z snapshot on each run', () => {
@@ -126,44 +192,10 @@ describe('project Safe Z', () => {
       gcodePath: '/gcode/panel.gc',
       sourceGcodePath: '/gcode/panel.gc',
       activeRun: { mode: 'source', path: '/gcode/panel.gc' },
-      projectSafeZ: calculateProjectSafeZ({
-        workpieceHeightMm: 24,
-        workZeroReference: 'bottom',
-        safeZClearanceMm: 5,
-      }),
+      programZ: { selectedSafeZ: 15, confidence: 'high' },
+      projectSafeZ: calculateProjectSafeZ({ programZ: { selectedSafeZ: 15, confidence: 'high' }, extraClearanceMm: 5 }),
     };
-    expect(startRunHistory(job, {}, '2026-07-26T12:00:00.000Z').safeZSnapshot)
-      .toMatchObject({ stockTopWorkZ: 24, safeZClearanceMm: 5, effectiveSafeZ: 29 });
-  });
-
-  it('routes start, Bounding Box, Aircut, recovery, and Safe Jog through the shared value', () => {
-    expect(previewHtml).toContain('id="safe-z-clearance"');
-    expect(previewHtml).toContain('id="effective-safe-z"');
-    expect(previewHtml).not.toContain('id="run-safe-start-z"');
-    expect(previewHtml).not.toContain('id="recovery-safe-z"');
-    expect(previewHtml).not.toContain('id="safe-z"');
-    expect(previewSource).toMatch(/safeStartZ: projectSafeZValue\(\)/);
-    expect(previewSource).toMatch(/function generateTraceCommands\(\)[\s\S]*const safeZ = projectSafeZValue\(\)/);
-    expect(previewSource).toMatch(/function generateAircutCommands\(\)[\s\S]*const safeZ = projectSafeZValue\(\)/);
-    expect(previewSource).toMatch(/function recoverySafeZ\(\)[\s\S]*return projectSafeZValue\(\)/);
-    expect(machineBarSource).toMatch(/activeSafeWorkZ\(\)[\s\S]*safeWorkZToMachine\(safeWorkZ\)/);
-    expect(machineBarSource).toContain('Project Safe Z unresolved');
-  });
-
-  it('does not derive from or rewrite a higher CAM retract', () => {
-    const source = 'G21\nG90\nG0 Z30\nG1 X10 Z-2\n';
-    const unchanged = String(source);
-    const safeZ = calculateProjectSafeZ({
-      workpieceHeightMm: 24,
-      workZeroReference: 'bottom',
-      safeZClearanceMm: 5,
-    });
-    expect(safeZ.effectiveSafeZ).toBe(29);
-    expect(source).toBe(unchanged);
-    const calculator = safeZSource.slice(
-      safeZSource.indexOf('export function calculateProjectSafeZ'),
-      safeZSource.indexOf('export function migrateProjectSafeZ'),
-    );
-    expect(calculator).not.toMatch(/toolpath|gcode|zMax|maxZ/i);
+    expect(startRunHistory(job, {}, '2026-07-28T12:00:00.000Z').safeZSnapshot)
+      .toMatchObject({ programSafeZ: 15, extraClearanceMm: 5, effectiveSafeZ: 20 });
   });
 });

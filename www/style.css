@@ -54,9 +54,10 @@ select {
   font: inherit;
 }
 
-option {
-  background-color: var(--cnc-panel-strong);
-  color: var(--cnc-text);
+option,
+select option {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
 }
 
 .app {

@@ -329,6 +329,15 @@ function defaultModel() {
       lineCount: 0,
       originalText: '',
     },
+    programZ: {
+      highestExplicitZ: null,
+      highestRapidZ: null,
+      highestRetractZ: null,
+      selectedSafeZ: null,
+      selectedSource: 'machine-max',
+      confidence: 'fallback',
+      evidenceLineNumbers: [],
+    },
     tools: [],
     toolChanges: [],
   };
@@ -351,6 +360,10 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
   };
   let motion = null;
   let commandNumber = 0;
+  let highestExplicitZ = null;
+  let highestRapidZ = null;
+  let highestRetractZ = null;
+  const evidenceLineNumbersSet = new Set();
 
   model.source = {
     lineCount: lines.length,
@@ -471,8 +484,46 @@ export function parseGCodeToToolpath(sourceText, options = {}) {
     else if (type === 'plunge') model.feed.plungeDistance += length;
     else if (type === 'retract') model.feed.retractDistance += length;
 
+    if (Number.isFinite(byLetter.Z)) {
+      const explicitZ = next.z;
+      highestExplicitZ = highestExplicitZ === null ? explicitZ : Math.max(highestExplicitZ, explicitZ);
+      evidenceLineNumbersSet.add(lineNumber);
+      if (motion === 'G0') {
+        highestRapidZ = highestRapidZ === null ? explicitZ : Math.max(highestRapidZ, explicitZ);
+      } else if (!xyChanged(position, next) && next.z > position.z) {
+        highestRetractZ = highestRetractZ === null ? explicitZ : Math.max(highestRetractZ, explicitZ);
+      }
+    }
+
     Object.assign(position, next);
   });
+
+  let selectedSafeZ = null;
+  let selectedSource = 'machine-max';
+  let confidence = 'fallback';
+  if (highestRapidZ !== null) {
+    selectedSafeZ = highestRapidZ;
+    selectedSource = 'rapid';
+    confidence = 'high';
+  } else if (highestRetractZ !== null) {
+    selectedSafeZ = highestRetractZ;
+    selectedSource = 'retract';
+    confidence = 'medium';
+  } else if (highestExplicitZ !== null) {
+    selectedSafeZ = highestExplicitZ;
+    selectedSource = 'explicit';
+    confidence = 'medium';
+  }
+
+  model.programZ = {
+    highestExplicitZ,
+    highestRapidZ,
+    highestRetractZ,
+    selectedSafeZ,
+    selectedSource,
+    confidence,
+    evidenceLineNumbers: [...evidenceLineNumbersSet].sort((a, b) => a - b),
+  };
 
   model.bounds.rawTravelBounds = finalizeBounds(rawBounds);
   model.bounds.cutBounds = finalizeBounds(cutBounds);
