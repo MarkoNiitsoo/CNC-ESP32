@@ -94,7 +94,7 @@ describe('shared browser telemetry', () => {
     expect(firmware).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
     expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
     expect(telemetry).toContain("schedule('job')");
-    expect(telemetry).toContain('window.CncTelemetry = { accept, request');
+    expect(telemetry).toContain('window.CncTelemetry = api;');
   });
 
   it('never stops a firmware-owned recovery stream when the browser is hidden', () => {

@@ -376,6 +376,17 @@
     connectSocket();
   });
 
-  window.CncTelemetry = { accept, request, setDemand, start, state, mirroredState, subscribe };
+  const api = { accept, request, setDemand, start, state, mirroredState, subscribe };
+  if (typeof window !== 'undefined' && window.CNC_TELEMETRY_TEST_MODE === true) {
+    api.__test__ = {
+      getClientSeq: () => clientSeq,
+      getHighestClientSeqSuccessfullySent: () => highestClientSeqSuccessfullySent,
+      getHighestClientSeqAcknowledgedByESP: () => highestClientSeqAcknowledgedByESP,
+      getLastServerSeq: () => lastServerSeq,
+      getLastStateRevision: () => lastStateRevision,
+      getKnownBootId: () => knownBootId,
+    };
+  }
+  window.CncTelemetry = api;
 }());
 

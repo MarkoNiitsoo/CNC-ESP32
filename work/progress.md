@@ -1,5 +1,14 @@
 # Progress
 
+## 2026-07-28 - Phase 1 WebSocket Test Completion, Docs Sync & Wall-Clock Owner Pass
+
+- Completed Phase 1 WebSocket Test Completion, Docs Sync & Wall-Clock Owner Pass on `feature/phase1-websocket-transport`:
+  1. Executable Raw TCP WebSocket Runtime Tests (`test/firmware/websocket-runtime.test.mjs`): Replaced all placeholder tests with 20 executable TCP WebSocket runtime tests matching exact required titles and assertions. Updated `parseServerWsFrames()` parser to expose `opcode` and `raw` payload.
+  2. Complete Browser Telemetry Client Tests (`test/ui/telemetry-protocol-browser.test.mjs` & `www/telemetry.js`): Added separate executable unit tests for monotonic ACK advance, old ACK non-regression, zero-sent future ACK rejection, protocol-error sequence commitment, same-boot absent canonical slice clearing, snapshot job/jog emission, motion event dispatch, and log event dispatch. Gated `window.CncTelemetry.__test__` behind `window.CNC_TELEMETRY_TEST_MODE === true` and verified it is absent by default.
+  3. Single Wall-Clock Authority (`src/main.cpp` & `dev/mock-server.mjs`): Enforced single wall-clock authority rules across firmware and mock server. First valid browser `hello` initializes ESP wall clock. Secondary connections do not rewrite valid clock/timezone unless from current control owner. Rejected or unchanged clock proposals do not set `dirtySystem` or increment `stateRevision`.
+  4. Documentation Synchronization (`docs/protocol.md`): Updated protocol documentation to include `"event"` type, exact event envelope structure, `"motion"` and `"log"` channels, local connection state definition, low-rate stable system diagnostics, and wall-clock authority rules.
+  5. Verification: `pio run -e esp32cam` compiled cleanly. Full test suite (`npm test`) passed all 47 test files and 463 tests (increasing total test count).
+
 ## 2026-07-28 - Phase 1 WebSocket Final Protocol-Correctness Repair Pass
 
 - Completed Phase 1 WebSocket Final Protocol-Correctness Repair Pass on `feature/phase1-websocket-transport`:

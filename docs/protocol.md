@@ -40,15 +40,28 @@ Every application packet uses readable JSON keys and the common envelope:
 - `protocolVersion`: integer `1`.
 - `type`: string.
   - Browser to ESP: `"hello"`, `"sync"`, `"resync"`, `"log"`.
-  - ESP to Browser: `"snapshot"`, `"patch"`, `"sync"`, `"protocol-error"`.
+  - ESP to Browser: `"snapshot"`, `"patch"`, `"sync"`, `"event"`, `"protocol-error"`.
 - `seq`: monotonic integer counter per connection and per direction. Assigned and committed ONLY AFTER successful transmission over the transport (`sendTXT`). Failed sends do not consume sequence numbers.
 - `ack`: highest contiguous packet sequence number successfully processed from the peer. ACKs must advance monotonically (`lastAck <= ack <= highestSent`). ACKs beyond the highest sent sequence generate a protocol error and trigger resync.
 - `bootId`: unique string per ESP boot. Browser discards mirrored state when `bootId` changes.
 - `stateRevision`: global authoritative state version counter. Increments ONLY when authoritative state slices change. `snapshot`, `resync`, `sync`, `log`, `motion`, and retries do NOT increment `stateRevision`.
-- `patch`: contains complete top-level replacement slices (`system`, `controller`, `machine`, `job`, `jog`, `control`). Complete slices replace mirrored state without shallow recursive merging of nested properties. Log and motion events are ordered streaming events, not state slices.
+- `patch`: contains complete top-level replacement slices (`system`, `controller`, `machine`, `job`, `jog`, `control`). Complete slices replace mirrored state without shallow recursive merging of nested properties. Browser connection state (`connection`) is transport-local client state only and is not part of the 6 canonical state slices.
+- `event`: ordered streaming event frame carrying `"channel"` (`"motion"` or `"log"`) and `"data"`. Motion and log events are streaming events, not state patches.
+  ```json
+  {
+    "protocolVersion": 1,
+    "type": "event",
+    "seq": 15,
+    "ack": 3,
+    "bootId": "esp-A1B2C3D4-E5F60708",
+    "stateRevision": 106,
+    "channel": "motion",
+    "data": { ... }
+  }
+  ```
 - `commands & jog`: Phase 1 machine commands and Jog remain on HTTP endpoints.
 
-### Handshake & Clock Sync
+### Handshake & Clock Sync Authority
 
 On connection, browser sends:
 
@@ -66,7 +79,13 @@ On connection, browser sends:
 }
 ```
 
-Firmware sets its wall-clock offset derived from `utcMs` relative to monotonic `millis()`, and replies with a complete authoritative `snapshot`.
+- The first valid browser `hello` initializes the ESP wall-clock offset derived from `utcMs` relative to monotonic `millis()`, and replies with a complete authoritative `snapshot`.
+- Once valid, secondary read-only connections do not overwrite wall-clock or timezone settings. Later clock adjustments are accepted exclusively from the active operator control owner.
+- Rejected or unchanged clock proposals do not set `dirtySystem` or increment `stateRevision`.
+
+### Low-Rate Stable System Diagnostics
+
+Candidate system base JSON is updated on a low-rate 10-second scheduler outside the telemetry mutex with quantized diagnostic fields (`uptimeMs`, `freeHeap`, `rssi`, SD capacity metrics). Non-diagnostic business state changes (position, job state, jog state) do not perform heap, SD, or WiFi health queries, preventing continuous `stateRevision` churn.
 
 ### Controller-Independent Authoritative State Schema
 

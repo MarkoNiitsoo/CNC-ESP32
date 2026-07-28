@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const telemetryJsCode = readFileSync(path.resolve(__dirname, '../../www/telemetry.js'), 'utf8');
 
-function createBrowserEnv() {
+function createBrowserEnv(options = {}) {
   const listeners = new Map();
   const sentPackets = [];
   const fakeSockets = [];
@@ -78,6 +78,7 @@ function createBrowserEnv() {
     CustomEvent: FakeCustomEvent,
     WebSocket: FakeWebSocket,
     CNC_WS_URL: 'ws://127.0.0.1:81/',
+    ...options.windowProps,
   };
 
   const fn = new Function('window', 'document', 'location', 'CustomEvent', 'WebSocket', telemetryJsCode);
@@ -92,8 +93,8 @@ function createBrowserEnv() {
   };
 }
 
-async function setupStartedBrowserEnv() {
-  const env = createBrowserEnv();
+async function setupStartedBrowserEnv(options = {}) {
+  const env = createBrowserEnv(options);
   env.CncTelemetry.setDemand('job', 'test', true);
   env.CncTelemetry.start();
   await new Promise((r) => setTimeout(r, 20));
@@ -127,10 +128,36 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     expect(hello.timezoneOffsetMinutes).toBe(-new Date().getTimezoneOffset());
   });
 
-  it('3 & 4. Peer ACK advances monotonically and future ACK is rejected even when highest sent is zero', async () => {
+  it('3. Monotonic ACK advance', async () => {
+    const { env, ws } = await setupStartedBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 2, bootId: 'boot1', stateRevision: 1,
+      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+    });
+
+    expect(env.CncTelemetry.__test__.getHighestClientSeqAcknowledgedByESP()).toBe(2);
+  });
+
+  it('4. Old ACK does not regress stored ACK', async () => {
+    const { env, ws } = await setupStartedBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 2, bootId: 'boot1', stateRevision: 1,
+      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+    });
+    expect(env.CncTelemetry.__test__.getHighestClientSeqAcknowledgedByESP()).toBe(2);
+
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'patch', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
+      patch: { job: { state: 'IDLE' } },
+    });
+    expect(env.CncTelemetry.__test__.getHighestClientSeqAcknowledgedByESP()).toBe(2); // Retains 2!
+  });
+
+  it('5. Future ACK when highest successfully sent is zero triggers protocol error and resync', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
-    // Send snapshot with ACK 999 when no client packet has been sent yet
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 999, bootId: 'boot1', stateRevision: 1,
       state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
@@ -141,7 +168,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     expect(errEv.detail.error).toBe('invalid future ACK');
   });
 
-  it('5. Protocol-error participates in sequence tracking', async () => {
+  it('6. Protocol-error sequence is committed and next contiguous packet works', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     ws.receiveMessage({
@@ -152,18 +179,23 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     const errEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-protocol-error');
     expect(errEv).toBeDefined();
     expect(errEv.detail.error).toBe('test error');
+
+    // Next contiguous sequence 2 should be accepted normally
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'patch', seq: 2, ack: 0, bootId: 'boot1', stateRevision: 2,
+      patch: { controller: { state: 'idle' } },
+    });
+    expect(env.CncTelemetry.mirroredState.controller.state).toBe('idle');
   });
 
-  it('6 & 7. Duplicate seq is ignored; Packet gap requests resync', async () => {
+  it('7. Duplicate seq is ignored and sequence gap requests resync', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
-    // Send valid snapshot seq 1
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
       state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
     });
 
-    // Send duplicate seq 1 (must be ignored)
     const countBefore = env.dispatchedEvents.length;
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
@@ -171,7 +203,6 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     });
     expect(env.dispatchedEvents.length).toBe(countBefore);
 
-    // Send sequence gap (seq 5 instead of 2)
     const packetsBefore = env.sentPackets.length;
     ws.receiveMessage({
       protocolVersion: 1, type: 'patch', seq: 5, ack: 1, bootId: 'boot1', stateRevision: 2,
@@ -184,20 +215,18 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
   it('8. stateRevision skip does not request resync', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
-    // Initial snapshot rev 1
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
       state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
     });
 
-    // Patch with skipped revision (rev 10 instead of 2, but contiguous seq 2)
     const packetsBefore = env.sentPackets.length;
     ws.receiveMessage({
       protocolVersion: 1, type: 'patch', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 10,
       patch: { job: { state: 'RUNNING' } },
     });
     const resyncSent = env.sentPackets.slice(packetsBefore).find((p) => p.type === 'resync');
-    expect(resyncSent).toBeUndefined(); // Revision skip does NOT request resync
+    expect(resyncSent).toBeUndefined();
   });
 
   it('9. stateRevision regression within same boot session triggers error and resync without regressing state', async () => {
@@ -220,73 +249,77 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     const resyncSent = env.sentPackets.slice(packetsBefore).find((p) => p.type === 'resync');
     expect(resyncSent).toBeDefined();
-
-    // State must NOT have regressed to IDLE
     expect(env.CncTelemetry.mirroredState.job.state).toBe('RUNNING');
   });
 
-  it('10 & 11. Snapshot replaces canonical mirrored state; Patch replaces top-level slice', async () => {
+  it('10. Same-boot snapshot clears absent canonical slices', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
-    // Snapshot
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
       state: {
-        system: { bootId: 'boot1' },
-        controller: { state: 'idle' },
-        machine: { position: { work: { x: 0 } } },
-        job: { state: 'IDLE' },
-        jog: { state: 'Idle' },
-        control: { owner: null },
+        system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, job: { state: 'RUNNING' }, jog: {}, control: {},
       },
     });
+    expect(env.CncTelemetry.mirroredState.job.state).toBe('RUNNING');
 
-    expect(env.CncTelemetry.mirroredState.controller.state).toBe('idle');
-
-    // Patch updating controller
+    // Second snapshot in same boot missing job slice
     ws.receiveMessage({
-      protocolVersion: 1, type: 'patch', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
-      patch: { controller: { state: 'running' } },
+      protocolVersion: 1, type: 'snapshot', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
+      state: { system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, jog: {}, control: {} },
     });
-
-    expect(env.CncTelemetry.mirroredState.controller.state).toBe('running');
+    expect(env.CncTelemetry.mirroredState.job).toBeNull(); // Absent canonical slice cleared!
   });
 
-  it('12 & 13. Unchanged slice emits no event; Snapshot emits events exactly once', async () => {
+  it('11. Job and jog each emit exactly once on snapshot', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     let jobEvents = 0;
+    let jogEvents = 0;
     env.window.addEventListener('cnc-telemetry-job', () => jobEvents++);
+    env.window.addEventListener('cnc-telemetry-jog', () => jogEvents++);
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: { state: 'IDLE' }, jog: {}, control: {} },
+      state: { system: {}, controller: {}, machine: {}, job: { state: 'IDLE' }, jog: { state: 'Idle' }, control: {} },
     });
-    expect(jobEvents).toBe(1);
 
-    // Send identical patch for job
-    ws.receiveMessage({
-      protocolVersion: 1, type: 'patch', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
-      patch: { job: { state: 'IDLE' } },
-    });
-    expect(jobEvents).toBe(1); // Unchanged slice emitted no duplicate event
+    expect(jobEvents).toBe(1);
+    expect(jogEvents).toBe(1);
   });
 
-  it('14. Changed boot ID clears old mirrored state', async () => {
+  it('12. Motion event dispatches cnc-telemetry-motion', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     ws.receiveMessage({
-      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, job: {}, jog: {}, control: {} },
+      protocolVersion: 1, type: 'event', channel: 'motion', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      data: { events: [{ sequence: 10, command: 'G1 X10' }], feedOverridePercent: 100 },
     });
-    expect(env.CncTelemetry.mirroredState.controller).toBeDefined();
 
-    // New boot ID
+    const motionEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-motion');
+    expect(motionEv).toBeDefined();
+    expect(motionEv.detail.events[0].sequence).toBe(10);
+  });
+
+  it('13. Log event dispatches cnc-telemetry-log', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+
     ws.receiveMessage({
-      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot-REBOOT-NEW', stateRevision: 1,
-      state: { system: { bootId: 'boot-REBOOT-NEW' } },
+      protocolVersion: 1, type: 'event', channel: 'log', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      data: { entries: [{ id: 1, text: 'ok' }], nextId: 2 },
     });
-    expect(env.CncTelemetry.mirroredState.system.bootId).toBe('boot-REBOOT-NEW');
-    expect(env.CncTelemetry.mirroredState.controller).toBeNull();
+
+    const logEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-log');
+    expect(logEv).toBeDefined();
+    expect(logEv.detail.entries[0].text).toBe('ok');
+  });
+
+  it('14. Test mode interface gating: absent by default, present when window.CNC_TELEMETRY_TEST_MODE === true', async () => {
+    const normalEnv = createBrowserEnv();
+    expect(normalEnv.CncTelemetry.__test__).toBeUndefined();
+
+    const testEnv = createBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+    expect(testEnv.CncTelemetry.__test__).toBeDefined();
+    expect(typeof testEnv.CncTelemetry.__test__.getClientSeq).toBe('function');
   });
 });

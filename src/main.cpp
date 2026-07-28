@@ -2516,20 +2516,48 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       uint64_t utcMs = doc["utcMs"] | 0ULL;
       int tzOffset = doc["timezoneOffsetMinutes"] | 0;
       String timeZoneStr = doc["timeZone"] | "";
+      String clientOwner = doc["owner"] | (doc["operatorOwner"] | "");
 
       if (utcMs > 1000000000000ULL && telemetryStateMutex != nullptr) {
         int64_t newOffset = static_cast<int64_t>(utcMs) - static_cast<int64_t>(millis());
         if (xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-          if (!stagedState.wallClock.valid || llabs(newOffset - stagedState.wallClock.offsetMs) < 60000LL) {
-            stagedState.wallClock.valid = true;
-            stagedState.wallClock.offsetMs = newOffset;
-            stagedState.wallClock.timezoneOffsetMinutes = tzOffset;
-            snprintf(stagedState.wallClock.timeZone, sizeof(stagedState.wallClock.timeZone), "%s", timeZoneStr.c_str());
-            stagedState.wallClock.syncUptimeMs = millis();
-            snprintf(stagedState.wallClock.source, sizeof(stagedState.wallClock.source), "browser");
+          bool allowUpdate = false;
+          if (!stagedState.wallClock.valid) {
+            allowUpdate = true;
+          } else {
+            String activeOwner = "";
+            int ownerPos = stagedState.controlJson.indexOf("\"owner\":");
+            if (ownerPos >= 0) {
+              int startQuote = stagedState.controlJson.indexOf('"', ownerPos + 8);
+              if (startQuote >= 0) {
+                int endQuote = stagedState.controlJson.indexOf('"', startQuote + 1);
+                if (endQuote > startQuote) {
+                  activeOwner = stagedState.controlJson.substring(startQuote + 1, endQuote);
+                }
+              }
+            }
+            if (activeOwner.length() > 0 && clientOwner.length() > 0 && activeOwner == clientOwner) {
+              allowUpdate = true;
+            }
+          }
 
-            stagedState.dirtySystem = true;
-            stagedState.globalRevision++;
+          if (allowUpdate) {
+            bool changed = !stagedState.wallClock.valid ||
+                           llabs(newOffset - stagedState.wallClock.offsetMs) > 1000LL ||
+                           stagedState.wallClock.timezoneOffsetMinutes != tzOffset ||
+                           strcmp(stagedState.wallClock.timeZone, timeZoneStr.c_str()) != 0;
+
+            if (changed) {
+              stagedState.wallClock.valid = true;
+              stagedState.wallClock.offsetMs = newOffset;
+              stagedState.wallClock.timezoneOffsetMinutes = tzOffset;
+              snprintf(stagedState.wallClock.timeZone, sizeof(stagedState.wallClock.timeZone), "%s", timeZoneStr.c_str());
+              stagedState.wallClock.syncUptimeMs = millis();
+              snprintf(stagedState.wallClock.source, sizeof(stagedState.wallClock.source), "browser");
+
+              stagedState.dirtySystem = true;
+              stagedState.globalRevision++;
+            }
           }
           xSemaphoreGive(telemetryStateMutex);
         }
