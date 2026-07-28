@@ -1,5 +1,14 @@
 # Handoff
 
+## 2026-07-28 - Aurora Glass Skin Joystick CSS Fix Handoff
+
+- Fixed Aurora Glass skin joystick positioning regression (`www/skins/aurora-glass/theme.css`):
+- Key Highlights:
+  1. Generic Button Transform Removal: Removed `transform: translateY(-1px)` and `transform: translateY(1px)` from `button:not(:disabled):hover` and `button:not(:disabled):active` in `www/skins/aurora-glass/theme.css`. Hover state visual feedback is now maintained purely using background, border, and box-shadow properties.
+  2. Joystick Positioning Integrity: Guaranteed that `.machine-jog-center`, `.machine-jog-direction`, `.machine-jog-z-slider`, and `.machine-jog-z-handle` retain their original `transform: translate(-50%, -50%)` positioning without using `!important` overrides or altering joystick JavaScript / transport / firmware code.
+  3. UI Skin Regression Test: Added unit test in `test/ui/ui-skins.test.mjs` verifying Aurora generic button hover/active rules do not contain `transform`.
+  4. Verification: Full test suite (`npm test`) passed all 47 test files and 464 tests.
+
 ## 2026-07-28 - Phase 1 WebSocket First-Valid-Clock-Wins & Test-Accuracy Cleanup Handoff
 
 - Completed Phase 1 WebSocket First-Valid-Clock-Wins & Test-Accuracy Cleanup on `feature/phase1-websocket-transport`:

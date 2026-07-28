@@ -95,13 +95,7 @@ button:not(:disabled):hover,
 select:not(:disabled):hover {
   background: rgba(255, 255, 255, 0.1) !important;
   border-color: var(--glass-border-hover) !important;
-  transform: translateY(-1px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15) !important;
-}
-
-/* Active transitions */
-button:not(:disabled):active {
-  transform: translateY(1px);
 }
 
 /* Primary/Accent buttons */

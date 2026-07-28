@@ -1,5 +1,13 @@
 # Progress
 
+## 2026-07-28 - Aurora Glass Skin Joystick CSS Fix
+
+- Fixed Aurora Glass skin joystick positioning regression (`www/skins/aurora-glass/theme.css`):
+  1. CSS Fix: Removed `transform: translateY(-1px)` and `transform: translateY(1px)` from generic `button:not(:disabled):hover` and `button:not(:disabled):active` rules, preserving hover feedback strictly via background, border, and box-shadow properties.
+  2. Joystick Positioning Preservation: Verified `.machine-jog-center`, `.machine-jog-direction`, `.machine-jog-z-slider`, and `.machine-jog-z-handle` retain their original positioning transforms without `!important` overrides.
+  3. UI Skin Regression Test (`test/ui/ui-skins.test.mjs`): Added focused unit test asserting Aurora theme generic button hover and active selectors contain no `transform` property.
+  4. Verification: Full test suite (`npm test`) passed all 47 test files and 464 tests.
+
 ## 2026-07-28 - Phase 1 WebSocket First-Valid-Clock-Wins & Test-Accuracy Cleanup
 
 - Completed Phase 1 WebSocket First-Valid-Clock-Wins & Test-Accuracy Cleanup on `feature/phase1-websocket-transport`:

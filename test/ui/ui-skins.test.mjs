@@ -89,4 +89,25 @@ describe('UI skin loading and persistence', () => {
     expect(previewJs).toContain("themeColor('--cnc-path-generated'");
     expect(previewJs).toContain("themeColor('--cnc-zero'");
   });
+
+  it('proves Aurora generic button:hover and button:active rules do not set transform property', () => {
+    const auroraCss = readFileSync(join('www', 'skins', 'aurora-glass', 'theme.css'), 'utf8');
+
+    const hoverMatch = auroraCss.match(/button:not\(:disabled\):hover[^{]*\{([^}]+)\}/);
+    const activeMatch = auroraCss.match(/button:not\(:disabled\):active[^{]*\{([^}]+)\}/);
+
+    if (hoverMatch) {
+      expect(hoverMatch[1]).not.toContain('transform');
+    }
+    if (activeMatch) {
+      expect(activeMatch[1]).not.toContain('transform');
+    }
+
+    const genericButtonRules = auroraCss.match(/button:[^{]+\{[^}]+\}/g) || [];
+    genericButtonRules.forEach((rule) => {
+      if (rule.includes(':hover') || rule.includes(':active')) {
+        expect(rule).not.toContain('transform');
+      }
+    });
+  });
 });
