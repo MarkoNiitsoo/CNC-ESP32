@@ -26,13 +26,14 @@ function sleep(ms) {
 }
 
 export class MockJobRunner {
-  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20, realtimeHold = true } = {}) {
+  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20, realtimeHold = true, controllerState = 'connected' } = {}) {
     this.sd = sd;
     this.marlin = marlin;
     this.frame = frame;
     this.toolChangeSettings = toolChangeSettings || {};
     this.lineDelayMs = Math.max(0, Number(lineDelayMs) || 0);
     this.realtimeHold = realtimeHold !== false;
+    this.controllerState = controllerState;
     this.runToken = 0;
     this.status = this.emptyStatus();
   }
@@ -67,11 +68,12 @@ export class MockJobRunner {
       stopEmergencyParserDetected: true, stopWarning: '',
       lastFeedOverrideCommand: '', lastFeedOverrideResponse: '', lastFeedOverrideError: '',
       streamingPausedReason: '', uptimeMs: 0,
+      controllerState: this?.controllerState || 'connected',
     };
   }
 
   snapshot(message = '') {
-    const status = { ...this.status, position: { ...this.marlin.position }, uptimeMs: Date.now() };
+    const status = { ...this.status, controllerState: this.controllerState, position: { ...this.marlin.position }, uptimeMs: Date.now() };
     if (message) return { ...status, ok: true, message };
     return status;
   }
@@ -80,8 +82,49 @@ export class MockJobRunner {
     return ACTIVE_STATES.has(this.status.state);
   }
 
+  assertControllerCommunication() {
+    if (this.controllerState === 'unresponsive') {
+      throw new Error('Marlin is not responding. Machine commands are blocked until controller communication is restored.');
+    }
+    if (this.controllerState === 'recovering') {
+      throw new Error('Controller communication recovery is in progress. Machine commands are blocked.');
+    }
+  }
+
+  async recoverController() {
+    this.controllerState = 'recovering';
+    const m115 = this.marlin.execute('M115', { priority: true });
+    if (!m115.ok || (!m115.response.includes('FIRMWARE_NAME') && !m115.response.includes('Marlin'))) {
+      this.controllerState = 'unresponsive';
+      return { ok: false, error: 'M115 recovery probe failed to return Marlin identity content', controllerState: 'unresponsive' };
+    }
+    if (this.marlin.controllerResetDetected || m115.response.includes('start')) {
+      if (this.frame) {
+        this.frame.machineValid = false;
+        this.frame.absoluteFromHome = false;
+        this.frame.homedX = false;
+        this.frame.homedY = false;
+        this.frame.homedZ = false;
+      }
+    }
+    const m114 = this.marlin.execute('M114', { priority: true });
+    if (!m114.ok || m114.response.includes('INVALID')) {
+      this.controllerState = 'unresponsive';
+      return { ok: false, error: 'M114 position probe failed during recovery', controllerState: 'unresponsive' };
+    }
+    this.controllerState = 'connected';
+    return { ok: true, message: 'Controller communication restored.', controllerState: 'connected' };
+  }
+
   runCommand(command, { priority = false, allowMachineCoordinates = false } = {}) {
+    const upper = String(command || '').trim().toUpperCase();
+    if (!priority && upper !== 'M410' && upper !== 'M5') {
+      this.assertControllerCommunication();
+    }
     const result = this.marlin.execute(command, { priority, allowMachineCoordinates });
+    if (result.timeout) {
+      this.controllerState = 'unresponsive';
+    }
     if (priority) {
       this.status.lastPriorityCommand = command;
       this.status.lastPriorityResponse = result.response || '';
@@ -196,6 +239,7 @@ export class MockJobRunner {
   }
 
   async start(request = {}) {
+    this.assertControllerCommunication();
     if (this.isActive()) throw new Error('another job is already active');
     const job = JSON.parse(await this.sd.readText(request.jobPath));
     const active = getActiveRun(job);
@@ -263,6 +307,7 @@ export class MockJobRunner {
   }
 
   async startTestMotion(request = {}) {
+    this.assertControllerCommunication();
     if (this.isActive()) throw new Error('another job is already active');
     const mode = String(request.mode || '');
     const path = String(request.path || '');

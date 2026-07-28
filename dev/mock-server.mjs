@@ -212,6 +212,26 @@ export async function createMockServer(options = {}) {
       const url = new URL(req.url || '/', 'http://localhost');
       const pathname = url.pathname;
 
+      if (env.runner.controllerState === 'unresponsive' || env.runner.controllerState === 'recovering') {
+        const exempt = ['/api/job/stop', '/api/jog/stop', '/api/stop', '/api/controller/recover', '/api/operator/status', '/api/health', '/api/device', '/api/job/status', '/api/ui/status', '/api/sd/status', '/api/marlin/log'];
+        if (!exempt.includes(pathname) && !pathname.startsWith('/api/operator/')) {
+          return json(res, 503, {
+            ok: false,
+            error: 'Marlin is not responding. Machine commands are blocked until controller communication is restored.',
+            controllerState: env.runner.controllerState,
+          });
+        }
+      }
+
+      if (req.method === 'POST' && pathname === '/api/controller/recover') {
+        if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'Controller recovery cannot be started while a job or jog is active.' });
+        const result = await env.runner.recoverController();
+        if (!result.ok) {
+          return json(res, 503, result);
+        }
+        return json(res, 200, result);
+      }
+
       if (req.method === 'GET' && pathname === '/api/operator/status') {
         return json(res, 200, operatorStatus(req));
       }

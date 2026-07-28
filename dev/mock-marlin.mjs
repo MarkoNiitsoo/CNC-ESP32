@@ -37,6 +37,9 @@ export class MockMarlin {
     this.lastCommand = '';
     this.endstops = { xMin: 'open', xMax: 'open', yMin: 'open', yMax: 'open', zMin: 'open', zMax: 'open' };
     this.log = [];
+    this.simulateTimeout = Boolean(config.simulateTimeout);
+    this.malformedM114Count = Number(config.malformedM114Count || 0);
+    this.controllerResetDetected = Boolean(config.controllerResetDetected);
   }
 
   get position() {
@@ -73,6 +76,9 @@ export class MockMarlin {
     this.addLog('tx', command, options);
     const upper = command.toUpperCase();
     const args = words(upper);
+    if (this.simulateTimeout) {
+      return { ok: false, timeout: true, error: 'Marlin did not respond within timeout' };
+    }
     if (this.failCommands.has(upper)) return this.error(`Injected failure for ${command}`);
     if (upper === 'P000') {
       if (!this.realtimeHold) return this.error('Realtime hold is unavailable');
@@ -100,9 +106,14 @@ export class MockMarlin {
     }
     if (/\bM115\b/.test(upper)) {
       const m = this.machine;
-      return this.response(`FIRMWARE_NAME:MockMarlin 2.1.1 SOURCE_CODE_URL:local PROTOCOL_VERSION:1.0 MACHINE_TYPE:DEV-MOCK EXTRUDER_COUNT:0\nCap:EEPROM:1\nCap:AUTOREPORT_POS:1\nCap:EMERGENCY_PARSER:1\nCap:REALTIME_REPORTING:${this.realtimeHold ? 1 : 0}\nCap:SDCARD:1\nCap:MOTION_MODES:1\nCap:ARCS:1\narea:{full:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}},work:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}}}\nok`);
+      const resetHeader = this.controllerResetDetected ? 'start\necho:Marlin 2.1.1\n' : '';
+      return this.response(`${resetHeader}FIRMWARE_NAME:MockMarlin 2.1.1 SOURCE_CODE_URL:local PROTOCOL_VERSION:1.0 MACHINE_TYPE:DEV-MOCK EXTRUDER_COUNT:0\nCap:EEPROM:1\nCap:AUTOREPORT_POS:1\nCap:EMERGENCY_PARSER:1\nCap:REALTIME_REPORTING:${this.realtimeHold ? 1 : 0}\nCap:SDCARD:1\nCap:MOTION_MODES:1\nCap:ARCS:1\narea:{full:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}},work:{min:{x:${m.xMin.toFixed(4)},y:${m.yMin.toFixed(4)},z:${m.zMin.toFixed(4)}},max:{x:${m.xMax.toFixed(4)},y:${m.yMax.toFixed(4)},z:${m.zMax.toFixed(4)}}}}\nok`);
     }
     if (/\bM114\b/.test(upper)) {
+      if (this.malformedM114Count > 0) {
+        this.malformedM114Count -= 1;
+        return this.response('X:INVALID Y:INVALID Z:INVALID Count X:0 Y:0 Z:0\nok');
+      }
       const p = this.position;
       return this.response(`X:${p.x.toFixed(4)} Y:${p.y.toFixed(4)} Z:${p.z.toFixed(4)} Count X:${Math.round(this.machinePosition.x * this.stepsPerMm.x)} Y:${Math.round(this.machinePosition.y * this.stepsPerMm.y)} Z:${Math.round(this.machinePosition.z * this.stepsPerMm.z)}\nok`);
     }

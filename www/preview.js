@@ -4293,23 +4293,133 @@ function setFeedStartPercent(percent) {
   renderRunPanel();
 }
 
+let controllerCommState = 'connected';
+
+function renderControllerStatus() {
+  const el = document.getElementById('controller-comm-status');
+  if (el) {
+    el.textContent = `Controller: ${controllerCommState.toUpperCase()}`;
+    el.className = `status-badge ${controllerCommState}`;
+  }
+}
+
+async function recoverControllerConnection() {
+  try {
+    controllerCommState = 'recovering';
+    renderControllerStatus();
+    const res = await fetch('/api/controller/recover', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      controllerCommState = 'unresponsive';
+      renderControllerStatus();
+      alert(data.error || 'Controller recovery failed.');
+      return false;
+    }
+    controllerCommState = 'connected';
+    renderControllerStatus();
+    alert('Controller communication restored.');
+    return true;
+  } catch (err) {
+    controllerCommState = 'unresponsive';
+    renderControllerStatus();
+    alert(`Controller recovery failed: ${err.message}`);
+    return false;
+  }
+}
+
 async function sendCmd(cmd) {
-  const res = await fetch('/api/cmd', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cmd }),
-  });
+  let res;
+  try {
+    res = await fetch('/api/cmd', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd }),
+    });
+  } catch (netErr) {
+    const err = new Error("Marlin did not respond. Machine commands are blocked until controller communication is restored.");
+    err.isTimeout = true;
+    controllerCommState = 'unresponsive';
+    renderControllerStatus();
+    throw err;
+  }
   const data = await res.json();
+  if (res.status === 409) {
+    const err = new Error(data.error || `${cmd} failed: UART busy`);
+    err.status = 409;
+    err.isBusy = true;
+    throw err;
+  }
   if (!res.ok || !data.ok) {
-    throw new Error(data.error || `${cmd} failed`);
+    const err = new Error(data.error || `${cmd} failed`);
+    err.status = res.status;
+    if (res.status === 503 || data.controllerState === 'unresponsive') {
+      err.isTimeout = true;
+      controllerCommState = 'unresponsive';
+      renderControllerStatus();
+    }
+    throw err;
+  }
+  if (controllerCommState === 'unresponsive' || controllerCommState === 'waiting') {
+    controllerCommState = 'connected';
+    renderControllerStatus();
   }
   return data.response || '';
 }
 
 async function captureM114() {
-  await sendCmd('M400');
-  const raw = await sendCmd('M114');
-  return parseM114(raw);
+  appendDryRunLog('Waiting for the machine to finish current motion…');
+  try {
+    await sendCmd('M400');
+  } catch (err) {
+    if (err.isBusy) {
+      throw err;
+    }
+    if (err.isTimeout || controllerCommState === 'unresponsive') {
+      throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
+    }
+    throw err;
+  }
+
+  appendDryRunLog('Waiting for Marlin to report the current position. No movement has been started.');
+  let raw1;
+  try {
+    raw1 = await sendCmd('M114');
+  } catch (err) {
+    if (err.isBusy) {
+      throw err;
+    }
+    if (err.isTimeout || controllerCommState === 'unresponsive') {
+      throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
+    }
+    throw err;
+  }
+
+  let capture = parseM114(raw1);
+  const isValid = (c) => Number.isFinite(c?.position?.x) && Number.isFinite(c?.position?.y) && Number.isFinite(c?.position?.z);
+  if (isValid(capture)) {
+    return capture;
+  }
+
+  console.warn('[Cut Bounds] 1st M114 response complete but position unparseable. Performing at most one retry...', raw1);
+  let raw2;
+  try {
+    raw2 = await sendCmd('M114');
+  } catch (err) {
+    if (err.isBusy) throw err;
+    if (err.isTimeout || controllerCommState === 'unresponsive') {
+      throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
+    }
+    throw err;
+  }
+
+  capture = parseM114(raw2);
+  if (isValid(capture)) {
+    return capture;
+  }
+
+  const malformedErr = new Error('Marlin responded, but a complete X/Y/Z position could not be read. Cut Bounds was not started.');
+  malformedErr.isMalformed = true;
+  throw malformedErr;
 }
 
 async function checkJobExists() {
@@ -4898,7 +5008,16 @@ async function sendBoundingBoxTrace() {
   try {
     returnCapture = await captureM114();
   } catch (err) {
-    const unconfirmedMsg = 'Current X/Y/Z could not be confirmed; Cut Bounds was not started.';
+    let unconfirmedMsg = 'Current X/Y/Z could not be confirmed; Cut Bounds was not started.';
+    if (err.isBusy) {
+      unconfirmedMsg = `UART owner busy: ${err.message}`;
+    } else if (err.isMalformed) {
+      unconfirmedMsg = 'Marlin responded, but a complete X/Y/Z position could not be read. Cut Bounds was not started.';
+    } else if (err.isTimeout || controllerCommState === 'unresponsive') {
+      unconfirmedMsg = 'Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.';
+    } else if (err.message) {
+      unconfirmedMsg = err.message;
+    }
     console.error('[Cut Bounds] Position capture failed:', err.message);
     appendDryRunLog(unconfirmedMsg);
     setJobResult(unconfirmedMsg, true);

@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-07-28 - Controller Contact Safety & Motion Gating Pass
+
+- Completed Controller Contact Safety and Motion Gating pass on `feature/phase1-websocket-transport`:
+  1. Distinguish M400/M114 Outcomes (`www/preview.js`):
+     - UART owner busy (HTTP 409): Returns busy error, shows active owner, and does NOT mark Marlin unresponsive.
+     - M400 waiting: Renders `"Waiting for the machine to finish current motion…"`, awaits M400 completion before sending M114, and allows operator cancel without sending movement.
+     - Malformed M114 position: Terminal `ok` response with invalid coordinates triggers AT MOST ONE controlled retry (`M114`). If 2nd M114 also fails, aborts with `"Marlin responded, but a complete X/Y/Z position could not be read. Cut Bounds was not started."` (retains controller contact).
+     - M400 / M114 timeout: Sets controller communication state to `UNRESPONSIVE`, aborts Cut Bounds, and blocks normal commands.
+  2. Authoritative Controller Communication State (`src/main.cpp`, `dev/mock-job-runner.mjs`, `dev/mock-server.mjs`): Added `ControllerCommunicationState` enum (`Unknown`, `Connected`, `Waiting`, `Unresponsive`, `Recovering`) and `ControllerCommunicationTelemetry` struct. Serialized `controllerState` and `controllerCommunication` telemetry object into status JSON.
+  3. Gate Ordinary Machine Commands (`src/main.cpp`, `dev/mock-job-runner.mjs`, `dev/mock-server.mjs`): Gated Home, Jog, Bounds, Aircut, Job Start, Resume, Work Zero set/restore/goto, and `/api/cmd` when state is `UNRESPONSIVE` or `RECOVERING` (HTTP 503 error). Physical Stop / E-stop pathways remain callable.
+  4. Controlled Recovery Sequence (`src/main.cpp`, `dev/mock-job-runner.mjs`, `dev/mock-server.mjs`): Implemented `POST /api/controller/recover` performing UART drain -> quiet period -> enter `RECOVERING` -> send `M115` identity probe (invalidates homing/frame if reset detected) -> send `M114` position probe -> transition to `CONNECTED`.
+  5. Browser UI & Behavior (`www/preview.js`): Added `renderControllerStatus()` status badge and `recoverControllerConnection()` retry button calling `/api/controller/recover`.
+  6. Executable Safety Test Suite (`test/firmware/controller-communication.test.mjs`): Added 14 executable test cases proving all safety scenarios.
+  7. Verification: `npm test` passed 48/48 test files and 501/501 tests. `pio run -e esp32cam` compiled cleanly (RAM: 19.6%, Flash: 73.9%).
+
 ## 2026-07-28 - Project Safe Z & Cut Bounds Safety Corrections Pass
 
 - Completed Project Safe Z and Cut Bounds safety corrections on `feature/phase1-websocket-transport`:

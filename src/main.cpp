@@ -269,6 +269,66 @@ struct MarlinLogEntry {
   String level = "info";
 };
 
+enum class ControllerCommunicationState {
+  Unknown,
+  Connected,
+  Waiting,
+  Unresponsive,
+  Recovering
+};
+
+String controllerCommunicationStateToString(ControllerCommunicationState state) {
+  switch (state) {
+    case ControllerCommunicationState::Connected: return "connected";
+    case ControllerCommunicationState::Waiting: return "waiting";
+    case ControllerCommunicationState::Unresponsive: return "unresponsive";
+    case ControllerCommunicationState::Recovering: return "recovering";
+    default: return "unknown";
+  }
+}
+
+struct ControllerCommunicationTelemetry {
+  ControllerCommunicationState state = ControllerCommunicationState::Connected;
+  uint32_t lastSuccessfulResponseMs = 0;
+  uint32_t lastTimeoutMs = 0;
+  String lastFailedCommand = "";
+  String lastError = "";
+};
+
+ControllerCommunicationTelemetry controllerCommStatus;
+
+bool isControllerCommunicationActive() {
+  return controllerCommStatus.state == ControllerCommunicationState::Connected ||
+         controllerCommStatus.state == ControllerCommunicationState::Unknown;
+}
+
+bool ensureControllerCommunicationActive(String &error) {
+  if (controllerCommStatus.state == ControllerCommunicationState::Unresponsive) {
+    error = "Marlin is not responding. Machine commands are blocked until controller communication is restored.";
+    return false;
+  }
+  if (controllerCommStatus.state == ControllerCommunicationState::Recovering) {
+    error = "Controller communication recovery is in progress. Machine commands are blocked.";
+    return false;
+  }
+  return true;
+}
+
+void markControllerResponseSuccess() {
+  controllerCommStatus.lastSuccessfulResponseMs = millis();
+  if (controllerCommStatus.state == ControllerCommunicationState::Waiting ||
+      controllerCommStatus.state == ControllerCommunicationState::Unknown) {
+    controllerCommStatus.state = ControllerCommunicationState::Connected;
+  }
+}
+
+void markControllerUnresponsive(const String &cmd, const String &errorMsg) {
+  controllerCommStatus.state = ControllerCommunicationState::Unresponsive;
+  controllerCommStatus.lastTimeoutMs = millis();
+  controllerCommStatus.lastFailedCommand = cmd;
+  controllerCommStatus.lastError = errorMsg;
+}
+
 struct PositionTelemetry {
   bool valid = false;
   float x = 0;
@@ -1694,7 +1754,15 @@ String jobStatusJson(bool authoritativeState = false) {
   String json = "{";
   json += "\"state\":\"";
   json += jobStateName(jobStatus.state);
-  json += "\",\"gcodePath\":\"";
+  json += "\",\"controllerState\":\"" + controllerCommunicationStateToString(controllerCommStatus.state) + "\"";
+  json += ",\"controllerCommunication\":{";
+  json += "\"state\":\"" + controllerCommunicationStateToString(controllerCommStatus.state) + "\"";
+  json += ",\"lastSuccessfulResponseMs\":" + String(controllerCommStatus.lastSuccessfulResponseMs);
+  json += ",\"lastTimeoutMs\":" + String(controllerCommStatus.lastTimeoutMs);
+  json += ",\"lastFailedCommand\":" + (controllerCommStatus.lastFailedCommand.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastFailedCommand) + "\"") : "null");
+  json += ",\"lastError\":" + (controllerCommStatus.lastError.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastError) + "\"") : "null");
+  json += "}";
+  json += ",\"gcodePath\":\"";
   json += jsonEscape(jobStatus.gcodePath);
   json += "\",\"jobPath\":\"";
   json += jsonEscape(jobStatus.jobPath);
@@ -3049,9 +3117,14 @@ String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
       received = true;
     }
     if (received && marlinResponseIsTerminal(response)) {
+      markControllerResponseSuccess();
       break;
     }
     delay(1);
+  }
+
+  if (response.length() == 0 || !marlinResponseIsTerminal(response)) {
+    markControllerUnresponsive("UART_TIMEOUT", "Marlin did not respond within timeout");
   }
 
   addMarlinLog("rx", priority, response);
@@ -6650,6 +6723,11 @@ void handleRename() {
 }
 
 void handleCommand() {
+  String commError;
+  if (!ensureControllerCommunicationActive(commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (otaActive) {
     server.send(409, "application/json", "{\"ok\":false,\"error\":\"OTA update in progress\"}");
     return;
@@ -7252,6 +7330,11 @@ void handleRecoveryCheckpointAcknowledge() {
 }
 
 void handleTestMotionStart() {
+  String commError;
+  if (!ensureControllerCommunicationActive(commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (!sdMounted) {
     sendJsonError(503, "SD card is not mounted");
     return;
@@ -7490,6 +7573,11 @@ void handleJobFeedOverride() {
 }
 
 void handleJobStart() {
+  String commError;
+  if (!ensureControllerCommunicationActive(commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (!sdMounted) {
     sendJsonError(503, "SD card is not mounted");
     return;
@@ -8913,6 +9001,63 @@ void startMdns() {
   logSystemEvent("mDNS started hostname=" + deviceIdentity.hostname + ".local");
 }
 
+void handleControllerRecover() {
+  if (jobIsActive() || jogIsActive()) {
+    sendJsonError(409, "Controller recovery cannot be started while a job or jog is active.");
+    return;
+  }
+
+  drainMarlinInput();
+  delay(50);
+  drainMarlinInput();
+
+  controllerCommStatus.state = ControllerCommunicationState::Recovering;
+  controllerCommStatus.lastError = "";
+
+  addMarlinLog("tx", true, "M115");
+  Serial.print("M115\n");
+  const String m115Resp = readMarlinResponseFor(5000, true);
+  String m115Upper = m115Resp;
+  m115Upper.toUpperCase();
+
+  if (!marlinResponseIsTerminal(m115Resp) || (m115Upper.indexOf("FIRMWARE_NAME") < 0 && m115Upper.indexOf("MARLIN") < 0)) {
+    controllerCommStatus.state = ControllerCommunicationState::Unresponsive;
+    controllerCommStatus.lastTimeoutMs = millis();
+    controllerCommStatus.lastFailedCommand = "M115";
+    controllerCommStatus.lastError = "M115 recovery probe failed to return Marlin identity content";
+    sendJsonError(503, controllerCommStatus.lastError);
+    return;
+  }
+
+  if (m115Upper.indexOf("START") >= 0 || m115Upper.indexOf("RESET") >= 0) {
+    machineFrame.machineValid = false;
+    machineFrame.absoluteFromHome = false;
+    machineFrame.homedX = false;
+    machineFrame.homedY = false;
+    machineFrame.homedZ = false;
+    logJobEvent("Controller reset detected during M115 recovery. Machine position trust invalidated.");
+  }
+
+  addMarlinLog("tx", true, "M114");
+  Serial.print("M114\n");
+  const String m114Resp = readMarlinResponseFor(3000, true);
+  float x = 0, y = 0, z = 0;
+  if (!marlinResponseIsTerminal(m114Resp) || !parseAxisFromM114(m114Resp, 'X', x) ||
+      !parseAxisFromM114(m114Resp, 'Y', y) || !parseAxisFromM114(m114Resp, 'Z', z)) {
+    controllerCommStatus.state = ControllerCommunicationState::Unresponsive;
+    controllerCommStatus.lastTimeoutMs = millis();
+    controllerCommStatus.lastFailedCommand = "M114";
+    controllerCommStatus.lastError = "M114 position probe failed during recovery";
+    sendJsonError(503, controllerCommStatus.lastError);
+    return;
+  }
+
+  controllerCommStatus.state = ControllerCommunicationState::Connected;
+  controllerCommStatus.lastSuccessfulResponseMs = millis();
+  controllerCommStatus.lastError = "";
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Controller communication restored.\",\"controllerState\":\"connected\"}");
+}
+
 void startHttpServer() {
   logSystemEvent("HTTP setup starting port=80");
   const char *collectedHeaders[] = {"Cookie"};
@@ -8923,6 +9068,7 @@ void startHttpServer() {
   httpRoute("/app.js", HTTP_GET, handleAppJs);
   httpRoute("/files.js", HTTP_GET, handleFilesJs);
   httpRoute("/style.css", HTTP_GET, handleStyleCss);
+  operatorRoute("/api/controller/recover", HTTP_POST, handleControllerRecover);
   httpRoute("/api/operator/status", HTTP_GET, handleOperatorStatus);
   httpRoute("/api/operator/claim", HTTP_POST, handleOperatorClaim);
   httpRoute("/api/operator/reconnect", HTTP_POST, handleOperatorReconnect);
