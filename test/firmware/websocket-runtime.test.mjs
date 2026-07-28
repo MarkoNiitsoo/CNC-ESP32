@@ -325,14 +325,15 @@ describe('Executable Raw TCP WebSocket Runtime Tests', () => {
     const countBefore = client.messages.length;
     srv.coalesceStateChanges((add) => {
       add('controller', { state: 'running' });
-      add('job', { state: 'RUNNING' });
+      add('controller', { state: 'paused' });
+      add('controller', { state: 'idle' });
     });
 
     const patch = await client.waitNextMessage();
     expect(client.messages.length).toBe(countBefore + 1); // Exactly ONE patch packet
     expect(patch.patch.controller).toBeDefined();
-    expect(patch.patch.job).toBeDefined();
-    expect(patch.stateRevision).toBe(initRev + 1);
+    expect(patch.patch.controller.state).toBe('idle'); // Final complete controller slice with state = idle
+    expect(patch.stateRevision).toBe(initRev + 1); // Exactly ONE stateRevision increment
     client.close();
   });
 
@@ -434,8 +435,9 @@ describe('Executable Raw TCP WebSocket Runtime Tests', () => {
     const snap1 = await client1.waitNextMessage();
     expect(snap1.state.system.time.valid).toBe(true);
     expect(snap1.state.system.time.timeZone).toBe('Europe/Tallinn');
+    const firstClientRev = snap1.stateRevision;
 
-    // Second read-only client connects with a different clock attempt
+    // Second client connects with a different clock attempt
     const client2 = await createTestWsClient(port, '/');
     client2.sendJson({
       protocolVersion: 1, type: 'hello', seq: 1, ack: 0,
@@ -443,7 +445,8 @@ describe('Executable Raw TCP WebSocket Runtime Tests', () => {
     });
     const snap2 = await client2.waitNextMessage();
     expect(snap2.state.system.time.valid).toBe(true);
-    expect(snap2.state.system.time.timeZone).toBe('Europe/Tallinn'); // Clock was retained!
+    expect(snap2.state.system.time.timeZone).toBe('Europe/Tallinn'); // Retained timezone!
+    expect(snap2.stateRevision).toBe(firstClientRev); // Unchanged revision!
 
     client1.close();
     client2.close();

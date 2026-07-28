@@ -18,7 +18,7 @@ function createBrowserEnv(options = {}) {
     constructor(url) {
       this.url = url;
       this.readyState = 1; // OPEN
-      this.shouldThrowOnSend = false;
+      this.shouldThrowOnSend = options.throwOnInitSend || false;
       this.eventListeners = new Map();
       fakeSockets.push(this);
     }
@@ -156,16 +156,29 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
   });
 
   it('5. Future ACK when highest successfully sent is zero triggers protocol error and resync', async () => {
-    const { env, ws } = await setupStartedBrowserEnv();
+    const env = createBrowserEnv({ throwOnInitSend: true, windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+    env.CncTelemetry.setDemand('job', 'test', true);
+    env.CncTelemetry.start();
+    await new Promise((r) => setTimeout(r, 20));
+    const ws = env.getWsInstance();
 
+    expect(env.CncTelemetry.__test__.getHighestClientSeqSuccessfullySent()).toBe(0);
+
+    ws.shouldThrowOnSend = false;
+    const packetsBefore = env.sentPackets.length;
     ws.receiveMessage({
-      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 999, bootId: 'boot1', stateRevision: 1,
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
       state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
     });
 
     const errEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-protocol-error');
     expect(errEv).toBeDefined();
     expect(errEv.detail.error).toBe('invalid future ACK');
+
+    const resyncSent = env.sentPackets.slice(packetsBefore).find((p) => p.type === 'resync');
+    expect(resyncSent).toBeDefined();
+
+    expect(env.CncTelemetry.__test__.getHighestClientSeqAcknowledgedByESP()).toBe(0);
   });
 
   it('6. Protocol-error sequence is committed and next contiguous packet works', async () => {

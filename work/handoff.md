@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-28 - Phase 1 WebSocket First-Valid-Clock-Wins & Test-Accuracy Cleanup Handoff
+
+- Completed Phase 1 WebSocket First-Valid-Clock-Wins & Test-Accuracy Cleanup on `feature/phase1-websocket-transport`:
+- Key Highlights:
+  1. First-Valid-Clock-Wins Rule (`src/main.cpp`, `dev/mock-server.mjs`, `docs/protocol.md`): Simplified WebSocket `hello` wall-clock processing to strict first-valid-clock-wins. Removed client-supplied `owner`/`operatorOwner` checks from `hello` handling. Subsequent `hello` clock proposals after `wallClock.valid == true` are completely ignored without changing timezone, `dirtySystem`, or `stateRevision`.
+  2. Mock `stateRevision` Alignment (`dev/mock-server.mjs`): First valid clock proposal increments `mockStateRevision` exactly once (`1 -> 2`), ensuring the initial snapshot carries revision 2. Subsequent rejected clock proposals do not increment `mockStateRevision`.
+  3. Two-Client Clock Test (`test/firmware/websocket-runtime.test.mjs`): Updated Test 20 to assert both retained timezone (`Europe/Tallinn`) and unchanged `stateRevision` after second client connects.
+  4. Future-ACK-Zero Browser Test (`test/ui/telemetry-protocol-browser.test.mjs`): Updated Test 5 to use `throwOnInitSend: true` so `highestClientSeqSuccessfullySent` remains `0`, verifying `invalid future ACK` protocol error, resync attempt, and non-advanced ACK (`0`).
+  5. Strengthened Coalescing Test (`test/firmware/websocket-runtime.test.mjs`): Updated Test 12 to modify `controller` slice multiple times inside `coalesceStateChanges()` (`running` -> `paused` -> `idle`), asserting exactly 1 patch packet, 1 revision increment, and final `controller.state = 'idle'`.
+  6. Verification: `pio run -e esp32cam` compiled cleanly (19.6% RAM, 73.4% Flash). Full test suite (`npm test`) passed all 47 test files and 463 tests.
+
 ## 2026-07-28 - Phase 1 WebSocket Test Completion, Docs Sync & Wall-Clock Owner Pass Handoff
 
 - Completed Phase 1 WebSocket Test Completion, Docs Sync & Wall-Clock Owner Pass on `feature/phase1-websocket-transport`:

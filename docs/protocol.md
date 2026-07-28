@@ -79,9 +79,9 @@ On connection, browser sends:
 }
 ```
 
-- The first valid browser `hello` initializes the ESP wall-clock offset derived from `utcMs` relative to monotonic `millis()`, and replies with a complete authoritative `snapshot`.
-- Once valid, secondary read-only connections do not overwrite wall-clock or timezone settings. Later clock adjustments are accepted exclusively from the active operator control owner.
-- Rejected or unchanged clock proposals do not set `dirtySystem` or increment `stateRevision`.
+- The first valid browser `hello` after boot initializes the ESP wall-clock offset derived from `utcMs` relative to monotonic `millis()`, and replies with a complete authoritative `snapshot`.
+- After `wallClock.valid` becomes true, all later WebSocket clock proposals are ignored. Wall-clock correction by the active control owner is deferred until control claim is migrated to an authenticated WebSocket connection.
+- Rejected or unchanged clock proposals do not change timezone, set `dirtySystem`, or increment `stateRevision`.
 
 ### Low-Rate Stable System Diagnostics
 

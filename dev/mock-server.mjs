@@ -1098,12 +1098,12 @@ export async function createMockServer(options = {}) {
               return;
             }
             if (msg.utcMs !== undefined && msg.utcMs !== null) {
-              const allowUpdate = !env.clockValid || (env.operator.owner && (msg.owner === env.operator.owner || msg.operatorOwner === env.operator.owner));
-              if (allowUpdate) {
+              if (!env.clockValid) {
                 env.clockOffsetMs = Number(msg.utcMs) - Date.now();
                 env.timezoneOffsetMinutes = Number(msg.timezoneOffsetMinutes || 0);
                 env.timeZone = String(msg.timeZone || 'UTC');
                 env.clockValid = true;
+                mockStateRevision++;
               }
             }
             const sent = sendMockWsPacket(socket, 'snapshot', {
