@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-28 - Phase 1 WebSocket Protocol-Correctness Repair Pass Handoff
+
+- Completed Phase 1 WebSocket Protocol-Correctness Repair Pass on `feature/phase1-websocket-transport`:
+- Key Architectural Highlights:
+  1. Firmware Schema & Dynamic Serialization: `buildMachineSliceJson()` has `homingEpoch` at root of `machine` slice: `{"position":{...},"frame":{...},"homedAxes":{"x":...,"y":...,"z":...},"homingEpoch":0}`. `buildControllerSliceJson()` serializes capabilities dynamically from `controllerAdapter.capabilities`. Quantized `uptimeMs` to 10s and `freeHeap` to 10KB in `buildSystemBaseJson()` for stable state comparison. `processNetworkTelemetry()` marks `cs.resyncPending = true` if `sendClientPacket()` fails during state patch delivery.
+  2. Browser Telemetry Client Alignment (`www/telemetry.js`): Outbound `sendSocketPacket()` increments sequence and `highestClientSeqSuccessfullySent` ONLY after successful transmission. Browser timezone offset uses protocol sign `-new Date().getTimezoneOffset()`. Strict validation order: protocolVersion -> bootId transition -> packet sequence -> peer ACK -> stateRevision -> dispatch. Ignore every duplicate `seq <= lastServerSeq`. Full canonical snapshot replacement clears absent canonical slices. Top-level slice patch replacement without recursive merging.
+  3. Mock Dev Server & Test Hooks (`dev/mock-server.mjs`): Initialized `env.clockValid = false` before `hello`. Non-throwing `socket.write()` accepted as valid send. `handshakeComplete = true` set after snapshot write succeeds. Added test hooks: `triggerStateSliceChange`, `coalesceStateChanges`, `getClientProtocolState`, `simulateOutboundWriteFailure`.
+  4. Real Browser Telemetry Client Tests (`test/ui/telemetry-protocol-browser.test.mjs`): Added 14 unit tests executing `www/telemetry.js` against a fake DOM environment.
+  5. Expanded Raw TCP WebSocket Runtime Tests (`test/firmware/websocket-runtime.test.mjs`): Expanded test suite covering all 12 raw WebSocket scenarios.
+- Verification: `pio run -e esp32cam` compiled cleanly (19.6% RAM, 73.4% Flash). `npm test` passed all 47 test files and 455 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Protocol Correctness Pass Handoff
 
 - Completed Phase 1 WebSocket Protocol Correctness Pass on `feature/phase1-websocket-transport`.

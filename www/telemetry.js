@@ -144,12 +144,17 @@
 
   function sendSocketPacket(packet) {
     if (!socketConnected || socket?.readyState !== WebSocket.OPEN) return false;
-    const seq = clientSeq++;
+    const seq = clientSeq;
     packet.seq = seq;
     packet.ack = lastServerSeq;
-    socket.send(JSON.stringify(packet));
-    highestClientSeqSuccessfullySent = seq;
-    return true;
+    try {
+      socket.send(JSON.stringify(packet));
+      clientSeq += 1;
+      highestClientSeqSuccessfullySent = seq;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function sendSocketDemand() {
@@ -187,8 +192,31 @@
     const stateRevision = Number(message.stateRevision || message.revision || 0);
     const msgType = message.type;
 
+    if (bootId && knownBootId && bootId !== knownBootId) {
+      ['system', 'controller', 'machine', 'job', 'jog', 'control'].forEach((sliceKey) => {
+        state[sliceKey] = null;
+        if (mirroredState[sliceKey] !== undefined) {
+          mirroredState[sliceKey] = null;
+        }
+      });
+      lastServerSeq = 0;
+      lastStateRevision = 0;
+    }
+    if (bootId) knownBootId = bootId;
+
+    if (seq > 0) {
+      if (seq <= lastServerSeq) {
+        return; // Every duplicate sequence is ignored without exception.
+      }
+      if (seq > lastServerSeq + 1 && lastServerSeq > 0) {
+        requestResync();
+        return;
+      }
+      lastServerSeq = seq;
+    }
+
     if (ack > 0) {
-      if (ack > highestClientSeqSuccessfullySent && highestClientSeqSuccessfullySent > 0) {
+      if (ack > highestClientSeqSuccessfullySent) {
         mirroredState.connection.lastError = 'received ACK for unsent packet';
         window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: { error: 'invalid future ACK' } }));
         window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
@@ -199,6 +227,14 @@
       }
     }
 
+    if (stateRevision > 0) {
+      if (stateRevision < lastStateRevision && bootId === knownBootId) {
+        // State revision must never regress within the same boot session.
+      } else {
+        lastStateRevision = stateRevision;
+      }
+    }
+
     if (msgType === 'protocol-error') {
       mirroredState.connection.lastError = message.error || 'protocol error';
       window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: message }));
@@ -206,35 +242,12 @@
       return;
     }
 
-    if (bootId && knownBootId && bootId !== knownBootId) {
-      Object.keys(mirroredState).forEach((key) => {
-        if (key !== 'connection' && key !== 'log') mirroredState[key] = null;
-      });
-      lastServerSeq = 0;
-    }
-    if (bootId) knownBootId = bootId;
-
-    if (seq > 0) {
-      if (seq <= lastServerSeq && msgType !== 'snapshot') {
-        return;
-      }
-      if (seq > lastServerSeq + 1 && lastServerSeq > 0) {
-        requestResync();
-        return;
-      }
-      lastServerSeq = seq;
-    }
-
-    if (stateRevision > 0) {
-      lastStateRevision = stateRevision;
-    }
-
     if (msgType === 'snapshot') {
+      const canonicalKeys = ['system', 'controller', 'machine', 'job', 'jog', 'control'];
       if (message.state) {
-        ['system', 'controller', 'machine', 'job', 'jog', 'control'].forEach((sliceKey) => {
-          if (message.state[sliceKey] !== undefined) {
-            emit(sliceKey, message.state[sliceKey]);
-          }
+        canonicalKeys.forEach((sliceKey) => {
+          const val = message.state[sliceKey] !== undefined ? message.state[sliceKey] : null;
+          emit(sliceKey, val);
         });
       } else {
         if (message.data?.job) emit('job', message.data.job);
@@ -250,13 +263,24 @@
 
     if (msgType === 'patch' || msgType === 'delta') {
       if (message.patch) {
+        const canonicalKeys = new Set(['system', 'controller', 'machine', 'job', 'jog', 'control']);
         Object.keys(message.patch).forEach((key) => {
-          emit(key, message.patch[key]);
+          if (canonicalKeys.has(key)) {
+            emit(key, message.patch[key]);
+          }
         });
       }
       if (message.channel && message.data) {
         emit(message.channel, message.data);
       }
+      return;
+    }
+
+    if (msgType === 'event') {
+      if (message.channel && message.data) {
+        emit(message.channel, message.data);
+      }
+      return;
     }
   }
 
@@ -298,7 +322,7 @@
         knownBootId: knownBootId || null,
         lastStateRevision,
         utcMs: Date.now(),
-        timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+        timezoneOffsetMinutes: -new Date().getTimezoneOffset(),
         timeZone: typeof Intl !== 'undefined' && Intl.DateTimeFormat
           ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
           : 'UTC',

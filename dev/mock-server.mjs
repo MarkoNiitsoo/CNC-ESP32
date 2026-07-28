@@ -970,7 +970,7 @@ export async function createMockServer(options = {}) {
   function sendMockWsPacket(socket, type, extra = {}) {
     if (!socket || socket.destroyed) return false;
     const cs = wsClientStates.get(socket);
-    if (!cs) return false;
+    if (!cs || cs.simulateWriteFailure) return false;
 
     const seq = cs.nextServerSeq;
     const ack = cs.lastContiguousClientSeq;
@@ -986,15 +986,13 @@ export async function createMockServer(options = {}) {
 
     try {
       const frame = buildWsFrame(JSON.stringify(msgObj));
-      const writeResult = socket.write(frame);
-      if (writeResult !== false) {
-        cs.highestServerSeqSuccessfullySent = seq;
-        cs.nextServerSeq++;
-        cs.lastOutboundAtMs = Date.now();
-        return true;
-      }
+      socket.write(frame);
+      cs.highestServerSeqSuccessfullySent = seq;
+      cs.nextServerSeq++;
+      cs.lastOutboundAtMs = Date.now();
+      return true;
     } catch {
-      // socket write failed
+      // socket write threw exception
     }
     return false;
   }
@@ -1040,6 +1038,8 @@ export async function createMockServer(options = {}) {
     };
     wsClients.add(socket);
     wsClientStates.set(socket, clientState);
+
+    env.clockValid = false;
 
     let buf = Buffer.alloc(0);
 
@@ -1102,10 +1102,12 @@ export async function createMockServer(options = {}) {
               env.timeZone = String(msg.timeZone || 'UTC');
               env.clockValid = true;
             }
-            clientState.handshakeComplete = true;
-            sendMockWsPacket(socket, 'snapshot', {
+            const sent = sendMockWsPacket(socket, 'snapshot', {
               state: mockNormalizedAuthoritativeState(),
             });
+            if (sent) {
+              clientState.handshakeComplete = true;
+            }
           } else if (!clientState.handshakeComplete) {
             sendMockWsPacket(socket, 'protocol-error', { error: 'handshake incomplete; send hello first' });
           } else if (msg.type === 'resync') {
@@ -1141,7 +1143,58 @@ export async function createMockServer(options = {}) {
 
   server.on('close', () => clearInterval(mockSyncTimer));
 
-  return { server, env };
+  function triggerStateSliceChange(sliceName, sliceData) {
+    mockStateRevision += 1;
+    for (const socket of wsClients) {
+      const cs = wsClientStates.get(socket);
+      if (cs && cs.handshakeComplete && !socket.destroyed) {
+        sendMockWsPacket(socket, 'patch', { patch: { [sliceName]: sliceData } });
+      }
+    }
+  }
+
+  let coalescingMode = false;
+  let pendingCoalescedPatch = {};
+
+  function coalesceStateChanges(fn) {
+    coalescingMode = true;
+    pendingCoalescedPatch = {};
+    try {
+      fn((sliceName, sliceData) => {
+        pendingCoalescedPatch[sliceName] = sliceData;
+      });
+    } finally {
+      coalescingMode = false;
+    }
+    if (Object.keys(pendingCoalescedPatch).length > 0) {
+      mockStateRevision += 1;
+      for (const socket of wsClients) {
+        const cs = wsClientStates.get(socket);
+        if (cs && cs.handshakeComplete && !socket.destroyed) {
+          sendMockWsPacket(socket, 'patch', { patch: pendingCoalescedPatch });
+        }
+      }
+      pendingCoalescedPatch = {};
+    }
+  }
+
+  function getClientProtocolState(socket) {
+    return wsClientStates.get(socket) ? { ...wsClientStates.get(socket) } : null;
+  }
+
+  function simulateOutboundWriteFailure(socket, fail = true) {
+    const cs = wsClientStates.get(socket);
+    if (cs) cs.simulateWriteFailure = Boolean(fail);
+  }
+
+  return {
+    server,
+    env,
+    triggerStateSliceChange,
+    coalesceStateChanges,
+    getClientProtocolState,
+    simulateOutboundWriteFailure,
+  };
 }
 
 export async function startMockServer(options = {}) {

@@ -1337,6 +1337,7 @@ struct CachedAuthoritativeSlices {
   bool homedZ = false;
   uint32_t homingEpoch = 0;
 
+  String systemBaseJson;
   String controllerJson;
   String jobJson;
   String jogJson;
@@ -1950,10 +1951,10 @@ String jogStatusJson() {
 }
 String currentIpAddress();
 bool wifiStaConnected();
-const char *jobStateName(JobRunnerState state);
-String marlinLogEntryJson(const MarlinLogEntry &entry);
+String healthStatusJson(bool quantizedForAuthoritativeState = false);
+String machineFrameJson();
 
-String healthStatusJson() {
+String healthStatusJson(bool quantizedForAuthoritativeState) {
   String json = "{";
   json += "\"firmware\":\"";
   json += kFirmwareName;
@@ -2131,7 +2132,7 @@ String buildSystemBaseJson() {
   String patchJson = "{\"bootId\":\"esp-";
   patchJson += bootSessionId;
   patchJson += "\",\"protocolVersion\":1,\"health\":";
-  patchJson += healthStatusJson();
+  patchJson += healthStatusJson(true);
   patchJson += "}";
   return patchJson;
 }
@@ -2167,7 +2168,25 @@ String buildControllerSliceJson() {
   patchJson += controllerStateNormalized();
   patchJson += "\",\"lastError\":";
   patchJson += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
-  patchJson += ",\"capabilities\":{\"homing\":true,\"absoluteMachineMove\":true,\"positionReports\":true,\"pause\":true,\"resume\":true,\"stop\":true,\"feedOverride\":true,\"arcs\":true,\"toolChange\":true}}";
+  patchJson += ",\"capabilities\":{\"homing\":";
+  patchJson += controllerAdapter.capabilities.homing ? "true" : "false";
+  patchJson += ",\"absoluteMachineMove\":";
+  patchJson += controllerAdapter.capabilities.absoluteMachineMove ? "true" : "false";
+  patchJson += ",\"positionReports\":";
+  patchJson += controllerAdapter.capabilities.positionReports ? "true" : "false";
+  patchJson += ",\"pause\":";
+  patchJson += controllerAdapter.capabilities.pause ? "true" : "false";
+  patchJson += ",\"resume\":";
+  patchJson += controllerAdapter.capabilities.resume ? "true" : "false";
+  patchJson += ",\"stop\":";
+  patchJson += controllerAdapter.capabilities.stop ? "true" : "false";
+  patchJson += ",\"feedOverride\":";
+  patchJson += controllerAdapter.capabilities.feedOverride ? "true" : "false";
+  patchJson += ",\"arcs\":";
+  patchJson += controllerAdapter.capabilities.arcs ? "true" : "false";
+  patchJson += ",\"toolChange\":";
+  patchJson += controllerAdapter.capabilities.toolChange ? "true" : "false";
+  patchJson += "}}";
   return patchJson;
 }
 
@@ -2192,7 +2211,7 @@ String buildMachineSliceJson() {
   patchJson += machineFrame.homedY ? "true" : "false";
   patchJson += ",\"z\":";
   patchJson += machineFrame.homedZ ? "true" : "false";
-  patchJson += ",\"homingEpoch\":";
+  patchJson += "},\"homingEpoch\":";
   patchJson += String(machineFrame.homingEpoch);
   patchJson += "}";
   return patchJson;
@@ -2221,6 +2240,7 @@ void initializeStagedState() {
   stagedState.dirtyJog = false;
   stagedState.dirtyControl = false;
 
+  cachedSlices.systemBaseJson = stagedState.systemBaseJson;
   cachedSlices.positionX = marlinPosition.x;
   cachedSlices.positionY = marlinPosition.y;
   cachedSlices.positionZ = marlinPosition.z;
@@ -2268,11 +2288,17 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
 void stageTelemetryUpdates() {
   if (!isTelemetryStarted() || telemetryStateMutex == nullptr) return;
 
+  bool diffSystem = false;
   bool diffMachine = false;
   bool diffController = false;
   bool diffJob = false;
   bool diffJog = false;
   bool diffControl = false;
+
+  String sysBaseStr = buildSystemBaseJson();
+  if (sysBaseStr != cachedSlices.systemBaseJson) {
+    diffSystem = true;
+  }
 
   if (fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
       fabs(marlinPosition.y - cachedSlices.positionY) > 0.0005f ||
@@ -2307,19 +2333,20 @@ void stageTelemetryUpdates() {
     diffControl = true;
   }
 
-  if (!diffMachine && !diffController && !diffJob && !diffJog && !diffControl) {
+  if (!diffSystem && !diffMachine && !diffController && !diffJob && !diffJog && !diffControl) {
     return;
   }
 
-  String sysBaseStr = buildSystemBaseJson();
   String machineStr = diffMachine ? buildMachineSliceJson() : "";
 
   if (xSemaphoreTake(telemetryStateMutex, 0) != pdTRUE) {
     return; // Lock busy! Retries on next loop iteration without losing state.
   }
 
-  stagedState.systemBaseJson = sysBaseStr;
-
+  if (diffSystem) {
+    stagedState.systemBaseJson = sysBaseStr;
+    stagedState.dirtySystem = true;
+  }
   if (diffMachine) {
     stagedState.machineJson = machineStr;
     stagedState.dirtyMachine = true;
@@ -2346,6 +2373,9 @@ void stageTelemetryUpdates() {
   xSemaphoreGive(telemetryStateMutex);
 
   // Commit to cachedSlices ONLY AFTER successfully updating stagedState under mutex:
+  if (diffSystem) {
+    cachedSlices.systemBaseJson = sysBaseStr;
+  }
   if (diffMachine) {
     cachedSlices.positionX = marlinPosition.x;
     cachedSlices.positionY = marlinPosition.y;
@@ -2599,7 +2629,10 @@ void processNetworkTelemetry() {
     for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
       TelemetryClientState &cs = protocolState.clients[i];
       if (cs.connected && cs.handshakeComplete) {
-        sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
+        bool sentOK = sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
+        if (!sentOK) {
+          cs.resyncPending = true;
+        }
       }
     }
   }
@@ -2627,7 +2660,7 @@ void processNetworkTelemetry() {
       for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
         TelemetryClientState &cs = protocolState.clients[c];
         if (cs.connected && cs.handshakeComplete) {
-          sendClientPacket(c, "patch", "patch", "{\"motion\":" + data + "}", activeRev);
+          sendClientPacket(c, "event", "data", data, activeRev);
         }
       }
     }

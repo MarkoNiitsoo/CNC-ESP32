@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-07-28 - Phase 1 WebSocket Protocol-Correctness Repair Pass
+
+- Completed Phase 1 WebSocket Protocol-Correctness Repair Pass on `feature/phase1-websocket-transport`:
+  1. Firmware Canonical Schema & Slice Alignment (`src/main.cpp`): Fixed `buildMachineSliceJson()` so `homingEpoch` is at the root of `machine` slice: `{"position":{...},"frame":{...},"homedAxes":{"x":...,"y":...,"z":...},"homingEpoch":0}`. Serialized capabilities dynamically from `controllerAdapter.capabilities`. Quantized `uptimeMs` to 10s and `freeHeap` to 10KB in `buildSystemBaseJson()` for stable candidate state comparisons. Fixed patch send error handling in `processNetworkTelemetry()` to mark `cs.resyncPending = true` on write failure. Formatted motion streaming events as `{"type":"event","channel":"motion","data":{...}}`.
+  2. Browser Telemetry Client (`www/telemetry.js`): Updated `sendSocketPacket()` to increment `clientSeq` and `highestClientSeqSuccessfullySent` ONLY after successful transmission. Corrected timezone offset sign to `-new Date().getTimezoneOffset()`. Standardized `applySocketMessage()` validation order: protocolVersion -> bootId transition -> packet sequence -> peer ACK -> stateRevision -> dispatch. Removed duplicate snapshot exception (all duplicate `seq <= lastServerSeq` are ignored). Implemented full canonical snapshot replacement (clears absent canonical slices) and top-level slice patch replacement.
+  3. Mock Dev Server & Test Hooks (`dev/mock-server.mjs`): Initialized `env.clockValid = false` before `hello`. Non-throwing `socket.write()` accepted as valid write. Marked `handshakeComplete = true` after snapshot write succeeds. Added test hooks: `triggerStateSliceChange`, `coalesceStateChanges`, `getClientProtocolState`, `simulateOutboundWriteFailure`.
+  4. Real Browser Telemetry Client Tests (`test/ui/telemetry-protocol-browser.test.mjs`): Created dedicated browser protocol test suite executing `www/telemetry.js` against a fake DOM environment covering all 14 browser scenarios.
+  5. Expanded Raw TCP WebSocket Runtime Tests (`test/firmware/websocket-runtime.test.mjs`): Expanded raw WebSocket test suite covering all 12 raw WebSocket scenarios including unsupported version, non-seq-1 hello, handshake requirement, monotonic ACK, duplicate sequence, resync snapshot, and write failure simulation.
+  6. Documentation & Test Suite Verification: Updated `test/firmware/transport-protocol.test.mjs` and `docs/protocol.md`. Verified firmware build (`pio run -e esp32cam`) compiles cleanly (19.6% RAM, 73.4% Flash). Verified full test suite (`npm test`) passes all 47 test files and 450 tests.
+
 ## 2026-07-27 - Phase 1 WebSocket Protocol Correctness Pass
 
 - Completed Phase 1 WebSocket Protocol Correctness Pass on `feature/phase1-websocket-transport`:

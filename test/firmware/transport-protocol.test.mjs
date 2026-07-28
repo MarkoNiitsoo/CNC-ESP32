@@ -21,7 +21,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
 
     it('ignores duplicate packets and triggers resync on sequence gap', () => {
-      expect(telemetryCode).toContain('if (seq <= lastServerSeq && msgType !== \'snapshot\')');
+      expect(telemetryCode).toContain('if (seq <= lastServerSeq)');
       expect(telemetryCode).toContain('if (seq > lastServerSeq + 1 && lastServerSeq > 0)');
       expect(telemetryCode).toContain('requestResync();');
     });
@@ -64,7 +64,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
 
     it('discards old mirrored state when bootId changes', () => {
       expect(telemetryCode).toContain('if (bootId && knownBootId && bootId !== knownBootId)');
-      expect(telemetryCode).toContain('mirroredState[key] = null');
+      expect(telemetryCode).toContain('state[sliceKey] = null');
     });
   });
 
@@ -204,7 +204,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(buildPos).toBeGreaterThan(-1);
       expect(mutexPos).toBeGreaterThan(-1);
       expect(buildPos).toBeLessThan(mutexPos);
-      expect(stageBlock).not.toContain('bool diffSystem');
+      expect(stageBlock).toContain('bool diffSystem');
     });
 
     it('verifies monotonic revision fallback and sendClientPacket success handling for handshake/resync', () => {

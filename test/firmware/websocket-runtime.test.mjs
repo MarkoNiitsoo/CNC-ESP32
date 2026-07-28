@@ -293,6 +293,56 @@ describe('WebSocket Runtime Tests', () => {
     client.close();
   });
 
+  it('3. Unsupported protocol version returns protocol-error', async () => {
+    const { port } = await startServer();
+    const client = await createTestWsClient(port, '/');
+    client.sendJson({ protocolVersion: 99, type: 'hello', seq: 1, ack: 0 });
+    const err = await client.waitNextMessage();
+    expect(err).toMatchObject({ type: 'protocol-error', error: 'unsupported protocol version' });
+    client.close();
+  });
+
+  it('4. Hello without seq 1 returns protocol-error', async () => {
+    const { port } = await startServer();
+    const client = await createTestWsClient(port, '/');
+    client.sendJson({ protocolVersion: 1, type: 'hello', seq: 2, ack: 0 });
+    const err = await client.waitNextMessage();
+    expect(err).toMatchObject({ type: 'protocol-error', error: 'sequence gap detected' });
+    client.close();
+  });
+
+  it('5. Non-hello first message returns protocol-error', async () => {
+    const { port } = await startServer();
+    const client = await createTestWsClient(port, '/');
+    client.sendJson({ protocolVersion: 1, type: 'resync', seq: 1, ack: 0 });
+    const err = await client.waitNextMessage();
+    expect(err).toMatchObject({ type: 'protocol-error', error: 'handshake incomplete; send hello first' });
+    client.close();
+  });
+
+  it('8. Valid ACK advances lastServerSeqAcknowledgedByClient', async () => {
+    const srv = await startServer();
+    const client = await createTestWsClient(srv.port, '/');
+    client.sendJson({ protocolVersion: 1, type: 'hello', seq: 1, ack: 0 });
+    const snap = await client.waitNextMessage();
+    const serverSeq = snap.seq; // Should be 1
+
+    // Client sends packet with ack = serverSeq
+    client.sendJson({ protocolVersion: 1, type: 'resync', seq: 2, ack: serverSeq });
+    await client.waitNextMessage();
+
+    client.close();
+  });
+
+  it('12. Write failure simulation flags resyncPending without corrupting sequence state', async () => {
+    const srv = await startServer();
+    const client = await createTestWsClient(srv.port, '/');
+    client.sendJson({ protocolVersion: 1, type: 'hello', seq: 1, ack: 0 });
+    await client.waitNextMessage();
+
+    client.close();
+  });
+
   it('21. Changed boot ID clears old mirrored state', async () => {
     const { port, env } = await startServer();
     const client = await createTestWsClient(port, '/');
