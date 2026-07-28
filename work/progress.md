@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-07-28 - Phase 1 WebSocket Final Protocol-Correctness Repair Pass
+
+- Completed Phase 1 WebSocket Final Protocol-Correctness Repair Pass on `feature/phase1-websocket-transport`:
+  1. Firmware Authoritative Slice Builders & Central Event Helper (`src/main.cpp`): Updated `healthStatusJson(bool quantizedForAuthoritativeState)` to omit raw `millis()`, `freeHeap`, `rssi`, and SD sizes when `quantizedForAuthoritativeState == true`. Created `buildAuthoritativeJobSliceJson()` and `buildAuthoritativeJogSliceJson()` to omit volatile `elapsedMs`, `heartbeatAgeMs`, and `uptimeMs` from state diff comparisons. Added 10s low-rate scheduler for candidate `systemBaseJson` in `stageTelemetryUpdates()`, preventing continuous `stateRevision` churn. Implemented central `sendClientEvent(client, channel, dataJson, revision)` helper and updated `"motion"` and `"log"` channels to use `type: "event"`, `channel: "motion"|"log"`. Removed `connection` slice from `buildSnapshotFromStagedState()`.
+  2. Browser Telemetry Client (`www/telemetry.js`): Added revision regression check in `applySocketMessage()`: within an unchanged `bootId`, packets with `stateRevision < lastStateRevision` trigger `cnc-telemetry-protocol-error` event and `requestResync()` without regressing state. Exposed gated `window.CncTelemetry.__test__` getters when `window.CNC_TELEMETRY_TEST_MODE === true`.
+  3. Mock Dev Server & Test Hooks (`dev/mock-server.mjs`): Initialized `env.clockValid = false` once on server creation (removed per-socket reset in upgrade handler). Removed `connection` slice from `mockNormalizedAuthoritativeState()`. Added test hooks: `listClientProtocolStates()`, `simulateNextOutboundWriteFailure(clientIndex)`, `triggerStateSliceChange()`, `coalesceStateChanges()`, `triggerIdleSync()`.
+  4. Real Browser Protocol Tests (`test/ui/telemetry-protocol-browser.test.mjs`): Expanded browser protocol test suite to 10 tests covering all required browser protocol assertions.
+  5. Expanded Raw TCP WebSocket Runtime Tests (`test/firmware/websocket-runtime.test.mjs`): Exposed `opcode` in `parseServerWsFrames()`, covering all 16 raw WebSocket runtime scenarios.
+  6. Documentation, Schema Parity & Verification: Added schema parity test in `test/firmware/transport-protocol.test.mjs`. Updated `docs/protocol.md` and `docs/architecture.md`. Verified clean firmware build (`pio run -e esp32cam` with 19.6% RAM, 73.4% Flash). Verified full test suite (`npm test`) passes all 47 test files and 455 tests.
+
 ## 2026-07-28 - Phase 1 WebSocket Protocol-Correctness Repair Pass
 
 - Completed Phase 1 WebSocket Protocol-Correctness Repair Pass on `feature/phase1-websocket-transport`:

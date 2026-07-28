@@ -78,7 +78,6 @@ Firmware sets its wall-clock offset derived from `utcMs` relative to monotonic `
     "health": { ... },
     "time": { "utcMs": 1785162634123, "timezoneOffsetMinutes": 180, "timeZone": "Europe/Tallinn", "valid": true }
   },
-  "connection": { "connected": true, "lastError": null },
   "controller": {
     "type": "marlin",
     "identity": "Marlin 2.1.1",

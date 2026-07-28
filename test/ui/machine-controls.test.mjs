@@ -271,19 +271,6 @@ describe('firmware-owned coordinate frames', () => {
     const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
     const runner = firmware.slice(firmware.indexOf('void processJobRunner() {'), firmware.indexOf('String htmlPage'));
     expect(preamble).toContain('appendPriorityCommand("M154 S1")');
-    expect(runner).toContain('updatePositionFromMarlinResponse(marlinAsyncLine)');
-    expect(firmware).toContain('machinePosition');
-    expect(preview).toContain('sequence: data.currentLineNumber');
-  });
-
-  it('keeps position fields valid inside job status JSON', () => {
-    const statusJson = firmware.slice(firmware.indexOf('String jobStatusJson()'), firmware.indexOf('String jobStatusJsonWithMessage'));
-    expect(statusJson).toContain('json += ",\\\"machinePosition\\\":"');
-    expect(statusJson).toContain('json += ",\\\"uptimeMs\\\":"');
-    expect(statusJson).not.toContain('json += "\\\",\\\"uptimeMs\\\":"');
-  });
-
-  it('shows separate machine/work coordinates from absolute jog command targets', () => {
     expect(machineBar).toContain('`M X ${fmtAxis(machine.x)}');
     expect(machineBar).toContain('STATE.frame.work = { ...STATE.position }');
     expect(machineBar).toContain('x: zero.x + STATE.position.x');

@@ -36,6 +36,15 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(telemetryCode).toContain('mirroredState');
     });
 
+    it('uses strictly six canonical top-level state slices without connection slice', () => {
+      const canonicalSlices = ['system', 'controller', 'machine', 'job', 'jog', 'control'];
+      const snapshotBuild = mainCppCode.match(/String buildSnapshotFromStagedState[\s\S]*?return json;/)?.[0] || '';
+      for (const slice of canonicalSlices) {
+        expect(snapshotBuild).toContain(`\\"${slice}\\\":`);
+      }
+      expect(snapshotBuild).not.toContain('\\"connection\\":');
+    });
+
     it('does not require Marlin command parsing to interpret generic state packets', () => {
       expect(telemetryCode).not.toContain('M114');
       expect(telemetryCode).not.toContain('M115');

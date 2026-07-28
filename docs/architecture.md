@@ -109,7 +109,7 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
 - Full-duplex WebSocket transport (Phase 1):
   - Keeps machine commands (Home, Zero, Pause, Resume, Stop, Start, Bounding Box, Jog) on HTTP in Phase 1.
   - Carries authoritative live state, synchronization, monotonic packet sequencing, piggybacked ACKs, and ESP boot identity.
-  - Establishes a controller-independent state schema normalizing system, connection, controller, machine, job, jog, and control states.
+  - Establishes a controller-independent state schema normalizing system, controller, machine, job, jog, and control states.
   - Maintains separate monotonic uptime time (for motion/timeouts) and browser-synchronized wall-clock time (for file/log metadata).
   - Throttles broadcasts to at most 10 Hz and falls back to sparse HTTP polling when disconnected.
   - Batches compact motion-command events for browser-side animation instead of broadcasting full

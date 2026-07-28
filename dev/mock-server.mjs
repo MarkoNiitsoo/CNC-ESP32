@@ -881,7 +881,6 @@ export async function createMockServer(options = {}) {
           valid: env.clockValid !== false,
         },
       },
-      connection: { connected: true, lastError: null },
       controller: {
         type: 'marlin',
         identity: 'MockMarlin 2.1.1',
@@ -971,6 +970,10 @@ export async function createMockServer(options = {}) {
     if (!socket || socket.destroyed) return false;
     const cs = wsClientStates.get(socket);
     if (!cs || cs.simulateWriteFailure) return false;
+    if (cs.failNextWrite) {
+      cs.failNextWrite = false;
+      return false;
+    }
 
     const seq = cs.nextServerSeq;
     const ack = cs.lastContiguousClientSeq;
@@ -1038,8 +1041,6 @@ export async function createMockServer(options = {}) {
     };
     wsClients.add(socket);
     wsClientStates.set(socket, clientState);
-
-    env.clockValid = false;
 
     let buf = Buffer.alloc(0);
 
@@ -1178,6 +1179,39 @@ export async function createMockServer(options = {}) {
     }
   }
 
+  function listClientProtocolStates() {
+    return Array.from(wsClients).map((socket, index) => {
+      const cs = wsClientStates.get(socket);
+      return {
+        index,
+        socket,
+        connected: cs?.connected ?? false,
+        handshakeComplete: cs?.handshakeComplete ?? false,
+        nextServerSeq: cs?.nextServerSeq ?? 1,
+        highestServerSeqSuccessfullySent: cs?.highestServerSeqSuccessfullySent ?? 0,
+        lastServerSeqAcknowledgedByClient: cs?.lastServerSeqAcknowledgedByClient ?? 0,
+        lastContiguousClientSeq: cs?.lastContiguousClientSeq ?? 0,
+      };
+    });
+  }
+
+  function simulateNextOutboundWriteFailure(clientIndex = 0) {
+    const clients = Array.from(wsClients);
+    if (clients[clientIndex]) {
+      const cs = wsClientStates.get(clients[clientIndex]);
+      if (cs) cs.failNextWrite = true;
+    }
+  }
+
+  function triggerIdleSync() {
+    for (const socket of wsClients) {
+      const cs = wsClientStates.get(socket);
+      if (cs && cs.handshakeComplete && !socket.destroyed) {
+        sendMockWsPacket(socket, 'sync');
+      }
+    }
+  }
+
   function getClientProtocolState(socket) {
     return wsClientStates.get(socket) ? { ...wsClientStates.get(socket) } : null;
   }
@@ -1193,7 +1227,11 @@ export async function createMockServer(options = {}) {
     triggerStateSliceChange,
     coalesceStateChanges,
     getClientProtocolState,
+    listClientProtocolStates,
+    simulateNextOutboundWriteFailure,
     simulateOutboundWriteFailure,
+    triggerIdleSync,
+    wsClients,
   };
 }
 

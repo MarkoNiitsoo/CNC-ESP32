@@ -229,7 +229,11 @@
 
     if (stateRevision > 0) {
       if (stateRevision < lastStateRevision && bootId === knownBootId) {
-        // State revision must never regress within the same boot session.
+        mirroredState.connection.lastError = 'stateRevision regression detected';
+        window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: { error: 'stateRevision regression detected' } }));
+        window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
+        requestResync();
+        return;
       } else {
         lastStateRevision = stateRevision;
       }

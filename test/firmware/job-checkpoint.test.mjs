@@ -53,7 +53,7 @@ describe('persistent active-job checkpoint', () => {
 
     const boot = firmware.slice(
       firmware.indexOf('void loadPersistentJobCheckpointAtBoot()'),
-      firmware.indexOf('String jobStatusJson()'),
+      firmware.indexOf('String jobStatusJson('),
     );
     expect(boot).toContain('sendImmediateJobSafetyM5');
     expect(boot).toContain('machineFrame = MachineFrameState()');

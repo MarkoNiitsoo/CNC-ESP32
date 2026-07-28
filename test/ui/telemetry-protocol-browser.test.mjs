@@ -181,7 +181,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     expect(resyncSent).toBeDefined();
   });
 
-  it('8 & 9. stateRevision skip does not request resync; stateRevision never regresses within boot', async () => {
+  it('8. stateRevision skip does not request resync', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     // Initial snapshot rev 1
@@ -198,6 +198,31 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     });
     const resyncSent = env.sentPackets.slice(packetsBefore).find((p) => p.type === 'resync');
     expect(resyncSent).toBeUndefined(); // Revision skip does NOT request resync
+  });
+
+  it('9. stateRevision regression within same boot session triggers error and resync without regressing state', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 10,
+      state: { system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, job: { state: 'RUNNING' }, jog: {}, control: {} },
+    });
+
+    const packetsBefore = env.sentPackets.length;
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'patch', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 5,
+      patch: { job: { state: 'IDLE' } },
+    });
+
+    const errEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-protocol-error');
+    expect(errEv).toBeDefined();
+    expect(errEv.detail.error).toBe('stateRevision regression detected');
+
+    const resyncSent = env.sentPackets.slice(packetsBefore).find((p) => p.type === 'resync');
+    expect(resyncSent).toBeDefined();
+
+    // State must NOT have regressed to IDLE
+    expect(env.CncTelemetry.mirroredState.job.state).toBe('RUNNING');
   });
 
   it('10 & 11. Snapshot replaces canonical mirrored state; Patch replaces top-level slice', async () => {

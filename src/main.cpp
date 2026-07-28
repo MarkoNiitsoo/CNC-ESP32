@@ -1664,7 +1664,7 @@ void loadPersistentJobCheckpointAtBoot() {
               " acknowledgedOffset=" + String(extractJsonInt(body, "lastAcknowledgedByteOffset", 0)));
 }
 
-String jobStatusJson() {
+String jobStatusJson(bool authoritativeState = false) {
   const float progress = jobStatus.fileSize > 0
                              ? (static_cast<float>(jobStatus.lastAcknowledgedByteOffset) * 100.0f) /
                                    static_cast<float>(jobStatus.fileSize)
@@ -1798,7 +1798,7 @@ String jobStatusJson() {
   json += ",\"hardTimeoutMs\":" + String(activeAckHardTimeoutMs);
   json += ",\"estimatedCommandDurationMs\":" + String(activeEstimatedDurationMs);
   json += ",\"plannerWaitAllowanceMs\":" + String(activePlannerWaitMs);
-  json += ",\"elapsedMs\":" + String(activeAckStartedAtMs > 0 ? millis() - activeAckStartedAtMs : 0);
+  json += ",\"elapsedMs\":" + String((!authoritativeState && activeAckStartedAtMs > 0) ? millis() - activeAckStartedAtMs : 0);
   json += "}";
   json += ",\"communicationLoss\":";
   if (jobStatus.communicationLostAtMs > 0) {
@@ -1866,9 +1866,13 @@ String jobStatusJson() {
     json += "null";
   }
   json += ",\"uptimeMs\":";
-  json += String(millis());
+  json += String(authoritativeState ? 0 : millis());
   json += "}";
   return json;
+}
+
+String buildAuthoritativeJobSliceJson() {
+  return jobStatusJson(true);
 }
 
 String jobStatusJsonWithMessage(const String &message) {
@@ -1901,7 +1905,7 @@ bool jogIsActive() {
          jogStatus.state == JogState::Stopping;
 }
 
-String jogStatusJson() {
+String jogStatusJson(bool authoritativeState = false) {
   const uint32_t now = millis();
   String json = "{";
   json += "\"state\":\"";
@@ -1943,11 +1947,15 @@ String jogStatusJson() {
   json += "\",\"lastError\":\"";
   json += jsonEscape(jogStatus.lastError);
   json += "\",\"heartbeatAgeMs\":";
-  json += String(jogStatus.lastUpdateMs > 0 ? now - jogStatus.lastUpdateMs : 0);
+  json += String((!authoritativeState && jogStatus.lastUpdateMs > 0) ? now - jogStatus.lastUpdateMs : 0);
   json += ",\"uptimeMs\":";
-  json += String(now);
+  json += String(authoritativeState ? 0 : now);
   json += "}";
   return json;
+}
+
+String buildAuthoritativeJogSliceJson() {
+  return jogStatusJson(true);
 }
 String currentIpAddress();
 bool wifiStaConnected();
@@ -1965,9 +1973,9 @@ String healthStatusJson(bool quantizedForAuthoritativeState) {
   json += "\",\"buildTime\":\"";
   json += buildTime;
   json += "\",\"uptimeMs\":";
-  json += String(millis());
+  json += String(quantizedForAuthoritativeState ? 0 : millis());
   json += ",\"freeHeap\":";
-  json += String(ESP.getFreeHeap());
+  json += String(quantizedForAuthoritativeState ? 0 : ESP.getFreeHeap());
   json += ",\"flashSize\":";
   json += String(ESP.getFlashChipSize());
   json += ",\"sketchSize\":";
@@ -1983,7 +1991,7 @@ String healthStatusJson(bool quantizedForAuthoritativeState) {
   json += "\",\"ssid\":\"";
   json += jsonEscape(activeWifiSsid);
   json += "\"";
-  if (wifiStaConnected()) {
+  if (!quantizedForAuthoritativeState && wifiStaConnected()) {
     json += ",\"rssi\":";
     json += String(WiFi.RSSI());
   }
@@ -1992,14 +2000,14 @@ String healthStatusJson(bool quantizedForAuthoritativeState) {
   json += ",\"sdCardType\":\"";
   json += sdCardTypeName();
   json += "\",\"sdTotalBytes\":";
-  json += String(sdMounted ? SD_MMC.totalBytes() : 0);
+  json += String((!quantizedForAuthoritativeState && sdMounted) ? SD_MMC.totalBytes() : 0);
   json += ",\"sdUsedBytes\":";
-  json += String(sdMounted ? SD_MMC.usedBytes() : 0);
+  json += String((!quantizedForAuthoritativeState && sdMounted) ? SD_MMC.usedBytes() : 0);
   json += ",\"sdFreeBytes\":";
-  if (sdMounted) {
+  if (!quantizedForAuthoritativeState && sdMounted) {
     const uint64_t total = SD_MMC.totalBytes();
     const uint64_t used = SD_MMC.usedBytes();
-    json += String(total > used ? total - used : 0);
+    json += String(total >= used ? total - used : 0);
   } else {
     json += "0";
   }
@@ -2128,6 +2136,33 @@ bool sendClientPacket(uint8_t client, const char *type, const String &bodyFieldK
   return false;
 }
 
+bool sendClientEvent(uint8_t client, const char *channel, const String &dataJson, uint32_t overrideRevision = 0) {
+  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return false;
+  TelemetryClientState &cs = protocolState.clients[client];
+  if (!cs.connected || !cs.handshakeComplete) return false;
+
+  uint32_t seq = cs.nextServerSeq;
+  uint32_t ack = cs.lastContiguousClientSeq;
+  uint32_t revision = overrideRevision > 0 ? overrideRevision : getStagedStateRevision();
+
+  String packet = "{\"protocolVersion\":1,\"type\":\"event\",\"seq\":";
+  packet += String(seq);
+  packet += ",\"ack\":" + String(ack);
+  packet += ",\"bootId\":\"esp-" + bootSessionId + "\"";
+  packet += ",\"stateRevision\":" + String(revision);
+  packet += ",\"channel\":\"" + jsonEscape(channel) + "\"";
+  packet += ",\"data\":" + dataJson + "}";
+
+  bool sentOK = telemetrySocket.sendTXT(client, packet);
+  if (sentOK) {
+    cs.highestServerSeqSuccessfullySent = seq;
+    cs.nextServerSeq++;
+    cs.lastOutboundAtMs = millis();
+    return true;
+  }
+  return false;
+}
+
 String buildSystemBaseJson() {
   String patchJson = "{\"bootId\":\"esp-";
   patchJson += bootSessionId;
@@ -2229,8 +2264,8 @@ void initializeStagedState() {
   stagedState.systemBaseJson = buildSystemBaseJson();
   stagedState.controllerJson = buildControllerSliceJson();
   stagedState.machineJson = buildMachineSliceJson();
-  stagedState.jobJson = jobStatusJson();
-  stagedState.jogJson = jogStatusJson();
+  stagedState.jobJson = buildAuthoritativeJobSliceJson();
+  stagedState.jogJson = buildAuthoritativeJogSliceJson();
   stagedState.controlJson = buildControlSliceJson();
   stagedState.globalRevision = 1;
   stagedState.dirtySystem = false;
@@ -2295,9 +2330,16 @@ void stageTelemetryUpdates() {
   bool diffJog = false;
   bool diffControl = false;
 
-  String sysBaseStr = buildSystemBaseJson();
-  if (sysBaseStr != cachedSlices.systemBaseJson) {
-    diffSystem = true;
+  static uint32_t lastSystemCheckMs = 0;
+  const uint32_t now = millis();
+  String sysBaseStr = cachedSlices.systemBaseJson;
+  if (now - lastSystemCheckMs >= 10000 || cachedSlices.systemBaseJson.length() == 0) {
+    lastSystemCheckMs = now;
+    String sysBaseCandidate = buildSystemBaseJson();
+    if (sysBaseCandidate != cachedSlices.systemBaseJson) {
+      sysBaseStr = sysBaseCandidate;
+      diffSystem = true;
+    }
   }
 
   if (fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
@@ -2318,12 +2360,12 @@ void stageTelemetryUpdates() {
     diffController = true;
   }
 
-  String jobStr = jobStatusJson();
+  String jobStr = buildAuthoritativeJobSliceJson();
   if (jobStr != cachedSlices.jobJson) {
     diffJob = true;
   }
 
-  String jogStr = jogStatusJson();
+  String jogStr = buildAuthoritativeJogSliceJson();
   if (jogStr != cachedSlices.jogJson) {
     diffJog = true;
   }
@@ -2660,7 +2702,7 @@ void processNetworkTelemetry() {
       for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
         TelemetryClientState &cs = protocolState.clients[c];
         if (cs.connected && cs.handshakeComplete) {
-          sendClientPacket(c, "event", "data", data, activeRev);
+          sendClientEvent(c, "motion", data, activeRev);
         }
       }
     }
@@ -2700,7 +2742,7 @@ void processNetworkTelemetry() {
         for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
           TelemetryClientState &cs = protocolState.clients[c];
           if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
-            sendClientPacket(c, "patch", "patch", "{\"log\":" + data + "}", activeRev);
+            sendClientEvent(c, "log", data, activeRev);
           }
         }
       }
