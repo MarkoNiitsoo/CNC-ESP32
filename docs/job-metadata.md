@@ -372,16 +372,32 @@ it does not change a stopped/interrupted/error record to completed.
 
 ## Project Safe Z
 
-Every Job JSON owns one `projectSafeZ` calculation:
+Every Job JSON owns one `projectSafeZ` calculation and persists active-run `programZ` evidence:
 
 ```json
 {
+  "programZ": {
+    "highestExplicitZ": 15,
+    "highestRapidZ": 15,
+    "highestRetractZ": null,
+    "selectedSafeZ": 15,
+    "selectedSource": "rapid",
+    "confidence": "high",
+    "evidenceLineNumbers": [3]
+  },
   "projectSafeZ": {
     "version": 2,
     "source": "rapid",
     "programSafeZ": 15,
     "extraClearanceMm": 0,
     "effectiveSafeZ": 15,
+    "confidence": "high",
+    "evidence": {
+      "highestExplicitZ": 15,
+      "highestRapidZ": 15,
+      "highestRetractZ": null,
+      "lineNumbers": [3]
+    },
     "resolved": true,
     "errors": []
   }
@@ -394,12 +410,15 @@ Every Job JSON owns one `projectSafeZ` calculation:
 3. Highest explicit Z word (`source: "explicit"`, `confidence: "medium"`)
 4. Machine maximum fallback (`zMax - workZeroMachineZ`, `source: "machine-max"`, `confidence: "fallback"`)
 
-`extraClearanceMm` defaults to `0` and is an optional extra clearance added to the program safe height.
-Clearance cannot be negative. Unreachable machine Z values are rejected without clamping.
+Machine maximum fallback requires a trusted machine position, valid active Work Zero, finite `workZeroMachineZ`, and discovered finite machine `zMax` with current frame identity. There is no hardcoded 70 mm fallback.
 
-The effective value is the only project motion height used by Job Start, Bounding Box, Aircut,
-Safe Jog, work-zero travel, recovery, Toolless Resume, and Production Resume preparation. Firmware
-reads `effectiveSafeZ` from Job JSON, converts through the trusted Work Zero, and rejects unreachable machine Z without clamping.
+`extraClearanceMm` defaults to `0 mm` and is an optional extra clearance added to the program safe height. Clearance cannot be negative.
+
+Firmware independently recomputes and verifies the Version 2 formula (`effectiveSafeZ == programSafeZ + extraClearanceMm` within 0.001 mm) and rejects unreachable or invalid metadata without clamping.
+
+The effective value is the only project motion height used by Job Start, Bounding Box (`mode: "bounds"` test motion stream), Aircut, Safe Jog, work-zero travel, recovery, Toolless Resume, and Production Resume preparation.
+
+Cut Bounds traces placed cut bounds (`placementBounds` -> `cutBounds` -> `rawTravelBounds` fallback with warning) as a single test-motion operation (`POST /api/test-motion/start` with `mode: "bounds"`). On successful completion, starting X/Y is restored before starting Z descent (`M400` separated). On Stop or motion failure, automatic Z descent is never performed. Cut Bounds remains separate from production Arm and Start. Note: WebSocket Jog was not implemented in this task.
 
 Loading legacy Version 1 metadata derives `extraClearanceMm` from legacy `effectiveSafeZ` and `programSafeZ`. Legacy stock reference fields are retained for audit but no longer required for resolution. Each new `runHistory` entry stores a `safeZSnapshot`.
 

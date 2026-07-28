@@ -32,16 +32,20 @@ export function calculateProjectSafeZ(input = {}) {
 
   const frame = input.frame || input.machineFrame || {};
   const limits = input.limits || input.machineLimits || frame.limits || {};
-  const zMax = Number(limits.zMax ?? limits.machineZMax ?? frame.safeZ?.machineMax ?? 70);
+  const zMaxRaw = limits.zMax ?? limits.machineZMax ?? frame.safeZ?.machineMax;
+  const zMax = finiteOrNull(zMaxRaw);
+  const frameIdentity = frame.revision ?? frame.homingEpoch ?? frame.bootSessionId ?? null;
 
-  if (programSafeZ === null) {
+  if (programSafeZ === null || source === 'machine-max') {
     source = 'machine-max';
     confidence = 'fallback';
-    const zeroMachineZ = Number(frame.workZeroMachine?.z);
-    if (frame.trusted === true && frame.workZeroValid === true && Number.isFinite(zeroMachineZ) && Number.isFinite(zMax)) {
+    const zeroMachineZ = finiteOrNull(frame.workZeroMachine?.z ?? frame.workZeroMachineZ);
+    if (frame.trusted === true && frame.workZeroValid === true && zeroMachineZ !== null && zMax !== null) {
       programSafeZ = zMax - zeroMachineZ;
+      evidence.frameIdentity = frameIdentity;
     } else {
-      errors.push('Safe Z is waiting for a trusted machine position and active Work Zero. Home the machine and restore or set Work Zero.');
+      programSafeZ = null;
+      errors.push('Safe Z is waiting for a trusted machine position, active Work Zero and known machine Z limits. Home the machine and restore or set Work Zero.');
     }
   }
 
@@ -50,8 +54,8 @@ export function calculateProjectSafeZ(input = {}) {
     : null;
 
   if (effectiveSafeZ !== null && frame.trusted === true && frame.workZeroValid === true) {
-    const zeroMachineZ = Number(frame.workZeroMachine?.z);
-    if (Number.isFinite(zeroMachineZ) && Number.isFinite(zMax)) {
+    const zeroMachineZ = finiteOrNull(frame.workZeroMachine?.z ?? frame.workZeroMachineZ);
+    if (zeroMachineZ !== null && zMax !== null) {
       const effectiveMachineZ = zeroMachineZ + effectiveSafeZ;
       if (effectiveMachineZ > zMax + 0.001) {
         errors.push(`Requested Safe Z Z${effectiveSafeZ.toFixed(1)} maps to machine Z${effectiveMachineZ.toFixed(1)}, but the machine maximum is Z${zMax.toFixed(1)}.`);

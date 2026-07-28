@@ -34,6 +34,8 @@ describe('dynamic Safe Z validation', () => {
     expect(metadata).toContain('resolved');
     expect(metadata).toContain('programSafeZ');
     expect(metadata).toContain('extraClearanceMm');
+    expect(metadata).toContain('fabsf(storedEffective - expectedEffective) > 0.001f');
+    expect(metadata).toContain('extraClearanceMm < 0.0f');
     for (const handler of ['handleTestMotionStart', 'handleProductionResumeStart', 'handleJobStart', 'handleJogStart', 'handleGoToWorkZero']) {
       const start = source.indexOf(`void ${handler}()`);
       const end = source.indexOf('\nvoid ', start + 1);

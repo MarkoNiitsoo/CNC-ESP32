@@ -153,7 +153,7 @@ describe('Project Safe Z Version 2', () => {
     expect(previewHtml).toContain('id="effective-safe-z"');
     expect(previewHtml).not.toContain('id="run-safe-start-z"');
     expect(previewSource).toMatch(/safeStartZ: projectSafeZValue\(\)/);
-    expect(previewSource).toMatch(/function generateTraceCommands\(\)[\s\S]*const safeZ = projectSafeZValue\(\)/);
+    expect(previewSource).toMatch(/function generateTraceCommands[\s\S]*const safeZ = projectSafeZValue\(\)/);
     expect(previewSource).toMatch(/function generateAircutCommands\(\)[\s\S]*const safeZ = projectSafeZValue\(\)/);
     expect(machineBarSource).toMatch(/activeSafeWorkZ\(\)[\s\S]*safeWorkZToMachine\(safeWorkZ\)/);
   });
@@ -197,5 +197,79 @@ describe('Project Safe Z Version 2', () => {
     };
     expect(startRunHistory(job, {}, '2026-07-28T12:00:00.000Z').safeZSnapshot)
       .toMatchObject({ programSafeZ: 15, extraClearanceMm: 5, effectiveSafeZ: 20 });
+  });
+
+  it('creates a new job with programZ parsing G0 Z15 and resolves projectSafeZ correctly', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 Z15\nG0 X10 Y10\n');
+    const safeZ = calculateProjectSafeZ({ programZ: model.programZ, extraClearanceMm: 0 });
+    expect(safeZ.programSafeZ).toBe(15);
+    expect(safeZ.extraClearanceMm).toBe(0);
+    expect(safeZ.effectiveSafeZ).toBe(15);
+    expect(safeZ.source).toBe('rapid');
+    expect(safeZ.resolved).toBe(true);
+  });
+
+  it('newly created job extra clearance defaults to exactly 0 mm', () => {
+    const newJob = {
+      projectSafeZ: {
+        version: 2,
+        source: null,
+        programSafeZ: null,
+        extraClearanceMm: 0,
+        effectiveSafeZ: null,
+        confidence: 'fallback',
+        evidence: { highestExplicitZ: null, highestRapidZ: null, highestRetractZ: null, lineNumbers: [] },
+        resolved: false,
+        errors: [],
+      },
+    };
+    const migrated = migrateProjectSafeZ(newJob);
+    expect(migrated.extraClearanceMm).toBe(0);
+    expect(migrated.version).toBe(2);
+  });
+
+  it('machineZMax = 70 and workZeroMachineZ = 25 produces work Safe Z 45', () => {
+    const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 25 } };
+    const safeZ = calculateProjectSafeZ({ frame, limits: { zMax: 70 } });
+    expect(safeZ.programSafeZ).toBe(45);
+    expect(safeZ.effectiveSafeZ).toBe(45);
+    expect(safeZ.source).toBe('machine-max');
+    expect(safeZ.resolved).toBe(true);
+  });
+
+  it('changing workZeroMachineZ from 25 to 30 recalculates Safe Z from 45 to 40', () => {
+    const frame1 = { trusted: true, workZeroValid: true, workZeroMachine: { z: 25 } };
+    const safeZ1 = calculateProjectSafeZ({ frame: frame1, limits: { zMax: 70 } });
+    expect(safeZ1.effectiveSafeZ).toBe(45);
+
+    const frame2 = { trusted: true, workZeroValid: true, workZeroMachine: { z: 30 } };
+    const safeZ2 = calculateProjectSafeZ({ frame: frame2, limits: { zMax: 70 } });
+    expect(safeZ2.effectiveSafeZ).toBe(40);
+  });
+
+  it('missing discovered zMax leaves Safe Z unresolved', () => {
+    const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 25 } };
+    const safeZ = calculateProjectSafeZ({ frame, limits: { zMax: null } });
+    expect(safeZ.resolved).toBe(false);
+    expect(safeZ.effectiveSafeZ).toBeNull();
+    expect(safeZ.errors[0]).toMatch(/waiting for a trusted machine position/);
+  });
+
+  it('stale machine-max value is not reused after frame identity changes', () => {
+    const oldJob = {
+      projectSafeZ: {
+        version: 2,
+        source: 'machine-max',
+        programSafeZ: 50,
+        extraClearanceMm: 0,
+        effectiveSafeZ: 50,
+        resolved: true,
+        evidence: { frameIdentity: 'epoch-1' },
+      },
+    };
+    const unhomedFrame = { trusted: false, workZeroValid: false };
+    const recalculated = calculateProjectSafeZ({ job: oldJob, frame: unhomedFrame });
+    expect(recalculated.resolved).toBe(false);
+    expect(recalculated.effectiveSafeZ).toBeNull();
   });
 });

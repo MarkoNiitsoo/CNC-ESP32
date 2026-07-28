@@ -1040,11 +1040,22 @@ function newJobState() {
       estimate: null,
     },
     startMode: 'use_active_work_zero',
-    projectSafeZ: calculateProjectSafeZ({
-      workZeroReference: 'unknown',
-      workpieceHeightMm: null,
-      safeZClearanceMm: 5,
-    }),
+    projectSafeZ: {
+      version: 2,
+      source: null,
+      programSafeZ: null,
+      extraClearanceMm: 0,
+      effectiveSafeZ: null,
+      confidence: 'fallback',
+      evidence: {
+        highestExplicitZ: null,
+        highestRapidZ: null,
+        highestRetractZ: null,
+        lineNumbers: [],
+      },
+      resolved: false,
+      errors: [],
+    },
     startChecklist: defaultRunChecklistState(),
     arm: {
       state: 'NOT_ARMED',
@@ -3721,15 +3732,42 @@ function showCommandPreview(label, commands) {
   traceCommandsEl.textContent = `${label} commands: ${commands.length}\n${shown.join('\n')}${suffix}`;
 }
 
+function boundsAvailable(b) {
+  return b && Number.isFinite(b.xMin) && Number.isFinite(b.xMax) &&
+    Number.isFinite(b.yMin) && Number.isFinite(b.yMax);
+}
+
+function selectBaseCutBounds() {
+  if (!parsed) return { bounds: null, source: 'none', isRawFallback: false };
+  const tb = parsed.toolpathBounds || {};
+  if (boundsAvailable(tb.placementBounds)) {
+    return { bounds: tb.placementBounds, source: 'placed', isRawFallback: false };
+  }
+  if (boundsAvailable(tb.cutBounds)) {
+    return { bounds: tb.cutBounds, source: 'cut', isRawFallback: false };
+  }
+  if (boundsAvailable(tb.rawTravelBounds)) {
+    return { bounds: tb.rawTravelBounds, source: 'raw', isRawFallback: true };
+  }
+  if (boundsAvailable(parsed.bounds)) {
+    return { bounds: parsed.bounds, source: 'raw', isRawFallback: true };
+  }
+  return { bounds: null, source: 'none', isRawFallback: false };
+}
+
 function generatedBounds() {
-  if (!parsed) return null;
+  const selection = selectBaseCutBounds();
+  if (!selection.bounds) return null;
   const margin = Number(traceMarginInput.value);
   const m = Number.isFinite(margin) ? margin : 0;
+  const b = selection.bounds;
   return {
-    xMin: parsed.bounds.xMin - m,
-    xMax: parsed.bounds.xMax + m,
-    yMin: parsed.bounds.yMin - m,
-    yMax: parsed.bounds.yMax + m,
+    xMin: b.xMin - m,
+    xMax: b.xMax + m,
+    yMin: b.yMin - m,
+    yMax: b.yMax + m,
+    source: selection.source,
+    isRawFallback: selection.isRawFallback,
   };
 }
 
@@ -3739,13 +3777,17 @@ function validateDryRun(bounds, safeZ) {
   const safeZError = safeZValidationMessage(safeZ);
   if (safeZError) messages.push(safeZError);
   if (!bounds) messages.push('Bounding box has not been generated.');
+  if (bounds?.isRawFallback) {
+    messages.push('Cut bounds could not be identified. This trace includes the complete G-code travel extents, including possible parking or lead-in movement.');
+  }
   if (bounds && (bounds.xMin < MACHINE.xMin || bounds.xMax > MACHINE.xMax ||
       bounds.yMin < MACHINE.yMin || bounds.yMax > MACHINE.yMax)) {
     messages.push(`Generated X/Y bounds exceed machine limits X ${MACHINE.xMin}..${MACHINE.xMax}, Y ${MACHINE.yMin}..${MACHINE.yMax}.`);
   }
   if (!hasWorkZero()) messages.push('Work zero is missing. Capture + Set Work Zero before sending a trace.');
   messages.push(...activeRunBlockers());
-  return { ok: messages.length === 0, messages };
+  const hardBlockers = messages.filter((msg) => !msg.startsWith('Cut bounds could not be identified'));
+  return { ok: hardBlockers.length === 0, messages };
 }
 
 function validateAircut(safeZ, commandCount) {
@@ -3764,24 +3806,30 @@ function validateAircut(safeZ, commandCount) {
   return { ok: messages.length === 0 || messages.every((message) => message.startsWith('Large aircut')), messages };
 }
 
-function generateTraceCommands() {
+function generateTraceCommands(startPos = null) {
   const bounds = generatedBounds();
   const safeZ = projectSafeZValue();
   traceSafety = validateDryRun(bounds, safeZ);
   if (!bounds || !Number.isFinite(safeZ)) {
     traceCommands = [];
   } else {
+    const startX = startPos ? Number(startPos.x) : bounds.xMin;
+    const startY = startPos ? Number(startPos.y) : bounds.yMin;
+    const startZ = startPos ? Number(startPos.z) : safeZ;
     traceCommands = [
       'M5',
       'G21',
       'G90',
+      'G54',
       `G0 Z${fmtMm(safeZ)} F${SAFETY_Z_FEED_MM_MIN}`,
       `G0 X${fmtMm(bounds.xMin)} Y${fmtMm(bounds.yMin)} F${automaticTravelFeed()}`,
       `G0 X${fmtMm(bounds.xMax)} Y${fmtMm(bounds.yMin)} F${automaticTravelFeed()}`,
       `G0 X${fmtMm(bounds.xMax)} Y${fmtMm(bounds.yMax)} F${automaticTravelFeed()}`,
       `G0 X${fmtMm(bounds.xMin)} Y${fmtMm(bounds.yMax)} F${automaticTravelFeed()}`,
       `G0 X${fmtMm(bounds.xMin)} Y${fmtMm(bounds.yMin)} F${automaticTravelFeed()}`,
-      `G0 Z${fmtMm(safeZ)} F${SAFETY_Z_FEED_MM_MIN}`,
+      `G0 X${fmtMm(startX)} Y${fmtMm(startY)} F${automaticTravelFeed()}`,
+      'M400',
+      `G0 Z${fmtMm(startZ)} F${SAFETY_Z_FEED_MM_MIN}`,
       'M400',
     ];
   }
@@ -4419,6 +4467,17 @@ function applyActiveRunParse(run, options = {}) {
     if (run.mode === 'source') jobState.activeRun.sourceFingerprint = run.fingerprint.value;
     else jobState.activeRun.generatedFingerprint = run.fingerprint.value;
   }
+  if (jobState) {
+    const newProgramZ = run.model?.programZ ? JSON.parse(JSON.stringify(run.model.programZ)) : null;
+    const programZChanged = JSON.stringify(jobState.programZ || null) !== JSON.stringify(newProgramZ);
+    jobState.programZ = newProgramZ;
+    if (programZChanged) {
+      markSafeZDependentsStale(jobState, { now: nowIso(), reason: 'Active run program Z changed.' });
+    }
+    const currentClearance = jobState.projectSafeZ?.extraClearanceMm ?? 0;
+    updateProjectSafeZ(jobState, { extraClearanceMm: currentClearance }, { now: nowIso(), frame: currentMachineFrame || {} });
+    applyProjectSafeZToInputs();
+  }
   pathEl.textContent = `${filePath} | Active: ${run.path}`;
   renderWorkbenchStatus();
   renderRunPanel();
@@ -4805,7 +4864,9 @@ function disarmJob() {
 
 async function sendBoundingBoxTrace() {
   console.log('[Cut Bounds] Click received');
-  generateTraceCommands();
+  const bounds = generatedBounds();
+  const safeZ = projectSafeZValue();
+  traceSafety = validateDryRun(bounds, safeZ);
   if (!traceSafety.ok) {
     const blocker = traceSafety.messages.join(' ');
     console.log('[Cut Bounds] Blocked:', blocker);
@@ -4814,8 +4875,8 @@ async function sendBoundingBoxTrace() {
     return;
   }
 
-  const effectiveZ = projectSafeZValue();
-  console.log(`[Cut Bounds] Accepted. Effective Safe Z: ${effectiveZ} mm. Transport: HTTP POST /api/cmd`);
+  const pZ = jobState?.projectSafeZ || {};
+  console.log(`[Cut Bounds] Accepted. Bounds Source: ${bounds?.source || 'none'}. Bounds: X${bounds?.xMin?.toFixed(1)}..${bounds?.xMax?.toFixed(1)}, Y${bounds?.yMin?.toFixed(1)}..${bounds?.yMax?.toFixed(1)}. Program Safe Z: ${pZ.programSafeZ} mm. Extra Clearance: ${pZ.extraClearanceMm} mm. Effective Safe Z: ${safeZ} mm. Transport: HTTP POST /api/test-motion/start (mode: "bounds")`);
 
   let confirmText = 'This will move the CNC around the job bounding box at safe Z, return to the starting X/Y, and then restore the starting Z. Keep your hand near the physical emergency stop.';
   const hasPreflightFail = currentPreflight?.checks?.some((check) => check.level === 'fail');
@@ -4832,43 +4893,47 @@ async function sendBoundingBoxTrace() {
   }
 
   const returnCapture = await captureM114();
-  const executionCommands = traceCommandsWithReturnPosition(traceCommands, returnCapture);
+  const startX = Number(returnCapture.position.x) || 0;
+  const startY = Number(returnCapture.position.y) || 0;
+  const startZ = Number(returnCapture.position.z) || 0;
+
+  generateTraceCommands({ x: startX, y: startY, z: startZ });
 
   dryRunStatus = 'running';
   setDryRunRunning(true);
   dryRunLogEl.textContent = '';
   renderDryRunPanel();
-  appendDryRunLog(`Return position: X${fmtMm(returnCapture.position.x)} Y${fmtMm(returnCapture.position.y)} Z${fmtMm(returnCapture.position.z)}`);
-  console.log(`[Cut Bounds] Sending ${executionCommands.length} HTTP commands...`);
+  appendDryRunLog(`Captured starting position: X${fmtMm(startX)} Y${fmtMm(startY)} Z${fmtMm(startZ)}`);
+  console.log(`[Cut Bounds] Captured starting XYZ: X${startX} Y${startY} Z${startZ}`);
 
+  let startingXyzRestored = false;
   try {
-    for (let i = 0; i < executionCommands.length; i += 1) {
-      const cmd = executionCommands[i];
-      appendDryRunLog(`> [${i + 1}/${executionCommands.length}] ${cmd}`);
-      const response = await sendCmd(cmd);
-      appendDryRunLog(response || '(ok)');
-    }
+    const finalStatus = await startTestMotionStream('bounds', traceCommands, safeZ, (status) => {
+      appendDryRunLog(`Cut Bounds stream ${Number(status.acknowledgedLineCount || 0)}/${traceCommands.length} (${Number(status.progressPercent || 0).toFixed(1)}%)`);
+    });
+    startingXyzRestored = true;
     dryRunStatus = 'complete';
     if (jobState) {
       jobState.dryRun = dryRunSummary();
       jobState.dryRun.lastBoundingBoxTraceAt = nowIso();
       jobState.dryRun.lastBoundingBoxTraceStatus = 'complete';
       await recordPhysicalVerification('bounds', {
-        safeZ: projectSafeZValue(), margin: Number(traceMarginInput.value),
+        safeZ, margin: Number(traceMarginInput.value),
       });
     }
-    appendDryRunLog('Bounding box trace complete; starting X/Y/Z restored');
-    setJobResult('Bounding box trace complete.');
-    console.log('[Cut Bounds] Complete. Restored starting position.');
+    appendDryRunLog('Cut Bounds complete. Starting X/Y/Z restored.');
+    setJobResult('Cut Bounds complete. Starting X/Y/Z restored.');
+    console.log('[Cut Bounds] Complete. Starting X/Y/Z restored.');
   } catch (err) {
     dryRunStatus = 'failed';
     if (jobState) {
       jobState.dryRun = dryRunSummary();
       jobState.dryRun.lastBoundingBoxTraceStatus = 'failed';
     }
-    appendDryRunLog(`Stopped: ${err.message}`);
-    setJobResult(`Cut Bounds failed: ${err.message}`, true);
-    console.error('[Cut Bounds] Failed:', err.message);
+    const stopMsg = 'Cut Bounds stopped before the starting position was restored. Automatic Z descent was not performed because the current X/Y position is not confirmed.';
+    appendDryRunLog(`${stopMsg} (${err.message})`);
+    setJobResult(stopMsg, true);
+    console.error('[Cut Bounds] Stopped/Failed:', err.message, '| Starting XYZ restored:', false);
   } finally {
     setDryRunRunning(false);
     renderDryRunPanel();

@@ -304,4 +304,47 @@ describe('MockJobRunner', () => {
     })).rejects.toThrow(/Safe Z/i);
     expect(cutting.marlin.log).toHaveLength(0);
   });
+
+  it('validates Project Safe Z Version 2 formula and rejects stale or invalid metadata', async () => {
+    const ctx = await fixture();
+    const validV2Job = {
+      projectSafeZ: { version: 2, programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: true },
+    };
+    expect(ctx.runner.assertProjectSafeZ(validV2Job, 15)).toBe(15);
+
+    const validV2Clearance = {
+      projectSafeZ: { version: 2, programSafeZ: 15, extraClearanceMm: 5, effectiveSafeZ: 20, resolved: true },
+    };
+    expect(ctx.runner.assertProjectSafeZ(validV2Clearance, 20)).toBe(20);
+
+    const staleEffective = {
+      projectSafeZ: { version: 2, programSafeZ: 15, extraClearanceMm: 5, effectiveSafeZ: 18, resolved: true },
+    };
+    expect(() => ctx.runner.assertProjectSafeZ(staleEffective, 18)).toThrow(/does not match programSafeZ \+ extraClearanceMm/);
+
+    const negativeClearance = {
+      projectSafeZ: { version: 2, programSafeZ: 15, extraClearanceMm: -2, effectiveSafeZ: 13, resolved: true },
+    };
+    expect(() => ctx.runner.assertProjectSafeZ(negativeClearance, 13)).toThrow(/non-negative/);
+
+    const unresolvedV2 = {
+      projectSafeZ: { version: 2, programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: false },
+    };
+    expect(() => ctx.runner.assertProjectSafeZ(unresolvedV2, 15)).toThrow(/unresolved/);
+  });
+
+  it('streams mode: "bounds" test motion and rejects overlapping operations', async () => {
+    const ctx = await fixture();
+    const boundsPath = '/jobs/generated/job.bounds.gc';
+    await ctx.sd.writeText(boundsPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X10 Y10 F1500', 'G0 X50 Y10 F1500', 'G0 X50 Y50 F1500', 'G0 X10 Y50 F1500', 'G0 X10 Y10 F1500',
+      'M400',
+    ].join('\n'));
+    await ctx.runner.startTestMotion({ path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath });
+    expect(ctx.runner.status.streamMode).toBe('bounds');
+    await expect(ctx.runner.startTestMotion({ path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath }))
+      .rejects.toThrow(/already active/);
+    expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
+  });
 });

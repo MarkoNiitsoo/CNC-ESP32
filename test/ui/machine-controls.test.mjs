@@ -57,16 +57,12 @@ describe('compact machine drawer', () => {
 
   it('restores the captured X/Y before restoring Z after bounding box trace', async () => {
     const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
-    const helperStart = preview.indexOf('function traceCommandsWithReturnPosition');
-    const helperEnd = preview.indexOf('function commandForSegment', helperStart);
-    const helper = preview.slice(helperStart, helperEnd);
-    expect(helper.indexOf('`G0 X${fmtMm(position.x)} Y${fmtMm(position.y)}')).toBeLessThan(helper.indexOf('`G0 Z${fmtMm(position.z)}'));
-    expect(helper).toContain("const finalWait = result.lastIndexOf('M400')");
     const sendStart = preview.indexOf('async function sendBoundingBoxTrace()');
     const sendEnd = preview.indexOf('async function sendAircutToolpath()', sendStart);
     const send = preview.slice(sendStart, sendEnd);
     expect(send).toContain('const returnCapture = await captureM114()');
-    expect(send).toContain('traceCommandsWithReturnPosition(traceCommands, returnCapture)');
+    expect(send).toContain("startTestMotionStream('bounds'");
+    expect(send).toContain('Starting X/Y/Z restored.');
   });
 
   it('keeps the dry run operator UI minimal and mode-driven', () => {

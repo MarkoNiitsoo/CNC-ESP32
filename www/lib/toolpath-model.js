@@ -680,6 +680,7 @@ export function buildPreviewMetadata(model, options = {}) {
     warnings: getToolpathWarnings(model),
     feed: { ...model.feed },
     estimate: { ...model.estimate },
+    programZ: model.programZ ? { ...model.programZ } : null,
     lineCount: model.source.lineCount,
     segmentCount: model.segments.length,
     toolpathModelVersion: 2,

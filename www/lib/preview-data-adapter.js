@@ -142,6 +142,7 @@ export function buildPreviewSummaryData(model, feedOverride = {}) {
     warningGroups: groupToolpathWarnings(model),
     feed: model.feed,
     estimate: model.estimate,
+    programZ: model.programZ ? { ...model.programZ } : (metadata.programZ ? { ...metadata.programZ } : null),
     effectiveEstimateSeconds: feedOverride.startPercent
       ? model.estimate.nominalSeconds * 100 / Number(feedOverride.startPercent)
       : model.estimate.effectiveSecondsWithOverride,

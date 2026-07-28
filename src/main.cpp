@@ -4675,6 +4675,15 @@ bool validateTestMotionCommand(const String &line, const String &mode, float saf
       error = "aircut Z command differs from configured Safe Z";
       return false;
     }
+  } else if (mode == "bounds") {
+    float z = 0.0f;
+    if (extractGcodeWordValue(upper, 'Z', z)) {
+      String safeZError;
+      if (!validateSafeWorkZ(z, true, safeZError)) {
+        error = "bounds Z command exceeds safe work range: " + safeZError;
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -6582,15 +6591,43 @@ bool loadProjectSafeZ(const String &jobPath, float &effectiveSafeZ, String &erro
     return false;
   }
   JsonObjectConst safeZ = doc["projectSafeZ"];
-  const bool resolved = safeZ["resolved"] | false;
-  const float storedEffective = safeZ["effectiveSafeZ"] | NAN;
+  const int version = safeZ["version"] | 1;
 
-  if (resolved && isfinite(storedEffective)) {
-    effectiveSafeZ = storedEffective;
+  if (version >= 2) {
+    const bool resolved = safeZ["resolved"] | false;
+    if (!resolved) {
+      error = "Project Safe Z is unresolved";
+      return false;
+    }
+    const float programSafeZ = safeZ["programSafeZ"] | NAN;
+    const float extraClearanceMm = safeZ["extraClearanceMm"] | NAN;
+    const float storedEffective = safeZ["effectiveSafeZ"] | NAN;
+
+    if (!isfinite(programSafeZ)) {
+      error = "programSafeZ is missing or invalid";
+      return false;
+    }
+    if (!isfinite(extraClearanceMm) || extraClearanceMm < 0.0f) {
+      error = "extraClearanceMm must be non-negative";
+      return false;
+    }
+    if (!isfinite(storedEffective)) {
+      error = "effectiveSafeZ is missing or invalid";
+      return false;
+    }
+
+    const float expectedEffective = programSafeZ + extraClearanceMm;
+    if (fabsf(storedEffective - expectedEffective) > 0.001f) {
+      error = "Project Safe Z effectiveSafeZ does not match programSafeZ + extraClearanceMm";
+      return false;
+    }
+
+    effectiveSafeZ = expectedEffective;
     return true;
   }
 
-  // Version 1 fallback if stored effectiveSafeZ was not directly resolved
+  // Version 1 fallback if version == 1
+  const bool resolved = safeZ["resolved"] | false;
   const String reference = jsonVariantString(safeZ["workZeroReference"]);
   const float clearance = safeZ["safeZClearanceMm"] | (safeZ["extraClearanceMm"] | NAN);
   float stockTop = NAN;
@@ -6601,12 +6638,17 @@ bool loadProjectSafeZ(const String &jobPath, float &effectiveSafeZ, String &erro
   } else if (reference == "custom") {
     stockTop = safeZ["stockTopWorkZ"] | NAN;
   }
-  if (isfinite(stockTop) && isfinite(clearance) && clearance >= 0.0f) {
+  if (resolved && isfinite(stockTop) && isfinite(clearance) && clearance >= 0.0f) {
     effectiveSafeZ = stockTop + clearance;
+    const float storedEffective = safeZ["effectiveSafeZ"] | NAN;
+    if (isfinite(storedEffective) && fabsf(storedEffective - effectiveSafeZ) > 0.001f) {
+      error = "Project Safe Z derived value is stale";
+      return false;
+    }
     return true;
   }
 
-  error = "Project Safe Z is unresolved or stale";
+  error = "Project Safe Z Version 1 metadata is unresolved or invalid";
   return false;
 }
 
@@ -7068,8 +7110,8 @@ void handleTestMotionStart() {
     sendJsonError(400, "test motion path must be under /jobs/generated");
     return;
   }
-  if (mode != "aircut" && mode != "toolless") {
-    sendJsonError(400, "test motion mode must be aircut or toolless");
+  if (mode != "aircut" && mode != "toolless" && mode != "bounds") {
+    sendJsonError(400, "test motion mode must be aircut, toolless, or bounds");
     return;
   }
   float projectSafeZ = NAN;

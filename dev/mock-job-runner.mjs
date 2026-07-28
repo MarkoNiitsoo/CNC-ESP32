@@ -115,6 +115,26 @@ export class MockJobRunner {
   }
 
   assertProjectSafeZ(job, requestedValue) {
+    const safeZ = job?.projectSafeZ || {};
+    const version = Number(safeZ.version || 1);
+    if (version >= 2) {
+      if (safeZ.resolved !== true) throw new Error(safeZ.errors?.[0] || 'Project Safe Z is unresolved');
+      const programSafeZ = Number(safeZ.programSafeZ);
+      const extraClearanceMm = Number(safeZ.extraClearanceMm);
+      const effectiveSafeZ = Number(safeZ.effectiveSafeZ);
+      if (!Number.isFinite(programSafeZ)) throw new Error('programSafeZ is missing or invalid');
+      if (!Number.isFinite(extraClearanceMm) || extraClearanceMm < 0) throw new Error('extraClearanceMm must be non-negative');
+      if (!Number.isFinite(effectiveSafeZ)) throw new Error('effectiveSafeZ is missing or invalid');
+      if (Math.abs(effectiveSafeZ - (programSafeZ + extraClearanceMm)) > 0.001) {
+        throw new Error('Project Safe Z effectiveSafeZ does not match programSafeZ + extraClearanceMm');
+      }
+      const requested = Number(requestedValue);
+      if (!Number.isFinite(requested) || Math.abs(requested - effectiveSafeZ) > 0.001) {
+        throw new Error('requested Safe Z does not match project metadata');
+      }
+      return this.assertSafeZ(requested);
+    }
+
     const projectSafeZ = migrateProjectSafeZ(job, { frame: this.frame });
     if (!projectSafeZ.resolved) throw new Error(projectSafeZ.errors[0] || 'Project Safe Z is unresolved');
     const requested = Number(requestedValue);
@@ -247,7 +267,7 @@ export class MockJobRunner {
     const mode = String(request.mode || '');
     const path = String(request.path || '');
     const safeZ = Number(request.safeZ);
-    if (!['aircut', 'toolless'].includes(mode)) throw new Error('test motion mode must be aircut or toolless');
+    if (!['aircut', 'toolless', 'bounds'].includes(mode)) throw new Error('test motion mode must be aircut, toolless, or bounds');
     if (!path.startsWith('/jobs/generated/')) throw new Error('test motion path must be under /jobs/generated');
     const job = JSON.parse(await this.sd.readText(request.jobPath));
     this.assertProjectSafeZ(job, safeZ);
