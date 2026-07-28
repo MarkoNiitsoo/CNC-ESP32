@@ -4296,10 +4296,22 @@ function setFeedStartPercent(percent) {
 let controllerCommState = 'connected';
 
 function renderControllerStatus() {
-  const el = document.getElementById('controller-comm-status');
-  if (el) {
-    el.textContent = `Controller: ${controllerCommState.toUpperCase()}`;
-    el.className = `status-badge ${controllerCommState}`;
+  const badgeEl = document.getElementById('controller-comm-status');
+  const btnEl = document.getElementById('btn-retry-controller-conn');
+
+  const state = (controllerCommState || 'connected').toLowerCase();
+  const isUnresponsive = (state === 'unresponsive');
+  const isRecovering = (state === 'recovering');
+
+  if (badgeEl) {
+    badgeEl.textContent = `Controller: ${state.toUpperCase()}`;
+    badgeEl.className = `status-badge ${state}`;
+  }
+
+  if (btnEl) {
+    btnEl.hidden = !isUnresponsive && !isRecovering;
+    btnEl.disabled = isRecovering;
+    btnEl.textContent = isRecovering ? 'Recovering controller connection…' : 'Retry controller connection';
   }
 }
 
@@ -4312,20 +4324,23 @@ async function recoverControllerConnection() {
     if (!res.ok || !data.ok) {
       controllerCommState = 'unresponsive';
       renderControllerStatus();
-      alert(data.error || 'Controller recovery failed.');
+      console.error('[Controller Recovery]', data.error || 'Controller recovery failed.');
       return false;
     }
     controllerCommState = 'connected';
     renderControllerStatus();
-    alert('Controller communication restored.');
     return true;
   } catch (err) {
     controllerCommState = 'unresponsive';
     renderControllerStatus();
-    alert(`Controller recovery failed: ${err.message}`);
+    console.error('[Controller Recovery]', err.message);
     return false;
   }
 }
+
+document.getElementById('btn-retry-controller-conn')?.addEventListener('click', () => {
+  recoverControllerConnection().catch(() => {});
+});
 
 async function sendCmd(cmd) {
   let res;

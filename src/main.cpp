@@ -296,6 +296,9 @@ struct ControllerCommunicationTelemetry {
 };
 
 ControllerCommunicationTelemetry controllerCommStatus;
+String g_lastSentUartCommand = "";
+
+void stageTelemetryUpdates(void); // Forward declaration
 
 bool isControllerCommunicationActive() {
   return controllerCommStatus.state == ControllerCommunicationState::Connected ||
@@ -314,11 +317,19 @@ bool ensureControllerCommunicationActive(String &error) {
   return true;
 }
 
+void markControllerWaiting(const String &cmd) {
+  if (controllerCommStatus.state != ControllerCommunicationState::Waiting || controllerCommStatus.lastFailedCommand != cmd) {
+    controllerCommStatus.state = ControllerCommunicationState::Waiting;
+    controllerCommStatus.lastFailedCommand = cmd;
+    stageTelemetryUpdates();
+  }
+}
+
 void markControllerResponseSuccess() {
   controllerCommStatus.lastSuccessfulResponseMs = millis();
-  if (controllerCommStatus.state == ControllerCommunicationState::Waiting ||
-      controllerCommStatus.state == ControllerCommunicationState::Unknown) {
+  if (controllerCommStatus.state != ControllerCommunicationState::Connected) {
     controllerCommStatus.state = ControllerCommunicationState::Connected;
+    stageTelemetryUpdates();
   }
 }
 
@@ -327,6 +338,12 @@ void markControllerUnresponsive(const String &cmd, const String &errorMsg) {
   controllerCommStatus.lastTimeoutMs = millis();
   controllerCommStatus.lastFailedCommand = cmd;
   controllerCommStatus.lastError = errorMsg;
+  stageTelemetryUpdates();
+}
+
+void markControllerRecovering() {
+  controllerCommStatus.state = ControllerCommunicationState::Recovering;
+  stageTelemetryUpdates();
 }
 
 struct PositionTelemetry {
@@ -2285,13 +2302,23 @@ String buildSystemSliceJsonFromBaseAndClock(const String &baseJson, const Staged
 }
 
 String buildControllerSliceJson() {
+  const bool isConnected = (controllerCommStatus.state == ControllerCommunicationState::Connected);
   String patchJson = "{\"type\":\"";
   patchJson += controllerAdapter.type;
   patchJson += "\",\"identity\":\"";
   patchJson += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : controllerAdapter.identity);
-  patchJson += "\",\"connected\":true,\"state\":\"";
-  patchJson += controllerStateNormalized();
-  patchJson += "\",\"lastError\":";
+  patchJson += "\",\"connected\":";
+  patchJson += isConnected ? "true" : "false";
+  patchJson += ",\"state\":\"";
+  patchJson += controllerCommunicationStateToString(controllerCommStatus.state);
+  patchJson += "\",\"communication\":{";
+  patchJson += "\"state\":\"" + controllerCommunicationStateToString(controllerCommStatus.state) + "\"";
+  patchJson += ",\"lastSuccessfulResponseMs\":" + String(controllerCommStatus.lastSuccessfulResponseMs);
+  patchJson += ",\"lastTimeoutMs\":" + String(controllerCommStatus.lastTimeoutMs);
+  patchJson += ",\"lastFailedCommand\":" + (controllerCommStatus.lastFailedCommand.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastFailedCommand) + "\"") : "null");
+  patchJson += ",\"lastError\":" + (controllerCommStatus.lastError.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastError) + "\"") : "null");
+  patchJson += "}";
+  patchJson += ",\"lastError\":";
   patchJson += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
   patchJson += ",\"capabilities\":{\"homing\":";
   patchJson += controllerAdapter.capabilities.homing ? "true" : "false";
@@ -3124,7 +3151,7 @@ String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
   }
 
   if (response.length() == 0 || !marlinResponseIsTerminal(response)) {
-    markControllerUnresponsive("UART_TIMEOUT", "Marlin did not respond within timeout");
+    markControllerUnresponsive(g_lastSentUartCommand.length() > 0 ? g_lastSentUartCommand : "UART_TIMEOUT", "Marlin did not respond within timeout");
   }
 
   addMarlinLog("rx", priority, response);
@@ -4840,7 +4867,7 @@ bool validateBoundsSequence(const String &path, float safeZ, float startX, float
       const bool hasZ = extractGcodeWordValue(trimmed, 'Z', valZ);
 
       if (!firstMotionSeen) {
-        if (!hasZ || hasX || hasY || fabsf(valZ - safeZ) > 0.001f) {
+        if (!trimmed.startsWith("G0 ") || !hasZ || hasX || hasY || fabsf(valZ - safeZ) > 0.001f) {
           file.close();
           error = "first bounds motion must be Safe Z lift G0 Z" + String(safeZ, 3) + " without XY movement";
           return false;

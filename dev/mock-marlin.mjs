@@ -77,7 +77,7 @@ export class MockMarlin {
     const upper = command.toUpperCase();
     const args = words(upper);
     if (this.simulateTimeout) {
-      return { ok: false, timeout: true, error: 'Marlin did not respond within timeout' };
+      return { ok: false, timeout: true, error: 'Marlin did not respond within timeout', controllerState: 'unresponsive', failedCommand: command };
     }
     if (this.failCommands.has(upper)) return this.error(`Injected failure for ${command}`);
     if (upper === 'P000') {

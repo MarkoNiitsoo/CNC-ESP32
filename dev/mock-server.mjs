@@ -403,6 +403,12 @@ export async function createMockServer(options = {}) {
           return json(res, 409, { ok: false, error: 'active or resumable job; manual command rejected' });
         }
         const result = env.marlin.execute(command, { priority: upper === 'M5' });
+        if (result.timeout || result.controllerState === 'unresponsive') {
+          env.runner.controllerState = 'unresponsive';
+          env.runner.lastFailedCommand = command;
+          env.runner.lastError = result.error || 'Marlin did not respond within timeout.';
+          return json(res, 503, { ok: false, error: env.runner.lastError, controllerState: 'unresponsive', failedCommand: command });
+        }
         if (result.ok && env.frame.trusted) syncMockFrame(env);
         return json(res, result.ok ? 200 : 400, result);
       }

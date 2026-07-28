@@ -1,5 +1,18 @@
 # Progress
 
+## 2026-07-28 - Controller Communication Correctness Fixes Pass
+
+- Completed Controller Communication Correctness Fixes pass on `feature/phase1-websocket-transport`:
+  1. Synchronous Command Timeout Contract (`src/main.cpp`, `dev/mock-server.mjs`, `dev/mock-job-runner.mjs`, `www/preview.js`): Updated `handleCommand()` and `readMarlinResponseFor()` so missing terminal response / Marlin timeout returns HTTP 503 `{ "ok": false, "error": "Marlin did not respond within timeout.", "controllerState": "unresponsive", "failedCommand": "<cmd>" }`. `captureM114()` in browser UI stops immediately after `M400` failure/timeout and never sends `M114`.
+  2. Centralized Ordinary-Command Gating (`src/main.cpp`, `dev/mock-server.mjs`, `dev/mock-job-runner.mjs`): Added reusable `ensureControllerCommunicationActive()` check to all ordinary command endpoints (/api/cmd, Home, manual frame, Work Zero set/restore/goto, Jog start/update/restore, Bounds, Aircut, Job Start, Production Resume, recovery positioning, tool-change positioning, feed override, machine discovery/apply). Allowed exceptions: M410/M5 safety shutdown, physical Stop endpoints, `/api/controller/recover`, and read-only status endpoints.
+  3. Authoritative Controller Slice (`src/main.cpp`, `dev/mock-job-runner.mjs`): Updated `buildControllerSliceJson()` and `controllerSlice()` to publish `"connected": false` during Waiting, Unresponsive, and Recovering (`connected: true` ONLY when state is Connected). Includes `"communication": { "state", "lastSuccessfulResponseMs", "lastTimeoutMs", "lastFailedCommand", "lastError" }`. Transitions stage `dirtyController` and increment `stateRevision` once.
+  4. Real Waiting State (`src/main.cpp`): Transitions `controllerCommStatus.state = Waiting` before synchronous UART send (`M400`, `M114`), publishing state over WebSocket; returning to `Connected` on terminal `ok` or `Unresponsive` on timeout. HTTP 409 (UART busy) does not alter communication state.
+  5. Visible Recovery UI (`www/preview.js`, `www/index.html`): Added visible controller status badge `#controller-comm-status` and "Retry controller connection" button `#btn-retry-controller-conn` (bound to `recoverControllerConnection()`, disabled during `Recovering`). Ordinary motion controls remain disabled while unresponsive/recovering.
+  6. Complete Reset Invalidation (`src/main.cpp`): `handleControllerRecover()` invalidates `machineValid`, `absoluteFromHome`, all `homedAxes` (`x`, `y`, `z`), `workZeroValid`, `manualWorkFrameValid`, stored live machine/work positions, increments frame revision, and publishes machine slice when M115 reset is detected.
+  7. Exact Bounds First-Motion Rule (`src/main.cpp`, `dev/mock-job-runner.mjs`): Updated bounds sequence validators in firmware and mock runner to enforce that the first motion command is strictly `G0 Z<safeZ>` (rejecting `G1 Z<safeZ>`).
+  8. Executable Test Suite (`test/firmware/controller-communication.test.mjs`): Created 17 executable test cases covering all controller communication, gating, timeout, recovery, UI, and bounds validation requirements.
+  9. Verification: `npm test` passed 48/48 test files and 504/504 tests. `pio run -e esp32cam` compiled cleanly (19.6% RAM, 73.9% Flash).
+
 ## 2026-07-28 - Controller Contact Safety & Motion Gating Pass
 
 - Completed Controller Contact Safety and Motion Gating pass on `feature/phase1-websocket-transport`:

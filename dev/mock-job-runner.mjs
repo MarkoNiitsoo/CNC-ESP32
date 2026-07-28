@@ -78,6 +78,23 @@ export class MockJobRunner {
     return status;
   }
 
+  controllerSlice() {
+    const isConnected = (this.controllerState === 'connected');
+    return {
+      type: 'Marlin',
+      identity: 'MockMarlin 2.1.1',
+      connected: isConnected,
+      state: this.controllerState,
+      communication: {
+        state: this.controllerState,
+        lastSuccessfulResponseMs: Date.now(),
+        lastTimeoutMs: this.lastTimeoutMs || 0,
+        lastFailedCommand: this.lastFailedCommand || '',
+        lastError: this.lastError || '',
+      },
+    };
+  }
+
   isActive() {
     return ACTIVE_STATES.has(this.status.state);
   }
@@ -407,7 +424,7 @@ export class MockJobRunner {
           const hasZ = valZ !== null;
 
           if (!firstMotionSeen) {
-            if (!hasZ || hasX || hasY || Math.abs(valZ - safeZ) > 0.001) {
+            if (code !== 'G0' || !hasZ || hasX || hasY || Math.abs(valZ - safeZ) > 0.001) {
               throw new Error(`first bounds motion must be Safe Z lift G0 Z${safeZ} without XY movement`);
             }
             firstMotionSeen = true;
@@ -459,6 +476,7 @@ export class MockJobRunner {
   }
 
   async startProductionResume(request = {}) {
+    this.assertControllerCommunication();
     if (this.isActive()) throw new Error('another job or motion stream is already active');
     const path = String(request.path || '');
     if (!path.startsWith('/jobs/generated/') || !path.endsWith('.production-resume.gc')) {
