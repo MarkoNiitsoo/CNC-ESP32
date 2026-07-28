@@ -1,5 +1,17 @@
 # Progress
 
+## 2026-07-28 - Controller Communication Correctness & Safety Fixes Pass 2
+
+- Completed production firmware and browser UI controller communication correctness fixes pass on `feature/phase1-websocket-transport`:
+  1. Synchronous Command Timeout Contract (`src/main.cpp`, `dev/mock-server.mjs`, `www/preview.js`): Replaced implicit string-only response contract with `struct MarlinCommandResult { response, terminalReceived, success, controllerError, timeout, error }`. `handleCommand()` timeout returns HTTP 503 `{ ok: false, error: "Marlin did not respond within timeout.", controllerState: "unresponsive", failedCommand: "<cmd>" }`. Marlin `Error:`, `Alarm:`, or `!!` returns HTTP 400 `{ ok: false, error, response, controllerState: "connected" }`.
+  2. Marlin Timeout Browser Contract (`www/preview.js`): Updated `captureM114()` so `sendCmd('M400')` failure/timeout immediately throws an error and `M114` is NEVER sent. Removed browser-side state promotion to `connected` on HTTP 200.
+  3. Single Low-Level Command Dispatcher & Gating (`src/main.cpp`): Implemented `enum class ControllerCommandClass { Ordinary, SafetyStop, RecoveryProbe }` and `checkCommandPermission()`. Blocked ordinary commands when controller is `Unresponsive`, `Recovering`, or `Waiting`. Allowed `SafetyStop` (`M410`, `M5`) always.
+  4. Real Waiting State (`src/main.cpp`): Set `markControllerWaiting(cmd)` before synchronous ordinary UART transactions (`M400`, `M114`), publishing state over WebSocket `controller` slice; returning to `Connected` on terminal `ok` or `Unresponsive` on timeout. Second ordinary command during `Waiting` returns HTTP 503.
+  5. Controlled Recovery State Machine (`src/main.cpp`, `dev/mock-job-runner.mjs`): `handleControllerRecover()` transitions to `Recovering`, drains input, sends `M115` as `RecoveryProbe` (`promoteConnectedOnTerminal = false`), remains `Recovering` after `M115` success, performs complete reset invalidation (`machineValid`, `manualWorkFrameValid`, `workZeroValid`, `homedX/Y/Z = false`, `homingSessionId = ""`, live positions, increment frame revision, stage telemetry), sends `M114` as `RecoveryProbe`, and transitions to `Connected` ONLY on `M114` position confirmation.
+  6. Shared Recovery UI Component (`www/machine-bar.js`, `www/index.html`, `www/preview.html`): Centralized status badge `#controller-comm-status`, message container `#controller-comm-message`, and retry button `#btn-retry-controller-conn` in `www/machine-bar.js` so both `index.html` and `preview.html` share identical UI and logic.
+  7. Executable Test Suite (`test/firmware/controller-communication.test.mjs`): Updated test suite to 20 executable HTTP endpoint and browser tests covering all communication, gating, timeout, recovery, reset invalidation, and UI requirements.
+  8. Verification: `npm test` passed 48/48 test files and 507/507 tests cleanly. `pio run -e esp32cam` compiled cleanly (19.6% RAM, 74.0% Flash).
+
 ## 2026-07-28 - Controller Communication Correctness Fixes Pass
 
 - Completed Controller Communication Correctness Fixes pass on `feature/phase1-websocket-transport`:

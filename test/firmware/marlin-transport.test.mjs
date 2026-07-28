@@ -46,7 +46,7 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('bool marlinResponseIsTerminal(const String &response)');
     expect(source).toContain('line == "OK"');
     expect(source).toContain('line.startsWith("ERROR:")');
-    expect(source).toMatch(/received && marlinResponseIsTerminal\(response\)/);
+    expect(source).toMatch(/received && marlinResponseIsTerminal\((?:result\.)?response\)/);
     expect(source).toContain('return readMarlinResponseFor(kMarlinTimeoutMs, priority);');
   });
 
@@ -265,7 +265,7 @@ describe('delta telemetry transport', () => {
 
   it('broadcasts position only when an M114 response changes XYZ', () => {
     expect(source).toContain('void updatePositionFromMarlinResponse(const String &response)');
-    expect(source).toMatch(/addMarlinLog\("rx", priority, response\);[\s\S]*updatePositionFromMarlinResponse\(response\)/);
+    expect(source).toMatch(/addMarlinLog\("rx", [^)]+\);[\s\S]*updatePositionFromMarlinResponse\(/);
     expect(source).toContain('fabs(marlinPosition.x - x) > 0.0005f');
     expect(source).toContain('touchPositionStatus()');
   });

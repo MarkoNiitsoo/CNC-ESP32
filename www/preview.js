@@ -4293,54 +4293,20 @@ function setFeedStartPercent(percent) {
   renderRunPanel();
 }
 
-let controllerCommState = 'connected';
+function getControllerCommState() {
+  return window.LowRiderMachineBar?.controllerState?.() || 'connected';
+}
 
 function renderControllerStatus() {
-  const badgeEl = document.getElementById('controller-comm-status');
-  const btnEl = document.getElementById('btn-retry-controller-conn');
-
-  const state = (controllerCommState || 'connected').toLowerCase();
-  const isUnresponsive = (state === 'unresponsive');
-  const isRecovering = (state === 'recovering');
-
-  if (badgeEl) {
-    badgeEl.textContent = `Controller: ${state.toUpperCase()}`;
-    badgeEl.className = `status-badge ${state}`;
-  }
-
-  if (btnEl) {
-    btnEl.hidden = !isUnresponsive && !isRecovering;
-    btnEl.disabled = isRecovering;
-    btnEl.textContent = isRecovering ? 'Recovering controller connection…' : 'Retry controller connection';
-  }
+  window.LowRiderMachineBar?.renderControllerStatus?.();
 }
 
 async function recoverControllerConnection() {
-  try {
-    controllerCommState = 'recovering';
-    renderControllerStatus();
-    const res = await fetch('/api/controller/recover', { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      controllerCommState = 'unresponsive';
-      renderControllerStatus();
-      console.error('[Controller Recovery]', data.error || 'Controller recovery failed.');
-      return false;
-    }
-    controllerCommState = 'connected';
-    renderControllerStatus();
-    return true;
-  } catch (err) {
-    controllerCommState = 'unresponsive';
-    renderControllerStatus();
-    console.error('[Controller Recovery]', err.message);
-    return false;
+  if (window.LowRiderMachineBar?.recoverControllerConnection) {
+    return window.LowRiderMachineBar.recoverControllerConnection();
   }
+  return false;
 }
-
-document.getElementById('btn-retry-controller-conn')?.addEventListener('click', () => {
-  recoverControllerConnection().catch(() => {});
-});
 
 async function sendCmd(cmd) {
   let res;
@@ -4353,7 +4319,6 @@ async function sendCmd(cmd) {
   } catch (netErr) {
     const err = new Error("Marlin did not respond. Machine commands are blocked until controller communication is restored.");
     err.isTimeout = true;
-    controllerCommState = 'unresponsive';
     renderControllerStatus();
     throw err;
   }
@@ -4369,14 +4334,8 @@ async function sendCmd(cmd) {
     err.status = res.status;
     if (res.status === 503 || data.controllerState === 'unresponsive') {
       err.isTimeout = true;
-      controllerCommState = 'unresponsive';
-      renderControllerStatus();
     }
     throw err;
-  }
-  if (controllerCommState === 'unresponsive' || controllerCommState === 'waiting') {
-    controllerCommState = 'connected';
-    renderControllerStatus();
   }
   return data.response || '';
 }
@@ -4389,7 +4348,7 @@ async function captureM114() {
     if (err.isBusy) {
       throw err;
     }
-    if (err.isTimeout || controllerCommState === 'unresponsive') {
+    if (err.isTimeout || getControllerCommState() === 'unresponsive') {
       throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
     }
     throw err;
@@ -4403,7 +4362,7 @@ async function captureM114() {
     if (err.isBusy) {
       throw err;
     }
-    if (err.isTimeout || controllerCommState === 'unresponsive') {
+    if (err.isTimeout || getControllerCommState() === 'unresponsive') {
       throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
     }
     throw err;
@@ -4421,7 +4380,7 @@ async function captureM114() {
     raw2 = await sendCmd('M114');
   } catch (err) {
     if (err.isBusy) throw err;
-    if (err.isTimeout || controllerCommState === 'unresponsive') {
+    if (err.isTimeout || getControllerCommState() === 'unresponsive') {
       throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
     }
     throw err;

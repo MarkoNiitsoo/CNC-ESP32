@@ -399,6 +399,18 @@ export async function createMockServer(options = {}) {
         const command = String((await readJson(req)).cmd || '').trim();
         if (!command) throw new Error('missing cmd');
         const upper = command.toUpperCase();
+        if (env.runner.controllerState === 'unresponsive' || env.runner.controllerState === 'recovering' || env.runner.controllerState === 'waiting') {
+          return json(res, 503, {
+            ok: false,
+            error: env.runner.controllerState === 'unresponsive'
+              ? 'Marlin is not responding. Machine commands are blocked until controller communication is restored.'
+              : (env.runner.controllerState === 'recovering'
+                  ? 'Controller communication recovery is in progress. Machine commands are blocked.'
+                  : 'Marlin is processing a synchronous command. Second command rejected.'),
+            controllerState: env.runner.controllerState,
+            failedCommand: env.runner.lastFailedCommand || command,
+          });
+        }
         if (env.runner.isActive() || (upper === 'M5' && env.runner.status.state === 'RECOVERY_REQUIRED')) {
           return json(res, 409, { ok: false, error: 'active or resumable job; manual command rejected' });
         }
@@ -409,8 +421,11 @@ export async function createMockServer(options = {}) {
           env.runner.lastError = result.error || 'Marlin did not respond within timeout.';
           return json(res, 503, { ok: false, error: env.runner.lastError, controllerState: 'unresponsive', failedCommand: command });
         }
+        if (result.ok === false) {
+          return json(res, 400, { ok: false, error: result.error || result.response, response: result.response, controllerState: 'connected' });
+        }
         if (result.ok && env.frame.trusted) syncMockFrame(env);
-        return json(res, result.ok ? 200 : 400, result);
+        return json(res, 200, result);
       }
       if (req.method === 'GET' && pathname === '/api/job/status') {
         return json(res, 200, {

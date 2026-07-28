@@ -106,6 +106,9 @@ export class MockJobRunner {
     if (this.controllerState === 'recovering') {
       throw new Error('Controller communication recovery is in progress. Machine commands are blocked.');
     }
+    if (this.controllerState === 'waiting') {
+      throw new Error('Marlin is processing a synchronous command. Second command rejected.');
+    }
   }
 
   async recoverController() {
@@ -115,13 +118,19 @@ export class MockJobRunner {
       this.controllerState = 'unresponsive';
       return { ok: false, error: 'M115 recovery probe failed to return Marlin identity content', controllerState: 'unresponsive' };
     }
-    if (this.marlin.controllerResetDetected || m115.response.includes('start')) {
+    if (this.marlin.controllerResetDetected || m115.response.includes('start') || m115.response.includes('RESET')) {
       if (this.frame) {
         this.frame.machineValid = false;
         this.frame.absoluteFromHome = false;
+        this.frame.manualWorkFrameValid = false;
+        this.frame.workZeroValid = false;
         this.frame.homedX = false;
         this.frame.homedY = false;
         this.frame.homedZ = false;
+        this.frame.homingSessionId = '';
+        this.frame.homingEpoch = 0;
+        this.frame.trusted = false;
+        this.frame.revision = (this.frame.revision || 0) + 1;
       }
     }
     const m114 = this.marlin.execute('M114', { priority: true });

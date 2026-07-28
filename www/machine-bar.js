@@ -15,6 +15,7 @@
     projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
     operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true },
     operatorPanelOpen: false,
+    controller: { connected: true, state: 'connected', communication: { state: 'connected', lastError: '', lastFailedCommand: '' } },
   };
   let jogTimer = null;
   let jogUpdatePending = false;
@@ -42,8 +43,84 @@
   const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'RECOVERY_REQUIRED', 'COMPLETED', 'ERROR']);
   const MACHINE_Z_MAX_MM = 70;
 
+  async function recoverControllerConnection() {
+    const btn = el('btn-retry-controller-conn');
+    const msgEl = el('controller-comm-message');
+    if (btn) btn.disabled = true;
+    if (msgEl) {
+      msgEl.textContent = 'Recovering controller communication…';
+      msgEl.hidden = false;
+      msgEl.style.display = 'block';
+    }
+    STATE.controller = { ...STATE.controller, state: 'recovering', communication: { ...(STATE.controller?.communication || {}), state: 'recovering' } };
+    renderControllerStatus();
+
+    try {
+      const res = await fetch('/api/controller/recover', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        if (msgEl) msgEl.textContent = data.error || data.message || 'Controller recovery failed.';
+      } else {
+        if (msgEl) msgEl.textContent = data.message || 'Controller communication restored.';
+      }
+    } catch (err) {
+      if (msgEl) msgEl.textContent = 'Recovery failed: ' + (err.message || String(err));
+    } finally {
+      if (btn && (STATE.controller?.state || STATE.controller?.communication?.state) !== 'recovering') {
+        btn.disabled = false;
+      }
+    }
+  }
+
+  function renderControllerStatus() {
+    const badge = el('controller-comm-status');
+    const btn = el('btn-retry-controller-conn');
+    const msgEl = el('controller-comm-message');
+
+    const state = String(STATE.controller?.state || STATE.controller?.communication?.state || (STATE.controller?.connected === false ? 'unresponsive' : 'connected')).toLowerCase();
+    const lastError = STATE.controller?.communication?.lastError || STATE.controller?.lastError || '';
+
+    if (badge) {
+      badge.textContent = `Controller: ${state.toUpperCase()}`;
+      badge.className = `status-badge status-${state} ${state === 'connected' ? 'connected' : ''}`;
+    }
+
+    if (btn) {
+      btn.hidden = !(state === 'unresponsive' || state === 'recovering');
+      btn.style.display = (state === 'unresponsive' || state === 'recovering') ? 'inline-block' : 'none';
+      btn.disabled = (state === 'recovering');
+    }
+
+    if (msgEl) {
+      if (state === 'unresponsive') {
+        msgEl.textContent = lastError || 'Marlin is not responding. Machine commands are blocked until controller communication is restored.';
+        msgEl.hidden = false;
+        msgEl.style.display = 'block';
+      } else if (state === 'recovering') {
+        msgEl.textContent = 'Controller communication recovery in progress…';
+        msgEl.hidden = false;
+        msgEl.style.display = 'block';
+      } else if (state === 'waiting') {
+        msgEl.textContent = 'Waiting for machine response…';
+        msgEl.hidden = false;
+        msgEl.style.display = 'block';
+      } else {
+        msgEl.hidden = true;
+        msgEl.style.display = 'none';
+      }
+    }
+
+    const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
+    document.querySelectorAll('.requires-controller-comm').forEach((node) => {
+      node.disabled = ordinaryDisabled;
+    });
+  }
+
   window.LowRiderMachineBar = {
     lastCritical: () => STATE.marlinLog?.lastCritical || '',
+    controllerState: () => String(STATE.controller?.state || STATE.controller?.communication?.state || (STATE.controller?.connected === false ? 'unresponsive' : 'connected')).toLowerCase(),
+    recoverControllerConnection,
+    renderControllerStatus,
   };
 
   function el(id) {
@@ -1681,6 +1758,16 @@
       if (document.hidden) stopJog(false, true).catch(() => {});
     });
 
+    const retryBtn = el('btn-retry-controller-conn');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', recoverControllerConnection);
+    }
+
+    window.CncTelemetry?.subscribe('controller', (data) => {
+      STATE.controller = data;
+      renderControllerStatus();
+    });
+
     if (window.CncTelemetry) window.CncTelemetry.start();
     else {
       refreshJobStatus().catch(() => {});
@@ -1693,6 +1780,7 @@
     renderOperatorLock();
     refreshOperatorStatus().catch(() => {});
     operatorTimer = setInterval(operatorHeartbeat, 15000);
+    renderControllerStatus();
     render();
   }
 
