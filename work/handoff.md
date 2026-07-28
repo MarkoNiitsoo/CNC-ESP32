@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-28 - ESP32 Panic Reboot Loop Investigation & Fix Handoff
+
+- Investigated and resolved ESP32 panic reboot loop on `feature/phase1-websocket-transport`:
+- Key Highlights:
+  1. Decoded Panic & Root Cause: `processNetworkTelemetry()` allocated `LogTelemetryEvent events[32];` (9,344 bytes) and `MotionTelemetryEvent events[16];` (1,184 bytes) directly on the task stack inside `telemetryNetworkTask`, exceeding the 8,192-byte stack allocation and causing a task stack overflow panic during startup when log events accumulated.
+  2. Stack Overflow Fix (`src/main.cpp`): Replaced the 32-element local stack array in `processNetworkTelemetry()` with single-item `LogTelemetryEvent logEv;` processing (292 bytes stack) and reduced `MotionTelemetryEvent` batch array to 4 items (296 bytes stack). Increased `ws-telemetry` task stack from 8,192 to 12,288 bytes.
+  3. Diagnostic Checkpoints & FreeRTOS Hooks (`src/main.cpp`): Added `logSystemEvent` checkpoints for mutex creation, queue creation, task creation, and Bluetooth setup. Installed `vApplicationStackOverflowHook` and `vApplicationMallocFailedHook`.
+  4. Cross-Task SD Safety: Maintained strict isolation so `telemetryNetworkTask` (Core 0) never accesses SD or calls `logSystemEvent()` directly, preventing concurrency races with Core 1.
+  5. Regression Testing (`test/firmware/transport-protocol.test.mjs`): Added unit tests verifying 12KB task stack, single-item log event streaming, FreeRTOS hooks, and startup checkpoints.
+  6. Verification: PlatformIO build (`pio run -e esp32cam`) compiled cleanly (19.6% RAM, 73.4% Flash). Full test suite (`npm test`) passed all 47 test files and 468 tests.
+
 ## 2026-07-28 - Aurora Glass Skin Joystick CSS Fix Handoff
 
 - Fixed Aurora Glass skin joystick positioning regression (`www/skins/aurora-glass/theme.css`):

@@ -20,6 +20,14 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
+extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+  (void)xTask;
+  (void)pcTaskName;
+}
+
+extern "C" void vApplicationMallocFailedHook(void) {
+}
+
 namespace {
 constexpr const char *kFirmwareName = "G-code CNC Pendant";
 constexpr const char *firmwareVersion = "0.6.11-guided-cut-workflow";
@@ -2642,27 +2650,27 @@ void processNetworkTelemetry() {
       first = false;
     }
     if (snapshotCopy.dirtyController) {
-      if (!first) patchJson += ",";
+      if (!first) patchJson += ',';
       patchJson += "\"controller\":" + snapshotCopy.controllerJson;
       first = false;
     }
     if (snapshotCopy.dirtyMachine) {
-      if (!first) patchJson += ",";
+      if (!first) patchJson += ',';
       patchJson += "\"machine\":" + snapshotCopy.machineJson;
       first = false;
     }
     if (snapshotCopy.dirtyJob) {
-      if (!first) patchJson += ",";
+      if (!first) patchJson += ',';
       patchJson += "\"job\":" + snapshotCopy.jobJson;
       first = false;
     }
     if (snapshotCopy.dirtyJog) {
-      if (!first) patchJson += ",";
+      if (!first) patchJson += ',';
       patchJson += "\"jog\":" + snapshotCopy.jogJson;
       first = false;
     }
     if (snapshotCopy.dirtyControl) {
-      if (!first) patchJson += ",";
+      if (!first) patchJson += ',';
       patchJson += "\"control\":" + snapshotCopy.controlJson;
       first = false;
     }
@@ -2671,19 +2679,16 @@ void processNetworkTelemetry() {
     for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
       TelemetryClientState &cs = protocolState.clients[i];
       if (cs.connected && cs.handshakeComplete) {
-        bool sentOK = sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
-        if (!sentOK) {
-          cs.resyncPending = true;
-        }
+        sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
       }
     }
   }
 
   if (motionEventQueue != nullptr && uxQueueMessagesWaiting(motionEventQueue) > 0) {
-    MotionTelemetryEvent events[16];
+    MotionTelemetryEvent events[4];
     size_t count = 0;
     MotionTelemetryEvent ev;
-    while (count < 16 && xQueueReceive(motionEventQueue, &ev, 0) == pdTRUE) {
+    while (count < 4 && xQueueReceive(motionEventQueue, &ev, 0) == pdTRUE) {
       events[count++] = ev;
     }
     if (count > 0) {
@@ -2709,41 +2714,34 @@ void processNetworkTelemetry() {
   }
 
   if (logEventQueue != nullptr && uxQueueMessagesWaiting(logEventQueue) > 0 && telemetryHasLogSubscriber()) {
-    LogTelemetryEvent events[32];
-    size_t count = 0;
-    LogTelemetryEvent lev;
-    while (count < 32 && xQueueReceive(logEventQueue, &lev, 0) == pdTRUE) {
-      events[count++] = lev;
-    }
-    if (count > 0) {
-      uint32_t droppedLogs = fetchAndResetLogTelemetryDropped();
-      for (size_t k = 0; k < count; ++k) {
-        const LogTelemetryEvent &logEv = events[k];
-        String data = "{\"entries\":[{\"id\":";
-        data += String(logEv.id);
-        data += ",\"time\":\"";
-        data += String(logEv.timeMs);
-        data += "\",\"direction\":\"";
-        data += jsonEscape(logEv.direction);
-        data += "\",\"priority\":";
-        data += logEv.priority ? "true" : "false";
-        data += ",\"text\":\"";
-        data += jsonEscape(logEv.text);
-        data += "\",\"level\":\"";
-        data += jsonEscape(logEv.level);
-        data += "\"}],\"nextId\":";
-        data += String(logEv.id);
-        data += ",\"lastCritical\":";
-        data += logEv.lastCriticalMessage[0] != '\0' ? "\"" + jsonEscape(logEv.lastCriticalMessage) + "\"" : "null";
-        data += ",\"dropped\":" + String(droppedLogs);
-        data += "}";
+    LogTelemetryEvent logEv;
+    uint32_t droppedLogs = fetchAndResetLogTelemetryDropped();
+    while (xQueueReceive(logEventQueue, &logEv, 0) == pdTRUE) {
+      String data = "{\"entries\":[{\"id\":";
+      data += String(logEv.id);
+      data += ",\"time\":\"";
+      data += String(logEv.timeMs);
+      data += "\",\"direction\":\"";
+      data += jsonEscape(logEv.direction);
+      data += "\",\"priority\":";
+      data += logEv.priority ? "true" : "false";
+      data += ",\"text\":\"";
+      data += jsonEscape(logEv.text);
+      data += "\",\"level\":\"";
+      data += jsonEscape(logEv.level);
+      data += "\"}],\"nextId\":";
+      data += String(logEv.id);
+      data += ",\"lastCritical\":";
+      data += logEv.lastCriticalMessage[0] != '\0' ? "\"" + jsonEscape(logEv.lastCriticalMessage) + "\"" : "null";
+      data += ",\"dropped\":" + String(droppedLogs);
+      data += "}";
+      droppedLogs = 0;
 
-        uint32_t activeRev = snapshotCopy.globalRevision > 0 ? snapshotCopy.globalRevision : getStagedStateRevision();
-        for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
-          TelemetryClientState &cs = protocolState.clients[c];
-          if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
-            sendClientEvent(c, "log", data, activeRev);
-          }
+      uint32_t activeRev = snapshotCopy.globalRevision > 0 ? snapshotCopy.globalRevision : getStagedStateRevision();
+      for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
+        TelemetryClientState &cs = protocolState.clients[c];
+        if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
+          sendClientEvent(c, "log", data, activeRev);
         }
       }
     }
@@ -8760,11 +8758,18 @@ void startHttpServer() {
   server.begin();
   logSystemEvent("HTTP server started port=80 apIp=" + WiFi.softAPIP().toString() +
                  " staIp=" + WiFi.localIP().toString());
+
+  logSystemEvent("[CHECKPOINT] Telemetry mutex creation starting");
   telemetryStateMutex = xSemaphoreCreateMutex();
+  logSystemEvent("[CHECKPOINT] Telemetry mutex creation complete");
+
+  logSystemEvent("[CHECKPOINT] Queue creation starting");
   motionEventQueue = xQueueCreate(16, sizeof(MotionTelemetryEvent));
   logEventQueue = xQueueCreate(32, sizeof(LogTelemetryEvent));
+  logSystemEvent("[CHECKPOINT] Queue creation complete");
 
   if (telemetryStateMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr) {
+    logSystemEvent("[CHECKPOINT] Telemetry initialization failed: allocation error");
     logSystemEvent("Telemetry initialization failed: allocation error");
     if (telemetryStateMutex) { vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr; }
     if (motionEventQueue) { vQueueDelete(motionEventQueue); motionEventQueue = nullptr; }
@@ -8775,8 +8780,11 @@ void startHttpServer() {
 
   initializeStagedState();
 
-  BaseType_t taskRes = xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 8192, nullptr, 1, &telemetryTaskHandle, 0);
+  logSystemEvent("[CHECKPOINT] Task creation starting");
+  BaseType_t taskRes = xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 12288, nullptr, 1, &telemetryTaskHandle, 0);
+  logSystemEvent("[CHECKPOINT] Task creation complete res=" + String((int)taskRes));
   if (taskRes != pdPASS) {
+    logSystemEvent("[CHECKPOINT] Telemetry initialization failed: task creation error");
     logSystemEvent("Telemetry initialization failed: task creation error");
     telemetryTaskHandle = nullptr;
     vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr;
@@ -8785,6 +8793,8 @@ void startHttpServer() {
     setTelemetryStarted(false);
     return;
   }
+
+  logSystemEvent("Telemetry started port=81 queue=ready task=ready");
 }
 } // namespace
 
@@ -8824,8 +8834,9 @@ void setup() {
   logSystemEvent("Device identity load complete hostname=" + deviceIdentity.hostname +
                  " source=" + deviceIdentity.source);
   loadOperatorSettings();
+  const bool operatorSecurityConfigured = operatorPinHash.length() > 0;
   logSystemEvent("Operator settings loaded configured=" +
-                 String(operatorPinHash.length() > 0 ? "true" : "false"));
+                 String(operatorSecurityConfigured ? "true" : "false"));
   logSystemEvent("WiFi setup starting");
   startWifi();
   logSystemEvent("WiFi setup complete mode=" + activeWifiMode + " ssid=" + activeWifiSsid +
@@ -8835,7 +8846,9 @@ void setup() {
   logSystemEvent("HTTP setup dispatching");
   startHttpServer();
   logSystemEvent("Bluetooth setup starting");
+  logSystemEvent("[CHECKPOINT] Bluetooth setup start");
   startBluetoothAdvertisement();
+  logSystemEvent("[CHECKPOINT] Bluetooth setup completion");
   logSystemEvent("BOOT complete bluetooth=" + String(deviceIdentity.bluetoothStarted ? "started" : "stopped"));
 }
 

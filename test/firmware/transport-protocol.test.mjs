@@ -36,19 +36,44 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(telemetryCode).toContain('mirroredState');
     });
 
-    it('uses strictly six canonical top-level state slices without connection slice', () => {
+    it('matches firmware canonical snapshot schema with exactly six top-level slices', () => {
       const canonicalSlices = ['system', 'controller', 'machine', 'job', 'jog', 'control'];
-      const snapshotBuild = mainCppCode.match(/String buildSnapshotFromStagedState[\s\S]*?return json;/)?.[0] || '';
-      for (const slice of canonicalSlices) {
-        expect(snapshotBuild).toContain(`\\"${slice}\\\":`);
-      }
-      expect(snapshotBuild).not.toContain('\\"connection\\":');
+      const snapshotBuilder = mainCppCode.slice(
+        mainCppCode.indexOf('String buildSnapshotFromStagedState('),
+        mainCppCode.indexOf('void stageTelemetryUpdates()')
+      );
+      canonicalSlices.forEach((sliceKey) => {
+        expect(snapshotBuilder).toContain(`\\"${sliceKey}\\\":`);
+      });
+      expect(snapshotBuilder).not.toContain('"connection":');
     });
 
     it('does not require Marlin command parsing to interpret generic state packets', () => {
       expect(telemetryCode).not.toContain('M114');
       expect(telemetryCode).not.toContain('M115');
       expect(telemetryCode).not.toContain('FIRMWARE_NAME');
+    });
+  });
+
+  describe('Startup Safety & Task Stack Isolation', () => {
+    it('prevents stack overflow in telemetryNetworkTask by processing log events sequentially and allocating 12KB stack', () => {
+      expect(mainCppCode).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask, "ws-telemetry", 12288');
+      expect(mainCppCode).not.toContain('LogTelemetryEvent events[32];');
+      expect(mainCppCode).toContain('LogTelemetryEvent logEv;');
+      expect(mainCppCode).toContain('while (xQueueReceive(logEventQueue, &logEv, 0) == pdTRUE)');
+    });
+
+    it('contains FreeRTOS stack overflow and malloc failed hooks', () => {
+      expect(mainCppCode).toContain('vApplicationStackOverflowHook');
+      expect(mainCppCode).toContain('vApplicationMallocFailedHook');
+    });
+
+    it('contains required startup checkpoints', () => {
+      expect(mainCppCode).toContain('[CHECKPOINT] Telemetry mutex creation starting');
+      expect(mainCppCode).toContain('[CHECKPOINT] Queue creation starting');
+      expect(mainCppCode).toContain('[CHECKPOINT] Task creation starting');
+      expect(mainCppCode).toContain('[CHECKPOINT] Bluetooth setup start');
+      expect(mainCppCode).toContain('[CHECKPOINT] Bluetooth setup completion');
     });
   });
 
