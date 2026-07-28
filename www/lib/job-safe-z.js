@@ -118,8 +118,8 @@ export function migrateProjectSafeZ(job = {}, options = {}) {
   return job.projectSafeZ;
 }
 
-export function effectiveProjectSafeZ(job = {}) {
-  const safeZ = migrateProjectSafeZ(job);
+export function effectiveProjectSafeZ(job = {}, options = {}) {
+  const safeZ = migrateProjectSafeZ(job, options);
   return safeZ.resolved ? safeZ.effectiveSafeZ : null;
 }
 

@@ -856,6 +856,20 @@ float extractJsonFloat(const String &body, const char *field, float fallback) {
   return number.length() > 0 ? number.toFloat() : fallback;
 }
 
+float extractJsonObjectFloat(const String &body, const char *objectField, const char *subField, float fallback) {
+  String key = "\"";
+  key += objectField;
+  key += "\"";
+  const int keyIndex = body.indexOf(key);
+  if (keyIndex < 0) return fallback;
+  const int braceIndex = body.indexOf('{', keyIndex);
+  if (braceIndex < 0) return fallback;
+  const int closeBrace = body.indexOf('}', braceIndex);
+  if (closeBrace < 0) return fallback;
+  const String subBody = body.substring(braceIndex, closeBrace + 1);
+  return extractJsonFloat(subBody, subField, fallback);
+}
+
 int extractJsonInt(const String &body, const char *field, int fallback) {
   return static_cast<int>(extractJsonFloat(body, field, static_cast<float>(fallback)));
 }
@@ -4688,8 +4702,151 @@ bool validateTestMotionCommand(const String &line, const String &mode, float saf
   return true;
 }
 
+bool validateBoundsSequence(const String &path, float safeZ, float startX, float startY, float startZ, String &error) {
+  File file = SD_MMC.open(path, FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) file.close();
+    error = "could not open bounds file";
+    return false;
+  }
+
+  bool g21Seen = false;
+  bool g90Seen = false;
+  bool g54Seen = false;
+  bool firstMotionSeen = false;
+  bool returnXySeen = false;
+  bool m400BeforeZRestorationSeen = false;
+  bool startZRestored = false;
+  bool finalM400Seen = false;
+
+  String raw;
+  while (file.available()) {
+    const char c = static_cast<char>(file.read());
+    if (c != '\n') {
+      raw += c;
+      if (raw.length() > kMaxGcodeLineLength) {
+        file.close();
+        error = "bounds file line is too long";
+        return false;
+      }
+      continue;
+    }
+
+    const String line = cleanGcodeLine(raw);
+    raw = "";
+    if (line.length() == 0) continue;
+
+    if (finalM400Seen) {
+      file.close();
+      error = "bounds file contains additional commands after final M400";
+      return false;
+    }
+
+    const int commentIdx = line.indexOf(';');
+    const String upper = (commentIdx >= 0 ? line.substring(0, commentIdx) : line);
+    String trimmed = upper;
+    trimmed.trim();
+    if (trimmed.length() == 0) continue;
+
+    if (trimmed == "G21") g21Seen = true;
+    else if (trimmed == "G90") g90Seen = true;
+    else if (trimmed == "G54") g54Seen = true;
+
+    if (trimmed.startsWith("G0 ") || trimmed.startsWith("G1 ") || trimmed.startsWith("G2 ") || trimmed.startsWith("G3 ")) {
+      if (!g21Seen || !g90Seen || !g54Seen) {
+        file.close();
+        error = "bounds motion requires G21, G90, and G54 established before motion";
+        return false;
+      }
+
+      float valX = NAN;
+      float valY = NAN;
+      float valZ = NAN;
+      const bool hasX = extractGcodeWordValue(trimmed, 'X', valX);
+      const bool hasY = extractGcodeWordValue(trimmed, 'Y', valY);
+      const bool hasZ = extractGcodeWordValue(trimmed, 'Z', valZ);
+
+      if (!firstMotionSeen) {
+        if (!hasZ || hasX || hasY || fabsf(valZ - safeZ) > 0.001f) {
+          file.close();
+          error = "first bounds motion must be Safe Z lift G0 Z" + String(safeZ, 3) + " without XY movement";
+          return false;
+        }
+        firstMotionSeen = true;
+        continue;
+      }
+
+      if (startZRestored) {
+        file.close();
+        error = "bounds file contains motion after start Z restoration";
+        return false;
+      }
+
+      if (m400BeforeZRestorationSeen) {
+        if (!hasZ || hasX || hasY || fabsf(valZ - startZ) > 0.001f) {
+          file.close();
+          error = "bounds Z restoration command must be G0 Z" + String(startZ, 3) + " without XY movement";
+          return false;
+        }
+        startZRestored = true;
+        continue;
+      }
+
+      if (hasZ && valZ < safeZ - 0.001f) {
+        file.close();
+        error = "bounds motion Z descends below Safe Z before start position restoration";
+        return false;
+      }
+
+      if (hasX && hasY && fabsf(valX - startX) <= 0.001f && fabsf(valY - startY) <= 0.001f) {
+        returnXySeen = true;
+      }
+    } else if (trimmed == "M400") {
+      if (startZRestored) {
+        finalM400Seen = true;
+      } else if (returnXySeen) {
+        m400BeforeZRestorationSeen = true;
+      }
+    }
+  }
+
+  if (raw.length() > 0) {
+    const String line = cleanGcodeLine(raw);
+    if (line.length() > 0 && finalM400Seen) {
+      file.close();
+      error = "bounds file contains additional commands after final M400";
+      return false;
+    }
+  }
+  file.close();
+
+  if (!firstMotionSeen) {
+    error = "bounds file must contain initial Safe Z lift motion";
+    return false;
+  }
+  if (!returnXySeen) {
+    error = "bounds file must return to start X/Y before Z restoration";
+    return false;
+  }
+  if (!m400BeforeZRestorationSeen) {
+    error = "bounds file must separate return X/Y motion and Z restoration with M400";
+    return false;
+  }
+  if (!startZRestored) {
+    error = "bounds file must restore starting Z position";
+    return false;
+  }
+  if (!finalM400Seen) {
+    error = "bounds file must end with M400";
+    return false;
+  }
+
+  return true;
+}
+
 bool validateTestMotionFile(const String &path, const String &mode, float safeZ,
-                            uint32_t &commandCount, String &error) {
+                            uint32_t &commandCount, String &error,
+                            float startX = NAN, float startY = NAN, float startZ = NAN) {
   File file = SD_MMC.open(path, FILE_READ);
   if (!file || file.isDirectory()) {
     if (file) file.close();
@@ -4758,6 +4915,13 @@ bool validateTestMotionFile(const String &path, const String &mode, float safeZ,
     error = "test motion file must start with M5, contain motion, and end with M400";
     return false;
   }
+
+  if (mode == "bounds") {
+    if (!validateBoundsSequence(path, safeZ, startX, startY, startZ, error)) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -7130,9 +7294,22 @@ void handleTestMotionStart() {
     return;
   }
 
+  float startX = NAN;
+  float startY = NAN;
+  float startZ = NAN;
+  if (mode == "bounds") {
+    startX = extractJsonObjectFloat(body, "startPosition", "x", NAN);
+    startY = extractJsonObjectFloat(body, "startPosition", "y", NAN);
+    startZ = extractJsonObjectFloat(body, "startPosition", "z", NAN);
+    if (isnan(startX) || isnan(startY) || isnan(startZ)) {
+      sendJsonError(400, "bounds startPosition (x, y, z) is required and must be finite");
+      return;
+    }
+  }
+
   uint32_t commandCount = 0;
   String validationError;
-  if (!validateTestMotionFile(path, mode, safeZ, commandCount, validationError)) {
+  if (!validateTestMotionFile(path, mode, safeZ, commandCount, validationError, startX, startY, startZ)) {
     sendJsonError(400, validationError);
     return;
   }

@@ -42,4 +42,13 @@ describe('dynamic Safe Z validation', () => {
       expect(source.slice(start, end)).toContain('loadProjectSafeZ');
     }
   });
+
+  it('enforces stateful sequence validation for mode: "bounds" test motion', () => {
+    expect(source).toContain('bool validateBoundsSequence(');
+    expect(source).toContain('extractJsonObjectFloat(body, "startPosition", "x", NAN)');
+    expect(source).toContain('bounds motion requires G21, G90, and G54 established before motion');
+    expect(source).toContain('first bounds motion must be Safe Z lift G0 Z');
+    expect(source).toContain('bounds motion Z descends below Safe Z before start position restoration');
+    expect(source).toContain('bounds Z restoration command must be G0 Z');
+  });
 });

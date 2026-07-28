@@ -60,7 +60,10 @@ describe('compact machine drawer', () => {
     const sendStart = preview.indexOf('async function sendBoundingBoxTrace()');
     const sendEnd = preview.indexOf('async function sendAircutToolpath()', sendStart);
     const send = preview.slice(sendStart, sendEnd);
-    expect(send).toContain('const returnCapture = await captureM114()');
+    expect(send).toContain('returnCapture = await captureM114()');
+    expect(send).toContain('const startX = returnCapture?.position?.x');
+    expect(send).toContain('!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(startZ)');
+    expect(send).toContain('Current X/Y/Z could not be confirmed; Cut Bounds was not started.');
     expect(send).toContain("startTestMotionStream('bounds'");
     expect(send).toContain('Starting X/Y/Z restored.');
   });

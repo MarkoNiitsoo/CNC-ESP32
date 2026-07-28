@@ -272,6 +272,28 @@ export class MockJobRunner {
     const job = JSON.parse(await this.sd.readText(request.jobPath));
     this.assertProjectSafeZ(job, safeZ);
 
+    let startX = null;
+    let startY = null;
+    let startZ = null;
+    if (mode === 'bounds') {
+      const pos = request.startPosition;
+      if (!pos || typeof pos !== 'object') {
+        throw new Error('bounds startPosition (x, y, z) is required and must be finite');
+      }
+      const px = pos.x;
+      const py = pos.y;
+      const pz = pos.z;
+      if (px === null || px === undefined || py === null || py === undefined || pz === null || pz === undefined) {
+        throw new Error('bounds startPosition (x, y, z) is required and must be finite');
+      }
+      startX = Number(px);
+      startY = Number(py);
+      startZ = Number(pz);
+      if (!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(startZ)) {
+        throw new Error('bounds startPosition (x, y, z) is required and must be finite');
+      }
+    }
+
     const text = await this.sd.readText(path);
     const commands = text.split(/\r?\n/).map(cleanLine).filter(Boolean);
     if (!commands.length || commands.length > 20000 || commands[0].toUpperCase() !== 'M5' ||
@@ -297,6 +319,90 @@ export class MockJobRunner {
       }
     }
     if (!hasMotion) throw new Error('test motion file must contain motion');
+
+    if (mode === 'bounds') {
+      let g21Seen = false;
+      let g90Seen = false;
+      let g54Seen = false;
+      let firstMotionSeen = false;
+      let returnXySeen = false;
+      let m400BeforeZRestorationSeen = false;
+      let startZRestored = false;
+      let finalM400Seen = false;
+
+      for (const command of commands) {
+        if (finalM400Seen) {
+          throw new Error('bounds file contains additional commands after final M400');
+        }
+        const upper = command.split(';')[0].trim().toUpperCase();
+        if (!upper) continue;
+
+        if (upper === 'G21') g21Seen = true;
+        else if (upper === 'G90') g90Seen = true;
+        else if (upper === 'G54') g54Seen = true;
+
+        const words = upper.split(/\s+/);
+        const code = words[0];
+        if (['G0', 'G1', 'G2', 'G3'].includes(code)) {
+          if (!g21Seen || !g90Seen || !g54Seen) {
+            throw new Error('bounds motion requires G21, G90, and G54 established before motion');
+          }
+
+          const getWord = (char) => {
+            const w = words.find((item) => item.startsWith(char));
+            return w && Number.isFinite(Number(w.slice(1))) ? Number(w.slice(1)) : null;
+          };
+
+          const valX = getWord('X');
+          const valY = getWord('Y');
+          const valZ = getWord('Z');
+
+          const hasX = valX !== null;
+          const hasY = valY !== null;
+          const hasZ = valZ !== null;
+
+          if (!firstMotionSeen) {
+            if (!hasZ || hasX || hasY || Math.abs(valZ - safeZ) > 0.001) {
+              throw new Error(`first bounds motion must be Safe Z lift G0 Z${safeZ} without XY movement`);
+            }
+            firstMotionSeen = true;
+            continue;
+          }
+
+          if (startZRestored) {
+            throw new Error('bounds file contains motion after start Z restoration');
+          }
+
+          if (m400BeforeZRestorationSeen) {
+            if (!hasZ || hasX || hasY || Math.abs(valZ - startZ) > 0.001) {
+              throw new Error(`bounds Z restoration command must be G0 Z${startZ} without XY movement`);
+            }
+            startZRestored = true;
+            continue;
+          }
+
+          if (hasZ && valZ < safeZ - 0.001) {
+            throw new Error('bounds motion Z descends below Safe Z before start position restoration');
+          }
+
+          if (hasX && hasY && Math.abs(valX - startX) <= 0.001 && Math.abs(valY - startY) <= 0.001) {
+            returnXySeen = true;
+          }
+        } else if (upper === 'M400') {
+          if (startZRestored) {
+            finalM400Seen = true;
+          } else if (returnXySeen) {
+            m400BeforeZRestorationSeen = true;
+          }
+        }
+      }
+
+      if (!firstMotionSeen) throw new Error('bounds file must contain initial Safe Z lift motion');
+      if (!returnXySeen) throw new Error('bounds file must return to start X/Y before Z restoration');
+      if (!m400BeforeZRestorationSeen) throw new Error('bounds file must separate return X/Y motion and Z restoration with M400');
+      if (!startZRestored) throw new Error('bounds file must restore starting Z position');
+      if (!finalM400Seen) throw new Error('bounds file must end with M400');
+    }
 
     this.status = {
       ...this.emptyStatus(), state: 'RUNNING', gcodePath: path, startMode: 'validated_test_motion',

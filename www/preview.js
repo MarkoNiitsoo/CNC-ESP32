@@ -462,7 +462,7 @@ async function handleReadinessAction(action) {
 
 function workflowHardBlockers() {
   const blockers = [...activeRunBlockers()];
-  const safeZ = jobState ? migrateProjectSafeZ(jobState) : null;
+  const safeZ = jobState ? migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} }) : null;
   if (!safeZ?.resolved) blockers.push(safeZ?.errors?.[0] || 'Project Safe Z is unresolved.');
   (currentPreflight?.checks || [])
     .filter((check) => check.level === 'fail' && check.id !== 'workZero')
@@ -947,7 +947,7 @@ function refreshToolpathEstimateForFeed() {
 }
 
 function projectSafeZValue() {
-  return jobState ? effectiveProjectSafeZ(jobState) : null;
+  return jobState ? effectiveProjectSafeZ(jobState, { frame: currentMachineFrame || {} }) : null;
 }
 
 function jobIsLive() {
@@ -2093,7 +2093,7 @@ function ensureJobState() {
   jobState.jobPath = jobPathFor(filePath);
   ensureActiveRunShape(jobState);
   if (!jobState.startMode) jobState.startMode = 'use_active_work_zero';
-  migrateProjectSafeZ(jobState);
+  migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} });
   delete jobState.safeStartZ;
   if (!jobState.startChecklist) jobState.startChecklist = defaultRunChecklistState();
   if (jobState.allowedWorkspaceCommands !== true) jobState.allowedWorkspaceCommands = false;
@@ -3693,7 +3693,8 @@ function dryRunPrimaryLabel() {
 }
 
 function isDryRunWarningMessage(message) {
-  return /^Large aircut\./i.test(message || '');
+  return /^Large aircut\./i.test(message || '') ||
+    /^Cut bounds could not be identified/i.test(message || '');
 }
 
 function dryRunStatusMessage() {
@@ -3948,24 +3949,25 @@ function testMotionPath(mode) {
   return `/jobs/generated/${sourceName}.${mode}.gc`;
 }
 
-async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {}) {
+async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {}, extraPayload = {}) {
   if (activeTestMotion) throw new Error('Another test-motion stream is already active.');
   const path = testMotionPath(mode);
   const { toolpath } = await toolpathModulesPromise;
   const statusPosition = jobRunStatus?.position || jobRunStatus?.lastKnownPosition || {};
   const animationModel = toolpath.parseGCodeToToolpath(`${commands.join('\n')}\n`, {
     initialPosition: {
-      x: Number(statusPosition.x) || 0,
-      y: Number(statusPosition.y) || 0,
-      z: Number(statusPosition.z) || 0,
+      x: Number.isFinite(Number(extraPayload?.startPosition?.x)) ? Number(extraPayload.startPosition.x) : (Number(statusPosition.x) || 0),
+      y: Number.isFinite(Number(extraPayload?.startPosition?.y)) ? Number(extraPayload.startPosition.y) : (Number(statusPosition.y) || 0),
+      z: Number.isFinite(Number(extraPayload?.startPosition?.z)) ? Number(extraPayload.startPosition.z) : (Number(statusPosition.z) || 0),
     },
   });
   await uploadGeneratedRun(path, `${commands.join('\n')}\n`);
 
+  const payload = { path, mode, safeZ, jobPath: jobPathFor(filePath), ...extraPayload };
   const res = await fetch('/api/test-motion/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, mode, safeZ, jobPath: jobPathFor(filePath) }),
+    body: JSON.stringify(payload),
   });
   const started = await readJsonOrThrow(res);
   if (!res.ok) throw new Error(started.error || 'Test motion start failed');
@@ -4346,7 +4348,7 @@ async function loadJob() {
   ensureZeroState(jobState);
   ensureActiveRunShape(jobState);
   ensureHistoryShape(jobState);
-  migrateProjectSafeZ(jobState);
+  migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} });
   applyProjectSafeZToInputs();
   applyPlacementToInputs(jobState.placement);
   if (jobState.dryRun) {
@@ -4414,7 +4416,7 @@ function applyLoadedJobState(loaded) {
   ensureZeroState(jobState);
   ensureActiveRunShape(jobState);
   ensureHistoryShape(jobState);
-  migrateProjectSafeZ(jobState);
+  migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} });
   applyProjectSafeZToInputs();
   applyPlacementToInputs(jobState.placement);
   if (jobState.dryRun?.margin !== undefined) traceMarginInput.value = jobState.dryRun.margin;
@@ -4655,7 +4657,7 @@ function applySafeZInputLimits() {
 }
 
 function safeZValidationMessage(value) {
-  const projectSafeZ = jobState ? migrateProjectSafeZ(jobState) : null;
+  const projectSafeZ = jobState ? migrateProjectSafeZ(jobState, { frame: currentMachineFrame || {} }) : null;
   if (!projectSafeZ?.resolved) return projectSafeZ?.errors?.[0] || 'Project Safe Z is unresolved.';
   if (Math.abs(Number(value) - Number(projectSafeZ.effectiveSafeZ)) > 0.001) {
     return 'Safety movement Z does not match the effective Project Safe Z.';
@@ -4892,10 +4894,28 @@ async function sendBoundingBoxTrace() {
     return;
   }
 
-  const returnCapture = await captureM114();
-  const startX = Number(returnCapture.position.x) || 0;
-  const startY = Number(returnCapture.position.y) || 0;
-  const startZ = Number(returnCapture.position.z) || 0;
+  let returnCapture;
+  try {
+    returnCapture = await captureM114();
+  } catch (err) {
+    const unconfirmedMsg = 'Current X/Y/Z could not be confirmed; Cut Bounds was not started.';
+    console.error('[Cut Bounds] Position capture failed:', err.message);
+    appendDryRunLog(unconfirmedMsg);
+    setJobResult(unconfirmedMsg, true);
+    return;
+  }
+
+  const startX = returnCapture?.position?.x;
+  const startY = returnCapture?.position?.y;
+  const startZ = returnCapture?.position?.z;
+
+  if (!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(startZ)) {
+    const unconfirmedMsg = 'Current X/Y/Z could not be confirmed; Cut Bounds was not started.';
+    console.error('[Cut Bounds] Position capture returned invalid coordinates:', returnCapture);
+    appendDryRunLog(unconfirmedMsg);
+    setJobResult(unconfirmedMsg, true);
+    return;
+  }
 
   generateTraceCommands({ x: startX, y: startY, z: startZ });
 
@@ -4910,6 +4930,8 @@ async function sendBoundingBoxTrace() {
   try {
     const finalStatus = await startTestMotionStream('bounds', traceCommands, safeZ, (status) => {
       appendDryRunLog(`Cut Bounds stream ${Number(status.acknowledgedLineCount || 0)}/${traceCommands.length} (${Number(status.progressPercent || 0).toFixed(1)}%)`);
+    }, {
+      startPosition: { x: startX, y: startY, z: startZ },
     });
     startingXyzRestored = true;
     dryRunStatus = 'complete';

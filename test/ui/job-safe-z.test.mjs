@@ -272,4 +272,17 @@ describe('Project Safe Z Version 2', () => {
     expect(recalculated.resolved).toBe(false);
     expect(recalculated.effectiveSafeZ).toBeNull();
   });
+
+  it('effectiveProjectSafeZ helper maintains resolved machine-max Safe Z across frame workZeroMachineZ changes', () => {
+    const job = {
+      programZ: { selectedSafeZ: null, selectedSource: 'machine-max', confidence: 'fallback' },
+      projectSafeZ: { version: 2, extraClearanceMm: 0 },
+    };
+    const frame1 = { trusted: true, workZeroValid: true, workZeroMachine: { z: 25 } };
+    const limits = { zMax: 70 };
+    expect(effectiveProjectSafeZ(job, { frame: frame1, limits })).toBe(45);
+
+    const frame2 = { trusted: true, workZeroValid: true, workZeroMachine: { z: 30 } };
+    expect(effectiveProjectSafeZ(job, { frame: frame2, limits })).toBe(40);
+  });
 });

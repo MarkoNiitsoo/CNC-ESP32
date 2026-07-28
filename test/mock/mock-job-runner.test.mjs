@@ -339,12 +339,136 @@ describe('MockJobRunner', () => {
     await ctx.sd.writeText(boundsPath, [
       'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
       'G0 X10 Y10 F1500', 'G0 X50 Y10 F1500', 'G0 X50 Y50 F1500', 'G0 X10 Y50 F1500', 'G0 X10 Y10 F1500',
-      'M400',
+      'G0 X2 Y3 F1500', 'M400', 'G0 Z0 F400', 'M400',
     ].join('\n'));
-    await ctx.runner.startTestMotion({ path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath });
+    await ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: { x: 2, y: 3, z: 0 },
+    });
     expect(ctx.runner.status.streamMode).toBe('bounds');
-    await expect(ctx.runner.startTestMotion({ path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath }))
-      .rejects.toThrow(/already active/);
+    await expect(ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: { x: 2, y: 3, z: 0 },
+    })).rejects.toThrow(/already active/);
     expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
+  });
+
+  it('inspects Marlin TX log for valid Cut Bounds stream and safety sequence', async () => {
+    const ctx = await fixture({ delay: 5 });
+    const boundsPath = '/jobs/generated/valid.bounds.gc';
+    await ctx.sd.writeText(boundsPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X10 Y10 F1500', 'G0 X50 Y10 F1500', 'G0 X50 Y50 F1500', 'G0 X10 Y50 F1500', 'G0 X10 Y10 F1500',
+      'G0 X0 Y0 F1500', 'M400', 'G0 Z0 F400', 'M400',
+    ].join('\n'));
+
+    await ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: { x: 0, y: 0, z: 0 },
+    });
+    expect(await waitForState(ctx.runner, 'COMPLETED')).toBe('COMPLETED');
+
+    const txLogs = ctx.marlin.log.filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    const firstMotion = txLogs.find((cmd) => cmd.startsWith('G0') || cmd.startsWith('G1'));
+    expect(firstMotion).toBe('G0 Z15 F400');
+
+    const returnXyIndex = txLogs.indexOf('G0 X0 Y0 F1500');
+    const sepM400Index = txLogs.indexOf('M400', returnXyIndex);
+    const descentZIndex = txLogs.indexOf('G0 Z0 F400', sepM400Index);
+    const finalM400Index = txLogs.indexOf('M400', descentZIndex);
+
+    expect(returnXyIndex).toBeGreaterThan(-1);
+    expect(sepM400Index).toBeGreaterThan(returnXyIndex);
+    expect(descentZIndex).toBeGreaterThan(sepM400Index);
+    expect(finalM400Index).toBeGreaterThan(descentZIndex);
+  });
+
+  it('rejects bounds stream when startPosition is missing or invalid without sending Marlin commands', async () => {
+    const ctx = await fixture();
+    const boundsPath = '/jobs/generated/test.bounds.gc';
+    await ctx.sd.writeText(boundsPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X0 Y0 F1500', 'M400', 'G0 Z0 F400', 'M400',
+    ].join('\n'));
+
+    await expect(ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: null,
+    })).rejects.toThrow(/startPosition.*required/);
+    expect(ctx.marlin.log.filter((entry) => entry.direction === 'tx')).toHaveLength(0);
+
+    await expect(ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: { x: null, y: 0, z: 0 },
+    })).rejects.toThrow(/startPosition.*finite/);
+    expect(ctx.marlin.log.filter((entry) => entry.direction === 'tx')).toHaveLength(0);
+  });
+
+  it('rejects malformed bounds files with early Z descent or wrong return XYZ', async () => {
+    const earlyDescent = await fixture();
+    const earlyPath = '/jobs/generated/early.bounds.gc';
+    await earlyDescent.sd.writeText(earlyPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X10 Y10 Z-1 F1500', 'M400',
+    ].join('\n'));
+    await expect(earlyDescent.runner.startTestMotion({
+      path: earlyPath, mode: 'bounds', safeZ: 15, jobPath: earlyDescent.jobPath,
+      startPosition: { x: 0, y: 0, z: 0 },
+    })).rejects.toThrow(/Z descends below Safe Z/);
+
+    const wrongXyz = await fixture();
+    const wrongPath = '/jobs/generated/wrong.bounds.gc';
+    await wrongXyz.sd.writeText(wrongPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X10 Y10 F1500', 'G0 X0 Y0 F1500', 'M400', 'G0 Z5 F400', 'M400',
+    ].join('\n'));
+    await expect(wrongXyz.runner.startTestMotion({
+      path: wrongPath, mode: 'bounds', safeZ: 15, jobPath: wrongXyz.jobPath,
+      startPosition: { x: 0, y: 0, z: 0 },
+    })).rejects.toThrow(/Z restoration command must be G0 Z0/);
+  });
+
+  it('leaves final Z descent absent from Marlin log if bounds stream is stopped before descent', async () => {
+    const ctx = await fixture({ delay: 50 });
+    const boundsPath = '/jobs/generated/stop.bounds.gc';
+    await ctx.sd.writeText(boundsPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X10 Y10 F1500', 'G0 X50 Y10 F1500', 'G0 X50 Y50 F1500', 'G0 X10 Y50 F1500', 'G0 X10 Y10 F1500',
+      'G0 X0 Y0 F1500', 'M400', 'G0 Z0 F400', 'M400',
+    ].join('\n'));
+
+    await ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: { x: 0, y: 0, z: 0 },
+    });
+    await waitForState(ctx.runner, 'RUNNING');
+    await wait(20);
+    ctx.runner.stop();
+    expect(await waitForState(ctx.runner, 'STOPPED')).toBe('STOPPED');
+
+    const txLogs = ctx.marlin.log.filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    expect(txLogs).not.toContain('G0 Z0 F400');
+  });
+
+  it('leaves final Z descent absent from Marlin log if simulated error occurs before descent', async () => {
+    const ctx = await fixture({ delay: 50 });
+    const boundsPath = '/jobs/generated/error.bounds.gc';
+    await ctx.sd.writeText(boundsPath, [
+      'M5', 'G21', 'G90', 'G54', 'G0 Z15 F400',
+      'G0 X10 Y10 F1500', 'G0 X50 Y10 F1500', 'G0 X50 Y50 F1500', 'G0 X10 Y50 F1500', 'G0 X10 Y10 F1500',
+      'G0 X0 Y0 F1500', 'M400', 'G0 Z0 F400', 'M400',
+    ].join('\n'));
+
+    await ctx.runner.startTestMotion({
+      path: boundsPath, mode: 'bounds', safeZ: 15, jobPath: ctx.jobPath,
+      startPosition: { x: 0, y: 0, z: 0 },
+    });
+    await waitForState(ctx.runner, 'RUNNING');
+    await wait(20);
+    ctx.runner.fail('Printer stalled');
+    expect(await waitForState(ctx.runner, 'ERROR')).toBe('ERROR');
+
+    const txLogs = ctx.marlin.log.filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
+    expect(txLogs).not.toContain('G0 Z0 F400');
   });
 });

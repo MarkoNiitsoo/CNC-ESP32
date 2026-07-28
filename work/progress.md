@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-07-28 - Project Safe Z & Cut Bounds Safety Corrections Pass
+
+- Completed Project Safe Z and Cut Bounds safety corrections on `feature/phase1-websocket-transport`:
+  1. Frame-Aware Safe Z Lookup (`www/lib/job-safe-z.js`, `www/preview.js`): Updated `effectiveProjectSafeZ(job, options)` to accept and forward `options`. Updated `projectSafeZValue()` and all UI `migrateProjectSafeZ` calls to pass `{ frame: currentMachineFrame || {} }`. Added integration test in `test/ui/job-safe-z.test.mjs` proving machine-max Safe Z stays resolved across Work Zero changes (25mm -> 45mm, 30mm -> 40mm).
+  2. Position Capture & Unconfirmed M114 Handling (`www/preview.js`): Removed all `|| 0` fallbacks in `sendBoundingBoxTrace()`. Require `startX`, `startY`, `startZ` to be finite numbers. If unconfirmed or missing/null/NaN: logs `"Current X/Y/Z could not be confirmed; Cut Bounds was not started."`, updates dry run log and job result, and returns before file generation/upload or API calls. Added assertions in `test/ui/machine-controls.test.mjs`.
+  3. Non-Blocking Raw Bounds Fallback Warning Classifier (`www/preview.js`): Updated `isDryRunWarningMessage()` to classify `"Cut bounds could not be identified..."` as a non-blocking warning (`error: false`), keeping the action button enabled when `traceSafety.ok === true`.
+  4. Stateful Firmware & Mock Bounds Sequence Validation (`src/main.cpp`, `dev/mock-job-runner.mjs`): Updated `POST /api/test-motion/start` payload to include `startPosition: { x, y, z }`. Implemented 9-step stateful sequence validator enforcing: 1. M5 first, 2. G21/G90/G54 established before motion, 3. first motion is `G0 Z<safeZ>` without XY, 4. no XY motion before initial Safe Z lift, 5. bounds/perimeter motion Z >= safeZ, 6. return `G0 X<startX> Y<startY>` followed by `M400`, 7. next motion is `G0 Z<startZ>` without XY, 8. ends with `M400`, 9. no motion following final M400.
+  5. Mock Marlin Command Log Execution Tests (`test/mock/mock-job-runner.test.mjs`): Added 10-point Marlin command log inspection tests asserting exact TX command ordering, `M400` separation, initial Safe Z lift, return X/Y before Z descent, final Z equality, unconfirmed start position rejection, early Z descent rejection, and absence of descent after Stop or error.
+  6. Verification: `npm test` passed 47/47 test files and 487/487 tests. `pio run -e esp32cam` compiled cleanly (RAM: 19.6%, Flash: 73.7%).
+
 ## 2026-07-28 - Project Safe Z Integration & Cut Bounds Execution Repair Pass
 
 - Completed Project Safe Z integration and Cut Bounds test motion execution repair on `feature/phase1-websocket-transport`:
