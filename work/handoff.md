@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-07-29 - Firmware and Mock Parity Corrections Handoff
+
+- Completed 4 final firmware and mock parity corrections on `feature/phase1-websocket-transport`:
+- Key Highlights:
+  1. Preserved `PAUSED_INTACT` After Failed `R000` Write (`src/main.cpp`): In `handleJobResume()`, removed `setJobError()` on pre-write `R000` rejection. `jobStatus.state` remains `PausedIntact`, `directResumeValid` remains `true`, `pauseRealtimeHold` remains `true`, and open/checkpointed job file is preserved. Sets `lastError` and returns HTTP 503 so the operator can retry Resume.
+  2. Accurate `P000` Failure Representation (`src/main.cpp`, `dev/mock-job-runner.mjs`): In `handleJobPause()`, failed `P000` write calls `setJobCommunicationLost()`, transitioning state to `Error` with `COMMUNICATION_LOST`. Does not claim `PAUSED_INTACT` or report "Motion held". Stops sending stream lines, requires Stop/recovery, and preserves active job checkpoint on SD. Updated mock runner `pause()` to match production behavior.
+  3. Restored Mock Stream Parity & Workspace Validation (`dev/mock-job-runner.mjs`, `test/mock/mock-job-runner.test.mjs`): Restored line byte accounting, acknowledged byte offset after complete source line, progress percentage, non-G54 workspace rejection when `allowedWorkspaceCommands` is false, and blank-line offset behavior. Added tests proving byte offset advances beyond zero, final offset equals file size, forbidden G55 is rejected, and allowed G54 is accepted.
+  4. Explicit Production & Mock Parity Source Audit Tests (`test/firmware/controller-communication.test.mjs`): Added Source Audit test (Test 24) verifying production source semantics in `src/main.cpp` for `R000` (fails if `setJobError` is called), `P000` (verifies `setJobCommunicationLost`), and `M220` preamble failure (verifies error capture before `jobStatus` reset).
+  5. Verification:
+     - `npm test`: **516/516 tests passed** across 48 test files (0 failed).
+     - `pio test -e native`: **13/13 native C++ test cases passed** (0 failed).
+     - `pio run -e esp32cam`: **SUCCESS** (RAM: 19.7%, Flash: 74.2%).
+
 ## 2026-07-29 - Terminal Response Error State Promotion, Gated UART Drain & Recovery Token Tightening Handoff
 
 - Completed 6 core correctness fixes on `feature/phase1-websocket-transport`:

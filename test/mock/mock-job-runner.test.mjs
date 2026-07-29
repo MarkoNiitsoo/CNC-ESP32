@@ -471,4 +471,38 @@ describe('MockJobRunner', () => {
     const txLogs = ctx.marlin.log.filter((entry) => entry.direction === 'tx').map((entry) => entry.text);
     expect(txLogs).not.toContain('G0 Z0 F400');
   });
+
+  it('advances byte offset beyond zero on first acknowledged command and equals file size on completion', async () => {
+    const gcode = 'G21\nG90\nG0 Z15\nG1 X10 Y10 F1000\n';
+    const ctx = await fixture({ gcode, delay: 10 });
+    const fileSize = Buffer.byteLength(gcode);
+    await ctx.runner.start(ctx.request);
+    await waitForState(ctx.runner, 'RUNNING');
+    await wait(30);
+    expect(ctx.runner.status.lastAcknowledgedByteOffset).toBeGreaterThan(0);
+    await waitForState(ctx.runner, 'COMPLETED');
+    expect(ctx.runner.status.lastAcknowledgedByteOffset).toBe(fileSize);
+    expect(ctx.runner.status.currentByteOffset).toBe(fileSize);
+    expect(ctx.runner.status.progressPercent).toBe(100);
+  });
+
+  it('rejects forbidden G55 workspace command when allowedWorkspaceCommands is false', async () => {
+    const gcode = 'G21\nG90\nG55\nG0 Z15\n';
+    const ctx = await fixture({ gcode, delay: 10 });
+    ctx.runner.status.allowedWorkspaceCommands = false;
+    const promise = ctx.runner.start(ctx.request);
+    const finalState = await waitForState(ctx.runner, 'ERROR');
+    expect(finalState).toBe('ERROR');
+    expect(ctx.runner.status.lastError).toContain('Non-default workspace command found');
+    await promise.catch(() => {});
+  });
+
+  it('accepts allowed G54 workspace command', async () => {
+    const gcode = 'G21\nG90\nG54\nG0 Z15\n';
+    const ctx = await fixture({ gcode, delay: 10 });
+    ctx.runner.status.allowedWorkspaceCommands = false;
+    await ctx.runner.start(ctx.request);
+    const finalState = await waitForState(ctx.runner, 'COMPLETED');
+    expect(finalState).toBe('COMPLETED');
+  });
 });

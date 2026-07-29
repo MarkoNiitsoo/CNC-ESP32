@@ -574,11 +574,23 @@ export class MockJobRunner {
       if (this.status.state !== 'RUNNING' && this.status.state !== 'RESUMING') return;
       const original = lines[index];
       const command = cleanLine(original);
-      this.status.currentLineNumber = index + 1;
-      this.status.currentByteOffset = offset;
-      offset += Buffer.byteLength(original) + 1;
-      if (!command) continue;
+      const lineBytes = Buffer.byteLength(original) + (index < lines.length - 1 ? 1 : 0);
+      offset += lineBytes;
+      this.status.currentByteOffset = Math.min(offset, this.status.fileSize);
+      if (!command) {
+        this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
+        this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
+        continue;
+      }
       commandLineNumber += 1;
+      this.status.currentLineNumber = commandLineNumber;
+
+      const workspace = command.toUpperCase().match(/\bG5(?:4|5|6|7|8|9(?:\.[123])?)\b/)?.[0];
+      if (workspace && workspace !== 'G54' && !this.status.allowedWorkspaceCommands) {
+        this.fail('Non-default workspace command found. This may conflict with captured work zero.');
+        return;
+      }
+
       if (isM6(command)) {
         this.status.lastCommand = command;
         this.handleToolChange(command);
@@ -623,7 +635,17 @@ export class MockJobRunner {
   pause() {
     if (this.status.state !== 'RUNNING') throw new Error('job is not running');
     if (this.simulateP000Failure) {
+      this.status.state = 'ERROR';
+      this.status.errorCode = 'COMMUNICATION_LOST';
+      this.status.communicationLostAtMs = Date.now();
+      this.status.communicationLostCommand = 'P000';
       this.status.lastError = 'P000 realtime pause rejected: UART write failed';
+      this.status.pauseRequested = false;
+      this.status.directResumeValid = false;
+      this.status.pauseRealtimeHold = false;
+      this.status.streamingPausedReason = '';
+      this.status.communicationLostWorkPositionValid = true;
+      this.status.communicationLostMachinePositionValid = true;
       throw new Error(this.status.lastError);
     }
     this.status.state = 'PAUSING';

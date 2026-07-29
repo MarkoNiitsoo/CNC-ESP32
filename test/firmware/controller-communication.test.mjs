@@ -356,7 +356,7 @@ describe('Controller Communication Correctness Fixes', () => {
     expect(env.runner.isActive()).toBe(false);
   });
 
-  it('22. P000 writer failure on /api/job/pause returns HTTP 503 without entering PAUSED_INTACT', async () => {
+  it('22. P000 writer failure on /api/job/pause returns HTTP 503 without claiming PAUSED_INTACT', async () => {
     const { base, env } = await startServer();
     env.runner.status.state = 'RUNNING';
     env.runner.simulateP000Failure = true;
@@ -366,13 +366,17 @@ describe('Controller Communication Correctness Fixes', () => {
     const data = await res.json();
     expect(data.ok).toBe(false);
     expect(data.error).toContain('P000 realtime pause rejected: UART write failed');
-    expect(env.runner.status.state).toBe('RUNNING');
+    expect(env.runner.status.state).toBe('ERROR');
+    expect(env.runner.status.errorCode).toBe('COMMUNICATION_LOST');
+    expect(env.runner.status.directResumeValid).toBe(false);
+    expect(env.runner.status.streamingPausedReason).not.toContain('Motion held');
   });
 
   it('23. R000 writer failure on /api/job/resume returns HTTP 503 and preserves PAUSED_INTACT state', async () => {
     const { base, env } = await startServer();
     env.runner.status.state = 'PAUSED_INTACT';
     env.runner.status.directResumeValid = true;
+    env.runner.status.pauseRealtimeHold = true;
     env.runner.status.realtimeHoldActive = true;
     env.runner.simulateR000Failure = true;
 
@@ -383,5 +387,32 @@ describe('Controller Communication Correctness Fixes', () => {
     expect(data.error).toContain('R000 realtime resume rejected: UART write failed');
     expect(env.runner.status.state).toBe('PAUSED_INTACT');
     expect(env.runner.status.directResumeValid).toBe(true);
+    expect(env.runner.status.pauseRealtimeHold).toBe(true);
+  });
+
+  it('24. Production source audit verifies P000 communication loss, R000 state preservation without setJobError, and M220 preamble error capture', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const mainCpp = await readFile('src/main.cpp', 'utf8');
+
+    // 1. Verify R000 failure in handleJobResume does NOT call setJobError
+    const resumeHandlerMatch = mainCpp.match(/void handleJobResume\(\)\s*\{([\s\S]*?)\n\}/);
+    expect(resumeHandlerMatch).not.toBeNull();
+    const resumeHandlerBody = resumeHandlerMatch[1];
+    expect(resumeHandlerBody).toContain('writeControllerLine("R000"');
+    expect(resumeHandlerBody).not.toMatch(/writeControllerLine\("R000"[\s\S]*?setJobError/);
+
+    // 2. Verify P000 failure in handleJobPause calls setJobCommunicationLost
+    const pauseHandlerMatch = mainCpp.match(/void handleJobPause\(\)\s*\{([\s\S]*?)\n\}/);
+    expect(pauseHandlerMatch).not.toBeNull();
+    const pauseHandlerBody = pauseHandlerMatch[1];
+    expect(pauseHandlerBody).toContain('writeControllerLine("P000"');
+    expect(pauseHandlerBody).toContain('setJobCommunicationLost');
+
+    // 3. Verify Production Resume M220 preamble failure captures errors before jobStatus reset
+    const prodResumeHandlerMatch = mainCpp.match(/void handleProductionResumeStart\(\)\s*\{([\s\S]*?)\n\}/);
+    expect(prodResumeHandlerMatch).not.toBeNull();
+    const prodResumeHandlerBody = prodResumeHandlerMatch[1];
+    expect(prodResumeHandlerBody).toContain('sendFeedOverrideImmediate');
+    expect(prodResumeHandlerBody).toContain('lastFeedOverrideError');
   });
 });

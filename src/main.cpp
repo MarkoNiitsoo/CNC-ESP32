@@ -7903,7 +7903,8 @@ void handleJobPause() {
   if (machineProfile.capRealtimeReporting) {
     String writeErr;
     if (!writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
-      setJobError("P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed"));
+      const String errMsg = "P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
+      setJobCommunicationLost(errMsg);
       touchJobStatus();
       sendJsonError(503, jobStatus.lastError);
       return;
@@ -7964,7 +7965,7 @@ void handleJobResume() {
   if (realtimeHold) {
     String writeErr;
     if (!writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
-      setJobError("R000 realtime resume rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed"));
+      jobStatus.lastError = "R000 realtime resume rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
       touchJobStatus();
       sendJsonError(503, jobStatus.lastError);
       return;
