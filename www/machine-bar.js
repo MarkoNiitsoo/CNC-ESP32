@@ -77,12 +77,20 @@
     const btn = el('btn-retry-controller-conn');
     const msgEl = el('controller-comm-message');
 
+    const transportStatus = window.CncTelemetry?.transportStatus || 'synchronized';
+    const isTransportStale = transportStatus !== 'synchronized';
+
     const state = String(STATE.controller?.state || STATE.controller?.communication?.state || (STATE.controller?.connected === false ? 'unresponsive' : 'connected')).toLowerCase();
     const lastError = STATE.controller?.communication?.lastError || STATE.controller?.lastError || '';
 
     if (badge) {
-      badge.textContent = `Controller: ${state.toUpperCase()}`;
-      badge.className = `status-badge status-${state} ${state === 'connected' ? 'connected' : ''}`;
+      if (isTransportStale) {
+        badge.textContent = `WebSocket: ${transportStatus.toUpperCase()}`;
+        badge.className = 'status-badge status-unresponsive';
+      } else {
+        badge.textContent = `Controller: ${state.toUpperCase()}`;
+        badge.className = `status-badge status-${state} ${state === 'connected' ? 'connected' : ''}`;
+      }
     }
 
     if (btn) {
@@ -92,7 +100,11 @@
     }
 
     if (msgEl) {
-      if (state === 'unresponsive') {
+      if (isTransportStale) {
+        msgEl.textContent = `WebSocket transport is ${transportStatus}. Machine state is stale. Controls disabled until synchronization is restored.`;
+        msgEl.hidden = false;
+        msgEl.style.display = 'block';
+      } else if (state === 'unresponsive') {
         msgEl.textContent = lastError || 'Marlin is not responding. Machine commands are blocked until controller communication is restored.';
         msgEl.hidden = false;
         msgEl.style.display = 'block';
@@ -110,7 +122,7 @@
       }
     }
 
-    const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
+    const ordinaryDisabled = isTransportStale || (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
     const ordinarySelectors = [
       '.requires-controller-comm',
       '#mb-home-all', '#mb-home-xy', '#mb-home-z',
@@ -128,6 +140,10 @@
         node.classList.add('requires-controller-comm');
         node.disabled = ordinaryDisabled;
       });
+    });
+
+    document.querySelectorAll('#action-stop-job, #mb-stop').forEach((stopBtn) => {
+      stopBtn.disabled = false;
     });
   }
 
@@ -1778,23 +1794,29 @@
       retryBtn.addEventListener('click', recoverControllerConnection);
     }
 
+    window.CncTelemetry?.subscribe('control', (data) => {
+      if (data) {
+        STATE.operator = { owner: data.owner || null };
+        renderOperatorLock();
+      }
+    });
+
     window.CncTelemetry?.subscribe('controller', (data) => {
       STATE.controller = data;
       renderControllerStatus();
     });
 
+    window.addEventListener('cnc-telemetry-transport', () => {
+      renderControllerStatus();
+      render();
+    });
+
     if (window.CncTelemetry) window.CncTelemetry.start();
-    else {
-      refreshJobStatus().catch(() => {});
-      refreshHealth().catch(() => {});
-    }
     syncJogDock();
     if (el('mb-operator-owner')) {
       el('mb-operator-owner').value = localStorage.getItem('cnc.operator.owner') || '';
     }
     renderOperatorLock();
-    refreshOperatorStatus().catch(() => {});
-    operatorTimer = setInterval(operatorHeartbeat, 15000);
     renderControllerStatus();
     render();
   }

@@ -1,17 +1,10 @@
 (function () {
   if (window.CncTelemetry) return;
 
-  const ACTIVE_JOB_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'STOPPING']);
-  const channels = {
-    health: { url: '/api/health', idleMs: 30000, activeMs: 30000, always: false },
-    job: { url: '/api/job/status', idleMs: 10000, activeMs: 1000, always: false },
-    log: { url: '/api/marlin/log', idleMs: 5000, activeMs: 2000, always: false },
-    jog: { url: '/api/jog/status', idleMs: 2000, activeMs: 1000, always: false },
-  };
   const state = {};
   const mirroredState = {
     system: null,
-    connection: { connected: false },
+    connection: { connected: false, stale: true, transportStatus: 'connecting' },
     controller: null,
     machine: null,
     job: null,
@@ -19,12 +12,13 @@
     control: null,
     log: { entries: [], nextId: 0, lastCritical: null },
   };
+
   const inFlight = new Map();
-  const timers = new Map();
   const demand = new Map();
   let started = false;
   let socket = null;
   let socketConnected = false;
+  let transportStatus = 'connecting'; // 'connecting', 'synchronized', 'reconnecting', 'stale', 'failed'
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let clientSeq = 1;
@@ -53,11 +47,38 @@
     return JSON.stringify(a) === JSON.stringify(b);
   }
 
+  function updateTransportStatus(newStatus, extraError) {
+    transportStatus = newStatus;
+    const isSynced = newStatus === 'synchronized';
+    const isConn = isSynced || socketConnected;
+    mirroredState.connection = {
+      connected: isConn,
+      stale: !isSynced,
+      transportStatus: newStatus,
+      lastError: extraError || mirroredState.connection?.lastError || null,
+    };
+    window.dispatchEvent(new CustomEvent('cnc-telemetry-transport', {
+      detail: { transportStatus: newStatus, connected: isConn, stale: !isSynced },
+    }));
+    window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', {
+      detail: mirroredState.connection,
+    }));
+  }
+
   function emit(name, data) {
     if (name === 'log') {
       const existing = Array.isArray(state.log?.entries) ? state.log.entries : [];
       const incoming = Array.isArray(data.entries) ? data.entries : [];
       const byId = new Map(existing.map((entry) => [Number(entry.id), entry]));
+      
+      // Check for gap in log entry IDs if logCursor is active
+      if (incoming.length > 0) {
+        const minIncomingId = Math.min(...incoming.map(e => Number(e.id)));
+        if (logCursor > 0 && minIncomingId > logCursor + 1) {
+          requestResync();
+        }
+      }
+
       incoming.forEach((entry) => byId.set(Number(entry.id), entry));
       data = {
         ...state.log,
@@ -78,43 +99,20 @@
 
   function accept(name, data) {
     emit(name, data);
-    schedule(name);
-  }
-
-  function isActive() {
-    return ACTIVE_JOB_STATES.has(String(state.job?.state || mirroredState.job?.state || ''));
-  }
-
-  function isWanted(name) {
-    return channels[name]?.always || (demand.get(name)?.size || 0) > 0;
-  }
-
-  function wantsSocket() {
-    return isWanted('job') || isWanted('jog') || isWanted('log');
-  }
-
-  function intervalFor(name) {
-    const config = channels[name];
-    return isActive() ? config.activeMs : config.idleMs;
-  }
-
-  function schedule(name) {
-    clearTimeout(timers.get(name));
-    timers.delete(name);
-    if (!started || document.hidden || !isWanted(name)) return;
-    if (socketConnected && (name === 'job' || name === 'jog')) return;
-    timers.set(name, setTimeout(async () => {
-      await request(name).catch(() => {});
-      schedule(name);
-    }, intervalFor(name)));
   }
 
   async function request(name) {
-    const config = channels[name];
-    if (!config) throw new Error(`Unknown telemetry channel: ${name}`);
+    // One-shot manual diagnostic read helper (no recurring polling schedule)
+    const endpoints = {
+      health: '/api/health',
+      job: '/api/job/status',
+      log: `/api/marlin/log?after=${logCursor}`,
+      jog: '/api/jog/status',
+    };
+    const url = endpoints[name];
+    if (!url) throw new Error(`Unknown diagnostic slice: ${name}`);
     if (inFlight.has(name)) return inFlight.get(name);
 
-    const url = name === 'log' ? `${config.url}?after=${logCursor}` : config.url;
     const pending = fetch(url)
       .then(readJson)
       .then((data) => {
@@ -123,23 +121,21 @@
       })
       .finally(() => {
         inFlight.delete(name);
-        schedule(name);
       });
     inFlight.set(name, pending);
     return pending;
   }
 
   function setDemand(name, owner, enabled) {
-    if (!channels[name] || channels[name].always) return;
     const owners = demand.get(name) || new Set();
     if (enabled) owners.add(owner);
     else owners.delete(owner);
     demand.set(name, owners);
-    if (started && wantsSocket()) connectSocket();
-    else if (started && !wantsSocket() && socket) socket.close();
     sendSocketDemand();
-    if (enabled) request(name).catch(() => {});
-    schedule(name);
+  }
+
+  function isWanted(name) {
+    return (demand.get(name)?.size || 0) > 0;
   }
 
   function sendSocketPacket(packet) {
@@ -174,6 +170,7 @@
   }
 
   function requestResync() {
+    updateTransportStatus('stale');
     sendSocketPacket({
       protocolVersion: 1,
       type: 'resync',
@@ -201,6 +198,7 @@
       });
       lastServerSeq = 0;
       lastStateRevision = 0;
+      updateTransportStatus('reconnecting');
     }
     if (bootId) knownBootId = bootId;
 
@@ -217,9 +215,8 @@
 
     if (ack > 0) {
       if (ack > highestClientSeqSuccessfullySent) {
-        mirroredState.connection.lastError = 'received ACK for unsent packet';
+        updateTransportStatus('stale', 'received ACK for unsent packet');
         window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: { error: 'invalid future ACK' } }));
-        window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
         requestResync();
         return;
       } else if (ack >= highestClientSeqAcknowledgedByESP) {
@@ -229,9 +226,8 @@
 
     if (stateRevision > 0) {
       if (stateRevision < lastStateRevision && bootId === knownBootId) {
-        mirroredState.connection.lastError = 'stateRevision regression detected';
+        updateTransportStatus('stale', 'stateRevision regression detected');
         window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: { error: 'stateRevision regression detected' } }));
-        window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
         requestResync();
         return;
       } else {
@@ -240,9 +236,8 @@
     }
 
     if (msgType === 'protocol-error') {
-      mirroredState.connection.lastError = message.error || 'protocol error';
+      updateTransportStatus('stale', message.error || 'protocol error');
       window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: message }));
-      window.dispatchEvent(new CustomEvent('cnc-telemetry-connection', { detail: mirroredState.connection }));
       return;
     }
 
@@ -253,11 +248,12 @@
           const val = message.state[sliceKey] !== undefined ? message.state[sliceKey] : null;
           emit(sliceKey, val);
         });
-      } else {
-        if (message.data?.job) emit('job', message.data.job);
-        if (message.data?.jog) emit('jog', message.data.jog);
-        if (message.data?.position) emit('position', message.data.position);
+      } else if (message.data) {
+        Object.keys(message.data).forEach((sliceKey) => {
+          emit(sliceKey, message.data[sliceKey]);
+        });
       }
+      updateTransportStatus('synchronized');
       return;
     }
 
@@ -266,12 +262,13 @@
     }
 
     if (msgType === 'patch' || msgType === 'delta') {
+      if (transportStatus !== 'synchronized' && transportStatus !== 'stale') {
+        // Do not apply patches before initial snapshot synchronization
+        return;
+      }
       if (message.patch) {
-        const canonicalKeys = new Set(['system', 'controller', 'machine', 'job', 'jog', 'control']);
         Object.keys(message.patch).forEach((key) => {
-          if (canonicalKeys.has(key)) {
-            emit(key, message.patch[key]);
-          }
+          emit(key, message.patch[key]);
         });
       }
       if (message.channel && message.data) {
@@ -299,22 +296,19 @@
   }
 
   function connectSocket() {
-    if (!started || document.hidden || socket || !wantsSocket()) return;
+    if (!started || document.hidden || socket) return;
+    updateTransportStatus('connecting');
     try {
       socket = new WebSocket(getWebSocketUrl());
     } catch (err) {
       socket = null;
+      updateTransportStatus('reconnecting');
+      scheduleReconnect();
       return;
     }
     socket.addEventListener('open', () => {
       socketConnected = true;
-      mirroredState.connection.connected = true;
       reconnectDelayMs = 1000;
-      ['job', 'jog'].forEach((name) => {
-        clearTimeout(timers.get(name));
-        timers.delete(name);
-      });
-
       clientSeq = 1;
       highestClientSeqSuccessfullySent = 0;
       highestClientSeqAcknowledgedByESP = 0;
@@ -337,54 +331,65 @@
       try {
         applySocketMessage(JSON.parse(event.data));
       } catch (err) {
-        // Ignore malformed telemetry; HTTP controls and fallback polling remain independent.
+        // Ignore malformed socket message
       }
     });
     socket.addEventListener('close', () => {
       socket = null;
       socketConnected = false;
-      mirroredState.connection.connected = false;
-      schedule('job');
-      schedule('jog');
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connectSocket, reconnectDelayMs);
-      reconnectDelayMs = Math.min(10000, reconnectDelayMs * 2);
+      updateTransportStatus('reconnecting');
+      scheduleReconnect();
     });
-    socket.addEventListener('error', () => socket?.close());
+    socket.addEventListener('error', () => {
+      socket?.close();
+    });
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectSocket, reconnectDelayMs);
+    reconnectDelayMs = Math.min(10000, reconnectDelayMs * 2);
   }
 
   function start() {
     if (started) return;
     started = true;
-    Object.keys(channels).forEach((name) => {
-      if (isWanted(name)) request(name).catch(() => {});
-    });
     connectSocket();
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      timers.forEach((timer) => clearTimeout(timer));
-      timers.clear();
       clearTimeout(reconnectTimer);
       socket?.close();
       return;
     }
-    Object.keys(channels).forEach((name) => {
-      if (isWanted(name)) request(name).catch(() => {});
-    });
     connectSocket();
   });
 
-  const api = { accept, request, setDemand, start, state, mirroredState, subscribe };
+  const api = {
+    accept,
+    request,
+    setDemand,
+    start,
+    state,
+    mirroredState,
+    subscribe,
+    get transportStatus() {
+      return transportStatus;
+    },
+  };
+
   if (typeof window !== 'undefined' && window.CNC_TELEMETRY_TEST_MODE === true) {
     api.__test__ = {
+      getTransportStatus: () => transportStatus,
+      setTransportStatus: (st) => updateTransportStatus(st),
       getClientSeq: () => clientSeq,
       getHighestClientSeqSuccessfullySent: () => highestClientSeqSuccessfullySent,
       getHighestClientSeqAcknowledgedByESP: () => highestClientSeqAcknowledgedByESP,
       getLastServerSeq: () => lastServerSeq,
       getLastStateRevision: () => lastStateRevision,
       getKnownBootId: () => knownBootId,
+      applySocketMessage,
     };
   }
   window.CncTelemetry = api;

@@ -345,7 +345,7 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
 
 describe('browser control disabling', () => {
   it('disables ordinary controls while unresponsive, recovering, or waiting, while Stop and Retry remain enabled', () => {
-    expect(machineBar).toContain("const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');");
+    expect(machineBar).toContain("const ordinaryDisabled = isTransportStale || (state === 'unresponsive' || state === 'recovering' || state === 'waiting');");
     expect(machineBar).toContain('.requires-controller-comm');
     expect(machineBar).toContain('#mb-home-all');
     expect(machineBar).toContain('#mb-set-zero');

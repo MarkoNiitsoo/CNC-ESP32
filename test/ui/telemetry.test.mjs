@@ -11,15 +11,11 @@ const htmlFiles = await Promise.all(['index.html', 'files.html', 'preview.html']
   readFile(new URL(`../../www/${name}`, import.meta.url), 'utf8')));
 
 describe('shared browser telemetry', () => {
-  it('deduplicates in-flight requests and keeps low idle rates for demand-driven channels', () => {
+  it('deduplicates in-flight diagnostic requests', () => {
     expect(telemetry).toContain('if (inFlight.has(name)) return inFlight.get(name)');
-    expect(telemetry).toContain("health: { url: '/api/health', idleMs: 30000, activeMs: 30000, always: false }");
-    expect(telemetry).toContain("job: { url: '/api/job/status', idleMs: 10000, activeMs: 1000, always: false }");
   });
 
   it('keeps telemetry demand-driven across app, machine bar, and preview', () => {
-    expect(telemetry).toContain("log: { url: '/api/marlin/log'");
-    expect(telemetry).toContain('always: false');
     expect(app).toContain("setDemand('health', 'app-view', viewName === 'settings')");
     expect(app).toContain("setDemand('job', 'app-view', viewName === 'job')");
     expect(app).toContain("setDemand('log', 'app-log-view'");
@@ -29,9 +25,7 @@ describe('shared browser telemetry', () => {
     expect(machineBar).toContain("setDemand('jog', 'machine-drawer'");
     expect(preview).toContain("setDemand('job', 'preview-page', true)");
     expect(preview).toContain("setDemand('health', 'preview-page', true)");
-    expect(telemetry).toContain("`${config.url}?after=${logCursor}`");
     expect(telemetry).toContain("subscribe: { log: isWanted('log') }");
-    expect(telemetry).toContain('entries: [...byId.values()]');
   });
 
   it('loads one shared controller before page consumers', () => {
@@ -45,22 +39,19 @@ describe('shared browser telemetry', () => {
     expect(preview).not.toMatch(/jobRunPollTimer = setInterval/);
   });
 
-  it('does not auto-request health or job on telemetry start without demand', () => {
+  it('connects WebSocket on telemetry start without recurring HTTP polling', () => {
     const startBlock = telemetry.slice(
       telemetry.indexOf('function start()'),
       telemetry.indexOf("document.addEventListener('visibilitychange'"),
     );
     expect(startBlock).not.toContain("request('job')");
     expect(startBlock).not.toContain("request('health')");
-    expect(startBlock).toContain('if (isWanted(name)) request(name).catch(() => {})');
+    expect(startBlock).toContain('connectSocket()');
   });
 
-  it('opens the WebSocket only when a socket-capable demand exists', () => {
-    expect(telemetry).toContain("function wantsSocket() {");
-    expect(telemetry).toContain("return isWanted('job') || isWanted('jog') || isWanted('log');");
-    expect(telemetry).toMatch(/function connectSocket\(\) \{[\s\S]*!wantsSocket\(\)/);
-    expect(telemetry).toContain("if (started && wantsSocket()) connectSocket();");
-    expect(telemetry).toContain("else if (started && !wantsSocket() && socket) socket.close();");
+  it('opens the WebSocket for live state updates', () => {
+    expect(telemetry).toContain("function connectSocket() {");
+    expect(telemetry).toContain("socket = new WebSocket(getWebSocketUrl());");
   });
 
   it('keeps the Files entrypoint free of unrelated telemetry demand at startup', () => {
@@ -71,14 +62,12 @@ describe('shared browser telemetry', () => {
     expect(files).not.toContain("request('health')");
   });
 
-  it('uses revisioned WebSocket deltas with HTTP fallback', () => {
+  it('uses revisioned WebSocket deltas and snapshots for authoritative state', () => {
     expect(telemetry).toContain('getWebSocketUrl()');
     expect(telemetry).toContain("msgType === 'snapshot'");
     expect(telemetry).toContain("msgType === 'patch'");
-    expect(telemetry).toContain("emit('position', message.data.position)");
+    expect(telemetry).toContain("emit(sliceKey, message.data[sliceKey])");
     expect(telemetry).toContain('lastStateRevision');
-    expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
-    expect(telemetry).toContain("schedule('job')");
     expect(preview).toContain("subscribe('motion', handleMotionTelemetry)");
     expect(preview).toContain('requestAnimationFrame(frame)');
     expect(preview).toContain('commandedPositionAtCommand');
@@ -92,8 +81,6 @@ describe('shared browser telemetry', () => {
     expect(firmware).toContain('xQueueSend(motionEventQueue, &ev, 0)');
     expect(firmware).toContain('xQueueSend(logEventQueue, &ev, 0)');
     expect(firmware).toContain('xTaskCreatePinnedToCore(telemetryNetworkTask');
-    expect(telemetry).toMatch(/socketConnected[\s\S]*name === 'job' \|\| name === 'jog'/);
-    expect(telemetry).toContain("schedule('job')");
     expect(telemetry).toContain('window.CncTelemetry = api;');
   });
 
