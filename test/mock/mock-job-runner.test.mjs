@@ -505,4 +505,38 @@ describe('MockJobRunner', () => {
     const finalState = await waitForState(ctx.runner, 'COMPLETED');
     expect(finalState).toBe('COMPLETED');
   });
+
+  it('correctly calculates intermediate and final acknowledged byte offsets for LF input', async () => {
+    const gcode = 'G21\nG90\nG0 Z15';
+    const ctx = await fixture({ gcode, delay: 10 });
+    await ctx.runner.start(ctx.request);
+    await waitForState(ctx.runner, 'COMPLETED');
+    expect(ctx.runner.status.lastAcknowledgedByteOffset).toBe(14);
+    expect(ctx.runner.status.currentByteOffset).toBe(14);
+  });
+
+  it('correctly calculates intermediate and final acknowledged byte offsets for CRLF input', async () => {
+    const gcode = 'G21\r\nG90\r\nG0 Z15\r\n';
+    const ctx = await fixture({ gcode, delay: 10 });
+    await ctx.runner.start(ctx.request);
+    await waitForState(ctx.runner, 'COMPLETED');
+    expect(ctx.runner.status.lastAcknowledgedByteOffset).toBe(18);
+    expect(ctx.runner.status.currentByteOffset).toBe(18);
+  });
+
+  it('correctly handles final line without trailing newline', async () => {
+    const gcode = 'G21\r\nG90';
+    const ctx = await fixture({ gcode, delay: 10 });
+    await ctx.runner.start(ctx.request);
+    await waitForState(ctx.runner, 'COMPLETED');
+    expect(ctx.runner.status.lastAcknowledgedByteOffset).toBe(8);
+  });
+
+  it('correctly handles blank CRLF lines advancing byte offset', async () => {
+    const gcode = 'G21\r\n\r\nG90\r\n';
+    const ctx = await fixture({ gcode, delay: 10 });
+    await ctx.runner.start(ctx.request);
+    await waitForState(ctx.runner, 'COMPLETED');
+    expect(ctx.runner.status.lastAcknowledgedByteOffset).toBe(12);
+  });
 });

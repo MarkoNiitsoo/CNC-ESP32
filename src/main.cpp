@@ -673,7 +673,7 @@ bool gcodeHasM6(const String &line);
 bool gcodeIsStandaloneToolSelect(const String &line, int &toolNumber);
 bool beginToolChange(const String &line);
 void setJobError(const String &message, bool resetFeedOverride = true);
-void setJobCommunicationLost(const String &message);
+void setJobCommunicationLost(const String &message, const String &failedCommandOverride = "");
 void sendImmediateJobSafetyM5(const String &reason);
 bool beginPersistentJobCheckpoint();
 void processPersistentJobCheckpoint();
@@ -5238,10 +5238,12 @@ void sendImmediateJobSafetyM5(const String &reason) {
   logJobEvent("immediate M5: " + reason);
 }
 
-void setJobCommunicationLost(const String &message) {
-  const String failedCommand = jobStatus.priorityCommandInProgress
-                                   ? jobStatus.lastPriorityCommand
-                                   : jobStatus.lastCommand;
+void setJobCommunicationLost(const String &message, const String &failedCommandOverride) {
+  const String failedCommand = failedCommandOverride.length() > 0
+                                   ? failedCommandOverride
+                                   : (jobStatus.priorityCommandInProgress
+                                          ? jobStatus.lastPriorityCommand
+                                          : jobStatus.lastCommand);
   jobStatus.errorCode = "COMMUNICATION_LOST";
   jobStatus.communicationLostAtMs = millis();
   jobStatus.communicationLostCommand = failedCommand;
@@ -7904,7 +7906,7 @@ void handleJobPause() {
     String writeErr;
     if (!writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
       const String errMsg = "P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
-      setJobCommunicationLost(errMsg);
+      setJobCommunicationLost(errMsg, "P000");
       touchJobStatus();
       sendJsonError(503, jobStatus.lastError);
       return;

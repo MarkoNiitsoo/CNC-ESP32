@@ -1,5 +1,16 @@
 # Handoff
 
+## 2026-07-29 - Explicit P000 Failed Command Recording & CRLF Line Accounting Handoff
+
+- Completed 2 final parity corrections on `feature/phase1-websocket-transport`:
+- Key Highlights:
+  1. Explicit `P000` Failed Command Recording (`src/main.cpp`, `dev/mock-job-runner.mjs`, `test/firmware/controller-communication.test.mjs`): Updated `setJobCommunicationLost(const String &message, const String &failedCommandOverride = "")` to accept an explicit failed-command override parameter. In `handleJobPause()`, when `P000` write fails, `setJobCommunicationLost(errMsg, "P000")` is called. Proved `jobStatus.communicationLostCommand`, communication-loss checkpoint/log (`"communication_lost command=P000"`), `jobStatusJson()` (`"command":"P000"`), and mock endpoint state (`communicationLostCommand: "P000"`) all contain `"P000"` without overwriting `jobStatus.lastCommand` (the previously acknowledged G-code line).
+  2. Exact CRLF / LF Line Terminator Byte Accounting (`dev/mock-job-runner.mjs`, `test/mock/mock-job-runner.test.mjs`): Updated `MockJobRunner.prototype.stream` line splitting to use regex matching `[^\r\n]*(?:\r?\n|$)` to preserve exact line terminator sizes (LF = 1 byte, CRLF = 2 bytes, final line without newline = 0 terminator bytes, blank CRLF lines = 2 bytes). Added test suite in `mock-job-runner.test.mjs` proving intermediate and final acknowledged byte offsets for LF, CRLF, non-newline final line, and blank CRLF lines.
+  3. Verification:
+     - `npm test`: **520/520 tests passed** across 48 test files (0 failed).
+     - `pio test -e native`: **13/13 native C++ test cases passed** (0 failed).
+     - `pio run -e esp32cam`: **SUCCESS** (RAM: 19.7%, Flash: 74.2%).
+
 ## 2026-07-29 - Firmware and Mock Parity Corrections Handoff
 
 - Completed 4 final firmware and mock parity corrections on `feature/phase1-websocket-transport`:

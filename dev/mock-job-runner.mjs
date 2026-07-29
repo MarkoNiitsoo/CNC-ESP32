@@ -562,26 +562,31 @@ export class MockJobRunner {
   }
 
   async stream(text, token, resetFeed) {
-    const lines = String(text).split(/\r?\n/);
+    const rawLines = String(text).match(/[^\r\n]*(?:\r?\n|$)/g) || [];
     let offset = 0;
     let commandLineNumber = 0;
-    for (let index = 0; index < lines.length; index += 1) {
+    for (let index = 0; index < rawLines.length; index += 1) {
+      const lineWithTerminator = rawLines[index];
+      if (lineWithTerminator === '' && index === rawLines.length - 1) continue;
+
       if (token !== this.runToken || this.status.stopRequested) return;
       while (this.status.state === 'PAUSED_INTACT' || this.status.state === 'PAUSED' || this.status.state === 'PAUSING') {
         if (token !== this.runToken || this.status.stopRequested) return;
         await sleep(5);
       }
       if (this.status.state !== 'RUNNING' && this.status.state !== 'RESUMING') return;
-      const original = lines[index];
-      const command = cleanLine(original);
-      const lineBytes = Buffer.byteLength(original) + (index < lines.length - 1 ? 1 : 0);
+
+      const lineBytes = Buffer.byteLength(lineWithTerminator);
       offset += lineBytes;
       this.status.currentByteOffset = Math.min(offset, this.status.fileSize);
+
+      const command = cleanLine(lineWithTerminator);
       if (!command) {
         this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
         this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
         continue;
       }
+
       commandLineNumber += 1;
       this.status.currentLineNumber = commandLineNumber;
 

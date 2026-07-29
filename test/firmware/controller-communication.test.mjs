@@ -368,6 +368,7 @@ describe('Controller Communication Correctness Fixes', () => {
     expect(data.error).toContain('P000 realtime pause rejected: UART write failed');
     expect(env.runner.status.state).toBe('ERROR');
     expect(env.runner.status.errorCode).toBe('COMMUNICATION_LOST');
+    expect(env.runner.status.communicationLostCommand).toBe('P000');
     expect(env.runner.status.directResumeValid).toBe(false);
     expect(env.runner.status.streamingPausedReason).not.toContain('Motion held');
   });
@@ -390,7 +391,7 @@ describe('Controller Communication Correctness Fixes', () => {
     expect(env.runner.status.pauseRealtimeHold).toBe(true);
   });
 
-  it('24. Production source audit verifies P000 communication loss, R000 state preservation without setJobError, and M220 preamble error capture', async () => {
+  it('24. Production source audit verifies P000 explicit failed command override, R000 state preservation without setJobError, and M220 preamble error capture', async () => {
     const { readFile } = await import('node:fs/promises');
     const mainCpp = await readFile('src/main.cpp', 'utf8');
 
@@ -401,14 +402,17 @@ describe('Controller Communication Correctness Fixes', () => {
     expect(resumeHandlerBody).toContain('writeControllerLine("R000"');
     expect(resumeHandlerBody).not.toMatch(/writeControllerLine\("R000"[\s\S]*?setJobError/);
 
-    // 2. Verify P000 failure in handleJobPause calls setJobCommunicationLost
+    // 2. Verify P000 failure in handleJobPause calls setJobCommunicationLost with explicit "P000" override
     const pauseHandlerMatch = mainCpp.match(/void handleJobPause\(\)\s*\{([\s\S]*?)\n\}/);
     expect(pauseHandlerMatch).not.toBeNull();
     const pauseHandlerBody = pauseHandlerMatch[1];
     expect(pauseHandlerBody).toContain('writeControllerLine("P000"');
-    expect(pauseHandlerBody).toContain('setJobCommunicationLost');
+    expect(pauseHandlerBody).toContain('setJobCommunicationLost(errMsg, "P000")');
 
-    // 3. Verify Production Resume M220 preamble failure captures errors before jobStatus reset
+    // 3. Verify setJobCommunicationLost signature supports failedCommandOverride
+    expect(mainCpp).toContain('void setJobCommunicationLost(const String &message, const String &failedCommandOverride');
+
+    // 4. Verify Production Resume M220 preamble failure captures errors before jobStatus reset
     const prodResumeHandlerMatch = mainCpp.match(/void handleProductionResumeStart\(\)\s*\{([\s\S]*?)\n\}/);
     expect(prodResumeHandlerMatch).not.toBeNull();
     const prodResumeHandlerBody = prodResumeHandlerMatch[1];
