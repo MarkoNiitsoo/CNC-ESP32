@@ -290,6 +290,7 @@ void stageTelemetryUpdates(void); // Forward declaration
 void addMarlinLog(const String &direction, bool priority, const String &text, const String &level = ""); // Forward declaration
 bool jobIsActive(); // Forward declaration
 bool jogIsActive(); // Forward declaration
+bool operatorSessionActive(); // Forward declaration
 
 bool isControllerCommunicationActive() {
   return controllerCommManager.telemetry.state == ControllerCommunicationState::Connected ||
@@ -2475,8 +2476,19 @@ String buildMachineSliceJson() {
 }
 
 String buildControlSliceJson() {
-  String patchJson = "{\"owner\":";
-  patchJson += operatorSessionOwner.length() > 0 ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+  const bool active = operatorSessionActive();
+  String patchJson = "{\"configured\":";
+  patchJson += operatorPinHash.length() > 0 ? "true" : "false";
+  patchJson += ",\"active\":";
+  patchJson += active ? "true" : "false";
+  patchJson += ",\"owner\":";
+  patchJson += active ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
+  patchJson += ",\"leaseMs\":";
+  patchJson += String(kOperatorLeaseMs);
+  patchJson += ",\"leaseExpiresAtUptimeMs\":";
+  patchJson += active ? String(operatorSessionLastSeenMs + kOperatorLeaseMs) : "0";
+  patchJson += ",\"canClaim\":";
+  patchJson += active ? "false" : "true";
   patchJson += "}";
   return patchJson;
 }

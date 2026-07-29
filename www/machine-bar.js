@@ -14,6 +14,7 @@
     toolChangeSettings: null,
     projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
     operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true },
+    operatorGlobal: { configured: false, active: false, owner: null, canClaim: true, leaseMs: 45000, leaseExpiresAtUptimeMs: 0 },
     operatorPanelOpen: false,
     controller: { connected: true, state: 'connected', communication: { state: 'connected', lastError: '', lastFailedCommand: '' } },
   };
@@ -28,7 +29,10 @@
   let operatorFetchMonitorInstalled = false;
   let operatorIntentUntil = 0;
   let operatorReconnectLastAttempt = 0;
+  let operatorReconnectInFlight = null;
+  let operatorHeartbeatInFlight = false;
   const OPERATOR_BROWSER_ID_KEY = 'cnc.operator.browserId';
+  const OPERATOR_HEARTBEAT_INTERVAL_MS = 12000;
   const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
     motionSettingsModule = module;
     travelSpeedMmS = module.loadMotionSettings().travelSpeedMmS;
@@ -42,6 +46,112 @@
   const PAUSED_STATES = new Set(['PAUSED_INTACT', 'PAUSED']);
   const SETUP_STATES = new Set(['IDLE', 'STOPPED', 'RECOVERY_REQUIRED', 'COMPLETED', 'ERROR']);
   const MACHINE_Z_MAX_MM = 70;
+  const ordinaryControlSelectors = [
+    '[data-requires-live-control]',
+    '#mb-pause',
+    '#mb-home-x', '#mb-home-y', '#mb-home-z', '#mb-home-all', '#mb-m119',
+    '#mb-set-work-zero', '#mb-set-z-zero', '#mb-capture-work-zero', '#mb-capture-z-zero',
+    '#mb-touch-plate-z-zero', '[data-mb-goto-zero]',
+    '#mb-terminal-send', '#mb-terminal-select', '#mb-terminal-cmd', '#mb-m114', '#mb-capture-position',
+    '#mb-jog-restore-z', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
+    '#mb-jog-dock-toggle', '#mb-jog-settings-toggle', '#mb-jog-safe',
+    '#mb-jog-z-slider', '#mb-jog-center', '[data-mb-jog-direction]',
+    '[data-mb-feed]', '[data-mb-feed-delta]',
+    '#home-machine-zero',
+    '#readiness-home-all', '#readiness-set-work-zero', '#readiness-set-z-zero',
+    '#readiness-run-bounds', '#readiness-run-aircut',
+    '#set-work-zero', '#set-z-zero', '#touch-plate-z-zero',
+    '#restore-saved-work-zero', '#restore-prepare-work-zero',
+    '#send-dry-run', '#start-job', '#pause-job', '#resume-job',
+    '#feed-live-percent', '#feed-live-set', '[data-feed-live]',
+    '#move-to-resume-point', '#toolless-resume-start',
+    '#production-prepare', '#production-resume-hold',
+    '#tool-change-manual-z', '#tool-change-touch-plate', '#tool-change-complete',
+    '.recovery-move-btn', '.tool-change-move-btn',
+  ];
+  const ordinaryLocalDisabled = new WeakMap();
+  const ordinaryGuardForced = new WeakSet();
+  let ordinaryGuardObserver = null;
+
+  function controllerCommunicationState() {
+    return String(
+      STATE.controller?.state ||
+      STATE.controller?.communication?.state ||
+      (STATE.controller?.connected === false ? 'unresponsive' : 'unknown')
+    ).toLowerCase();
+  }
+
+  function ordinaryMachineControlBlocked() {
+    const telemetry = window.CncTelemetry;
+    if (!telemetry || telemetry.transportStatus !== 'synchronized') return true;
+    return controllerCommunicationState() !== 'connected';
+  }
+
+  function markOrdinaryMachineControls() {
+    ordinaryControlSelectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((node) => {
+        node.setAttribute?.('data-requires-live-control', '');
+      });
+    });
+  }
+
+  function setMachineControlDisabled(node, locallyDisabled, options = {}) {
+    if (!node) return;
+    if (options.safetyException === true || !node.matches?.('[data-requires-live-control]')) {
+      node.disabled = Boolean(locallyDisabled);
+      return;
+    }
+    ordinaryLocalDisabled.set(node, Boolean(locallyDisabled));
+    const blocked = ordinaryMachineControlBlocked();
+    node.disabled = Boolean(locallyDisabled || blocked);
+    if (blocked) ordinaryGuardForced.add(node);
+    else ordinaryGuardForced.delete(node);
+  }
+
+  function applyOrdinaryControlGuard() {
+    markOrdinaryMachineControls();
+    const blocked = ordinaryMachineControlBlocked();
+    document.querySelectorAll('[data-requires-live-control]').forEach((node) => {
+      if (blocked) {
+        if (!ordinaryGuardForced.has(node)) {
+          ordinaryLocalDisabled.set(node, Boolean(node.disabled));
+        } else if (node.disabled === false) {
+          ordinaryLocalDisabled.set(node, false);
+        }
+        ordinaryGuardForced.add(node);
+        node.disabled = true;
+      } else if (ordinaryGuardForced.has(node)) {
+        node.disabled = ordinaryLocalDisabled.get(node) === true;
+        ordinaryGuardForced.delete(node);
+      }
+    });
+  }
+
+  function installOrdinaryControlGuard() {
+    markOrdinaryMachineControls();
+    const interceptBlockedControl = (event) => {
+      const control = event.target?.closest?.('[data-requires-live-control]');
+      if (!control || !ordinaryMachineControlBlocked()) return;
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      setMessage('Machine controls are disabled until WebSocket and controller communication are synchronized.');
+      applyOrdinaryControlGuard();
+    };
+    document.addEventListener('pointerdown', interceptBlockedControl, true);
+    document.addEventListener('click', interceptBlockedControl, true);
+    document.addEventListener('keydown', interceptBlockedControl, true);
+    if (typeof MutationObserver === 'function') {
+      ordinaryGuardObserver = new MutationObserver(() => {
+        if (ordinaryMachineControlBlocked()) applyOrdinaryControlGuard();
+      });
+      ordinaryGuardObserver.observe(document.body, {
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['disabled'],
+      });
+    }
+    applyOrdinaryControlGuard();
+  }
 
   async function recoverControllerConnection() {
     const btn = el('btn-retry-controller-conn');
@@ -77,10 +187,10 @@
     const btn = el('btn-retry-controller-conn');
     const msgEl = el('controller-comm-message');
 
-    const transportStatus = window.CncTelemetry?.transportStatus || 'synchronized';
+    const transportStatus = window.CncTelemetry?.transportStatus || 'unavailable';
     const isTransportStale = transportStatus !== 'synchronized';
 
-    const state = String(STATE.controller?.state || STATE.controller?.communication?.state || (STATE.controller?.connected === false ? 'unresponsive' : 'connected')).toLowerCase();
+    const state = controllerCommunicationState();
     const lastError = STATE.controller?.communication?.lastError || STATE.controller?.lastError || '';
 
     if (badge) {
@@ -122,36 +232,26 @@
       }
     }
 
-    const ordinaryDisabled = isTransportStale || (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
-    const ordinarySelectors = [
-      '.requires-controller-comm',
-      '#mb-home-all', '#mb-home-xy', '#mb-home-z',
-      '#mb-set-zero', '#mb-goto-zero', '#mb-restore-zero', '#mb-touch-plate',
-      '#mb-set-z-zero', '#mb-set-z-zero-touch', '#mb-set-z-zero-manual',
-      '#mb-terminal-send', '#mb-terminal-cmd',
-      '.machine-jog-btn', '.machine-jog-z-btn', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
-      '#action-bounds', '#action-aircut', '#action-toolless',
-      '#action-start-job', '#action-arm-start', '#action-resume-job', '#action-production-resume',
-      '#action-feed-override-apply', '#action-feed-override-slider', '.feed-override-btn',
-      '.recovery-move-btn', '.tool-change-move-btn'
-    ];
-    ordinarySelectors.forEach((sel) => {
-      document.querySelectorAll(sel).forEach((node) => {
-        node.classList.add('requires-controller-comm');
-        node.disabled = ordinaryDisabled;
-      });
-    });
-
-    document.querySelectorAll('#action-stop-job, #mb-stop').forEach((stopBtn) => {
-      stopBtn.disabled = false;
-    });
+    applyOrdinaryControlGuard();
   }
 
   window.LowRiderMachineBar = {
     lastCritical: () => STATE.marlinLog?.lastCritical || '',
-    controllerState: () => String(STATE.controller?.state || STATE.controller?.communication?.state || (STATE.controller?.connected === false ? 'unresponsive' : 'connected')).toLowerCase(),
+    controllerState: controllerCommunicationState,
+    ordinaryMachineControlBlocked,
+    applyOrdinaryControlGuard,
+    setControlDisabled: setMachineControlDisabled,
+    applyGlobalControlState,
+    applyLocalOperatorAuthorization,
+    operatorHeartbeat,
+    claimOperatorControl,
+    reconnectStoredOperator: silentlyReconnectOperator,
+    operatorState: () => ({ ...STATE.operator }),
+    machineFrame: () => ({ ...STATE.frame }),
+    applyMachineSlice,
     recoverControllerConnection,
     renderControllerStatus,
+    render,
   };
 
   function el(id) {
@@ -255,7 +355,7 @@
 
   function publishPosition(source) {
     const zero = STATE.frame?.workZeroMachine;
-    if (zero && [STATE.position.x, STATE.position.y, STATE.position.z].every(Number.isFinite)) {
+    if (source !== 'MARLIN' && zero && [STATE.position.x, STATE.position.y, STATE.position.z].every(Number.isFinite)) {
       STATE.frame.work = { ...STATE.position };
       STATE.frame.machine = {
         x: zero.x + STATE.position.x,
@@ -288,6 +388,20 @@
       window.dispatchEvent(new CustomEvent('cnc-machine-frame', { detail: STATE.frame }));
     }
     return true;
+  }
+
+  function applyMachineSlice(data) {
+    if (!data || typeof data !== 'object') return false;
+    STATE.machine = data;
+    const authoritativeFrame = data.frame && typeof data.frame === 'object' ? data.frame : {};
+    const frame = {
+      ...authoritativeFrame,
+      work: data.position?.work ?? authoritativeFrame.work ?? null,
+      machine: data.position?.machine ?? authoritativeFrame.machine ?? null,
+      homedAxes: data.homedAxes ?? authoritativeFrame.homedAxes ?? null,
+      homingEpoch: data.homingEpoch ?? authoritativeFrame.homingEpoch ?? 0,
+    };
+    return applyFrame(frame, 'MARLIN');
   }
 
   function parseM114(text) {
@@ -536,32 +650,81 @@
     return browserId;
   }
 
+  function stopOperatorHeartbeat() {
+    clearInterval(operatorTimer);
+    operatorTimer = null;
+  }
+
+  function syncOperatorHeartbeat() {
+    stopOperatorHeartbeat();
+    if (!STATE.operator?.controller || document.hidden ||
+        window.CncTelemetry?.transportStatus === 'failed') return;
+    operatorTimer = setInterval(() => {
+      operatorHeartbeat().catch(() => {});
+    }, OPERATOR_HEARTBEAT_INTERVAL_MS);
+  }
+
+  function applyLocalOperatorAuthorization(data) {
+    const controller = data?.controller === true;
+    STATE.operator = {
+      ...STATE.operator,
+      ...data,
+      controller,
+      readOnly: !controller,
+    };
+    syncOperatorHeartbeat();
+    return STATE.operator;
+  }
+
+  function applyGlobalControlState(data) {
+    if (!data || typeof data !== 'object') return STATE.operator;
+    STATE.operatorGlobal = { ...STATE.operatorGlobal, ...data };
+    const local = STATE.operator || {};
+    let controller = local.controller === true;
+    if (data.active === false || data.owner === null) {
+      controller = false;
+    } else if (data.active === true && data.owner && local.owner && data.owner !== local.owner) {
+      controller = false;
+    }
+    STATE.operator = {
+      ...local,
+      configured: data.configured ?? local.configured ?? false,
+      active: data.active ?? local.active ?? false,
+      owner: data.owner ?? null,
+      canClaim: data.canClaim ?? local.canClaim ?? true,
+      leaseMs: data.leaseMs ?? local.leaseMs,
+      leaseExpiresAtUptimeMs: data.leaseExpiresAtUptimeMs ?? local.leaseExpiresAtUptimeMs,
+      controller,
+      readOnly: !controller,
+    };
+    syncOperatorHeartbeat();
+    return STATE.operator;
+  }
+
   async function silentlyReconnectOperator() {
     const browserId = storedOperatorBrowserId();
     const now = Date.now();
-    if (!browserId || now - operatorReconnectLastAttempt < 15000) return false;
+    if (!browserId || STATE.operator?.controller || document.hidden ||
+        window.CncTelemetry?.transportStatus === 'failed') return false;
+    if (operatorReconnectInFlight) return operatorReconnectInFlight;
+    if (now - operatorReconnectLastAttempt < 1000) return false;
     operatorReconnectLastAttempt = now;
-    try {
-      STATE.operator = await readOperatorResponse(await fetch('/api/operator/reconnect', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ browserId }),
-      }));
-      renderOperatorLock();
-      return STATE.operator.controller === true;
-    } catch {
-      return false;
-    }
-  }
-
-  async function refreshOperatorStatus() {
-    try {
-      STATE.operator = await readOperatorResponse(await fetch('/api/operator/status', { cache: 'no-store' }));
-      if (!STATE.operator.controller) await silentlyReconnectOperator();
-    } catch (err) {
-      STATE.operator = { ...STATE.operator, controller: false, readOnly: true, error: err.message };
-    }
-    renderOperatorLock();
-    return STATE.operator;
+    operatorReconnectInFlight = (async () => {
+      try {
+        const data = await readOperatorResponse(await fetch('/api/operator/reconnect', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ browserId }),
+        }));
+        applyLocalOperatorAuthorization(data);
+        renderOperatorLock();
+        return STATE.operator.controller === true;
+      } catch {
+        return false;
+      } finally {
+        operatorReconnectInFlight = null;
+      }
+    })();
+    return operatorReconnectInFlight;
   }
 
   async function claimOperatorControl() {
@@ -576,7 +739,7 @@
       }));
       localStorage.setItem('cnc.operator.owner', owner);
       if (el('mb-operator-pin')) el('mb-operator-pin').value = '';
-      STATE.operator = data;
+      applyLocalOperatorAuthorization(data);
       STATE.operatorPanelOpen = false;
       if (status) status.textContent = 'This browser now controls the machine.';
       renderOperatorLock();
@@ -589,7 +752,9 @@
 
   async function releaseOperatorControl() {
     try {
-      STATE.operator = await readOperatorResponse(await fetch('/api/operator/release', { method: 'POST' }));
+      applyLocalOperatorAuthorization(
+        await readOperatorResponse(await fetch('/api/operator/release', { method: 'POST' }))
+      );
       localStorage.removeItem(OPERATOR_BROWSER_ID_KEY);
       STATE.operatorPanelOpen = false;
       renderOperatorLock();
@@ -616,13 +781,24 @@
   }
 
   async function operatorHeartbeat() {
-    if (!STATE.operator?.controller) return refreshOperatorStatus();
+    if (!STATE.operator?.controller || document.hidden ||
+        window.CncTelemetry?.transportStatus === 'failed' || operatorHeartbeatInFlight) {
+      if (!STATE.operator?.controller) stopOperatorHeartbeat();
+      return STATE.operator;
+    }
+    operatorHeartbeatInFlight = true;
     try {
-      STATE.operator = await readOperatorResponse(await fetch('/api/operator/heartbeat', { method: 'POST' }));
+      applyLocalOperatorAuthorization(
+        await readOperatorResponse(await fetch('/api/operator/heartbeat', { method: 'POST' }))
+      );
     } catch (err) {
       STATE.operator = { ...(err.data || STATE.operator), controller: false, readOnly: true, error: err.message };
+      stopOperatorHeartbeat();
+    } finally {
+      operatorHeartbeatInFlight = false;
     }
     renderOperatorLock();
+    return STATE.operator;
   }
 
   function requestOperatorControl(message = 'Claim control before changing machine state.') {
@@ -1065,9 +1241,9 @@
     });
   }
 
-  function setDisabled(id, disabled) {
+  function setDisabled(id, disabled, options = {}) {
     const item = el(id);
-    if (item) item.disabled = Boolean(disabled);
+    if (item) setMachineControlDisabled(item, disabled, options);
   }
 
   function toggleDrawer(open = !STATE.drawerOpen) {
@@ -1355,7 +1531,7 @@
     syncJogDock();
 
     setDisabled('mb-pause', !(running || state === 'PAUSED_INTACT' || recoveryRequired || isUnknown()) || toolChangePending);
-    setDisabled('mb-stop', !ACTIVE_STATES.has(state) || state === 'STOPPING');
+    setDisabled('mb-stop', !ACTIVE_STATES.has(state) || state === 'STOPPING', { safetyException: true });
     const diagnosticsBusy = ACTIVE_STATES.has(state) || state === 'RECOVERY_REQUIRED' || jogIsUiActive();
     setDisabled('mb-terminal-send', diagnosticsBusy);
     setDisabled('mb-terminal-select', diagnosticsBusy);
@@ -1379,9 +1555,10 @@
     setDisabled('mb-jog-restore-z', !restoreAvailable || busy || jogIsUiActive());
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {
       const noActiveWorkZero = STATE.frame?.workZeroValid !== true;
-      item.disabled = disableHoming || jogIsUiActive() || noActiveWorkZero;
+      setMachineControlDisabled(item, disableHoming || jogIsUiActive() || noActiveWorkZero);
       item.title = noActiveWorkZero ? 'Set or restore an active work zero first' : '';
     });
+    applyOrdinaryControlGuard();
   }
 
   function install() {
@@ -1568,6 +1745,7 @@
       </aside>
     `;
     document.body.prepend(root);
+    installOrdinaryControlGuard();
 
     const machineBar = root.querySelector('.machine-bar');
     const syncMachineBarHeight = () => {
@@ -1742,15 +1920,19 @@
     });
     window.CncTelemetry?.subscribe('machine', (data) => {
       if (!data) return;
-      STATE.machine = data;
-      const posData = data.position || data;
-      if (jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true) return;
-      if (!applyFrame(posData, 'MARLIN')) return;
+      if (!applyMachineSlice(data)) return;
       renderPositionReadouts();
     });
     window.addEventListener('blur', () => stopJog(false, true).catch(() => {}));
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) stopJog(false, true).catch(() => {});
+      if (document.hidden) {
+        stopJog(false, true).catch(() => {});
+        stopOperatorHeartbeat();
+        STATE.operator = { ...STATE.operator, controller: false, readOnly: true };
+        renderOperatorLock();
+        return;
+      }
+      silentlyReconnectOperator().catch(() => {});
     });
 
     const retryBtn = el('btn-retry-controller-conn');
@@ -1760,7 +1942,7 @@
 
     window.CncTelemetry?.subscribe('control', (data) => {
       if (data) {
-        STATE.operator = { owner: data.owner || null };
+        applyGlobalControlState(data);
         renderOperatorLock();
       }
     });
@@ -1770,7 +1952,9 @@
       renderControllerStatus();
     });
 
-    window.addEventListener('cnc-telemetry-transport', () => {
+    window.addEventListener('cnc-telemetry-transport', (event) => {
+      if (event.detail?.transportStatus === 'failed') stopOperatorHeartbeat();
+      else syncOperatorHeartbeat();
       renderControllerStatus();
       render();
     });
@@ -1783,6 +1967,8 @@
     renderOperatorLock();
     renderControllerStatus();
     render();
+    applyOrdinaryControlGuard();
+    silentlyReconnectOperator().catch(() => {});
   }
 
   if (document.readyState === 'loading') {

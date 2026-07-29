@@ -238,6 +238,14 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
     expect(state.job).toBeDefined();
     expect(state.jog).toBeDefined();
     expect(state.control).toBeDefined();
+    expect(state.control).toMatchObject({
+      configured: false,
+      active: false,
+      owner: null,
+      leaseMs: 45000,
+      leaseExpiresAtUptimeMs: 0,
+      canClaim: true,
+    });
     expect(state.log).toBeDefined();
     expect(state.machineProfile).toBeDefined();
   });
@@ -736,6 +744,170 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
     });
     expect(tel.transportStatus).toBe('synchronized');
     expect(tel.__test__.getReconnectAttempts()).toBe(0);
+  });
+
+  it('15a. Lost resync with continuing sync packets closes and reconnects the socket', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-29T12:00:00Z'));
+    const env = createBrowserEnv();
+    const tel = env.CncTelemetry;
+    tel.start();
+    const firstSocket = env.getSocket();
+    firstSocket.receiveMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 1,
+      bootId: 'watchdog-boot',
+      stateRevision: 1,
+      state: completeState(),
+    });
+    firstSocket.receiveMessage({
+      protocolVersion: 1,
+      type: 'patch',
+      seq: 10,
+      bootId: 'watchdog-boot',
+      stateRevision: 2,
+      patch: { job: { state: 'RUNNING' } },
+    });
+    expect(tel.__test__.isResyncPending()).toBe(true);
+
+    for (let seq = 2; seq <= 4; seq += 1) {
+      vi.advanceTimersByTime(2000);
+      firstSocket.receiveMessage({
+        protocolVersion: 1,
+        type: 'sync',
+        seq,
+        bootId: 'watchdog-boot',
+        stateRevision: 1,
+      });
+    }
+    vi.advanceTimersByTime(2001);
+    expect(firstSocket.readyState).toBe(3);
+    vi.advanceTimersByTime(1000);
+    expect(env.getSocket()).not.toBe(firstSocket);
+  });
+
+  it('15b. Malformed replacement snapshot cannot satisfy the resync watchdog', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-29T12:00:00Z'));
+    const env = createBrowserEnv();
+    const tel = env.CncTelemetry;
+    tel.start();
+    const socket = env.getSocket();
+    socket.receiveMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 1,
+      bootId: 'malformed-watchdog',
+      stateRevision: 1,
+      state: completeState(),
+    });
+    socket.receiveMessage({
+      protocolVersion: 1,
+      type: 'patch',
+      seq: 9,
+      bootId: 'malformed-watchdog',
+      stateRevision: 2,
+      patch: { job: { state: 'RUNNING' } },
+    });
+    socket.receiveMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 2,
+      bootId: 'malformed-watchdog',
+      stateRevision: 2,
+      state: completeState({
+        log: {
+          entries: [{ id: 10 }, { id: 12 }],
+          oldestId: 10,
+          latestId: 12,
+          nextId: 13,
+          lastCritical: null,
+          dropped: 0,
+        },
+      }),
+    });
+    expect(tel.__test__.isResyncPending()).toBe(true);
+    vi.advanceTimersByTime(8001);
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('15c. Valid replacement snapshot clears the resync watchdog and synchronizes', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-29T12:00:00Z'));
+    const env = createBrowserEnv();
+    const tel = env.CncTelemetry;
+    tel.start();
+    const socket = env.getSocket();
+    socket.receiveMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 1,
+      bootId: 'valid-watchdog',
+      stateRevision: 1,
+      state: completeState({ job: { state: 'IDLE' } }),
+    });
+    socket.receiveMessage({
+      protocolVersion: 1,
+      type: 'patch',
+      seq: 8,
+      bootId: 'valid-watchdog',
+      stateRevision: 2,
+      patch: { job: { state: 'RUNNING' } },
+    });
+    socket.receiveMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 2,
+      bootId: 'valid-watchdog',
+      stateRevision: 2,
+      state: completeState({ job: { state: 'PAUSED' } }),
+    });
+    expect(tel.transportStatus).toBe('synchronized');
+    expect(tel.__test__.isResyncPending()).toBe(false);
+    expect(tel.__test__.getResyncStartedAtMs()).toBe(0);
+    vi.advanceTimersByTime(6001);
+    expect(socket.readyState).toBe(1);
+  });
+
+  it('15d. Non-contiguous bounded log snapshot is rejected before state replacement', () => {
+    const tel = createBrowserEnv().CncTelemetry;
+    tel.__test__.applySocketMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 1,
+      bootId: 'contiguous-log',
+      stateRevision: 1,
+      state: completeState({
+        log: {
+          entries: [{ id: 10 }, { id: 11 }],
+          oldestId: 10,
+          latestId: 11,
+          nextId: 12,
+          lastCritical: null,
+          dropped: 0,
+        },
+      }),
+    });
+    tel.__test__.applySocketMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 2,
+      bootId: 'contiguous-log',
+      stateRevision: 2,
+      state: completeState({
+        log: {
+          entries: [{ id: 10 }, { id: 12 }],
+          oldestId: 10,
+          latestId: 12,
+          nextId: 13,
+          lastCritical: null,
+          dropped: 0,
+        },
+      }),
+    });
+    expect(tel.transportStatus).toBe('stale');
+    expect(tel.state.log.entries.map((entry) => entry.id)).toEqual([10, 11]);
   });
 
   it('16. File list/upload/download/delete endpoints remain HTTP', async () => {

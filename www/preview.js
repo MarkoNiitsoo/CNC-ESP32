@@ -570,12 +570,14 @@ function renderAllWorkflowPanels() {
   renderPreflight();
   renderRunPanel();
   draw();
+  applyMachineControlGuard();
 }
 
 function workflowButton(label, action, className = '') {
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = label;
+  button.setAttribute('data-requires-live-control', '');
   if (className) button.className = className;
   button.addEventListener('click', () => Promise.resolve(action()).catch((err) => {
     setJobResult(err.message, true);
@@ -689,6 +691,7 @@ function renderReadiness() {
     }, 'primary-action'));
   }
   renderWorkbenchStatus();
+  applyMachineControlGuard();
 }
 
 function basename(path) {
@@ -1646,6 +1649,8 @@ function renderRunPanel() {
   } catch (err) {
     appendRunLog(`Run panel render failed: ${err.message}`);
     if (stopJobButton) stopJobButton.disabled = false;
+  } finally {
+    applyMachineControlGuard();
   }
 }
 
@@ -4198,11 +4203,16 @@ function setFeedStartPercent(percent) {
 }
 
 function getControllerCommState() {
-  return window.LowRiderMachineBar?.controllerState?.() || 'connected';
+  return window.LowRiderMachineBar?.controllerState?.() || 'unknown';
+}
+
+function applyMachineControlGuard() {
+  window.LowRiderMachineBar?.applyOrdinaryControlGuard?.();
 }
 
 function renderControllerStatus() {
   window.LowRiderMachineBar?.renderControllerStatus?.();
+  applyMachineControlGuard();
 }
 
 async function recoverControllerConnection() {
@@ -6769,6 +6779,7 @@ renderPreflight();
 renderDryRunPanel();
 renderArmPanel();
 renderRecoveryPanel();
+applyMachineControlGuard();
 loadToolChangeDeviceSettings().catch((err) => appendRunLog(`Tool-change settings unavailable: ${err.message}`));
 jobRecoveryPromise.then(refreshRecoveryPlan).catch((err) => appendRecoveryLog(`Recovery planner unavailable: ${err.message}`));
 jobReadinessPromise.then(renderReadiness).catch((err) => {

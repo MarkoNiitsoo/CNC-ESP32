@@ -2,6 +2,25 @@
 
 ## 2026-07-29 - Phase 2: Socket-Only Authoritative Live State Handoff
 
+- Follow-up step 1 closes the stale-control and machine-frame gaps:
+  - Ordinary controls now fail closed when `CncTelemetry` is missing, the transport is not synchronized, or controller communication is not `connected`. A shared guard survives later Machine Bar and Preview renders; Stop and Retry remain available.
+  - The canonical `machine` subscriber now merges `position`, the full authoritative `frame`, `homedAxes`, and `homingEpoch` without reconstructing trusted machine coordinates from browser assumptions.
+- Follow-up step 2 closes operator ownership and lease gaps:
+  - The socket `control` slice contains stable global lease fields and clears the presented owner after expiration.
+  - Browser-local `controller` authorization survives a matching global owner patch but is revoked by inactive or different-owner state; viewers cannot be promoted by socket ownership data.
+  - A bounded 12-second HTTP authorization heartbeat renews long-job leases. It stops while hidden/failed or after authorization loss, and stored-browser restoration uses one reconnect POST rather than status polling.
+- Follow-up step 3 closes persistent-stale and malformed-log gaps:
+  - A six-second full-snapshot watchdog closes and reconnects a live socket when an idempotent resync request or replacement snapshot is lost. Sync packets do not clear it; only atomic validated snapshot installation does.
+  - Snapshot log IDs must be unique, already ascending, and contiguous with exact oldest/latest/next metadata.
+- Follow-up step 4 adds executable regression coverage:
+  - Six DOM interaction tests exercise fail-closed ordering with real IDs, complete frame delivery, Claim/global-patch authorization, heartbeat, and stored reconnect.
+  - Four socket-timer tests cover lost/malformed/valid replacement snapshots and non-contiguous log rejection.
+  - One deterministic mock test proves repeated heartbeat renewal throughout a simulated long job. Focused result: 97/97.
+- Follow-up step 5 verification:
+  - Two consecutive complete JavaScript runs: **556/556**, 50 files, both clean.
+  - Native ControllerCommManager tests: **13/13**.
+  - ESP32-CAM build: **SUCCESS**, RAM **83,428 bytes (25.5%)**, Flash **1,481,941 bytes (75.4%)**.
+  - Physical hardware was not flashed or exercised.
 - Completed Phase 2: Socket-Only Authoritative Live State on `feature/phase1-websocket-transport`:
 - Key Highlights:
   1. Authoritative Support for All 8 Canonical Slices (`src/main.cpp`, `dev/mock-server.mjs`, `www/telemetry.js`): Full WebSocket snapshots emit all 8 canonical slices: `system`, `controller`, `machine`, `job`, `jog`, `control`, `log`, `machineProfile`.
@@ -12,9 +31,9 @@
   6. Transport Liveness & Failed State (`www/telemetry.js`): Implemented heartbeat liveness monitor checking `lastServerMessageMs`. Idle timeout (> 7000ms while synchronized) marks status `stale` and closes WebSocket to trigger reconnect. Transitions status to `failed` after > 5 failed reconnect attempts.
   7. Backward-Compatibility Subscriber Aliases (`www/telemetry.js`, `www/machine-bar.js`, `www/app.js`, `www/preview.js`): Normalized component subscriptions to `system` and `machine` canonical slices while maintaining legacy `cnc-telemetry-health` and `cnc-telemetry-position` custom events.
   8. Executable Quality Verification:
-     - `npm test`: **545/545 tests passed** across 49 test files (0 failed).
+     - `npm test`: **556/556 tests passed** across 50 test files in two consecutive runs (0 failed).
      - `pio test -e native`: **13/13 native C++ test cases passed** (0 failed).
-     - `pio run -e esp32cam`: **SUCCESS** (RAM: 25.5% [used 83,428B of 327,680B], Flash: 75.4% [used 1,481,669B of 1,966,080B]).
+     - `pio run -e esp32cam`: **SUCCESS** (RAM: 25.5% [used 83,428B of 327,680B], Flash: 75.4% [used 1,481,941B of 1,966,080B]).
   9. Physical hardware was not flashed or exercised. Machine control commands remain HTTP, and WebSocket Jog has not started.
 
 ## 2026-07-29 - Explicit P000 Failed Command Recording & CRLF Line Accounting Handoff

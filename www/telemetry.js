@@ -29,6 +29,9 @@
   let heartbeatTimer = null;
   let lastServerMessageMs = 0;
   let resyncPending = false;
+  let resyncStartedAtMs = 0;
+  let resyncRequestSent = false;
+  const RESYNC_COMPLETION_TIMEOUT_MS = 6000;
 
   let clientSeq = 1;
   let highestClientSeqSuccessfullySent = 0;
@@ -234,9 +237,15 @@
   }
 
   function requestResync() {
-    if (resyncPending) return;
-    resyncPending = true;
-    updateTransportStatus('stale');
+    if (resyncPending && resyncRequestSent) return;
+    if (!resyncPending) {
+      resyncPending = true;
+      resyncStartedAtMs = Date.now();
+      updateTransportStatus('stale');
+    } else if (resyncStartedAtMs === 0) {
+      resyncStartedAtMs = Date.now();
+    }
+    resyncRequestSent = true;
     sendSocketPacket({
       protocolVersion: 1,
       type: 'resync',
@@ -260,15 +269,18 @@
     if (!isObject(logData) || !Array.isArray(logData.entries)) return false;
     const ids = logData.entries.map((entry) => Number(entry?.id));
     if (ids.some((id) => !Number.isInteger(id) || id <= 0)) return false;
-    const sortedIds = [...ids].sort((a, b) => a - b);
-    if (new Set(sortedIds).size !== sortedIds.length) return false;
+    if (new Set(ids).size !== ids.length) return false;
     const latestId = Number(logData.latestId);
     const oldestId = Number(logData.oldestId);
     const nextId = Number(logData.nextId);
     if (!Number.isInteger(latestId) || !Number.isInteger(oldestId) || !Number.isInteger(nextId)) return false;
     if (nextId !== latestId + 1) return false;
-    if (sortedIds.length === 0) return oldestId === 0 && latestId === 0 && nextId === 1;
-    return oldestId === sortedIds[0] && latestId === sortedIds[sortedIds.length - 1];
+    if (ids.length === 0) return oldestId === 0 && latestId === 0 && nextId === 1;
+    if (oldestId !== ids[0] || latestId !== ids[ids.length - 1]) return false;
+    for (let index = 1; index < ids.length; index += 1) {
+      if (ids[index] !== ids[index - 1] + 1) return false;
+    }
+    return true;
   }
 
   function isValidSnapshotState(rawState) {
@@ -310,6 +322,8 @@
     lastLogId = Number(nextState.log.latestId || 0);
 
     resyncPending = false;
+    resyncStartedAtMs = 0;
+    resyncRequestSent = false;
     reconnectAttempts = 0;
 
     // 5. Update transportStatus to 'synchronized'
@@ -476,6 +490,9 @@
       highestClientSeqAcknowledgedByESP = 0;
       lastServerSeq = 0;
       lastServerMessageMs = 0;
+      resyncPending = true;
+      resyncStartedAtMs = Date.now();
+      resyncRequestSent = false;
 
       sendSocketPacket({
         protocolVersion: 1,
@@ -505,6 +522,7 @@
       if (document.hidden || !started) return;
       if (!resyncPending) {
         resyncPending = true;
+        resyncStartedAtMs = Date.now();
         updateTransportStatus('stale');
       }
       scheduleReconnect();
@@ -532,10 +550,19 @@
   }
 
   function checkHeartbeatLiveness() {
+    if (socketConnected && resyncPending) {
+      if (resyncStartedAtMs === 0) resyncStartedAtMs = Date.now();
+      if (Date.now() - resyncStartedAtMs > RESYNC_COMPLETION_TIMEOUT_MS) {
+        updateTransportStatus('stale', 'full resync snapshot timed out');
+        socket?.close();
+      }
+      return;
+    }
     if (socketConnected && transportStatus === 'synchronized') {
       if (Date.now() - lastServerMessageMs > 7000) {
         if (!resyncPending) {
           resyncPending = true;
+          resyncStartedAtMs = Date.now();
           updateTransportStatus('stale');
         }
         if (socket) {
@@ -564,6 +591,7 @@
       socketConnected = false;
       if (!resyncPending) {
         resyncPending = true;
+        resyncStartedAtMs = 0;
         updateTransportStatus('stale');
       }
       visibleSocket?.close();
@@ -603,6 +631,8 @@
       getLastServerMessageMs: () => lastServerMessageMs,
       getReconnectAttempts: () => reconnectAttempts,
       isResyncPending: () => resyncPending,
+      getResyncStartedAtMs: () => resyncStartedAtMs,
+      getResyncCompletionTimeoutMs: () => RESYNC_COMPLETION_TIMEOUT_MS,
       getSocket: () => socket,
       connectSocket,
       scheduleReconnect,

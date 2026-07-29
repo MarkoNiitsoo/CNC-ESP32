@@ -2,6 +2,26 @@
 
 ## 2026-07-29 - Phase 2 Final Resync, Log, and Socket-Only State Correctness
 
+- Follow-up implementation step 1:
+  - Added a central fail-closed ordinary-machine-control guard. Missing telemetry, stale transport, or any controller state other than `connected` blocks the real Home, Work Zero, terminal, Jog, Bounds/Aircut, Start/Pause/Resume, feed, recovery, and tool-change controls; Stop and controller Retry remain safety exceptions.
+  - Machine-bar and Preview render paths reapply the same guard, and a capture guard prevents actions during any transient DOM update.
+  - Added a canonical machine-slice adapter that preserves the complete firmware frame, positions, homed axes, homing epoch, trust, Work Zero, Safe Z, revisions, and session identifiers before publishing `cnc-machine-frame`.
+- Follow-up implementation step 2:
+  - Expanded the firmware and mock `control` slice to stable global lease state: `configured`, `active`, `owner`, `leaseMs`, `leaseExpiresAtUptimeMs`, and `canClaim`. Lease expiry changes the slice once and presents no active owner to viewers.
+  - Separated global control ownership from this browser's local authorization. Same-owner global patches preserve a successful local Claim/Reconnect, inactive or different-owner patches revoke it, and a global owner never promotes a viewer.
+  - Restored 12-second `/api/operator/heartbeat` authorization keepalive while locally controlling. It stops on loss/release, hidden pages, or failed transport; stored-browser reconnect is one explicit POST on startup/visibility restoration. Recurring `/api/operator/status` polling was removed.
+- Follow-up implementation step 3:
+  - Added a six-second resync-completion watchdog distinct from ordinary liveness. One idempotent resync request remains pending while sync packets may prove socket liveness, but only a validated complete snapshot clears the deadline; timeout closes the socket and requires a new hello/snapshot.
+  - Tightened bounded log snapshots to require unique IDs in transmitted ascending order with every adjacent ID contiguous, plus exact `oldestId`, `latestId`, and `nextId` boundaries.
+- Follow-up implementation step 4:
+  - Added 11 executable tests: six real-DOM Machine Bar interaction/order, frame, operator, heartbeat, and reconnect cases; four resync-watchdog/log-contiguity cases; and one deterministic mock long-job lease-renewal case.
+  - Updated existing Machine Bar assertions for the canonical frame adapter, augmented the real mock hello proof for stable control-lease fields, and replaced the timing-sensitive mock lease wall-clock threshold with a deterministic before/after renewal assertion.
+  - Focused verification passes 97/97 tests across the five affected suites.
+- Follow-up verification step 5:
+  - Two consecutive complete `npm test` runs each passed **556/556** tests across **50** files.
+  - `platformio test -e native` passed **13/13** cases.
+  - `platformio run -e esp32cam` succeeded at **83,428 / 327,680 bytes RAM (25.5%)** and **1,481,941 / 1,966,080 bytes Flash (75.4%)**.
+  - Physical hardware was not flashed or exercised.
 - Finished the interrupted Phase 2 correctness/performance pass on `feature/phase1-websocket-transport`.
 - Final snapshot schema is one atomic `message.state` (legacy `message.data` is normalized through the same path) containing all eight object slices: `system`, `controller`, `machine`, `job`, `jog`, `control`, `log`, and `machineProfile`. Partial or incoherent snapshots remain stale and cannot enable controls.
 - Production `machineProfile` changes are staged by serialized-content comparison, included in patch detection/copy/clear/build, delivered to synchronized clients, and force client resync after delivery failure.
@@ -21,9 +41,9 @@
 - Machine control commands remain HTTP. WebSocket Jog has not started. Controller/UART ownership, transaction tokens, Safe Z, Cut Bounds, pause/resume, recovery, and production streaming were not redesigned.
 - Tests changed versus baseline: **15 net-new test cases** and **28 existing cases modified/rewritten**.
 - Verification:
-  - `npm test`: **545/545 passed** across **49** test files.
+  - `npm test`: **556/556 passed** across **50** test files in each of two consecutive runs.
   - `platformio test -e native`: **13/13 passed**.
-  - `platformio run -e esp32cam`: **SUCCESS**; RAM **83,428 / 327,680 bytes (25.5%)**; Flash **1,481,669 / 1,966,080 bytes (75.4%)**.
+  - `platformio run -e esp32cam`: **SUCCESS**; RAM **83,428 / 327,680 bytes (25.5%)**; Flash **1,481,941 / 1,966,080 bytes (75.4%)**.
 - Physical hardware was not flashed or exercised; no ESP32-CAM/Marlin/SKR hardware verification is claimed.
 
 ## 2026-07-29 - Phase 2 Final Correctness Recovery Assessment

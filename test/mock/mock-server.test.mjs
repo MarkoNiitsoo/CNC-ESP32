@@ -140,6 +140,7 @@ describe('mock HTTP API', () => {
     });
     const cookie = claim.headers.get('set-cookie').split(';')[0];
     env.operator.lastSeenAt = Date.now() - 20;
+    const expiredLeaseTimestamp = env.operator.lastSeenAt;
 
     expect(await fetch(`${base}/api/operator/status`, { headers: { Cookie: cookie } }).then((res) => res.json()))
       .toMatchObject({ active: false, controller: true, readOnly: false, owner: 'Marko phone' });
@@ -149,7 +150,31 @@ describe('mock HTTP API', () => {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ cmd: 'M5' }),
     })).ok).toBe(true);
-    expect(env.operator.lastSeenAt).toBeGreaterThan(Date.now() - 20);
+    expect(env.operator.lastSeenAt).toBeGreaterThan(expiredLeaseTimestamp);
+  });
+
+  it('renews the controller lease deterministically throughout a simulated long job', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    env.operator.leaseMs = 100;
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Long job browser', pin: '123456', browserId: 'd'.repeat(64) }),
+    });
+    const cookie = claim.headers.get('set-cookie').split(';')[0];
+    env.runner.status.state = 'RUNNING';
+
+    for (let interval = 0; interval < 5; interval += 1) {
+      const beforeRenewal = env.operator.lastSeenAt;
+      env.operator.lastSeenAt -= 75;
+      const heartbeat = await fetch(`${base}/api/operator/heartbeat`, {
+        method: 'POST',
+        headers: { Cookie: cookie },
+      });
+      expect(heartbeat.status).toBe(200);
+      expect(await heartbeat.json()).toMatchObject({ active: true, controller: true });
+      expect(env.operator.lastSeenAt).toBeGreaterThan(beforeRenewal - 75);
+    }
   });
 
   it('silently restores only the remembered browser after an ESP restart', async () => {

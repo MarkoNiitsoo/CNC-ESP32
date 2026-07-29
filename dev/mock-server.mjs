@@ -198,6 +198,19 @@ export async function createMockServer(options = {}) {
       otaUnlocked: controller && Date.now() < env.operator.otaUnlockedUntil,
     };
   };
+  const operatorControlSlice = () => {
+    const active = operatorActive();
+    return {
+      configured: env.operator.configured,
+      active,
+      owner: active ? env.operator.owner : null,
+      leaseMs: env.operator.leaseMs,
+      leaseExpiresAtUptimeMs: active
+        ? Math.max(0, env.operator.lastSeenAt + env.operator.leaseMs - env.startedAt)
+        : 0,
+      canClaim: !active,
+    };
+  };
   const mutationTouchesLockedFile = (candidate) => {
     if (!env.runner.isActive() && !env.recoveryCheckpoint.requiresReview) return false;
     const normalized = String(candidate || '').replace(/\/$/, '');
@@ -965,7 +978,7 @@ export async function createMockServer(options = {}) {
       },
       job: env.runner.snapshot(),
       jog: { ...env.jog },
-      control: { owner: env.operator.owner || null },
+      control: operatorControlSlice(),
       log: {
         entries: Array.isArray(env.marlinLog?.entries) ? [...env.marlinLog.entries] : [],
         oldestId: env.marlinLog?.entries?.length ? Math.min(...env.marlinLog.entries.map((e) => Number(e.id))) : 0,
@@ -1217,8 +1230,15 @@ export async function createMockServer(options = {}) {
     });
   });
 
+  let lastMockControlJson = JSON.stringify(operatorControlSlice());
   const mockSyncTimer = setInterval(() => {
     const now = Date.now();
+    const control = operatorControlSlice();
+    const controlJson = JSON.stringify(control);
+    if (controlJson !== lastMockControlJson) {
+      lastMockControlJson = controlJson;
+      triggerStateSliceChange('control', control);
+    }
     for (const socket of wsClients) {
       const cs = wsClientStates.get(socket);
       if (cs && cs.handshakeComplete && now - cs.lastOutboundAtMs >= 3000) {

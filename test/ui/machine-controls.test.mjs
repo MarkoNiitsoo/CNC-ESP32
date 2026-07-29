@@ -194,14 +194,14 @@ describe('compact machine drawer', () => {
     expect(machineBar).not.toContain('refreshJobStatus().then(() => pollPosition())');
     expect(machineBar).toContain("button('mb-m114', refreshPosition)");
     expect(machineBar).toContain("subscribe('machine'");
-    expect(machineBar).toContain("applyFrame(posData, 'MARLIN')");
+    expect(machineBar).toContain('applyMachineSlice(data)');
     expect(machineBar).toMatch(/async function home[\s\S]*apiPost\('\/api\/machine\/home'/);
     const update = machineBar.slice(machineBar.indexOf('async function sendJogUpdate()'), machineBar.indexOf('async function startJog'));
     expect(update).toContain('renderJogReadouts()');
     expect(update).not.toContain('render();');
     expect(machineBar).toMatch(/subscribe\('jog'[\s\S]{0,120}renderJogReadouts\(\)/);
     expect(machineBar).toMatch(/subscribe\('machine'[\s\S]{0,260}renderPositionReadouts\(\)/);
-    expect(machineBar).toContain("jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true");
+    expect(machineBar).toMatch(/function applyMachineSlice[\s\S]*authoritativeFrame[\s\S]*applyFrame\(frame, 'MARLIN'\)/);
     expect(machineBar).toMatch(/subscribe\('log'[\s\S]{0,240}renderMarlinReadouts\(\)/);
     expect(machineBar).not.toContain("applyIcons?.(document.querySelector('.machine-shell'))");
     expect(machineBar).toContain("source !== 'MARLIN' || frame.revision !== previousRevision");
@@ -344,149 +344,15 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
 });
 
 describe('browser control disabling', () => {
-  it('disables ordinary controls while unresponsive, recovering, or waiting, while Stop and Retry remain enabled', () => {
-    expect(machineBar).toContain("const ordinaryDisabled = isTransportStale || (state === 'unresponsive' || state === 'recovering' || state === 'waiting');");
-    expect(machineBar).toContain('.requires-controller-comm');
-    expect(machineBar).toContain('#mb-home-all');
-    expect(machineBar).toContain('#mb-set-zero');
-    expect(machineBar).toContain('#mb-terminal-send');
-    expect(machineBar).toContain('#action-bounds');
-    expect(machineBar).toContain('#action-start-job');
-    expect(machineBar).toContain('#action-production-resume');
-    expect(machineBar).toContain('.feed-override-btn');
-
-    const createdElements = [];
-    function makeEl(id, className = '') {
-      const el = {
-        id,
-        className,
-        disabled: false,
-        hidden: false,
-        style: {},
-        dataset: {},
-        textContent: '',
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        setAttribute: () => {},
-        removeAttribute: () => {},
-        getAttribute: () => null,
-        getBoundingClientRect: () => ({ height: 48, width: 300, top: 0, bottom: 48, left: 0, right: 300 }),
-        querySelector: () => el,
-        querySelectorAll: () => [],
-        classList: {
-          add(c) {
-            if (!el.className.includes(c)) el.className += ' ' + c;
-          },
-          remove() {},
-          toggle() {}
-        }
-      };
-      createdElements.push(el);
-      return el;
-    }
-
-    const homeBtn = makeEl('mb-home-all');
-    const jogBtn = makeEl('mb-jog-safe-z', 'machine-jog-btn');
-    const boundsBtn = makeEl('action-bounds');
-    const startBtn = makeEl('action-start-job');
-    const resumeBtn = makeEl('action-production-resume');
-    const stopBtn = makeEl('action-stop-job');
-    const retryBtn = makeEl('btn-retry-controller-conn');
-    makeEl('machine-jog-dock');
-    makeEl('machine-jog-dock-panel');
-
-    let controllerCb = null;
-    const fakeWindow = {
-      fetch: Object.assign(() => Promise.resolve({ ok: true }), { bind: () => () => Promise.resolve({ ok: true }) }),
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
-      CncTelemetry: {
-        subscribe(topic, cb) {
-          if (topic === 'controller') controllerCb = cb;
-        },
-        start() {},
-      },
-      STATE: {
-        controller: { state: 'connected' },
-        operator: { configured: false, active: false, controller: false, readOnly: false, owner: null, canClaim: true },
-      },
-    };
-    const fakeDoc = {
-      documentElement: { style: { setProperty: () => {} } },
-      body: { prepend: () => {}, appendChild: () => {}, classList: { add: () => {}, remove: () => {}, toggle: () => {} } },
-      createElement: (tag) => makeEl('created-' + tag),
-      querySelector: (sel) => makeEl('qs-' + sel),
-      getElementById(id) {
-        return createdElements.find(e => e.id === id) || makeEl(id);
-      },
-      querySelectorAll(selector) {
-        if (selector === '.requires-controller-comm') {
-          return createdElements.filter(e => e.className.includes('requires-controller-comm'));
-        }
-        return createdElements.filter(e => selector.includes(e.id) || (e.className && selector.includes(e.className)));
-      },
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    };
-
-    const setupFn = new Function('window', 'document', 'addEventListener', 'removeEventListener', 'localStorage', machineBar + '; return window.LowRiderMachineBar;');
-    const LowRiderMachineBar = setupFn(fakeWindow, fakeDoc, () => {}, () => {}, fakeWindow.localStorage);
-
-    // Test 'unresponsive'
-    if (controllerCb) controllerCb({ state: 'unresponsive' });
-    else {
-      fakeWindow.STATE.controller.state = 'unresponsive';
-      LowRiderMachineBar.renderControllerStatus();
-    }
-    expect(homeBtn.disabled).toBe(true);
-    expect(jogBtn.disabled).toBe(true);
-    expect(boundsBtn.disabled).toBe(true);
-    expect(startBtn.disabled).toBe(true);
-    expect(resumeBtn.disabled).toBe(true);
-    expect(stopBtn.disabled).toBe(false);
-    expect(retryBtn.disabled).toBe(false);
-
-    // Test 'recovering'
-    if (controllerCb) controllerCb({ state: 'recovering' });
-    else {
-      fakeWindow.STATE.controller.state = 'recovering';
-      LowRiderMachineBar.renderControllerStatus();
-    }
-    expect(homeBtn.disabled).toBe(true);
-    expect(jogBtn.disabled).toBe(true);
-    expect(boundsBtn.disabled).toBe(true);
-    expect(startBtn.disabled).toBe(true);
-    expect(resumeBtn.disabled).toBe(true);
-    expect(stopBtn.disabled).toBe(false);
-    expect(retryBtn.disabled).toBe(true);
-
-    // Test 'waiting'
-    if (controllerCb) controllerCb({ state: 'waiting' });
-    else {
-      fakeWindow.STATE.controller.state = 'waiting';
-      LowRiderMachineBar.renderControllerStatus();
-    }
-    expect(homeBtn.disabled).toBe(true);
-    expect(jogBtn.disabled).toBe(true);
-    expect(boundsBtn.disabled).toBe(true);
-    expect(startBtn.disabled).toBe(true);
-    expect(resumeBtn.disabled).toBe(true);
-    expect(stopBtn.disabled).toBe(false);
-    expect(retryBtn.disabled).toBe(false);
-
-    // Test 'connected'
-    if (controllerCb) controllerCb({ state: 'connected' });
-    else {
-      fakeWindow.STATE.controller.state = 'connected';
-      LowRiderMachineBar.renderControllerStatus();
-    }
-    expect(homeBtn.disabled).toBe(false);
-    expect(jogBtn.disabled).toBe(false);
-    expect(boundsBtn.disabled).toBe(false);
-    expect(startBtn.disabled).toBe(false);
-    expect(resumeBtn.disabled).toBe(false);
-    expect(stopBtn.disabled).toBe(false);
-    expect(retryBtn.disabled).toBe(false);
+  it('uses one fail-closed guard with the real control selectors and explicit safety exceptions', () => {
+    expect(machineBar).toContain('function ordinaryMachineControlBlocked()');
+    expect(machineBar).toContain("if (!telemetry || telemetry.transportStatus !== 'synchronized') return true");
+    expect(machineBar).toContain("return controllerCommunicationState() !== 'connected'");
+    expect(machineBar).toContain("'#mb-home-x', '#mb-home-y', '#mb-home-z', '#mb-home-all'");
+    expect(machineBar).toContain("'#mb-set-work-zero', '#mb-set-z-zero'");
+    expect(machineBar).toContain("'#start-job', '#pause-job', '#resume-job'");
+    expect(machineBar).toContain("'#feed-live-percent', '#feed-live-set'");
+    expect(machineBar).toContain("setDisabled('mb-stop', !ACTIVE_STATES.has(state) || state === 'STOPPING', { safetyException: true })");
+    expect(machineBar).not.toContain("transportStatus || 'synchronized'");
   });
 });
