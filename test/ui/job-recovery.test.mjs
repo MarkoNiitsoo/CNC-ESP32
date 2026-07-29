@@ -304,7 +304,9 @@ describe('motion-only recovery UI safety contract', () => {
     expect(previewSource).toContain("const positionTrustKey = 'lowrider.positionTrust'");
     expect(previewSource).toContain('sessionStorage.setItem(positionTrustKey');
     expect(previewSource).toMatch(/uptime < positionTrust\.bootUptimeMs[\s\S]*setPositionTrust\(false, 'firmware-reboot'\)/);
-    expect(machineBarSource).toContain("detail: { trusted: frame.trusted === true, fullHoming, homingEpoch: frame.homingEpoch");
+    expect(machineBarSource).toContain("dispatchConfirmedMachineEvent('cnc-position-trust'");
+    expect(machineBarSource).toContain('trusted: frame.trusted === true');
+    expect(machineBarSource).toContain('confirmedBySocket: true');
     expect(machineBarSource).toMatch(/home\('G28',[\s\S]*true\)/);
   });
 

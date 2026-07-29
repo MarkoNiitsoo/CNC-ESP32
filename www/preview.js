@@ -488,6 +488,8 @@ function openFirmwareRecoveryOptions() {
 }
 
 async function postManualFrame(mode) {
+  const baseline = socketSliceToken('machine');
+  const previousRevision = machineFrameRevision(currentMachineFrame);
   const res = await fetch('/api/machine/manual-frame', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -495,8 +497,13 @@ async function postManualFrame(mode) {
   });
   const data = await readJsonOrThrow(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Manual work frame failed');
-  currentMachineFrame = data.frame || currentMachineFrame;
-  return data;
+  const { frame } = await waitForMachineFrame(
+    baseline,
+    previousRevision,
+    mode === 'set-zero' ? 'manual Work Zero frame' : 'manual machine frame',
+  );
+  currentMachineFrame = frame;
+  return { ...data, frame, confirmedBySocket: true };
 }
 
 async function continueWithoutHoming() {
@@ -807,7 +814,7 @@ function parseAxisTriplet(text, regex) {
 }
 
 function parseM114(response) {
-  const capture = {
+  return {
     rawM114: response,
     position: {
       x: parseAxisTriplet(response, /(?:^|\s)X:\s*(-?\d+(?:\.\d+)?)/i),
@@ -820,12 +827,6 @@ function parseM114(response) {
       z: parseAxisTriplet(response, /Count\s+.*?\bZ:\s*(-?\d+(?:\.\d+)?)/i),
     },
   };
-  if (Number.isFinite(capture.position.x) && Number.isFinite(capture.position.y)) {
-    window.dispatchEvent(new CustomEvent('cnc-position-update', {
-      detail: { ...capture.position, source: 'M114', updatedAt: Date.now() },
-    }));
-  }
-  return capture;
 }
 
 function canvasToolPosition() {
@@ -1563,10 +1564,13 @@ function renderRunPanel() {
     pauseJobButton.hidden = !(running || pausing || statusUnknown);
     resumeJobButton.hidden = !(pausedIntact || recoveryRequired);
     resumeJobButton.textContent = recoveryRequired ? 'Review Recovery' : 'Resume';
-    stopJobButton.hidden = !(active || statusUnknown);
+    const transportSynchronized = window.CncTelemetry?.transportStatus === 'synchronized';
+    const safetyStopDisabled = window.LowRiderMachineBar?.safetyStopDisabled?.(state)
+      ?? (transportSynchronized && stopping);
+    stopJobButton.hidden = transportSynchronized ? !(active || statusUnknown) : false;
     pauseJobButton.disabled = !(running || statusUnknown);
     resumeJobButton.disabled = !(pausedIntact || recoveryRequired) || toolChangePending;
-    stopJobButton.disabled = stopping;
+    stopJobButton.disabled = safetyStopDisabled;
 
     if (runOperatorSummaryEl) {
       const visibleState = jobRunStatus?.errorCode === 'COMMUNICATION_LOST' ? 'COMMUNICATION LOST' : state;
@@ -1663,16 +1667,22 @@ async function setLiveFeedOverride(percent) {
   }
 
   try {
+    const baseline = socketSliceToken('job');
     await postCriticalJobAction('/api/job/feed-override', { percent: value });
+    const confirmed = await waitForSocketSlice(
+      'job',
+      (job) => Number(job?.feedOverridePercent) === value,
+      { afterSequence: baseline, timeoutMs: 5000, description: `feed override ${value}%` },
+    );
     if (jobState) {
       jobState.feedOverride = {
         ...currentFeedOverride(),
-        lastUsedPercent: value,
+        lastUsedPercent: Number(confirmed.feedOverridePercent),
         updatedAt: nowIso(),
-        source: 'user',
+        source: 'socket',
       };
     }
-    if (feedLiveResultEl) feedLiveResultEl.textContent = `Feed override requested: ${value}%`;
+    if (feedLiveResultEl) feedLiveResultEl.textContent = `Feed override confirmed: ${value}%`;
     renderLiveFeedOverride();
     renderFeedOverridePanel();
   } catch (err) {
@@ -1907,6 +1917,7 @@ async function startJobRun() {
   try {
     await saveJobQuietly();
     renderHistoryPanels();
+    const jobBaseline = socketSliceToken('job');
     const data = await postCriticalJobAction('/api/job/start', {
       gcodePath: runPath,
       jobPath: jobPathFor(filePath),
@@ -1927,36 +1938,48 @@ async function startJobRun() {
       generatedFingerprint: job.activeRun?.generatedFingerprint || '',
       transformFingerprint: job.activeRun?.transformFingerprint || '',
     });
-    history.updateRunHistoryFromStatus(job, { ...data, state: data.state || 'RUNNING' });
+    const confirmed = await waitForSocketSlice(
+      'job',
+      (status) => {
+        const state = String(status?.state || '').toUpperCase();
+        return ['PREPARING', 'RUNNING'].includes(state)
+          && (!status?.gcodePath || status.gcodePath === runPath);
+      },
+      { afterSequence: jobBaseline, timeoutMs: 5000, description: 'job start state' },
+    );
+    history.updateRunHistoryFromStatus(job, confirmed);
     job.startAuthorization = emptyWorkflow().startAuthorization;
     job.startAuthorizationToken = '';
     await saveJobQuietly();
     renderHistoryPanels();
-    appendRunLog(`Started ${data.gcodePath || runPath} with ${job.startMode}.`);
+    appendRunLog(`Started ${confirmed.gcodePath || runPath} with ${job.startMode}; live state confirmed.`);
   } catch (err) {
-    history.finishLatestRun(job, 'error', err.message);
-    jobRunStatus = {
-      ...(jobRunStatus || {}),
-      state: 'ERROR',
-      errorCode: 'START_REJECTED',
-      lastError: err.message,
-      gcodePath: runPath,
-    };
+    if (!/Command accepted, but live-state confirmation timed out/.test(err.message)) {
+      history.finishLatestRun(job, 'error', err.message);
+    }
     await saveJobQuietly().catch(() => {});
     renderHistoryPanels();
     setJobResult(`Cut did not start: ${err.message}`, true);
     renderRunPanel();
     showPreviewTab('run');
     workbenchController?.openForTab('run');
-    appendRunLog(`Run ${run.id} recorded as error.`);
+    appendRunLog(/Command accepted, but live-state confirmation timed out/.test(err.message)
+      ? `Run ${run.id} acceptance is awaiting authoritative socket state.`
+      : `Run ${run.id} recorded as rejected.`);
     throw err;
   }
 }
 
 async function pauseJobRun() {
   try {
+    const baseline = socketSliceToken('job');
     const data = await postCriticalJobAction('/api/job/pause');
-    appendRunLog(data.message || `Pause requested${data.currentByteOffset !== undefined ? ` at byte ${data.currentByteOffset}` : ''}`);
+    await waitForSocketSlice(
+      'job',
+      (status) => ['PAUSING', 'PAUSED_INTACT', 'PAUSED'].includes(String(status?.state || '').toUpperCase()),
+      { afterSequence: baseline, timeoutMs: 5000, description: 'paused job state' },
+    );
+    appendRunLog(data.message || 'Pause accepted and confirmed by live state.');
   } catch (err) {
     runLogError('Pause failed', err);
   }
@@ -1969,8 +1992,14 @@ async function resumeJobRun() {
     return;
   }
   try {
+    const baseline = socketSliceToken('job');
     const data = await postCriticalJobAction('/api/job/resume');
-    appendRunLog(data.message || `Resume requested${data.currentByteOffset !== undefined ? ` at byte ${data.currentByteOffset}` : ''}`);
+    await waitForSocketSlice(
+      'job',
+      (status) => ['RESUMING', 'RUNNING'].includes(String(status?.state || '').toUpperCase()),
+      { afterSequence: baseline, timeoutMs: 5000, description: 'resumed job state' },
+    );
+    appendRunLog(data.message || 'Resume accepted and confirmed by live state.');
   } catch (err) {
     runLogError('Resume failed', err);
   }
@@ -1979,9 +2008,17 @@ async function resumeJobRun() {
 async function stopJobRun() {
   appendRunLog('Stop Now requested. This is not a physical emergency stop.');
   try {
+    const baseline = socketSliceToken('job');
     const data = await postCriticalJobAction('/api/job/stop');
-    appendRunLog(data.message || 'Stop command accepted by firmware.');
-    await markLatestRunStopped(data, data.message || 'Operator stop requested');
+    const confirmed = await waitForSocketSlice(
+      'job',
+      (status) => ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(status?.state || '').toUpperCase()),
+      { afterSequence: baseline, timeoutMs: 5000, description: 'stopped job state' },
+    );
+    appendRunLog(data.message || 'Stop command accepted and confirmed by live state.');
+    if (['STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(confirmed.state || '').toUpperCase())) {
+      await markLatestRunStopped(confirmed, data.message || 'Operator stop requested');
+    }
   } catch (err) {
     runLogError('Stop endpoint failed', err);
     appendRunLog('M5 was not sent because motion may still be active. Use the physical emergency stop.');
@@ -2499,6 +2536,8 @@ async function restoreInterruptedWorkZero() {
 
   restoreSavedWorkZeroButton.disabled = true;
   appendRecoveryLog(`Restoring saved work zero at machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}...`);
+  const machineBaseline = socketSliceToken('machine');
+  const previousRevision = machineFrameRevision(currentMachineFrame);
   const res = await fetch('/api/work-zero/restore', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2514,6 +2553,12 @@ async function restoreInterruptedWorkZero() {
   });
   const data = await readJsonOrThrow(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Saved work zero restore failed.');
+  const { frame } = await waitForMachineFrame(
+    machineBaseline,
+    previousRevision,
+    'restored saved Work Zero frame',
+    (candidate) => candidate.workZeroValid === true,
+  );
 
   const history = await jobHistoryPromise;
   history.recordWorkZeroRestore(ensureJobState(), zero.id, {
@@ -2523,17 +2568,16 @@ async function restoreInterruptedWorkZero() {
     source: 'Home-relative M114 counts + M503 M92', capturedAt: zero.capturedAt,
     counts: { ...reference.counts }, stepsPerMm: { ...reference.stepsPerMm }, position: { ...reference.position },
   };
-  currentMachineFrame = data.frame || currentMachineFrame;
+  currentMachineFrame = frame;
   zero.frame = {
-    homingEpoch: Number(data.frame?.homingEpoch),
-    homingSessionId: data.frame?.homingSessionId || '',
-    revision: Number(data.frame?.revision),
+    homingEpoch: Number(frame.homingEpoch),
+    homingSessionId: frame.homingSessionId || '',
+    revision: Number(frame.revision),
   };
   if (jobState?.activeWorkZeroId === zero.id) {
     jobState.workZero.machineReference = structuredClone(zero.machineReference);
     jobState.workZero.frame = { ...zero.frame };
   }
-  if (data.response) liveToolPosition = parseM114(data.response).position;
   await saveJobQuietly();
   appendRecoveryLog('Saved home-relative XYZ work zero restored. Review recovery checks before cutting.');
   renderHistoryPanels();
@@ -2845,11 +2889,11 @@ function renderRecoveryPanel() {
       <ol>
         <li class="${fullHomeReady ? 'complete' : ''}">
           <span><strong>1. Home All</strong><small>${fullHomeReady ? 'Complete in the current powered session.' : 'Required before a saved machine-relative zero can be restored.'}</small></span>
-          ${fullHomeReady ? '<span class="recovery-step-state">DONE</span>' : '<button type="button" data-recovery-fix="home">Home All</button>'}
+          ${fullHomeReady ? '<span class="recovery-step-state">DONE</span>' : '<button type="button" data-recovery-fix="home" data-requires-live-control>Home All</button>'}
         </li>
         <li class="${!needsWorkZero ? 'complete' : ''}">
           <span><strong>2. Restore interrupted work zero</strong><small>${!needsWorkZero ? 'Active in the current Home All session.' : 'Moves safely to the saved home-relative origin and activates G92 XYZ zero.'}</small></span>
-          ${!needsWorkZero ? '<span class="recovery-step-state">DONE</span>' : `<button type="button" data-recovery-fix="restore" ${!fullHomeReady || !idle || !zero ? 'disabled' : ''}>Restore Saved Work Zero</button>`}
+          ${!needsWorkZero ? '<span class="recovery-step-state">DONE</span>' : `<button type="button" data-recovery-fix="restore" data-requires-live-control ${!fullHomeReady || !idle || !zero ? 'disabled' : ''}>Restore Saved Work Zero</button>`}
         </li>
       </ol>
       ${recoveryActionNotice ? `<p class="recovery-action-notice ${recoveryActionNotice.error ? 'error' : ''}" role="status">${html(recoveryActionNotice.message)}</p>` : ''}
@@ -3197,6 +3241,7 @@ async function startProductionResumeStream(commands) {
   await uploadGeneratedRun(path, streamText);
   await saveJobQuietly();
 
+  const jobBaseline = socketSliceToken('job');
   const res = await fetch('/api/recovery/production/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3215,8 +3260,12 @@ async function startProductionResumeStream(commands) {
   });
   const started = await readJsonOrThrow(res);
   if (!res.ok) throw new Error(started.error || 'Firmware Production Resume start failed');
+  const confirmed = await waitForSocketSlice(
+    'job',
+    (status) => status?.streamMode === 'production-resume' && status?.gcodePath === path,
+    { afterSequence: jobBaseline, timeoutMs: 5000, description: 'Production Resume stream state' },
+  );
   activeTestMotion = { mode: 'production-resume', path };
-  await applyJobRunStatus(started);
 
   return new Promise((resolve, reject) => {
     let unsubscribe = null;
@@ -3238,6 +3287,7 @@ async function startProductionResumeStream(commands) {
     if (window.CncTelemetry) {
       unsubscribe = window.CncTelemetry.subscribe('job', observe);
     }
+    observe(confirmed);
   });
 }
 
@@ -3883,6 +3933,7 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
   await uploadGeneratedRun(path, `${commands.join('\n')}\n`);
 
   const payload = { path, mode, safeZ, jobPath: jobPathFor(filePath), ...extraPayload };
+  const jobBaseline = socketSliceToken('job');
   const res = await fetch('/api/test-motion/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3890,8 +3941,12 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
   });
   const started = await readJsonOrThrow(res);
   if (!res.ok) throw new Error(started.error || 'Test motion start failed');
+  const confirmed = await waitForSocketSlice(
+    'job',
+    (status) => status?.streamMode === mode && status?.gcodePath === path,
+    { afterSequence: jobBaseline, timeoutMs: 5000, description: `${mode} test-motion stream state` },
+  );
   activeTestMotion = { mode, path, segments: animationModel.segments };
-  await applyJobRunStatus(started);
 
   return new Promise((resolve, reject) => {
     let unsubscribe = null;
@@ -3918,6 +3973,7 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
     if (window.CncTelemetry) {
       unsubscribe = window.CncTelemetry.subscribe('job', observe);
     }
+    observe(confirmed);
   });
 }
 
@@ -4026,7 +4082,7 @@ function renderZeroHistoryPanel() {
         ? `Last run: ${html(runState || 'unknown')}${suspicious ? ' ⚠' : ''} · ${html(localTimestamp(run.endedAt || run.startedAt))}`
         : 'Last run: not used yet'}</p>
       <div class="history-actions">
-        <button type="button" class="restore-history-zero" ${position ? '' : 'disabled'}>Restore &amp; Go</button>
+        <button type="button" class="restore-history-zero" data-requires-live-control ${position ? '' : 'disabled'}>Restore &amp; Go</button>
       </div>
       <details class="history-details">
         <summary>Details</summary>
@@ -4061,6 +4117,8 @@ async function restoreHistoryZero(zero) {
   const zeroLabel = zero.type === 'zZero' ? 'Z zero' : 'work zero';
   if (!confirm(`Restore this ${zeroLabel} and go there?\n\nThe machine will lift to Z${safeMachineZ.toFixed(1)}, move to machine X${reference.position.x.toFixed(3)} Y${reference.position.y.toFixed(3)}, then descend to saved Z${reference.position.z.toFixed(3)}.\n\nKeep your hand near the physical emergency stop.`)) return;
 
+  const machineBaseline = socketSliceToken('machine');
+  const previousRevision = machineFrameRevision(currentMachineFrame);
   const res = await fetch('/api/work-zero/restore', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -4076,6 +4134,12 @@ async function restoreHistoryZero(zero) {
   });
   const data = await readJsonOrThrow(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Zero restore failed.');
+  const { frame } = await waitForMachineFrame(
+    machineBaseline,
+    previousRevision,
+    `restored ${zeroLabel} frame`,
+    (candidate) => candidate.workZeroValid === true,
+  );
 
   const history = await jobHistoryPromise;
   const job = ensureJobState();
@@ -4085,7 +4149,7 @@ async function restoreHistoryZero(zero) {
     safeMachineZ,
     result: 'completed',
   });
-  currentMachineFrame = data.frame || currentMachineFrame;
+  currentMachineFrame = frame;
   zero.machineReference = {
     ...zero.machineReference,
     position: { ...reference.position },
@@ -4093,19 +4157,18 @@ async function restoreHistoryZero(zero) {
     stepsPerMm: { ...reference.stepsPerMm },
   };
   zero.frame = {
-    homingEpoch: Number(data.frame?.homingEpoch),
-    homingSessionId: data.frame?.homingSessionId || '',
-    revision: Number(data.frame?.revision),
+    homingEpoch: Number(frame.homingEpoch),
+    homingSessionId: frame.homingSessionId || '',
+    revision: Number(frame.revision),
   };
   if (zero.type === 'workZero') {
     job.workZero.machineReference = structuredClone(zero.machineReference);
     job.workZero.frame = { ...zero.frame };
-  } else if (job.workZero?.machineReference?.position && data.frame?.workZeroMachine) {
-    job.workZero.machineReference.position = { ...data.frame.workZeroMachine };
+  } else if (job.workZero?.machineReference?.position && frame.workZeroMachine) {
+    job.workZero.machineReference.position = { ...frame.workZeroMachine };
     job.workZero.frame = { ...zero.frame };
   }
   if (job.arm?.state === 'ARMED') job.arm.state = 'STALE';
-  if (data.response) liveToolPosition = parseM114(data.response).position;
   await saveJobQuietly();
   zeroHistoryDialog?.close?.();
   setJobResult(`${zeroLabel === 'Z zero' ? 'Z zero' : 'Work zero'} restored and active.`);
@@ -4206,6 +4269,44 @@ function getControllerCommState() {
   return window.LowRiderMachineBar?.controllerState?.() || 'unknown';
 }
 
+function socketSliceToken(slice) {
+  return window.LowRiderMachineBar?.socketSliceToken?.(slice) ?? 0;
+}
+
+function waitForSocketSlice(slice, predicate, options) {
+  const wait = window.LowRiderMachineBar?.waitForSocketSlice;
+  if (!wait) return Promise.reject(new Error('Socket confirmation service is unavailable.'));
+  return wait(slice, predicate, options);
+}
+
+function machineFrameFromSlice(data) {
+  const frame = data?.frame && typeof data.frame === 'object' ? data.frame : {};
+  return {
+    ...frame,
+    work: data?.position?.work ?? frame.work ?? null,
+    machine: data?.position?.machine ?? frame.machine ?? null,
+    homedAxes: data?.homedAxes ?? frame.homedAxes ?? null,
+    homingEpoch: data?.homingEpoch ?? frame.homingEpoch ?? 0,
+  };
+}
+
+function machineFrameRevision(frame) {
+  const revision = Number(frame?.revision);
+  return Number.isFinite(revision) ? revision : -1;
+}
+
+async function waitForMachineFrame(afterSequence, previousRevision, description, predicate = () => true) {
+  const machine = await waitForSocketSlice(
+    'machine',
+    (slice) => {
+      const frame = machineFrameFromSlice(slice);
+      return machineFrameRevision(frame) > previousRevision && predicate(frame, slice);
+    },
+    { afterSequence, timeoutMs: 5000, description },
+  );
+  return { machine, frame: machineFrameFromSlice(machine) };
+}
+
 function applyMachineControlGuard() {
   window.LowRiderMachineBar?.applyOrdinaryControlGuard?.();
 }
@@ -4223,6 +4324,9 @@ async function recoverControllerConnection() {
 }
 
 async function sendCmd(cmd) {
+  const normalized = String(cmd || '').trim().toUpperCase();
+  const machineBaseline = normalized === 'M114' ? socketSliceToken('machine') : 0;
+  const previousRevision = normalized === 'M114' ? machineFrameRevision(currentMachineFrame) : -1;
   let res;
   try {
     res = await fetch('/api/cmd', {
@@ -4250,6 +4354,16 @@ async function sendCmd(cmd) {
       err.isTimeout = true;
     }
     throw err;
+  }
+  if (normalized === 'M114') {
+    await waitForSocketSlice(
+      'machine',
+      (slice) => {
+        const frame = machineFrameFromSlice(slice);
+        return machineFrameRevision(frame) >= previousRevision && Boolean(frame.work || slice?.position?.work);
+      },
+      { afterSequence: machineBaseline, timeoutMs: 5000, description: 'new M114 machine position' },
+    );
   }
   return data.response || '';
 }
@@ -5077,27 +5191,33 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
   const toolZero = ensureToolZeroState();
   let data = transaction;
   if (!data) {
+    const machineBaseline = socketSliceToken('machine');
+    const previousRevision = machineFrameRevision(currentMachineFrame);
     const res = await fetch('/api/work-zero/set-z', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     });
     data = await readJsonOrThrow(res);
     if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Z Zero failed');
+    const { frame } = await waitForMachineFrame(machineBaseline, previousRevision, 'new Z Zero frame');
+    data = { ...data, frame, confirmedBySocket: true };
   }
+  if (data.confirmedBySocket !== true) throw new Error('Z Zero was accepted but has no authoritative socket confirmation.');
+  const frame = data.frame;
   const before = parseM114(data.before || '');
   const after = parseM114(data.after || '');
   const method = options.method || (data.method === 'touchplate' ? 'Touch plate + G92 Z thickness' : 'G92 Z0');
-  currentMachineFrame = data.frame || currentMachineFrame;
+  currentMachineFrame = frame;
   toolZero.method = method;
   toolZero.capturedAt = nowIso();
   toolZero.beforeG92Z = before;
   toolZero.afterG92Z = after;
-  const machineZ = Number(data.frame?.workZeroMachine?.z);
+  const machineZ = Number(frame?.workZeroMachine?.z);
   if (Number.isFinite(machineZ) && jobState?.workZero?.machineReference?.position) {
     jobState.workZero.machineReference.position.z = machineZ;
     jobState.workZero.frame = {
-      homingEpoch: Number(data.frame.homingEpoch),
-      homingSessionId: data.frame.homingSessionId || '',
-      revision: Number(data.frame.revision),
+      homingEpoch: Number(frame.homingEpoch),
+      homingSessionId: frame.homingSessionId || '',
+      revision: Number(frame.revision),
     };
     const activeZero = (jobState.zeroHistory || []).find((entry) => entry.id === jobState.activeWorkZeroId);
     if (activeZero?.machineReference?.position) {
@@ -5106,7 +5226,7 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
     }
   }
   const history = await jobHistoryPromise;
-  const zMachinePosition = data.frame?.workZeroMachine;
+  const zMachinePosition = frame?.workZeroMachine;
   history.appendZZeroHistory(ensureJobState(), {
     method,
     before,
@@ -5115,12 +5235,12 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
     machineReference: zMachinePosition ? {
       source: 'firmware absolute Home All frame', capturedAt: toolZero.capturedAt,
       position: { ...zMachinePosition }, counts: { ...before.counts },
-      stepsPerMm: { ...(data.frame?.homeReference?.stepsPerMm || {}) },
+      stepsPerMm: { ...(frame?.homeReference?.stepsPerMm || {}) },
     } : null,
     frame: {
-      homingEpoch: Number(data.frame?.homingEpoch),
-      homingSessionId: data.frame?.homingSessionId || '',
-      revision: Number(data.frame?.revision),
+      homingEpoch: Number(frame?.homingEpoch),
+      homingSessionId: frame?.homingSessionId || '',
+      revision: Number(frame?.revision),
     },
   });
   invalidateDependentSetup(jobState, 'Z zero changed after physical verification.');
@@ -5140,12 +5260,18 @@ async function probeTouchPlateZZero() {
   const settings = toolChangeDeviceSettings || await loadToolChangeDeviceSettings();
   if (!settings?.touchPlateEnabled) throw new Error('Touch plate is not enabled in Settings.');
   if (!confirm(`Probe downward up to ${settings.touchPlateProbeDistance.toFixed(1)} mm at ${settings.touchPlateProbeFeed.toFixed(0)} mm/min?\n\nPlate thickness: ${settings.touchPlateThickness.toFixed(2)} mm. Verify the probe lead is connected before continuing.`)) return;
+  const machineBaseline = socketSliceToken('machine');
+  const previousRevision = machineFrameRevision(currentMachineFrame);
   const res = await fetch('/api/work-zero/touch-plate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   });
   const data = await readJsonOrThrow(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Touch-plate Z zero failed');
-  await setZZeroWithCapture(data, { method: `Touch plate ${settings.touchPlateThickness.toFixed(3)} mm` });
+  const { frame } = await waitForMachineFrame(machineBaseline, previousRevision, 'touch-plate Z Zero frame');
+  await setZZeroWithCapture(
+    { ...data, frame, confirmedBySocket: true },
+    { method: `Touch plate ${settings.touchPlateThickness.toFixed(3)} mm` },
+  );
   if (toolChangeResultEl && jobRunStatus?.toolChangePending) {
     toolChangeResultEl.textContent = 'Touch plate completed. Verify the tool, then continue.';
   }
@@ -5176,15 +5302,26 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
   const job = ensureJobState();
   let data = transaction;
   if (!data) {
+    const machineBaseline = socketSliceToken('machine');
+    const previousRevision = machineFrameRevision(currentMachineFrame);
     const res = await fetch('/api/work-zero/set', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: selectedAxes }),
     });
     data = await readJsonOrThrow(res);
     if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Work Zero failed');
+    const { frame } = await waitForMachineFrame(
+      machineBaseline,
+      previousRevision,
+      `new ${selectedAxes.toUpperCase()} Work Zero frame`,
+      (candidate) => candidate.workZeroValid === true,
+    );
+    data = { ...data, frame, confirmedBySocket: true, axes: selectedAxes };
   }
+  if (data.confirmedBySocket !== true) throw new Error('Work Zero was accepted but has no authoritative socket confirmation.');
+  const frame = data.frame;
   const before = parseM114(data.before || '');
   const after = parseM114(data.after || '');
-  currentMachineFrame = data.frame || currentMachineFrame;
+  currentMachineFrame = frame;
   const axesToVerify = selectedAxes === 'xyz' ? ['x', 'y', 'z'] : [selectedAxes];
   const zeroConfirmed = axesToVerify.every((axis) => (
     Number.isFinite(Number(after.position?.[axis])) && Math.abs(Number(after.position[axis])) <= 0.02
@@ -5193,20 +5330,20 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
     throw new Error('Could not verify zero');
   }
 
-  const machinePosition = data.frame?.workZeroMachine;
+  const machinePosition = frame?.workZeroMachine;
   const machineReference = machinePosition ? {
     source: 'firmware absolute Home All frame', capturedAt: nowIso(), position: { ...machinePosition },
     counts: { ...before.counts },
-    stepsPerMm: { ...(data.frame?.homeReference?.stepsPerMm || {}) },
+    stepsPerMm: { ...(frame?.homeReference?.stepsPerMm || {}) },
   } : null;
   job.workZero.capturedAt = nowIso();
   job.workZero.beforeG92 = before;
   job.workZero.afterG92 = after;
   job.workZero.machineReference = machineReference;
   job.workZero.frame = {
-    homingEpoch: Number(data.frame?.homingEpoch),
-    homingSessionId: data.frame?.homingSessionId || '',
-    revision: Number(data.frame?.revision),
+    homingEpoch: Number(frame?.homingEpoch),
+    homingSessionId: frame?.homingSessionId || '',
+    revision: Number(frame?.revision),
   };
   job.startMode = 'use_active_work_zero';
   if (startModeSelect) startModeSelect.value = job.startMode;
@@ -5223,14 +5360,14 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
   if (selectedAxes === 'xyz') {
     job.frameDecision = {
       mode: 'homed',
-      bootSessionId: data.frame?.bootSessionId || '',
-      homingSessionId: data.frame?.homingSessionId || '',
+      bootSessionId: frame?.bootSessionId || '',
+      homingSessionId: frame?.homingSessionId || '',
       acknowledgedAt: nowIso(),
     };
     job.workZeroDecision = {
       mode: 'homed',
-      token: job.activeWorkZeroId || `homed:${data.frame?.homingSessionId || ''}:${job.workZero.capturedAt}`,
-      bootSessionId: data.frame?.bootSessionId || '',
+      token: job.activeWorkZeroId || `homed:${frame?.homingSessionId || ''}:${job.workZero.capturedAt}`,
+      bootSessionId: frame?.bootSessionId || '',
       capturedAt: job.workZero.capturedAt,
     };
   }
@@ -6360,12 +6497,7 @@ async function generateRunFile(options = {}) {
 async function loadPreview() {
   await motionSettingsPromise;
   await loadMachineLimits();
-  try {
-    const frameRes = await fetch('/api/machine/frame');
-    if (frameRes.ok) currentMachineFrame = await frameRes.json();
-  } catch (err) {
-    currentMachineFrame = null;
-  }
+  currentMachineFrame = window.LowRiderMachineBar?.machineFrame?.() || currentMachineFrame;
   applySafeZInputLimits();
   if (!filePath) {
     redirectToFiles();

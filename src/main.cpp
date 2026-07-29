@@ -507,6 +507,7 @@ String operatorSessionOwner;
 String operatorSessionBrowserHash;
 uint32_t operatorSessionClaimedAtMs = 0;
 uint32_t operatorSessionLastSeenMs = 0;
+uint32_t operatorControlSessionEpoch = 0;
 uint32_t operatorOtaUnlockedUntilMs = 0;
 uint32_t operatorFailedPinWindowStartedAtMs = 0;
 uint8_t operatorFailedPinAttempts = 0;
@@ -2487,6 +2488,8 @@ String buildControlSliceJson() {
   patchJson += String(kOperatorLeaseMs);
   patchJson += ",\"leaseExpiresAtUptimeMs\":";
   patchJson += active ? String(operatorSessionLastSeenMs + kOperatorLeaseMs) : "0";
+  patchJson += ",\"controlSessionEpoch\":";
+  patchJson += active ? String(operatorControlSessionEpoch) : "0";
   patchJson += ",\"canClaim\":";
   patchJson += active ? "false" : "true";
   patchJson += "}";
@@ -6340,7 +6343,7 @@ String operatorRequestToken() {
 bool operatorRequestAuthorized(bool refreshLease = true) {
   const String token = operatorRequestToken();
   if (token.length() == 0 || operatorSessionToken.length() == 0 || token != operatorSessionToken) return false;
-  operatorSessionActive();
+  if (!operatorSessionActive()) return false;
   if (refreshLease) operatorSessionLastSeenMs = millis();
   return true;
 }
@@ -6353,7 +6356,7 @@ bool operatorOtaUnlocked() {
 String operatorStatusJson(bool assumeController = false) {
   const bool active = operatorSessionActive();
   const String requestToken = operatorRequestToken();
-  const bool controller = operatorSessionToken.length() > 0 &&
+  const bool controller = active && operatorSessionToken.length() > 0 &&
                           (assumeController || requestToken == operatorSessionToken);
   const uint32_t remaining = active ? kOperatorLeaseMs - (millis() - operatorSessionLastSeenMs) : 0;
   String json = "{\"ok\":true,\"configured\":";
@@ -6366,6 +6369,7 @@ String operatorStatusJson(bool assumeController = false) {
   json += active || controller ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
   json += ",\"leaseRemainingMs\":" + String(remaining);
   json += ",\"leaseMs\":" + String(kOperatorLeaseMs);
+  json += ",\"controlSessionEpoch\":" + String(active ? operatorControlSessionEpoch : 0);
   const bool otaUnlocked = controller && operatorOtaUnlockedUntilMs != 0 &&
                            static_cast<int32_t>(operatorOtaUnlockedUntilMs - millis()) > 0;
   json += ",\"otaUnlocked\":" + String(otaUnlocked ? "true" : "false");
@@ -6418,6 +6422,11 @@ String newOperatorToken() {
            static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
            static_cast<unsigned long>(esp_random()));
   return String(token);
+}
+
+void beginOperatorControlSession() {
+  ++operatorControlSessionEpoch;
+  if (operatorControlSessionEpoch == 0) ++operatorControlSessionEpoch;
 }
 
 void saveOperatorPin(const String &pin) {
@@ -6487,6 +6496,7 @@ void handleOperatorClaim() {
     return;
   }
   operatorSessionToken = newOperatorToken();
+  beginOperatorControlSession();
   operatorSessionOwner = owner;
   operatorSessionBrowserHash = operatorBrowserDigest(browserId);
   rememberOperatorBrowser(browserId, owner);
@@ -6511,18 +6521,24 @@ void handleOperatorReconnect() {
     sendJsonError(403, "this browser is not the remembered controller");
     return;
   }
-  if (operatorSessionActive() && operatorSessionBrowserHash.length() > 0 &&
+  const bool activeSession = operatorSessionActive();
+  if (activeSession && operatorSessionBrowserHash.length() > 0 &&
       browserHash != operatorSessionBrowserHash) {
     sendOperatorLocked();
     return;
   }
-  operatorSessionToken = newOperatorToken();
-  operatorSessionOwner = operatorRememberedOwner.length() > 0
-                           ? operatorRememberedOwner : "Remembered controller";
-  operatorSessionBrowserHash = browserHash;
-  operatorSessionClaimedAtMs = millis();
-  operatorSessionLastSeenMs = operatorSessionClaimedAtMs;
-  operatorOtaUnlockedUntilMs = 0;
+  if (activeSession) {
+    operatorSessionLastSeenMs = millis();
+  } else {
+    operatorSessionToken = newOperatorToken();
+    beginOperatorControlSession();
+    operatorSessionOwner = operatorRememberedOwner.length() > 0
+                             ? operatorRememberedOwner : "Remembered controller";
+    operatorSessionBrowserHash = browserHash;
+    operatorSessionClaimedAtMs = millis();
+    operatorSessionLastSeenMs = operatorSessionClaimedAtMs;
+    operatorOtaUnlockedUntilMs = 0;
+  }
   server.sendHeader("Set-Cookie", "cnc_operator=" + operatorSessionToken +
                                   "; Path=/; SameSite=Strict; HttpOnly; Max-Age=" +
                                   String(kOperatorCookieMaxAgeSeconds));

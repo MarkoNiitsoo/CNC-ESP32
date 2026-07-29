@@ -1,5 +1,17 @@
 # Handoff
 
+## 2026-07-29 - Final Phase 2 safety/DOM guard pass
+
+- Both machine-bar and Preview Stop are now visible/enabled whenever WebSocket live state is stale, regardless of the last job state. Synchronized views continue to use normal Stop state rules.
+- Real static and generated machine-mutation controls now carry explicit live-control markers, including Preview X/Y zero, all Jog inputs, recovery movement, Production Resume, tool-change, feed override, and Index machine-configuration commands. Dynamic readiness and recovery actions are marked at creation time; Stop carries an explicit safety-exception marker.
+- HTTP responses are now acceptance/result channels only. A reusable bounded WebSocket-slice waiter confirms M114, Home, zero, feed, Jog, and job state transitions; timeout leaves the last authoritative live state unchanged.
+- Zero/trust follow-ups use confirmed socket frames and duplicate confirmed revisions do not create duplicate events/history. Commanded Jog positions are isolated as animation data.
+- Firmware, mock, HTTP operator responses, and socket control slices now include `controlSessionEpoch`. New sessions increment it, same-active-session heartbeat/reconnect preserves it, and browser authorization requires an exact local/global epoch match instead of comparing owner display text.
+- Recovery/trust regression coverage now asserts the socket-confirmed event path and no longer expects the removed response-derived event payload.
+- Production Resume and test-motion start responses are acceptance-only too; matching stream-mode/path job slices confirm those workflows before their UI-only motion tracking starts.
+- Final verification: two consecutive **569/569** JavaScript passes across 51 files, **13/13** native tests, and an ESP32-CAM **SUCCESS** build using **83,428 bytes RAM (25.5%)** and **1,482,257 bytes Flash (75.4%)**.
+- Hardware was not flashed or exercised. Phase 3 command migration and WebSocket Jog remain intentionally unstarted.
+
 ## 2026-07-29 - Phase 2: Socket-Only Authoritative Live State Handoff
 
 - Follow-up step 1 closes the stale-control and machine-frame gaps:

@@ -46,13 +46,13 @@
         <h2>Job Readiness</h2>
         <div id="readiness-summary" class="job-summary"></div>
         <div class="job-actions readiness-primary readiness-machine-actions">
-          <button id="readiness-home-all" class="primary-action machine-danger" type="button">Home All</button>
+          <button id="readiness-home-all" class="primary-action machine-danger" type="button" data-requires-live-control>Home All</button>
         </div>
         <div class="job-actions compact-actions readiness-persistent-tools" aria-label="Persistent setup tools">
-          <button id="readiness-set-work-zero" type="button">Set Work Zero</button>
-          <button id="readiness-set-z-zero" type="button">Set Z Zero</button>
-          <button id="readiness-run-bounds" type="button">Run Bounding Box</button>
-          <button id="readiness-run-aircut" type="button">Run Aircut</button>
+          <button id="readiness-set-work-zero" type="button" data-requires-live-control>Set Work Zero</button>
+          <button id="readiness-set-z-zero" type="button" data-requires-live-control>Set Z Zero</button>
+          <button id="readiness-run-bounds" type="button" data-requires-live-control>Run Bounding Box</button>
+          <button id="readiness-run-aircut" type="button" data-requires-live-control>Run Aircut</button>
           <button id="readiness-inspect-preflight" type="button">Inspect Preflight</button>
           <button id="readiness-inspect-recoveries" type="button">Recoveries / History</button>
         </div>
@@ -171,16 +171,16 @@
         <div class="prepare-zero-history">
           <label for="prepare-work-zero-history">Saved work zeros</label>
           <select id="prepare-work-zero-history" aria-label="Saved work zeros"></select>
-          <button id="restore-prepare-work-zero" type="button" disabled>Restore &amp; Activate</button>
+          <button id="restore-prepare-work-zero" type="button" disabled data-requires-live-control>Restore &amp; Activate</button>
           <p id="prepare-work-zero-hint" class="form-hint">Home All first, then restore a saved zero into the current machine session.</p>
         </div>
         <div class="zero-origin-actions">
-          <button id="home-machine-zero" type="button">Home Machine</button>
-          <button id="set-work-zero" type="button" data-icon="workZero">Set Work Zero</button>
-          <button id="set-zero-x" type="button">Set Zero X</button>
-          <button id="set-zero-y" type="button">Set Zero Y</button>
-          <button id="set-z-zero" type="button" data-icon="zZero">Set Zero Z</button>
-          <button id="touch-plate-z-zero" type="button" hidden>Touch Plate Z Zero</button>
+          <button id="home-machine-zero" type="button" data-requires-live-control>Home Machine</button>
+          <button id="set-work-zero" type="button" data-icon="workZero" data-requires-live-control>Set Work Zero</button>
+          <button id="set-zero-x" type="button" data-requires-live-control>Set Zero X</button>
+          <button id="set-zero-y" type="button" data-requires-live-control>Set Zero Y</button>
+          <button id="set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Zero Z</button>
+          <button id="touch-plate-z-zero" type="button" hidden data-requires-live-control>Touch Plate Z Zero</button>
           <button id="open-zero-history" type="button">History</button>
         </div>
         <div id="job-result" class="job-result" role="status"></div>
@@ -251,7 +251,7 @@
       <section class="panel recovery-panel preview-tab-panel" data-preview-tab="recovery">
         <h2>Saved Recoveries</h2>
         <div id="firmware-recovery-checkpoint" class="job-summary" hidden></div>
-        <button id="firmware-recovery-dismiss" class="machine-danger" type="button" hidden>Dismiss Firmware Recovery Record</button>
+        <button id="firmware-recovery-dismiss" class="machine-danger" type="button" hidden data-requires-live-control>Dismiss Firmware Recovery Record</button>
         <div id="recovery-collection" class="job-summary recovery-collection"></div>
         <h3>Review Selected Recovery</h3>
         <div id="recovery-trust" class="arm-state arm-not-ready">POSITION UNTRUSTED</div>
@@ -267,14 +267,14 @@
           <summary>Saved work zero</summary>
           <h3>Saved Work Zero</h3>
           <div id="work-zero-restore-summary" class="job-summary"></div>
-          <button id="restore-saved-work-zero" type="button" disabled>Restore Saved Work Zero</button>
+          <button id="restore-saved-work-zero" type="button" disabled data-requires-live-control>Restore Saved Work Zero</button>
           <p class="form-hint">Home All first. The saved home-relative XYZ origin is restored; homing is never automatic.</p>
         </details>
         <details class="operator-diagnostics recovery-positioning-panel">
           <summary>Motion-only positioning</summary>
         <div class="job-actions">
-          <button id="fit-resume-point" type="button">Fit Resume Point</button>
-          <button id="move-to-resume-point" type="button" disabled>Move Axes to Resume Point</button>
+          <button id="fit-resume-point" type="button" data-requires-live-control>Fit Resume Point</button>
+          <button id="move-to-resume-point" type="button" disabled data-requires-live-control>Move Axes to Resume Point</button>
           <button id="cancel-recovery" type="button">Hide Recovery</button>
         </div>
         </details>
@@ -282,7 +282,7 @@
           <p class="warning">Toolless resume test. No cutter/router installed. Spindle stays off. This follows the real Z path.</p>
           <label class="recovery-overlay-toggle"><input id="toolless-no-cutter" type="checkbox"> I confirm no cutter/router is installed</label>
           <div id="toolless-resume-summary" class="job-summary"></div>
-          <button id="toolless-resume-start" class="machine-danger" type="button" disabled>Toolless Resume From Point</button>
+          <button id="toolless-resume-start" class="machine-danger" type="button" disabled data-requires-live-control>Toolless Resume From Point</button>
         </details>
         <div class="production-resume-panel">
           <h3><span class="production-badge">GUARDED</span> Production Resume</h3>
@@ -298,9 +298,9 @@
               <label><input type="checkbox" data-production-check="newZZeroCorrect"> New Z zero is correct for this resume</label>
             </div>
           </fieldset>
-          <button id="production-prepare" type="button" disabled>Move to Resume Point at Safe Z</button>
+          <button id="production-prepare" type="button" disabled data-requires-live-control>Move to Resume Point at Safe Z</button>
           <label class="production-manual-check"><input id="production-router-confirmed" type="checkbox" disabled> At resume point: router was started/verified manually</label>
-          <button id="production-resume-hold" class="production-hold" type="button" disabled>Hold to Resume Cutting</button>
+          <button id="production-resume-hold" class="production-hold" type="button" disabled data-requires-live-control>Hold to Resume Cutting</button>
           <p class="help-text">After the hold, the ESP32 owns the cutting stream. Closing the browser or losing WiFi does not stop it; use Pause or Stop when needed.</p>
           <p class="form-hint">Hold for 1.5 seconds. Release early to cancel.</p>
         </div>
@@ -318,7 +318,7 @@
         </div>
         <p class="form-hint">When Aircut is ON, the XY toolpath is sent at Safe Z and spindle/laser start commands are suppressed. Identical stepdown passes at different Z levels run once.</p>
         <div class="job-actions">
-          <button id="send-dry-run" type="button" disabled>Send Box Trace</button>
+          <button id="send-dry-run" type="button" disabled data-requires-live-control>Send Box Trace</button>
         </div>
         <p id="dry-run-status" class="form-hint"></p>
         <p class="form-hint dry-run-warning">This is not an emergency stop. Keep the physical emergency stop within reach.</p>
@@ -336,9 +336,9 @@
           <p id="tool-change-instruction" class="warning"></p>
           <label class="production-manual-check"><input id="tool-change-router-ready" type="checkbox"> Router/spindle is in the intended state for continuing and was started manually if required.</label>
           <div class="job-actions">
-            <button id="tool-change-manual-z" type="button">Set Current Z Zero</button>
-            <button id="tool-change-touch-plate" type="button" hidden>Probe Touch Plate</button>
-            <button id="tool-change-complete" class="hold-to-confirm" type="button">Confirm Tool &amp; Continue</button>
+            <button id="tool-change-manual-z" type="button" data-requires-live-control>Set Current Z Zero</button>
+            <button id="tool-change-touch-plate" type="button" hidden data-requires-live-control>Probe Touch Plate</button>
+            <button id="tool-change-complete" class="hold-to-confirm" type="button" data-requires-live-control>Confirm Tool &amp; Continue</button>
           </div>
           <p id="tool-change-result" class="form-hint"></p>
         </section>
@@ -349,10 +349,10 @@
           <label><input type="checkbox" data-run-check="spindleStateReady"> Router/spindle is in the intended start state.</label>
         </fieldset>
         <div class="job-actions">
-          <button id="start-job" class="hold-to-confirm" type="button" aria-label="Hold to Start Cut" data-icon="start">Hold to Start Cut</button>
-          <button id="pause-job" class="hold-to-confirm" type="button" aria-label="Hold to Pause" title="Hold motion; cutter remains running" data-icon="pause">Pause</button>
-          <button id="resume-job" class="hold-to-confirm" type="button">Resume</button>
-          <button id="stop-job" class="hold-to-confirm" type="button" aria-label="Hold to Stop with M410" title="Stop motion first, then stop the cutter" data-icon="stop">Stop</button>
+          <button id="start-job" class="hold-to-confirm" type="button" aria-label="Hold to Start Cut" data-icon="start" data-requires-live-control>Hold to Start Cut</button>
+          <button id="pause-job" class="hold-to-confirm" type="button" aria-label="Hold to Pause" title="Hold motion; cutter remains running" data-icon="pause" data-requires-live-control>Pause</button>
+          <button id="resume-job" class="hold-to-confirm" type="button" data-requires-live-control>Resume</button>
+          <button id="stop-job" class="hold-to-confirm" type="button" aria-label="Hold to Stop with M410" title="Stop motion first, then stop the cutter" data-icon="stop" data-safety-exception>Stop</button>
         </div>
         <p class="form-hint"><strong>Pause</strong> holds motion without lifting Z and keeps the cutter running. <strong>Stop</strong> stops motion first, then sends M5 and requires Recovery.</p>
         <details class="operator-diagnostics">
@@ -364,18 +364,18 @@
             <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
             <div id="feed-live-summary" class="job-summary"></div>
             <div class="job-actions feed-actions">
-              <button type="button" data-feed-live="50">50%</button>
-              <button type="button" data-feed-live="75">75%</button>
-              <button type="button" data-feed-live="100">100%</button>
-              <button type="button" data-feed-live="125">125%</button>
-              <button type="button" data-feed-live="150" class="caution">150%</button>
-              <button type="button" data-feed-delta="-10">-10%</button>
-              <button type="button" data-feed-delta="10">+10%</button>
+              <button type="button" data-feed-live="50" data-requires-live-control>50%</button>
+              <button type="button" data-feed-live="75" data-requires-live-control>75%</button>
+              <button type="button" data-feed-live="100" data-requires-live-control>100%</button>
+              <button type="button" data-feed-live="125" data-requires-live-control>125%</button>
+              <button type="button" data-feed-live="150" class="caution" data-requires-live-control>150%</button>
+              <button type="button" data-feed-delta="-10" data-requires-live-control>-10%</button>
+              <button type="button" data-feed-delta="10" data-requires-live-control>+10%</button>
             </div>
             <div class="dry-run-inputs">
               <label for="feed-live-percent">Set percent</label>
-              <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100">
-              <button id="feed-live-set" type="button">Set Feed Override</button>
+              <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100" data-requires-live-control>
+              <button id="feed-live-set" type="button" data-requires-live-control>Set Feed Override</button>
             </div>
             <div id="feed-live-result" class="job-result"></div>
           </section>

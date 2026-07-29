@@ -13,8 +13,8 @@
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
     toolChangeSettings: null,
     projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
-    operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true },
-    operatorGlobal: { configured: false, active: false, owner: null, canClaim: true, leaseMs: 45000, leaseExpiresAtUptimeMs: 0 },
+    operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true, controlSessionEpoch: 0 },
+    operatorGlobal: { configured: false, active: false, owner: null, canClaim: true, leaseMs: 45000, leaseExpiresAtUptimeMs: 0, controlSessionEpoch: 0 },
     operatorPanelOpen: false,
     controller: { connected: true, state: 'connected', communication: { state: 'connected', lastError: '', lastFailedCommand: '' } },
   };
@@ -31,6 +31,9 @@
   let operatorReconnectLastAttempt = 0;
   let operatorReconnectInFlight = null;
   let operatorHeartbeatInFlight = false;
+  const socketSlices = new Map();
+  const socketSliceWaiters = new Map();
+  const confirmedMachineEvents = new Set();
   const OPERATOR_BROWSER_ID_KEY = 'cnc.operator.browserId';
   const OPERATOR_HEARTBEAT_INTERVAL_MS = 12000;
   const motionSettingsPromise = import('/lib/motion-settings.js').then((module) => {
@@ -68,6 +71,9 @@
     '#production-prepare', '#production-resume-hold',
     '#tool-change-manual-z', '#tool-change-touch-plate', '#tool-change-complete',
     '.recovery-move-btn', '.tool-change-move-btn',
+    '#save-device-settings', '#restart-device', '#refresh-machine-info', '#read-marlin-limits',
+    '#refresh-machine-config', '#save-marlin-eeprom', '[data-machine-group] button[type="submit"]',
+    '#tool-change-settings-form button[type="submit"]',
   ];
   const ordinaryLocalDisabled = new WeakMap();
   const ordinaryGuardForced = new WeakSet();
@@ -85,6 +91,69 @@
     const telemetry = window.CncTelemetry;
     if (!telemetry || telemetry.transportStatus !== 'synchronized') return true;
     return controllerCommunicationState() !== 'connected';
+  }
+
+  function socketLiveStateSynchronized() {
+    return window.CncTelemetry?.transportStatus === 'synchronized';
+  }
+
+  function safetyStopDisabled(jobState = visibleJobState()) {
+    const state = String(jobState || 'UNKNOWN').toUpperCase();
+    if (!socketLiveStateSynchronized()) return false;
+    return !ACTIVE_STATES.has(state) || state === 'STOPPING';
+  }
+
+  function socketSliceToken(slice) {
+    return Number(socketSlices.get(slice)?.sequence || 0);
+  }
+
+  function noteSocketSlice(slice, data) {
+    const sequence = socketSliceToken(slice) + 1;
+    socketSlices.set(slice, { sequence, data });
+    const waiters = socketSliceWaiters.get(slice);
+    if (!waiters?.size) return;
+    [...waiters].forEach((waiter) => {
+      if (sequence <= waiter.afterSequence) return;
+      let matched = false;
+      try {
+        matched = waiter.predicate(data);
+      } catch {
+        matched = false;
+      }
+      if (!matched) return;
+      clearTimeout(waiter.timer);
+      waiters.delete(waiter);
+      waiter.resolve(data);
+    });
+  }
+
+  function waitForSocketSlice(slice, predicate = () => true, options = {}) {
+    const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 5000;
+    const description = options.description || `${slice} state`;
+    const afterSequence = Number.isFinite(Number(options.afterSequence))
+      ? Number(options.afterSequence)
+      : socketSliceToken(slice);
+    if (!socketLiveStateSynchronized()) {
+      return Promise.reject(new Error(`Live socket state is not synchronized while waiting for ${description}.`));
+    }
+    const current = socketSlices.get(slice);
+    if (current && current.sequence > afterSequence && predicate(current.data)) {
+      return Promise.resolve(current.data);
+    }
+    return new Promise((resolve, reject) => {
+      const waiters = socketSliceWaiters.get(slice) || new Set();
+      const waiter = {
+        afterSequence,
+        predicate,
+        resolve,
+        timer: setTimeout(() => {
+          waiters.delete(waiter);
+          reject(new Error(`Command accepted, but live-state confirmation timed out while waiting for ${description}.`));
+        }, timeoutMs),
+      };
+      waiters.add(waiter);
+      socketSliceWaiters.set(slice, waiters);
+    });
   }
 
   function markOrdinaryMachineControls() {
@@ -162,16 +231,21 @@
       msgEl.hidden = false;
       msgEl.style.display = 'block';
     }
-    STATE.controller = { ...STATE.controller, state: 'recovering', communication: { ...(STATE.controller?.communication || {}), state: 'recovering' } };
     renderControllerStatus();
 
     try {
+      const baseline = socketSliceToken('controller');
       const res = await fetch('/api/controller/recover', { method: 'POST' });
       const data = await res.json();
       if (!res.ok || !data.ok) {
         if (msgEl) msgEl.textContent = data.error || data.message || 'Controller recovery failed.';
       } else {
-        if (msgEl) msgEl.textContent = data.message || 'Controller communication restored.';
+        await waitForSocketSlice(
+          'controller',
+          (controller) => String(controller?.state || controller?.communication?.state || '').toLowerCase() === 'connected',
+          { afterSequence: baseline, description: 'controller recovery' },
+        );
+        if (msgEl) msgEl.textContent = data.message || 'Controller communication restored and confirmed.';
       }
     } catch (err) {
       if (msgEl) msgEl.textContent = 'Recovery failed: ' + (err.message || String(err));
@@ -247,9 +321,26 @@
     claimOperatorControl,
     reconnectStoredOperator: silentlyReconnectOperator,
     operatorState: () => ({ ...STATE.operator }),
+    liveState: () => ({
+      job: { ...(STATE.job || {}) },
+      jog: { ...(STATE.jog || {}) },
+      position: { ...(STATE.position || {}) },
+      frame: { ...(STATE.frame || {}) },
+      controller: { ...(STATE.controller || {}) },
+    }),
     machineFrame: () => ({ ...STATE.frame }),
     applyMachineSlice,
+    socketSliceToken,
+    waitForSocketSlice,
+    safetyStopDisabled,
     recoverControllerConnection,
+    setFeedOverride,
+    sendCmd,
+    home,
+    setWorkZero,
+    setZZero,
+    startJog,
+    stopJog,
     renderControllerStatus,
     render,
   };
@@ -393,26 +484,42 @@
   function applyMachineSlice(data) {
     if (!data || typeof data !== 'object') return false;
     STATE.machine = data;
-    const authoritativeFrame = data.frame && typeof data.frame === 'object' ? data.frame : {};
-    const frame = {
-      ...authoritativeFrame,
-      work: data.position?.work ?? authoritativeFrame.work ?? null,
-      machine: data.position?.machine ?? authoritativeFrame.machine ?? null,
-      homedAxes: data.homedAxes ?? authoritativeFrame.homedAxes ?? null,
-      homingEpoch: data.homingEpoch ?? authoritativeFrame.homingEpoch ?? 0,
-    };
+    const frame = machineFrameFromSlice(data);
     return applyFrame(frame, 'MARLIN');
   }
 
-  function parseM114(text) {
-    const match = String(text).match(/X:\s*(-?\d+(?:\.\d+)?).*?Y:\s*(-?\d+(?:\.\d+)?).*?Z:\s*(-?\d+(?:\.\d+)?)/s);
-    if (!match) return false;
-    STATE.position = {
-      x: Number(match[1]),
-      y: Number(match[2]),
-      z: Number(match[3]),
+  function machineFrameFromSlice(data) {
+    const authoritativeFrame = data?.frame && typeof data.frame === 'object' ? data.frame : {};
+    return {
+      ...authoritativeFrame,
+      work: data?.position?.work ?? authoritativeFrame.work ?? null,
+      machine: data?.position?.machine ?? authoritativeFrame.machine ?? null,
+      homedAxes: data?.homedAxes ?? authoritativeFrame.homedAxes ?? null,
+      homingEpoch: data?.homingEpoch ?? authoritativeFrame.homingEpoch ?? 0,
     };
-    publishPosition('M114');
+  }
+
+  function frameRevision(frame) {
+    const revision = Number(frame?.revision);
+    return Number.isFinite(revision) ? revision : -1;
+  }
+
+  function dispatchConfirmedMachineEvent(type, commandResult, machineSlice, extra = {}) {
+    const frame = machineFrameFromSlice(machineSlice);
+    const key = [
+      type,
+      frame.bootSessionId || '',
+      frame.homingSessionId || '',
+      frameRevision(frame),
+      Number(frame.homingEpoch) || 0,
+      extra.axes || '',
+    ].join(':');
+    if (confirmedMachineEvents.has(key)) return false;
+    confirmedMachineEvents.add(key);
+    if (confirmedMachineEvents.size > 64) confirmedMachineEvents.delete(confirmedMachineEvents.values().next().value);
+    window.dispatchEvent(new CustomEvent(type, {
+      detail: { ...(commandResult || {}), ...extra, frame, machine: machineSlice, confirmedBySocket: true },
+    }));
     return true;
   }
 
@@ -506,17 +613,30 @@
   async function setFeedOverride(percent) {
     const value = Math.max(10, Math.min(200, Math.round(Number(percent) || 100)));
     if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
+    const baseline = socketSliceToken('job');
     await apiPost('/api/job/feed-override', { percent: value });
-    STATE.job = { ...(STATE.job || {}), feedOverridePercent: value };
-    setMessage(`Feed override ${value}% requested`);
-    render();
+    await waitForSocketSlice(
+      'job',
+      (job) => Number(job?.feedOverridePercent) === value,
+      { afterSequence: baseline, description: `feed override ${value}%` },
+    );
+    setMessage(`Feed override ${value}% confirmed`);
   }
 
   async function sendCmd(cmd) {
+    const normalized = cmd.toUpperCase();
+    const baseline = normalized === 'M114' ? socketSliceToken('machine') : 0;
     const data = await apiPost('/api/cmd', { cmd });
-    if (cmd.toUpperCase() === 'M114') parseM114(data.response || '');
-    setMessage(`${cmd} sent`);
-    render();
+    if (normalized === 'M114') {
+      await waitForSocketSlice(
+        'machine',
+        (machine) => machine?.position?.work || machine?.frame?.work,
+        { afterSequence: baseline, description: 'new M114 machine position' },
+      );
+      setMessage(`${cmd} accepted and position confirmed`);
+    } else {
+      setMessage(`${cmd} sent`);
+    }
     return data.response || '';
   }
 
@@ -576,14 +696,6 @@
     setMessage('Position refreshed');
   }
 
-  async function pollPosition() {
-    const state = visibleJobState();
-    if (state === 'UNKNOWN' || ACTIVE_STATES.has(state) || jogIsUiActive()) return;
-    const data = await apiPost('/api/cmd', { cmd: 'M114' });
-    parseM114(data.response || '');
-    render();
-  }
-
   async function goToWorkZero(axes) {
     await invalidatePausedResumeBeforeManualMotion();
     if (!canSetup()) throw new Error('Work-zero movement is unavailable while the job is active.');
@@ -602,13 +714,18 @@
       ? `Move ${label} to work zero after lifting to Z${safeZ.toFixed(1)} mm? Z will remain at safe height.`
       : `DIRECT ${label} MOVE AT CURRENT Z: This can drag the tool through material. Continue?`;
     if (!confirm(message)) return;
+    const baseline = socketSliceToken('machine');
     const data = await apiPost('/api/work-zero/goto', {
       axes, safeMove, safeZ, jobPath: STATE.projectSafeZ.jobPath,
       projectSafeZ: STATE.projectSafeZ.active ? safeZ : null,
       travelFeedMmMin: Math.round(travelSpeedMmS * 60),
     });
-    setMessage(data.message || `${label} work-zero move complete`);
-    await refreshPosition().catch(() => {});
+    await waitForSocketSlice(
+      'machine',
+      (machine) => machine?.position?.work || machine?.frame?.work,
+      { afterSequence: baseline, description: `${label} work-zero movement` },
+    );
+    setMessage(data.message || `${label} work-zero move confirmed`);
   }
 
   function jogSettings(safeJog) {
@@ -665,10 +782,12 @@
   }
 
   function applyLocalOperatorAuthorization(data) {
-    const controller = data?.controller === true;
+    const controlSessionEpoch = Number(data?.controlSessionEpoch) || 0;
+    const controller = data?.controller === true && controlSessionEpoch > 0;
     STATE.operator = {
       ...STATE.operator,
       ...data,
+      controlSessionEpoch,
       controller,
       readOnly: !controller,
     };
@@ -680,12 +799,12 @@
     if (!data || typeof data !== 'object') return STATE.operator;
     STATE.operatorGlobal = { ...STATE.operatorGlobal, ...data };
     const local = STATE.operator || {};
-    let controller = local.controller === true;
-    if (data.active === false || data.owner === null) {
-      controller = false;
-    } else if (data.active === true && data.owner && local.owner && data.owner !== local.owner) {
-      controller = false;
-    }
+    const globalSessionEpoch = Number(data.controlSessionEpoch) || 0;
+    const localSessionEpoch = Number(local.controlSessionEpoch) || 0;
+    const controller = local.controller === true
+      && data.active === true
+      && globalSessionEpoch > 0
+      && localSessionEpoch === globalSessionEpoch;
     STATE.operator = {
       ...local,
       configured: data.configured ?? local.configured ?? false,
@@ -694,6 +813,7 @@
       canClaim: data.canClaim ?? local.canClaim ?? true,
       leaseMs: data.leaseMs ?? local.leaseMs,
       leaseExpiresAtUptimeMs: data.leaseExpiresAtUptimeMs ?? local.leaseExpiresAtUptimeMs,
+      controlSessionEpoch: localSessionEpoch,
       controller,
       readOnly: !controller,
     };
@@ -881,10 +1001,14 @@
     }
     const targetLabel = formatRestoreZ(targetZ);
     if (!confirm(`Restore Z to ${targetLabel} mm at the current X/Y position? Make sure the path below the tool is clear.`)) return;
-    STATE.jog = await apiPost('/api/jog/restore-z');
-    setMessage(`Z restored to ${targetLabel} mm.`);
-    await refreshPosition().catch(() => {});
-    render();
+    const baseline = socketSliceToken('jog');
+    await apiPost('/api/jog/restore-z');
+    await waitForSocketSlice(
+      'jog',
+      (jog) => jog?.zRestoreAvailable !== true,
+      { afterSequence: baseline, description: `restored Z ${targetLabel} mm` },
+    );
+    setMessage(`Z restore to ${targetLabel} mm confirmed.`);
   }
 
   function jogIsUiActive() {
@@ -911,10 +1035,10 @@
       z: Number(jog.commandedWorkZ),
     };
     if (![next.x, next.y, next.z].every(Number.isFinite)) return false;
-    const changed = next.x !== STATE.position.x || next.y !== STATE.position.y || next.z !== STATE.position.z;
-    STATE.position = next;
-    if (changed) publishPosition('JOG_CMD');
-    renderPositionReadouts();
+    STATE.jogAnimationPosition = next;
+    window.dispatchEvent(new CustomEvent('cnc-commanded-jog-position', {
+      detail: { ...next, source: 'JOG_CMD', updatedAt: Date.now() },
+    }));
     return true;
   }
 
@@ -924,11 +1048,8 @@
     const vector = { ...STATE.jogVector };
     jogUpdatePending = true;
     try {
-      const jog = await apiPost('/api/jog/update', vector);
-      if (sessionId === jogSessionId) {
-        STATE.jog = jog;
-        applyCommandedJogPosition(jog);
-      }
+      await apiPost('/api/jog/update', vector);
+      if (sessionId !== jogSessionId) return;
     } finally {
       jogUpdatePending = false;
       renderJogReadouts();
@@ -943,13 +1064,18 @@
     const settings = jogSettings(safeJog);
     jogStartPending = true;
     try {
-      const jog = await apiPost('/api/jog/start', settings);
+      const baseline = socketSliceToken('jog');
+      await apiPost('/api/jog/start', settings);
       if (sessionId !== jogSessionId) {
         apiPost('/api/jog/stop').catch(() => {});
         return;
       }
-      STATE.jog = jog;
-      applyCommandedJogPosition(jog);
+      await waitForSocketSlice(
+        'jog',
+        (jog) => ['PREPARING_SAFE_Z', 'JOGGING'].includes(String(jog?.state || '').toUpperCase()),
+        { afterSequence: baseline, description: 'Jog start' },
+      );
+      if (sessionId !== jogSessionId) return;
       jogTimer = setInterval(() => {
         sendJogUpdate().catch((err) => {
           setMessage(`Jog stopped: ${err.message}`);
@@ -972,10 +1098,13 @@
     jogUpdatePending = false;
     if (!shouldStop) return;
     try {
-      STATE.jog = await apiPost('/api/jog/stop', { emergency });
-    } catch (err) {
-      STATE.jog = { ...(STATE.jog || {}), state: 'ERROR', lastError: err.message };
-      throw err;
+      const baseline = socketSliceToken('jog');
+      await apiPost('/api/jog/stop', { emergency });
+      await waitForSocketSlice(
+        'jog',
+        (jog) => !['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'].includes(String(jog?.state || '').toUpperCase()),
+        { afterSequence: baseline, description: 'Jog stop' },
+      );
     } finally {
       render();
     }
@@ -1173,20 +1302,35 @@
     if (!canSetup()) return;
     if (!confirmUnknown('setting work zero')) return;
     if (!confirm('This will set the current tool position as work X0/Y0/Z0.')) return;
+    const baseline = socketSliceToken('machine');
+    const previousRevision = frameRevision(STATE.frame);
     const data = await apiPost('/api/work-zero/set', {});
-    applyFrame(data.frame, 'WORK_ZERO');
-    window.dispatchEvent(new CustomEvent('cnc-work-zero-set', { detail: data }));
-    setMessage('Work zero set and frame synchronized');
+    const machine = await waitForSocketSlice(
+      'machine',
+      (slice) => {
+        const frame = machineFrameFromSlice(slice);
+        return frame.workZeroValid === true && frameRevision(frame) > previousRevision;
+      },
+      { afterSequence: baseline, description: 'new Work Zero frame' },
+    );
+    dispatchConfirmedMachineEvent('cnc-work-zero-set', data, machine, { axes: 'xyz' });
+    setMessage('Work zero set and confirmed by live machine state');
   }
 
   async function setZZero() {
     if (!canSetZ()) return;
     if (!confirmUnknown('setting Z zero')) return;
     if (!confirm('This will set only current Z as work Z0. X/Y will not change.')) return;
+    const baseline = socketSliceToken('machine');
+    const previousRevision = frameRevision(STATE.frame);
     const data = await apiPost('/api/work-zero/set-z', {});
-    applyFrame(data.frame, 'Z_ZERO');
-    window.dispatchEvent(new CustomEvent('cnc-z-zero-set', { detail: data }));
-    setMessage('Z zero set and frame synchronized');
+    const machine = await waitForSocketSlice(
+      'machine',
+      (slice) => frameRevision(machineFrameFromSlice(slice)) > previousRevision,
+      { afterSequence: baseline, description: 'new Z Zero frame' },
+    );
+    dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z' });
+    setMessage('Z zero set and confirmed by live machine state');
   }
 
   async function touchPlateZZero() {
@@ -1195,10 +1339,16 @@
     if (!settings?.touchPlateEnabled) throw new Error('Touch plate is not enabled in Settings.');
     if (!confirmUnknown('probing Z zero')) return;
     if (!confirm(`Probe downward up to ${settings.touchPlateProbeDistance.toFixed(1)} mm at ${settings.touchPlateProbeFeed.toFixed(0)} mm/min?\n\nPlate thickness: ${settings.touchPlateThickness.toFixed(2)} mm. Verify the probe lead is connected.`)) return;
+    const baseline = socketSliceToken('machine');
+    const previousRevision = frameRevision(STATE.frame);
     const data = await apiPost('/api/work-zero/touch-plate', {});
-    applyFrame(data.frame, 'TOUCH_PLATE_Z_ZERO');
-    window.dispatchEvent(new CustomEvent('cnc-z-zero-set', { detail: data }));
-    setMessage('Touch-plate Z zero set and frame synchronized');
+    const machine = await waitForSocketSlice(
+      'machine',
+      (slice) => frameRevision(machineFrameFromSlice(slice)) > previousRevision,
+      { afterSequence: baseline, description: 'touch-plate Z Zero frame' },
+    );
+    dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z', method: 'touchplate' });
+    setMessage('Touch-plate Z zero confirmed by live machine state');
   }
 
   async function loadToolChangeSettings() {
@@ -1223,11 +1373,28 @@
     if (!confirmUnknown('homing')) return;
     if (!confirm(message)) return;
     const axes = cmd === 'G28' ? 'all' : cmd.replace('G28', '').trim().toLowerCase().replace(/\s+/g, '');
-    const frame = await apiPost('/api/machine/home', { axes });
-    applyFrame(frame, 'HOME');
-    window.dispatchEvent(new CustomEvent('cnc-position-trust', {
-      detail: { trusted: frame.trusted === true, fullHoming, homingEpoch: frame.homingEpoch, source: fullHoming ? 'home-all' : 'partial-homing' },
-    }));
+    const baseline = socketSliceToken('machine');
+    const previousRevision = frameRevision(STATE.frame);
+    const previousHomingEpoch = Number(STATE.frame?.homingEpoch) || 0;
+    const result = await apiPost('/api/machine/home', { axes });
+    const machine = await waitForSocketSlice(
+      'machine',
+      (slice) => {
+        const frame = machineFrameFromSlice(slice);
+        const newerFrame = frameRevision(frame) > previousRevision;
+        const newerHoming = Number(frame.homingEpoch) > previousHomingEpoch;
+        return fullHoming ? newerHoming && frame.trusted === true : newerFrame;
+      },
+      { afterSequence: baseline, description: fullHoming ? 'Home All trust frame' : `${axes} homing frame` },
+    );
+    const frame = machineFrameFromSlice(machine);
+    dispatchConfirmedMachineEvent('cnc-position-trust', result, machine, {
+      trusted: frame.trusted === true,
+      fullHoming,
+      homingEpoch: frame.homingEpoch,
+      source: fullHoming ? 'home-all' : 'partial-homing',
+      axes,
+    });
   }
 
   function button(id, action) {
@@ -1531,7 +1698,11 @@
     syncJogDock();
 
     setDisabled('mb-pause', !(running || state === 'PAUSED_INTACT' || recoveryRequired || isUnknown()) || toolChangePending);
-    setDisabled('mb-stop', !ACTIVE_STATES.has(state) || state === 'STOPPING', { safetyException: true });
+    setDisabled(
+      'mb-stop',
+      safetyStopDisabled(state),
+      { safetyException: true },
+    );
     const diagnosticsBusy = ACTIVE_STATES.has(state) || state === 'RECOVERY_REQUIRED' || jogIsUiActive();
     setDisabled('mb-terminal-send', diagnosticsBusy);
     setDisabled('mb-terminal-select', diagnosticsBusy);
@@ -1574,8 +1745,8 @@
           <small id="mb-mock-badge" class="machine-mock-badge" title="DEV MOCK - NO REAL MACHINE" hidden>DEV MOCK</small>
         </button>
         <div class="machine-actions">
-          <button id="mb-pause" class="machine-warn hold-to-confirm" type="button" aria-label="Hold to Pause job" title="Hold motion; cutter remains running" data-icon="pause"><span class="machine-button-label">Pause</span></button>
-          <button id="mb-stop" class="machine-danger hold-to-confirm" type="button" aria-label="Hold to Stop with M410" title="Stop motion first, then stop the cutter" data-icon="stop">Stop</button>
+          <button id="mb-pause" class="machine-warn hold-to-confirm" type="button" aria-label="Hold to Pause job" title="Hold motion; cutter remains running" data-icon="pause" data-requires-live-control><span class="machine-button-label">Pause</span></button>
+          <button id="mb-stop" class="machine-danger hold-to-confirm" type="button" aria-label="Hold to Stop with M410" title="Stop motion first, then stop the cutter" data-icon="stop" data-safety-exception>Stop</button>
         </div>
         <div id="mb-operator-strip" class="machine-operator-strip" data-controller="false">
           <button id="mb-operator-toggle" type="button" data-operator-control aria-expanded="true">READ ONLY: claim control</button>
@@ -1602,7 +1773,7 @@
       </section>
       <div id="machine-drawer-overlay" class="machine-drawer-overlay" hidden></div>
       <div id="machine-jog-dock" class="machine-jog-dock" aria-label="Joystick controls">
-        <button id="mb-jog-dock-toggle" class="machine-jog-handle" type="button" aria-label="Open joystick" aria-expanded="false">
+        <button id="mb-jog-dock-toggle" class="machine-jog-handle" type="button" aria-label="Open joystick" aria-expanded="false" data-requires-live-control>
           <span class="machine-jog-handle-icon" aria-hidden="true">
             <svg class="cnc-icon machine-jog-handle-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <circle cx="12" cy="7" r="4.2" />
@@ -1613,7 +1784,7 @@
           <span class="machine-jog-handle-label" aria-hidden="true">Jog</span>
         </button>
         <div class="machine-jog-dock-panel" hidden>
-          <button id="mb-jog-settings-toggle" class="machine-jog-settings-toggle" type="button" aria-label="Joystick settings" aria-controls="mb-jog-settings" aria-expanded="false" title="Joystick settings">
+          <button id="mb-jog-settings-toggle" class="machine-jog-settings-toggle" type="button" aria-label="Joystick settings" aria-controls="mb-jog-settings" aria-expanded="false" title="Joystick settings" data-requires-live-control>
             <svg class="cnc-icon machine-jog-settings-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z" />
               <path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l2-1.5-2-3.4-2.5 1a8 8 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A8 8 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.7 7.7 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a8 8 0 0 0 2.6-1.5l2.4 1 2-3.4z" />
@@ -1622,29 +1793,29 @@
           <div id="mb-jog-settings" class="machine-jog-settings machine-jog-dock-settings" hidden>
             <p class="warning">Software controls are not a physical emergency stop.</p>
             <div class="machine-jog-setting-toggles">
-              <label><input id="mb-jog-safe" type="checkbox" checked> Safe</label>
-              <button id="mb-jog-restore-z" class="machine-jog-restore-button" type="button" disabled>Restore Z unavailable</button>
+              <label><input id="mb-jog-safe" type="checkbox" checked data-requires-live-control> Safe</label>
+              <button id="mb-jog-restore-z" class="machine-jog-restore-button" type="button" disabled data-requires-live-control>Restore Z unavailable</button>
             </div>
-            <label class="machine-jog-setting-field"><span>Safe Z <output id="mb-jog-safe-z-output">70 mm</output></span><input id="mb-jog-safe-z" type="range" min="1" max="70" step="1" value="70"></label>
-            <label class="machine-jog-setting-field"><span>XY max <output id="mb-jog-xy-output">50 mm/s</output></span><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50"></label>
-            <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5"></label>
+            <label class="machine-jog-setting-field"><span>Safe Z <output id="mb-jog-safe-z-output">70 mm</output></span><input id="mb-jog-safe-z" type="range" min="1" max="70" step="1" value="70" data-requires-live-control></label>
+            <label class="machine-jog-setting-field"><span>XY max <output id="mb-jog-xy-output">50 mm/s</output></span><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50" data-requires-live-control></label>
+            <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5" data-requires-live-control></label>
           </div>
           <div class="machine-jog-dock-core">
-            <button id="mb-jog-z-slider" class="machine-jog-z-slider" type="button" aria-label="Variable Z jog slider">
+            <button id="mb-jog-z-slider" class="machine-jog-z-slider" type="button" aria-label="Variable Z jog slider" data-requires-live-control>
               <span class="machine-jog-z-label machine-jog-z-positive" aria-hidden="true">Z+</span>
               <span id="mb-jog-z-handle" class="machine-jog-z-handle" aria-hidden="true"></span>
               <span class="machine-jog-z-label machine-jog-z-negative" aria-hidden="true">Z-</span>
             </button>
             <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick and locked directions">
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y+" data-mb-jog-x="0" data-mb-jog-y="1" style="--direction-x:0px;--direction-y:-74px;--direction-angle:-90deg" aria-label="Jog Y positive"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="1" style="--direction-x:52px;--direction-y:-52px;--direction-angle:-45deg" aria-label="Jog X and Y positive"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="X+" data-mb-jog-x="1" data-mb-jog-y="0" style="--direction-x:74px;--direction-y:0px;--direction-angle:0deg" aria-label="Jog X positive"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="-1" style="--direction-x:52px;--direction-y:52px;--direction-angle:45deg" aria-label="Jog X positive and Y negative"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y-" data-mb-jog-x="0" data-mb-jog-y="-1" style="--direction-x:0px;--direction-y:74px;--direction-angle:90deg" aria-label="Jog Y negative"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="-1" data-mb-jog-y="-1" style="--direction-x:-52px;--direction-y:52px;--direction-angle:135deg" aria-label="Jog X and Y negative"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="X-" data-mb-jog-x="-1" data-mb-jog-y="0" style="--direction-x:-74px;--direction-y:0px;--direction-angle:180deg" aria-label="Jog X negative"><span aria-hidden="true">&#10148;</span></button>
-              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="-1" data-mb-jog-y="1" style="--direction-x:-52px;--direction-y:-52px;--direction-angle:225deg" aria-label="Jog X negative and Y positive"><span aria-hidden="true">&#10148;</span></button>
-              <button id="mb-jog-center" class="machine-jog-center" type="button" aria-label="Free XY joystick">
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y+" data-mb-jog-x="0" data-mb-jog-y="1" style="--direction-x:0px;--direction-y:-74px;--direction-angle:-90deg" aria-label="Jog Y positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="1" style="--direction-x:52px;--direction-y:-52px;--direction-angle:-45deg" aria-label="Jog X and Y positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="X+" data-mb-jog-x="1" data-mb-jog-y="0" style="--direction-x:74px;--direction-y:0px;--direction-angle:0deg" aria-label="Jog X positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="-1" style="--direction-x:52px;--direction-y:52px;--direction-angle:45deg" aria-label="Jog X positive and Y negative" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y-" data-mb-jog-x="0" data-mb-jog-y="-1" style="--direction-x:0px;--direction-y:74px;--direction-angle:90deg" aria-label="Jog Y negative" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="-1" data-mb-jog-y="-1" style="--direction-x:-52px;--direction-y:52px;--direction-angle:135deg" aria-label="Jog X and Y negative" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="X-" data-mb-jog-x="-1" data-mb-jog-y="0" style="--direction-x:-74px;--direction-y:0px;--direction-angle:180deg" aria-label="Jog X negative" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="-1" data-mb-jog-y="1" style="--direction-x:-52px;--direction-y:-52px;--direction-angle:225deg" aria-label="Jog X negative and Y positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
+              <button id="mb-jog-center" class="machine-jog-center" type="button" aria-label="Free XY joystick" data-requires-live-control>
                 <span id="mb-jog-knob" class="machine-jog-knob"></span>
               </button>
             </div>
@@ -1667,63 +1838,63 @@
           <h2>Feed Override</h2>
           <p>Movement speed only. Router RPM does not change.</p>
           <div class="machine-feed-adjust">
-            <button type="button" data-mb-feed-delta="-10">-10</button>
-            <button type="button" data-mb-feed-delta="-1">-1</button>
+            <button type="button" data-mb-feed-delta="-10" data-requires-live-control>-10</button>
+            <button type="button" data-mb-feed-delta="-1" data-requires-live-control>-1</button>
             <strong id="mb-feed">100%</strong>
-            <button type="button" data-mb-feed-delta="1">+1</button>
-            <button type="button" data-mb-feed-delta="10">+10</button>
+            <button type="button" data-mb-feed-delta="1" data-requires-live-control>+1</button>
+            <button type="button" data-mb-feed-delta="10" data-requires-live-control>+10</button>
           </div>
           <div class="machine-feed-presets">
-            <button type="button" data-mb-feed="50">50%</button>
-            <button type="button" data-mb-feed="75">75%</button>
-            <button type="button" data-mb-feed="100">100%</button>
-            <button type="button" data-mb-feed="125">125%</button>
-            <button type="button" data-mb-feed="150" class="machine-warn">150%</button>
+            <button type="button" data-mb-feed="50" data-requires-live-control>50%</button>
+            <button type="button" data-mb-feed="75" data-requires-live-control>75%</button>
+            <button type="button" data-mb-feed="100" data-requires-live-control>100%</button>
+            <button type="button" data-mb-feed="125" data-requires-live-control>125%</button>
+            <button type="button" data-mb-feed="150" class="machine-warn" data-requires-live-control>150%</button>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Position</h2>
           <p id="mb-drawer-xyz">Use M114 to refresh position.</p>
-          <button id="mb-m114" type="button">Refresh Position M114</button>
+          <button id="mb-m114" type="button" data-requires-live-control>Refresh Position M114</button>
         </div>
         <div class="machine-drawer-card">
           <h2>Zero</h2>
           <p>Work Zero changes X/Y/Z. Z Zero changes only tool height.</p>
           <div class="machine-drawer-grid">
-            <button id="mb-capture-position" type="button">Capture Current Position</button>
-            <button id="mb-set-work-zero" type="button" data-icon="workZero">Set Work Zero XYZ</button>
-            <button id="mb-set-z-zero" type="button" data-icon="zZero">Set Z Zero Only</button>
-            <button id="mb-touch-plate-z-zero" type="button" hidden>Touch Plate Z Zero</button>
-            <button id="mb-capture-work-zero" type="button">Capture + Set Work Zero</button>
-            <button id="mb-capture-z-zero" type="button">Capture + Set Z Zero</button>
+            <button id="mb-capture-position" type="button" data-requires-live-control>Capture Current Position</button>
+            <button id="mb-set-work-zero" type="button" data-icon="workZero" data-requires-live-control>Set Work Zero XYZ</button>
+            <button id="mb-set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Z Zero Only</button>
+            <button id="mb-touch-plate-z-zero" type="button" hidden data-requires-live-control>Touch Plate Z Zero</button>
+            <button id="mb-capture-work-zero" type="button" data-requires-live-control>Capture + Set Work Zero</button>
+            <button id="mb-capture-z-zero" type="button" data-requires-live-control>Capture + Set Z Zero</button>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Homing</h2>
           <p class="warning">Homing moves the machine toward endstops. Run M119 first if unsure.</p>
           <div class="machine-homing-axis-row">
-            <button id="mb-home-x" type="button">X</button>
-            <button id="mb-home-y" type="button">Y</button>
-            <button id="mb-home-z" type="button">Z</button>
+            <button id="mb-home-x" type="button" data-requires-live-control>X</button>
+            <button id="mb-home-y" type="button" data-requires-live-control>Y</button>
+            <button id="mb-home-z" type="button" data-requires-live-control>Z</button>
           </div>
           <div class="machine-homing-action-row">
-            <button id="mb-home-all" class="machine-danger" type="button">Home All</button>
-            <button id="mb-m119" type="button">M119</button>
+            <button id="mb-home-all" class="machine-danger" type="button" data-requires-live-control>Home All</button>
+            <button id="mb-m119" type="button" data-requires-live-control>M119</button>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Go To Work Zero</h2>
           <div class="machine-zero-row">
-            <button type="button" data-mb-goto-zero="x">X0</button>
-            <button type="button" data-mb-goto-zero="y">Y0</button>
-            <button type="button" data-mb-goto-zero="xy">XY0</button>
+            <button type="button" data-mb-goto-zero="x" data-requires-live-control>X0</button>
+            <button type="button" data-mb-goto-zero="y" data-requires-live-control>Y0</button>
+            <button type="button" data-mb-goto-zero="xy" data-requires-live-control>XY0</button>
             <label><input id="mb-goto-safe" type="checkbox" checked> Safe move</label>
           </div>
         </div>
         <div class="machine-drawer-card">
           <h2>Terminal</h2>
           <div class="drawer-terminal-row">
-            <select id="mb-terminal-select" aria-label="Marlin command">
+            <select id="mb-terminal-select" aria-label="Marlin command" data-requires-live-control>
               <option value="M114">M114 Position</option>
               <option value="M119">M119 Endstops</option>
               <option value="M115">M115 Firmware</option>
@@ -1733,9 +1904,9 @@
               <option value="G92 X0 Y0 Z0">G92 XYZ0</option>
               <option value="custom">Custom...</option>
             </select>
-            <button id="mb-terminal-send" type="button" data-icon="terminal">Send</button>
+            <button id="mb-terminal-send" type="button" data-icon="terminal" data-requires-live-control>Send</button>
           </div>
-          <input id="mb-terminal-cmd" type="text" inputmode="text" autocomplete="off" placeholder="Custom Marlin command" hidden>
+          <input id="mb-terminal-cmd" type="text" inputmode="text" autocomplete="off" placeholder="Custom Marlin command" hidden data-requires-live-control>
           <p id="mb-marlin-last">No Marlin messages yet.</p>
           <p id="mb-marlin-critical" class="warning" hidden></p>
           <pre id="mb-marlin-log" class="log machine-marlin-log">No recent Marlin log entries.</pre>
@@ -1903,6 +2074,7 @@
     });
     window.CncTelemetry?.subscribe('job', (data) => {
       STATE.job = data;
+      noteSocketSlice('job', data);
       render();
     });
     window.CncTelemetry?.subscribe('log', (data) => {
@@ -1916,11 +2088,13 @@
     window.CncTelemetry?.subscribe('jog', (data) => {
       STATE.jog = data;
       applyCommandedJogPosition(data);
+      noteSocketSlice('jog', data);
       renderJogReadouts();
     });
     window.CncTelemetry?.subscribe('machine', (data) => {
       if (!data) return;
       if (!applyMachineSlice(data)) return;
+      noteSocketSlice('machine', data);
       renderPositionReadouts();
     });
     window.addEventListener('blur', () => stopJog(false, true).catch(() => {}));
@@ -1949,6 +2123,7 @@
 
     window.CncTelemetry?.subscribe('controller', (data) => {
       STATE.controller = data;
+      noteSocketSlice('controller', data);
       renderControllerStatus();
     });
 

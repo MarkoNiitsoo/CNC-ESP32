@@ -83,8 +83,8 @@
             <p class="form-hint">Enter only the name, without .local. Use this if you have multiple CNC devices. Example: g-code-cnc.local, laser.local, plotter.local</p>
             <p class="device-url-preview">New local address: <a id="device-url-preview" href="http://cnc.local">http://cnc.local</a></p>
             <div class="device-settings-actions">
-              <button id="save-device-settings" type="submit">Save Machine Identity</button>
-              <button id="restart-device" class="warning-button" type="button" hidden>Restart to Apply Address</button>
+              <button id="save-device-settings" type="submit" data-requires-live-control>Save Machine Identity</button>
+              <button id="restart-device" class="warning-button" type="button" hidden data-requires-live-control>Restart to Apply Address</button>
             </div>
           </form>
           <p id="device-settings-result" class="form-hint">Device address can be changed only when the machine is idle.</p>
@@ -92,7 +92,7 @@
         <section class="panel hardware-info-panel">
           <div class="panel-title-row">
             <div><h2>Hardware Info</h2><p class="form-hint">Cached immediately, refreshed from Marlin M115 while idle.</p></div>
-            <button id="refresh-machine-info" type="button">Refresh M115</button>
+            <button id="refresh-machine-info" type="button" data-requires-live-control>Refresh M115</button>
           </div>
           <div id="machine-info-summary" class="job-summary">Waiting for machine discovery...</div>
         </section>
@@ -104,7 +104,7 @@
             <input id="travel-speed-number" type="number" min="10" max="100" step="1" value="50" inputmode="numeric" aria-label="Automatic XY travel speed in millimeters per second">
             <span>mm/s</span>
           </div>
-          <button id="read-marlin-limits" type="button">Read Limits from Marlin (M503)</button>
+          <button id="read-marlin-limits" type="button" data-requires-live-control>Read Limits from Marlin (M503)</button>
           <p id="travel-speed-status" class="form-hint">Used for bounding box and other automatic XY travel moves. Z safety moves remain slower.</p>
         </section>
         <section class="panel tool-change-settings-panel">
@@ -137,45 +137,45 @@
               <label>Probe feed <input name="touchPlateProbeFeed" type="number" min="1" max="1000" step="1" required></label>
               <label>Retract after contact <input name="touchPlateRetractDistance" type="number" min="0.1" max="20" step="0.1" required></label>
             </div>
-            <button type="submit">Save Tool Change Settings</button>
+            <button type="submit" data-requires-live-control>Save Tool Change Settings</button>
           </form>
           <p id="tool-change-settings-result" class="form-hint">Loading tool-change settings...</p>
         </section>
         <section class="panel machine-config-panel">
           <div class="panel-title-row">
             <div><h2>Marlin Motion Configuration</h2><p class="form-hint">Apply changes to Marlin RAM first. Save to EEPROM only after reviewing them.</p></div>
-            <button id="refresh-machine-config" type="button">Read M503 + M211</button>
+            <button id="refresh-machine-config" type="button" data-requires-live-control>Read M503 + M211</button>
           </div>
           <form class="machine-config-group caution" data-machine-group="M92">
             <div><strong>M92 Steps/mm</strong><small>Changing this alters physical movement distance.</small></div>
             <label>X <input name="x" type="number" min="0.01" max="100000" step="0.0001" required></label>
             <label>Y <input name="y" type="number" min="0.01" max="100000" step="0.0001" required></label>
             <label>Z <input name="z" type="number" min="0.01" max="100000" step="0.0001" required></label>
-            <button type="submit">Apply M92</button>
+            <button type="submit" data-requires-live-control>Apply M92</button>
           </form>
           <form class="machine-config-group" data-machine-group="M203">
             <div><strong>M203 Maximum feedrate</strong><small>Axis maximum speed in mm/s.</small></div>
             <label>X <input name="x" type="number" min="0.01" max="2000" step="0.01" required></label>
             <label>Y <input name="y" type="number" min="0.01" max="2000" step="0.01" required></label>
             <label>Z <input name="z" type="number" min="0.01" max="2000" step="0.01" required></label>
-            <button type="submit">Apply M203</button>
+            <button type="submit" data-requires-live-control>Apply M203</button>
           </form>
           <form class="machine-config-group" data-machine-group="M201">
             <div><strong>M201 Maximum acceleration</strong><small>Axis maximum acceleration in mm/s².</small></div>
             <label>X <input name="x" type="number" min="1" max="100000" step="1" required></label>
             <label>Y <input name="y" type="number" min="1" max="100000" step="1" required></label>
             <label>Z <input name="z" type="number" min="1" max="100000" step="1" required></label>
-            <button type="submit">Apply M201</button>
+            <button type="submit" data-requires-live-control>Apply M201</button>
           </form>
           <form class="machine-config-group" data-machine-group="M204">
             <div><strong>M204 Acceleration</strong><small>Printing/cutting, retract, and travel acceleration.</small></div>
             <label>P <input name="p" type="number" min="1" max="100000" step="1" required></label>
             <label>R <input name="r" type="number" min="1" max="100000" step="1" required></label>
             <label>T <input name="t" type="number" min="1" max="100000" step="1" required></label>
-            <button type="submit">Apply M204</button>
+            <button type="submit" data-requires-live-control>Apply M204</button>
           </form>
           <div id="software-endstop-status" class="form-hint">Software endstop state not read yet.</div>
-          <button id="save-marlin-eeprom" class="warning-button" type="button">Save applied changes to Marlin EEPROM (M500)</button>
+          <button id="save-marlin-eeprom" class="warning-button" type="button" data-requires-live-control>Save applied changes to Marlin EEPROM (M500)</button>
           <p id="machine-config-result" class="form-hint">Applied values are temporary until M500 succeeds.</p>
         </section>
         <section class="panel appearance-panel">

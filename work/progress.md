@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-07-29 - Final Phase 2 safety/DOM guard pass
+
+- Stale or unavailable socket state now forces both software Stop controls visible and enabled even when the last authoritative job state was IDLE, UNKNOWN, or RUNNING; synchronized state retains the normal job-state rules.
+- Added explicit `data-requires-live-control` markers to the real Index, Preview, generated machine-bar, Jog, zero, homing, feed, recovery, Production Resume, tool-change, Bounds/Aircut, and dynamic recovery controls. Stop is explicitly marked as a safety exception.
+- Added reusable bounded socket-slice confirmation waits. HTTP command responses no longer write authoritative job, Jog, position, frame, controller, or live-feed state; M114, Home, zero, feed, Jog, and job transitions wait for the corresponding newer WebSocket slice.
+- Work/Z zero and homing follow-up/history events now use the confirmed socket frame and de-duplicate by confirmed frame/session/revision identity. Command acceptance without a matching patch reports a timeout and preserves the last socket state.
+- Commanded Jog coordinates are now UI-only animation data rather than authoritative machine position.
+- Added a non-secret monotonic `controlSessionEpoch` to firmware/mock operator responses and WebSocket control slices. Each new Claim or inactive remembered reconnect creates a new epoch; heartbeat and reconnect to the same active browser preserve it.
+- Browser controller authorization now survives only when its locally authorized epoch matches the active global epoch. A different epoch revokes even when owner text is identical, and owner/session display data alone never promotes a viewer.
+- Updated recovery/trust source coverage to require the socket-confirmed event dispatcher and its confirmed-frame marker instead of the removed direct event-detail construction.
+- Production Resume and Bounds/Aircut/tool-less test-motion starts now also wait for a matching authoritative job slice; their HTTP start responses no longer flow through the live job-status applicator.
+- Added executable regression coverage for stale Stop behavior, actual DOM mutation-control guarding, acceptance-only HTTP results, socket confirmation timeout/state preservation, confirmed-frame event de-duplication, and stable operator session epochs.
+- Final verification passed twice at **569/569 JavaScript tests across 51 files**, plus **13/13 native ControllerCommManager tests**. The ESP32-CAM build succeeded at **83,428 / 327,680 bytes RAM (25.5%)** and **1,482,257 / 1,966,080 bytes Flash (75.4%)**.
+- Physical hardware was not flashed or exercised. Phase 3 command envelopes and WebSocket Jog were not started.
+
 ## 2026-07-29 - Phase 2 Final Resync, Log, and Socket-Only State Correctness
 
 - Follow-up implementation step 1:

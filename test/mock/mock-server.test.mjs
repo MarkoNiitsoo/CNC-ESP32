@@ -139,18 +139,55 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({ owner: 'Marko phone', pin: '741852', browserId: markoBrowserId }),
     });
     const cookie = claim.headers.get('set-cookie').split(';')[0];
+    const claimed = await claim.json();
     env.operator.lastSeenAt = Date.now() - 20;
-    const expiredLeaseTimestamp = env.operator.lastSeenAt;
 
     expect(await fetch(`${base}/api/operator/status`, { headers: { Cookie: cookie } }).then((res) => res.json()))
-      .toMatchObject({ active: false, controller: true, readOnly: false, owner: 'Marko phone' });
+      .toMatchObject({ active: false, controller: false, readOnly: true, owner: null, controlSessionEpoch: 0 });
     expect(await fetch(`${base}/api/operator/status`).then((res) => res.json()))
       .toMatchObject({ active: false, controller: false, readOnly: true, owner: null, canClaim: true });
     expect((await fetch(`${base}/api/cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ cmd: 'M5' }),
+    })).status).toBe(423);
+
+    const reconnect = await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: markoBrowserId }),
+    });
+    const reconnected = await reconnect.json();
+    expect(reconnected).toMatchObject({ active: true, controller: true, owner: 'Marko phone' });
+    expect(reconnected.controlSessionEpoch).toBeGreaterThan(claimed.controlSessionEpoch);
+    const reconnectedCookie = reconnect.headers.get('set-cookie').split(';')[0];
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: reconnectedCookie },
+      body: JSON.stringify({ cmd: 'M5' }),
     })).ok).toBe(true);
-    expect(env.operator.lastSeenAt).toBeGreaterThan(expiredLeaseTimestamp);
+  });
+
+  it('preserves one active control session across heartbeat and remembered-browser reconnect', async () => {
+    const { base } = await start({ operatorLockEnabled: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '741852', browserId: markoBrowserId }),
+    });
+    const claimed = await claim.json();
+    const cookie = claim.headers.get('set-cookie').split(';')[0];
+
+    const heartbeat = await fetch(`${base}/api/operator/heartbeat`, {
+      method: 'POST', headers: { Cookie: cookie },
+    }).then((res) => res.json());
+    expect(heartbeat.controlSessionEpoch).toBe(claimed.controlSessionEpoch);
+
+    const reconnect = await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: markoBrowserId }),
+    }).then((res) => res.json());
+    expect(reconnect).toMatchObject({
+      controller: true,
+      owner: 'Alice',
+      controlSessionEpoch: claimed.controlSessionEpoch,
+    });
   });
 
   it('renews the controller lease deterministically throughout a simulated long job', async () => {

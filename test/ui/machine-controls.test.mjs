@@ -49,7 +49,9 @@ describe('compact machine drawer', () => {
     const action = preview.slice(start, end);
     expect(action).toContain("fetch('/api/work-zero/set'");
     expect(action).not.toContain("sendCmd('G92 X0 Y0 Z0')");
-    expect(action).toContain('data.frame?.workZeroMachine');
+    expect(action).toContain('waitForMachineFrame(');
+    expect(action).toContain('const machinePosition = frame?.workZeroMachine');
+    expect(action).toContain('confirmedBySocket');
     expect(action).toContain('homingEpoch');
     expect(action).toContain("job.startMode = 'use_active_work_zero'");
     expect(action).toContain('startModeSelect.value = job.startMode');
@@ -161,7 +163,8 @@ describe('compact machine drawer', () => {
     expect(machineBar).toMatch(/async function stopJog[\s\S]*resetJoystickVisual\(\)[\s\S]*if \(!shouldStop\) return/);
     expect(machineBar).toContain("apiPost('/api/jog/stop', { emergency })");
     expect(machineBar).toContain("stopJog(false, event.type !== 'pointerup')");
-    expect(machineBar).toMatch(/if \(sessionId === jogSessionId\) \{[\s\S]{0,100}STATE\.jog = jog;[\s\S]{0,100}applyCommandedJogPosition\(jog\)/);
+    expect(machineBar).toMatch(/async function stopJog[\s\S]*waitForSocketSlice\([\s\S]*'jog'[\s\S]*'Jog stop'/);
+    expect(machineBar).not.toMatch(/apiPost\('\/api\/jog\/stop'[\s\S]{0,100}STATE\.jog\s*=/);
     expect(styles).toMatch(/\.machine-jog-dock\s*\{[\s\S]*?z-index:\s*120;[\s\S]*?pointer-events:\s*none;/);
     expect(styles).toMatch(/\.machine-jog-dock-panel\s*\{[\s\S]*?pointer-events:\s*auto;/);
     expect(styles).toMatch(/\.machine-jog-handle\s*\{[\s\S]*?width:\s*28px;[\s\S]*?min-height:\s*74px;[\s\S]*?var\(--cnc-accent\) 68%/);
@@ -183,10 +186,11 @@ describe('compact machine drawer', () => {
     expect(styles).toMatch(/\.machine-jog-settings-toggle\s*\{[\s\S]*z-index:\s*6;/);
   });
 
-  it('publishes commanded jog positions immediately without periodic M114 traffic', () => {
-    expect(machineBar).toContain("publishPosition('JOG_CMD')");
-    expect(machineBar).toContain("publishPosition('M114')");
-    expect(machineBar).toMatch(/sendJogUpdate[\s\S]*applyCommandedJogPosition\(jog\)/);
+  it('keeps commanded jog animation separate from socket-authoritative position', () => {
+    expect(machineBar).toContain('STATE.jogAnimationPosition = next');
+    expect(machineBar).toContain("new CustomEvent('cnc-commanded-jog-position'");
+    expect(machineBar).not.toContain("publishPosition('JOG_CMD')");
+    expect(machineBar).not.toContain("publishPosition('M114')");
     expect(machineBar).toContain('commandedPositionCaptured !== true');
     expect(machineBar).toContain('x: Number(jog.commandedWorkX)');
     expect(machineBar).not.toContain('applyPredictedJogTick');
@@ -199,9 +203,10 @@ describe('compact machine drawer', () => {
     const update = machineBar.slice(machineBar.indexOf('async function sendJogUpdate()'), machineBar.indexOf('async function startJog'));
     expect(update).toContain('renderJogReadouts()');
     expect(update).not.toContain('render();');
+    expect(update).not.toMatch(/STATE\.jog\s*=/);
     expect(machineBar).toMatch(/subscribe\('jog'[\s\S]{0,120}renderJogReadouts\(\)/);
     expect(machineBar).toMatch(/subscribe\('machine'[\s\S]{0,260}renderPositionReadouts\(\)/);
-    expect(machineBar).toMatch(/function applyMachineSlice[\s\S]*authoritativeFrame[\s\S]*applyFrame\(frame, 'MARLIN'\)/);
+    expect(machineBar).toMatch(/function applyMachineSlice[\s\S]*machineFrameFromSlice\(data\)[\s\S]*applyFrame\(frame, 'MARLIN'\)/);
     expect(machineBar).toMatch(/subscribe\('log'[\s\S]{0,240}renderMarlinReadouts\(\)/);
     expect(machineBar).not.toContain("applyIcons?.(document.querySelector('.machine-shell'))");
     expect(machineBar).toContain("source !== 'MARLIN' || frame.revision !== previousRevision");
@@ -352,7 +357,9 @@ describe('browser control disabling', () => {
     expect(machineBar).toContain("'#mb-set-work-zero', '#mb-set-z-zero'");
     expect(machineBar).toContain("'#start-job', '#pause-job', '#resume-job'");
     expect(machineBar).toContain("'#feed-live-percent', '#feed-live-set'");
-    expect(machineBar).toContain("setDisabled('mb-stop', !ACTIVE_STATES.has(state) || state === 'STOPPING', { safetyException: true })");
+    expect(machineBar).toContain('function safetyStopDisabled(');
+    expect(machineBar).toContain('if (!socketLiveStateSynchronized()) return false');
+    expect(machineBar).toMatch(/setDisabled\([\s\S]{0,80}'mb-stop',[\s\S]{0,80}safetyStopDisabled\(state\)[\s\S]{0,80}safetyException: true/);
     expect(machineBar).not.toContain("transportStatus || 'synchronized'");
   });
 });

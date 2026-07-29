@@ -162,7 +162,7 @@ export async function createMockEnvironment(options = {}) {
   const operator = {
     configured: false, pin: '', token: '', owner: '', lastSeenAt: 0,
     browserId: '', rememberedBrowserId: '', rememberedOwner: '',
-    leaseMs: 45000, otaUnlockedUntil: 0,
+    leaseMs: 45000, otaUnlockedUntil: 0, controlSessionEpoch: 0,
   };
   return {
     projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device, marlinLog,
@@ -182,19 +182,20 @@ export async function createMockServer(options = {}) {
     return false;
   };
   const operatorAuthorized = (req, refresh = true) => {
-    operatorActive();
-    const valid = Boolean(env.operator.token) && requestToken(req) === env.operator.token;
+    const active = operatorActive();
+    const valid = active && Boolean(env.operator.token) && requestToken(req) === env.operator.token;
     if (valid && refresh) env.operator.lastSeenAt = Date.now();
     return valid;
   };
   const operatorStatus = (req) => {
     const active = operatorActive();
-    const controller = Boolean(env.operator.token) && requestToken(req) === env.operator.token;
+    const controller = active && Boolean(env.operator.token) && requestToken(req) === env.operator.token;
     return {
       ok: true, configured: env.operator.configured, active, controller, readOnly: !controller,
       canClaim: !active, owner: active || controller ? env.operator.owner : null,
       leaseRemainingMs: active ? Math.max(0, env.operator.leaseMs - (Date.now() - env.operator.lastSeenAt)) : 0,
       leaseMs: env.operator.leaseMs,
+      controlSessionEpoch: active ? env.operator.controlSessionEpoch : 0,
       otaUnlocked: controller && Date.now() < env.operator.otaUnlockedUntil,
     };
   };
@@ -208,6 +209,7 @@ export async function createMockServer(options = {}) {
       leaseExpiresAtUptimeMs: active
         ? Math.max(0, env.operator.lastSeenAt + env.operator.leaseMs - env.startedAt)
         : 0,
+      controlSessionEpoch: active ? env.operator.controlSessionEpoch : 0,
       canClaim: !active,
     };
   };
@@ -267,6 +269,7 @@ export async function createMockServer(options = {}) {
           configured: true, pin, token: randomBytes(20).toString('hex'), owner,
           browserId, rememberedBrowserId: browserId, rememberedOwner: owner,
           lastSeenAt: Date.now(), otaUnlockedUntil: 0,
+          controlSessionEpoch: (env.operator.controlSessionEpoch + 1) || 1,
         });
         const cookie = `cnc_operator=${env.operator.token}`;
         return json(res, 200, operatorStatus({ headers: { cookie } }), {
@@ -281,16 +284,22 @@ export async function createMockServer(options = {}) {
         if (!env.operator.rememberedBrowserId || browserId !== env.operator.rememberedBrowserId) {
           return json(res, 403, { ok: false, error: 'this browser is not the remembered controller' });
         }
-        if (operatorActive() && env.operator.browserId && browserId !== env.operator.browserId) {
+        const activeSession = operatorActive();
+        if (activeSession && env.operator.browserId && browserId !== env.operator.browserId) {
           return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
         }
-        Object.assign(env.operator, {
-          token: randomBytes(20).toString('hex'),
-          owner: env.operator.rememberedOwner || 'Remembered controller',
-          browserId,
-          lastSeenAt: Date.now(),
-          otaUnlockedUntil: 0,
-        });
+        if (activeSession) {
+          env.operator.lastSeenAt = Date.now();
+        } else {
+          Object.assign(env.operator, {
+            token: randomBytes(20).toString('hex'),
+            owner: env.operator.rememberedOwner || 'Remembered controller',
+            browserId,
+            lastSeenAt: Date.now(),
+            otaUnlockedUntil: 0,
+            controlSessionEpoch: (env.operator.controlSessionEpoch + 1) || 1,
+          });
+        }
         const cookie = `cnc_operator=${env.operator.token}`;
         return json(res, 200, operatorStatus({ headers: { cookie } }), {
           'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,

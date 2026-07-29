@@ -21,8 +21,8 @@ describe('single operator control lease', () => {
 
   it('recognizes the same browser after lease expiry without blocking a later takeover', () => {
     expect(firmware).not.toContain('operatorSessionToken = "";\n  operatorSessionOwner = "";\n  operatorOtaUnlockedUntilMs = 0;\n  return false;');
-    expect(firmware).toMatch(/operatorRequestAuthorized[\s\S]*token != operatorSessionToken[\s\S]*operatorSessionLastSeenMs = millis\(\)/);
-    expect(firmware).toMatch(/const bool controller = operatorSessionToken\.length\(\) > 0/);
+    expect(firmware).toMatch(/operatorRequestAuthorized[\s\S]*token != operatorSessionToken[\s\S]*!operatorSessionActive\(\)[\s\S]*operatorSessionLastSeenMs = millis\(\)/);
+    expect(firmware).toMatch(/const bool controller = active && operatorSessionToken\.length\(\) > 0/);
   });
 
   it('restores only the remembered browser after restart without asking for the PIN', () => {
@@ -33,6 +33,16 @@ describe('single operator control lease', () => {
     expect(machineBar).toContain("const OPERATOR_BROWSER_ID_KEY = 'cnc.operator.browserId'");
     expect(machineBar).toContain("fetch('/api/operator/reconnect'");
     expect(machineBar).toContain('body: JSON.stringify({ owner, pin, browserId })');
+  });
+
+  it('uses a stable non-secret control session epoch instead of the owner label', () => {
+    expect(firmware).toContain('uint32_t operatorControlSessionEpoch = 0');
+    expect(firmware).toContain('void beginOperatorControlSession()');
+    expect(firmware).toContain('controlSessionEpoch');
+    expect(firmware).toMatch(/handleOperatorClaim[\s\S]*beginOperatorControlSession\(\)/);
+    expect(firmware).toMatch(/handleOperatorReconnect[\s\S]*if \(activeSession\)[\s\S]*operatorSessionLastSeenMs = millis\(\);[\s\S]*else \{[\s\S]*beginOperatorControlSession\(\)/);
+    expect(machineBar).toContain('localSessionEpoch === globalSessionEpoch');
+    expect(machineBar).not.toContain('data.owner !== local.owner');
   });
 
   it('guards every state-changing machine route while leaving status reads public', () => {

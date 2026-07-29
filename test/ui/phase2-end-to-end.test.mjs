@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 
 const machineBarCode = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
+const previewCode = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
 
 const guardedIds = [
   'mb-home-x', 'mb-home-y', 'mb-home-z', 'mb-home-all',
@@ -162,6 +163,7 @@ function createMachineBarEnv(options = {}) {
         return JSON.stringify({
           ok: true, configured: true, active: true, controller: true, readOnly: false,
           owner: 'Alice', canClaim: false, leaseMs: 45000,
+          controlSessionEpoch: 1,
         });
       }
       return '{}';
@@ -248,23 +250,31 @@ describe('Phase 2 end-to-end UI correctness', () => {
     guardedIds.forEach((id) => expect(env.elements.get(id).disabled, id).toBe(true));
   });
 
-  it('keeps real ordinary controls disabled after full render while Stop and Retry stay available', () => {
+  it.each(['IDLE', 'UNKNOWN', 'RUNNING'])(
+    'keeps Stop enabled and ordinary controls disabled for stale %s state',
+    (jobState) => {
+      const env = createMachineBarEnv();
+      env.emitTelemetry('job', { state: jobState, progressPercent: 10 });
+      env.emitTelemetry('controller', { state: 'connected' });
+      env.emitTransport('stale');
+
+      env.api.renderControllerStatus();
+      env.api.render();
+      guardedIds.forEach((id) => expect(env.elements.get(id).disabled, id).toBe(true));
+      expect(env.elements.get('mb-stop').disabled).toBe(false);
+      expect(env.api.safetyStopDisabled(jobState)).toBe(false);
+      expect(env.elements.get('btn-retry-controller-conn').disabled).toBe(false);
+      expect(previewCode).toContain('window.LowRiderMachineBar?.safetyStopDisabled?.(state)');
+    },
+  );
+
+  it('allows synchronized IDLE to disable Stop', () => {
     const env = createMachineBarEnv();
-    env.emitTelemetry('job', { state: 'RUNNING', progressPercent: 10 });
-    env.emitTelemetry('controller', { state: 'connected' });
-    env.emitTransport('stale');
-
-    env.api.renderControllerStatus();
-    env.api.render();
-    guardedIds.forEach((id) => expect(env.elements.get(id).disabled, id).toBe(true));
-    expect(env.elements.get('mb-stop').disabled).toBe(false);
-    expect(env.elements.get('btn-retry-controller-conn').disabled).toBe(false);
-
-    env.emitTransport('synchronized');
-    env.emitTelemetry('controller', { state: 'waiting' });
     env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('controller', { state: 'connected' });
     env.api.render();
-    guardedIds.forEach((id) => expect(env.elements.get(id).disabled, id).toBe(true));
+    expect(env.api.safetyStopDisabled('IDLE')).toBe(true);
+    expect(env.elements.get('mb-stop').disabled).toBe(true);
   });
 
   it('preserves the complete canonical machine frame and publishes it to Preview listeners', () => {
@@ -317,23 +327,41 @@ describe('Phase 2 end-to-end UI correctness', () => {
     expect(env.api.operatorState().controller).toBe(true);
     env.api.applyGlobalControlState({
       configured: true, active: true, owner: 'Alice', canClaim: false, leaseMs: 45000,
-      leaseExpiresAtUptimeMs: 60000,
+      leaseExpiresAtUptimeMs: 60000, controlSessionEpoch: 1,
     });
     expect(env.api.operatorState().controller).toBe(true);
 
-    env.api.applyGlobalControlState({ active: false, owner: null, canClaim: true, leaseExpiresAtUptimeMs: 0 });
+    env.api.applyGlobalControlState({
+      active: true, owner: 'Alice', canClaim: false, controlSessionEpoch: 2,
+    });
+    expect(env.api.operatorState()).toMatchObject({ controller: false, readOnly: true, owner: 'Alice' });
+
+    env.api.applyLocalOperatorAuthorization({
+      configured: true, active: true, controller: true, readOnly: false, owner: 'Alice',
+      controlSessionEpoch: 1,
+    });
+    env.api.applyGlobalControlState({
+      active: false, owner: null, canClaim: true, leaseExpiresAtUptimeMs: 0, controlSessionEpoch: 0,
+    });
     expect(env.api.operatorState()).toMatchObject({ controller: false, readOnly: true, active: false, owner: null });
 
     env.api.applyLocalOperatorAuthorization({
       configured: true, active: true, controller: true, readOnly: false, owner: 'Alice',
+      controlSessionEpoch: 1,
     });
-    env.api.applyGlobalControlState({ active: true, owner: 'Bob', canClaim: false });
+    env.api.applyGlobalControlState({ active: true, owner: 'Bob', canClaim: false, controlSessionEpoch: 2 });
     expect(env.api.operatorState()).toMatchObject({ controller: false, readOnly: true, owner: 'Bob' });
 
     const viewer = createMachineBarEnv();
-    viewer.api.applyGlobalControlState({ active: true, owner: 'Bob', canClaim: false });
+    viewer.api.applyGlobalControlState({
+      active: true, owner: 'Bob', canClaim: false, controlSessionEpoch: 2,
+    });
     expect(viewer.api.operatorState()).toMatchObject({ controller: false, readOnly: true });
-    viewer.api.applyGlobalControlState({ active: false, owner: null, canClaim: true });
+    viewer.api.applyGlobalControlState({
+      active: true, owner: 'Alice', canClaim: false, controlSessionEpoch: 1,
+    });
+    expect(viewer.api.operatorState()).toMatchObject({ controller: false, readOnly: true, owner: 'Alice' });
+    viewer.api.applyGlobalControlState({ active: false, owner: null, canClaim: true, controlSessionEpoch: 0 });
     expect(viewer.api.operatorState()).toMatchObject({ controller: false, active: false, owner: null });
   });
 
@@ -343,6 +371,7 @@ describe('Phase 2 end-to-end UI correctness', () => {
       const env = createMachineBarEnv();
       env.api.applyLocalOperatorAuthorization({
         configured: true, active: true, controller: true, readOnly: false, owner: 'Alice',
+        controlSessionEpoch: 1,
       });
       for (let interval = 0; interval < 4; interval += 1) {
         await vi.advanceTimersByTimeAsync(12000);
@@ -350,6 +379,114 @@ describe('Phase 2 end-to-end UI correctness', () => {
       expect(env.fetchCalls.filter((url) => url.includes('/api/operator/heartbeat')).length).toBeGreaterThanOrEqual(4);
       expect(env.fetchCalls.some((url) => url.includes('/api/operator/status'))).toBe(false);
       expect(env.api.operatorState().controller).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps command responses out of live state until matching socket slices arrive', async () => {
+    const env = createMachineBarEnv({
+      fetch: async (url) => ({
+        ok: true,
+        status: 200,
+        url: String(url),
+        async text() {
+          if (String(url).includes('/api/cmd')) {
+            return JSON.stringify({ ok: true, response: 'X:99.000 Y:98.000 Z:97.000' });
+          }
+          return JSON.stringify({ ok: true, feedOverridePercent: 199 });
+        },
+        clone() { return this; },
+        async json() { return {}; },
+      }),
+    });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('job', { state: 'IDLE', feedOverridePercent: 100 });
+    env.emitTelemetry('machine', {
+      frame: { revision: 1, positionValid: true },
+      position: { work: { x: 1, y: 2, z: 3 }, machine: { x: 11, y: 12, z: 13 } },
+    });
+
+    const feedPromise = env.api.setFeedOverride(125);
+    await Promise.resolve();
+    expect(env.api.liveState().job.feedOverridePercent).toBe(100);
+    env.emitTelemetry('job', { state: 'IDLE', feedOverridePercent: 125 });
+    await feedPromise;
+
+    const positionPromise = env.api.sendCmd('M114');
+    await Promise.resolve();
+    expect(env.api.liveState().position).toEqual({ x: 1, y: 2, z: 3 });
+    env.emitTelemetry('machine', {
+      frame: { revision: 1, positionValid: true },
+      position: { work: { x: 4, y: 5, z: 6 }, machine: { x: 14, y: 15, z: 16 } },
+    });
+    await positionPromise;
+    expect(env.api.liveState().position).toEqual({ x: 4, y: 5, z: 6 });
+  });
+
+  it('dispatches zero history only from the confirmed socket frame and de-duplicates the revision', async () => {
+    vi.stubGlobal('confirm', () => true);
+    try {
+      const env = createMachineBarEnv({
+        fetch: async (url) => ({
+          ok: true,
+          status: 200,
+          url: String(url),
+          async text() {
+            return JSON.stringify({
+              ok: true,
+              frame: { revision: 999, workZeroMachine: { x: 999, y: 999, z: 999 } },
+              before: 'X:2 Y:3 Z:4',
+              after: 'X:0 Y:0 Z:0',
+            });
+          },
+          clone() { return this; },
+          async json() { return {}; },
+        }),
+      });
+      env.emitTelemetry('controller', { state: 'connected' });
+      env.emitTelemetry('job', { state: 'IDLE' });
+      env.emitTelemetry('machine', {
+        frame: { revision: 1, positionValid: true, workZeroValid: false },
+        position: { work: { x: 2, y: 3, z: 4 }, machine: { x: 2, y: 3, z: 4 } },
+      });
+      const command = env.api.setWorkZero();
+      await Promise.resolve();
+      const confirmed = {
+        frame: {
+          revision: 2, positionValid: true, workZeroValid: true,
+          workZeroMachine: { x: 2, y: 3, z: 4 },
+        },
+        position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 2, y: 3, z: 4 } },
+      };
+      env.emitTelemetry('machine', confirmed);
+      env.emitTelemetry('machine', confirmed);
+      await command;
+      const events = env.dispatched.filter((event) => event.type === 'cnc-work-zero-set');
+      expect(events).toHaveLength(1);
+      expect(events[0].detail).toMatchObject({
+        confirmedBySocket: true,
+        frame: { revision: 2, workZeroMachine: { x: 2, y: 3, z: 4 } },
+      });
+      expect(events[0].detail.frame.revision).not.toBe(999);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports accepted commands whose socket confirmation times out without fabricating live state', async () => {
+    vi.useFakeTimers();
+    try {
+      const env = createMachineBarEnv();
+      env.emitTelemetry('controller', { state: 'connected' });
+      env.emitTelemetry('job', { state: 'IDLE', feedOverridePercent: 100 });
+      const command = env.api.setFeedOverride(125);
+      const rejection = expect(command).rejects.toThrow(
+        'Command accepted, but live-state confirmation timed out while waiting for feed override 125%.',
+      );
+      await vi.advanceTimersByTimeAsync(5001);
+      await rejection;
+      expect(env.api.liveState().job.feedOverridePercent).toBe(100);
     } finally {
       vi.useRealTimers();
     }
