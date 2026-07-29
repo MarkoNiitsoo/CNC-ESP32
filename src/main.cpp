@@ -611,6 +611,69 @@ struct StagedWallClockState {
   char source[16] = "browser";
 };
 
+String jsonEscape(const String &value);
+
+struct BoundedLogRingBuffer {
+  static const size_t CAPACITY = 32;
+  LogTelemetryEvent entries[CAPACITY];
+  size_t count = 0;
+  size_t head = 0;
+  uint32_t oldestId = 0;
+  uint32_t latestId = 0;
+  uint32_t nextId = 1;
+  char lastCritical[128] = {};
+
+  void add(const LogTelemetryEvent &ev) {
+    size_t idx = (head + count) % CAPACITY;
+    if (count == CAPACITY) {
+      head = (head + 1) % CAPACITY;
+      oldestId = entries[head].id;
+    } else {
+      if (count == 0) oldestId = ev.id;
+      count++;
+    }
+    entries[idx] = ev;
+    latestId = ev.id;
+    nextId = ev.id + 1;
+    if (ev.lastCriticalMessage[0] != '\0') {
+      snprintf(lastCritical, sizeof(lastCritical), "%s", ev.lastCriticalMessage);
+    }
+  }
+
+  String buildJson() const {
+    String json = "{\"entries\":[";
+    for (size_t i = 0; i < count; i++) {
+      size_t idx = (head + i) % CAPACITY;
+      if (i > 0) json += ",";
+      json += "{\"id\":";
+      json += String(entries[idx].id);
+      json += ",\"time\":\"";
+      json += String(entries[idx].timeMs);
+      json += "\",\"direction\":\"";
+      json += jsonEscape(entries[idx].direction);
+      json += "\",\"priority\":";
+      json += entries[idx].priority ? "true" : "false";
+      json += ",\"level\":\"";
+      json += jsonEscape(entries[idx].level);
+      json += "\",\"text\":\"";
+      json += jsonEscape(entries[idx].text);
+      json += "\"}";
+    }
+    json += "],\"oldestId\":";
+    json += String(oldestId);
+    json += ",\"latestId\":";
+    json += String(latestId);
+    json += ",\"nextId\":";
+    json += String(nextId);
+    json += ",\"lastCritical\":";
+    json += lastCritical[0] != '\0' ? "\"" + jsonEscape(lastCritical) + "\"" : "null";
+    json += "}";
+    return json;
+  }
+};
+
+BoundedLogRingBuffer boundedLogRing;
+
 struct StagedTelemetryState {
   uint32_t globalRevision = 1;
   bool dirtySystem = false;
@@ -619,6 +682,8 @@ struct StagedTelemetryState {
   bool dirtyJob = false;
   bool dirtyJog = false;
   bool dirtyControl = false;
+  bool dirtyLog = false;
+  bool dirtyMachineProfile = false;
 
   StagedWallClockState wallClock;
 
@@ -628,6 +693,8 @@ struct StagedTelemetryState {
   String jobJson;
   String jogJson;
   String controlJson;
+  String logJson;
+  String machineProfileJson;
 };
 
 StagedTelemetryState stagedState;
@@ -737,6 +804,15 @@ void addMarlinLog(const String &direction, bool priority, const String &text, co
     snprintf(ev.level, sizeof(ev.level), "%s", entry.level.c_str());
     snprintf(ev.text, sizeof(ev.text), "%s", entry.text.c_str());
     snprintf(ev.lastCriticalMessage, sizeof(ev.lastCriticalMessage), "%s", lastCriticalMarlinMessage.c_str());
+
+    if (telemetryStateMutex != nullptr) {
+      if (xSemaphoreTake(telemetryStateMutex, 0) == pdTRUE) {
+        boundedLogRing.add(ev);
+        stagedState.logJson = boundedLogRing.buildJson();
+        stagedState.dirtyLog = true;
+        xSemaphoreGive(telemetryStateMutex);
+      }
+    }
 
     if (xQueueSend(logEventQueue, &ev, 0) != pdTRUE) {
       incrementLogTelemetryDropped();
@@ -1446,6 +1522,8 @@ struct CachedAuthoritativeSlices {
   String jobJson;
   String jogJson;
   String controlJson;
+  String logJson;
+  String machineProfileJson;
 };
 extern CachedAuthoritativeSlices cachedSlices;
 
@@ -2381,6 +2459,33 @@ String buildControlSliceJson() {
   return patchJson;
 }
 
+String buildMachineProfileSliceJson() {
+  String json = "{\"name\":\"LowRider3\",\"firmwareName\":\"";
+  json += jsonEscape(machineProfile.firmwareName.length() > 0 ? machineProfile.firmwareName : controllerAdapter.identity);
+  json += "\",\"machineType\":\"";
+  json += jsonEscape(machineProfile.machineType.length() > 0 ? machineProfile.machineType : "CNC");
+  json += "\",\"capabilities\":{\"homing\":";
+  json += controllerAdapter.capabilities.homing ? "true" : "false";
+  json += ",\"absoluteMachineMove\":";
+  json += controllerAdapter.capabilities.absoluteMachineMove ? "true" : "false";
+  json += ",\"positionReports\":";
+  json += controllerAdapter.capabilities.positionReports ? "true" : "false";
+  json += ",\"pause\":";
+  json += controllerAdapter.capabilities.pause ? "true" : "false";
+  json += ",\"resume\":";
+  json += controllerAdapter.capabilities.resume ? "true" : "false";
+  json += ",\"stop\":";
+  json += controllerAdapter.capabilities.stop ? "true" : "false";
+  json += ",\"feedOverride\":";
+  json += controllerAdapter.capabilities.feedOverride ? "true" : "false";
+  json += ",\"arcs\":";
+  json += controllerAdapter.capabilities.arcs ? "true" : "false";
+  json += ",\"toolChange\":";
+  json += controllerAdapter.capabilities.toolChange ? "true" : "false";
+  json += "}}";
+  return json;
+}
+
 void initializeStagedState() {
   stagedState.wallClock = StagedWallClockState{};
   stagedState.systemBaseJson = buildSystemBaseJson();
@@ -2389,6 +2494,8 @@ void initializeStagedState() {
   stagedState.jobJson = buildAuthoritativeJobSliceJson();
   stagedState.jogJson = buildAuthoritativeJogSliceJson();
   stagedState.controlJson = buildControlSliceJson();
+  stagedState.logJson = boundedLogRing.buildJson();
+  stagedState.machineProfileJson = buildMachineProfileSliceJson();
   stagedState.globalRevision = 1;
   stagedState.dirtySystem = false;
   stagedState.dirtyController = false;
@@ -2396,6 +2503,8 @@ void initializeStagedState() {
   stagedState.dirtyJob = false;
   stagedState.dirtyJog = false;
   stagedState.dirtyControl = false;
+  stagedState.dirtyLog = false;
+  stagedState.dirtyMachineProfile = false;
 
   cachedSlices.systemBaseJson = stagedState.systemBaseJson;
   cachedSlices.positionX = marlinPosition.x;
@@ -2412,13 +2521,15 @@ void initializeStagedState() {
   cachedSlices.jobJson = stagedState.jobJson;
   cachedSlices.jogJson = stagedState.jogJson;
   cachedSlices.controlJson = stagedState.controlJson;
+  cachedSlices.logJson = stagedState.logJson;
+  cachedSlices.machineProfileJson = stagedState.machineProfileJson;
 }
 
 String buildSnapshotFromStagedState(uint32_t &outRevision) {
   outRevision = 0;
   if (telemetryStateMutex == nullptr) return "";
 
-  String sysBase, ctrl, mach, job, jog, cntrl;
+  String sysBase, ctrl, mach, job, jog, cntrl, logStr, machProf;
   StagedWallClockState wallClock;
   if (xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
     sysBase = stagedState.systemBaseJson;
@@ -2428,6 +2539,8 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
     job = stagedState.jobJson;
     jog = stagedState.jogJson;
     cntrl = stagedState.controlJson;
+    logStr = stagedState.logJson;
+    machProf = stagedState.machineProfileJson;
     outRevision = stagedState.globalRevision;
     if (outRevision > netLastObservedRevision) {
       netLastObservedRevision = outRevision;
@@ -2438,7 +2551,7 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
   }
 
   String sysJson = buildSystemSliceJsonFromBaseAndClock(sysBase, wallClock);
-  String json = "{\"system\":" + sysJson + ",\"controller\":" + ctrl + ",\"machine\":" + mach + ",\"job\":" + job + ",\"jog\":" + jog + ",\"control\":" + cntrl + "}";
+  String json = "{\"system\":" + sysJson + ",\"controller\":" + ctrl + ",\"machine\":" + mach + ",\"job\":" + job + ",\"jog\":" + jog + ",\"control\":" + cntrl + ",\"log\":" + logStr + ",\"machineProfile\":" + machProf + "}";
   return json;
 }
 
@@ -2451,6 +2564,7 @@ void stageTelemetryUpdates() {
   bool diffJob = false;
   bool diffJog = false;
   bool diffControl = false;
+  bool diffMachineProfile = false;
 
   static uint32_t lastSystemCheckMs = 0;
   const uint32_t now = millis();
@@ -2497,7 +2611,12 @@ void stageTelemetryUpdates() {
     diffControl = true;
   }
 
-  if (!diffSystem && !diffMachine && !diffController && !diffJob && !diffJog && !diffControl) {
+  String machineProfileStr = buildMachineProfileSliceJson();
+  if (machineProfileStr != cachedSlices.machineProfileJson) {
+    diffMachineProfile = true;
+  }
+
+  if (!diffSystem && !diffMachine && !diffController && !diffJob && !diffJog && !diffControl && !diffMachineProfile) {
     return;
   }
 
@@ -2531,6 +2650,10 @@ void stageTelemetryUpdates() {
     stagedState.controlJson = controlStr;
     stagedState.dirtyControl = true;
   }
+  if (diffMachineProfile) {
+    stagedState.machineProfileJson = machineProfileStr;
+    stagedState.dirtyMachineProfile = true;
+  }
 
   stagedState.globalRevision++;
 
@@ -2563,6 +2686,9 @@ void stageTelemetryUpdates() {
   }
   if (diffControl) {
     cachedSlices.controlJson = controlStr;
+  }
+  if (diffMachineProfile) {
+    cachedSlices.machineProfileJson = machineProfileStr;
   }
 }
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {

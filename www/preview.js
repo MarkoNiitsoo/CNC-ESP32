@@ -3304,16 +3304,6 @@ async function startProductionResumeStream(commands) {
     };
     if (window.CncTelemetry) {
       unsubscribe = window.CncTelemetry.subscribe('job', observe);
-      window.CncTelemetry.request('job').catch(() => {});
-    } else {
-      fallbackTimer = setInterval(async () => {
-        try {
-          const statusRes = await fetch('/api/job/status');
-          observe(await readJsonOrThrow(statusRes));
-        } catch (err) {
-          // Firmware owns the stream; a browser/network outage must not stop cutting.
-        }
-      }, 1000);
     }
   });
 }
@@ -3998,16 +3988,6 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
 
     if (window.CncTelemetry) {
       unsubscribe = window.CncTelemetry.subscribe('job', observe);
-      window.CncTelemetry.request('job').catch(() => {});
-    } else {
-      fallbackTimer = setInterval(async () => {
-        try {
-          const statusRes = await fetch('/api/job/status');
-          observe(await readJsonOrThrow(statusRes));
-        } catch (err) {
-          // The firmware stream continues; retry status on the next interval.
-        }
-      }, 1000);
     }
   });
 }
@@ -6902,11 +6882,9 @@ window.CncTelemetry?.subscribe('job', (data) => {
 });
 window.CncTelemetry?.subscribe('motion', handleMotionTelemetry);
 window.CncTelemetry?.subscribe('health', handleRecoveryHealth);
+window.CncTelemetry?.subscribe('system', (data) => {
+  if (data) handleRecoveryHealth(data.health || data);
+});
 window.CncTelemetry?.setDemand('job', 'preview-page', true);
 window.CncTelemetry?.setDemand('health', 'preview-page', true);
 window.CncTelemetry?.start();
-if (runPanel) refreshJobStatus().catch(() => {
-  jobStatusHealthy = false;
-  renderRunPanel();
-  renderWorkbenchStatus();
-});

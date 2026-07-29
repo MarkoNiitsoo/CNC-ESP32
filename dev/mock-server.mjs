@@ -965,6 +965,23 @@ export async function createMockServer(options = {}) {
       job: env.runner.snapshot(),
       jog: { ...env.jog },
       control: { owner: env.operator.owner || null },
+      log: {
+        entries: Array.isArray(env.marlinLog?.entries) ? [...env.marlinLog.entries] : [],
+        oldestId: env.marlinLog?.entries?.length ? Math.min(...env.marlinLog.entries.map((e) => Number(e.id))) : 0,
+        latestId: env.marlinLog?.nextId ? Math.max(0, env.marlinLog.nextId - 1) : 0,
+        nextId: env.marlinLog?.nextId || 1,
+        lastCritical: env.marlinLog?.lastCritical || null,
+      },
+      machineProfile: {
+        name: 'LowRider3',
+        firmwareName: 'MockMarlin 2.1.1',
+        machineType: 'CNC',
+        capabilities: {
+          homing: true, absoluteMachineMove: true, positionReports: true,
+          pause: true, resume: true, stop: true, feedOverride: true,
+          arcs: true, toolChange: true,
+        },
+      },
     };
   }
 

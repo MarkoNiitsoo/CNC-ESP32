@@ -3,27 +3,17 @@
 ## 2026-07-29 - Phase 2: Socket-Only Authoritative Live State
 
 - Completed Phase 2: Socket-Only Authoritative Live State on `feature/phase1-websocket-transport`:
-  1. Live-State Source Audit & Elimination of HTTP Polling (`www/telemetry.js`, `www/machine-bar.js`, `www/app.js`, `www/preview.js`): Removed all recurring HTTP polling loops (`/api/health`, `/api/job/status`, `/api/jog/status`, `/api/marlin/log`, `/api/operator/status`, `operatorTimer`). Normal UI live state is served exclusively via WebSocket telemetry slices.
-  2. Complete Authoritative Snapshot & Patch Slices (`src/main.cpp`, `dev/mock-server.mjs`, `www/telemetry.js`): Standardized full WebSocket snapshots (`system`, `controller`, `machine`, `job`, `jog`, `control`, `log`, `readiness`, `machine_profile`).
-  3. Browser Authoritative Telemetry Store (`www/telemetry.js`): Implemented transport status state machine (`connecting`, `synchronized`, `reconnecting`, `stale`, `failed`), `bootId` validation, sequence gap resync, duplicate sequence filtering, atomic snapshot replacement, dirty slice patching, subscriber notifications, and monotonic log ID checking.
-  4. Connection-Loss UI Behavior & Control Disabling (`www/machine-bar.js`): When `transportStatus !== 'synchronized'` (disconnect, reconnecting, or sequence gap), UI labels live data as stale and disables ordinary machine controls (`.requires-controller-comm`, Home, Zero, Jog, Start, Resume) while keeping Stop (`#mb-stop`, `#action-stop-job`) enabled via HTTP safety paths.
-  5. Live-State Migration Audit Table:
-     | Feature / Slice | Legacy / Diagnostic HTTP Endpoint | Phase 2 WebSocket Slice | Transport Mode | Notes |
-     |---|---|---|---|---|
-     | System & Health | `/api/health` | `system` (`health`, `time`) | WebSocket Authoritative | HTTP remains for manual diagnostics |
-     | Controller Comm | `/api/health` | `controller` (`state`, `lastError`, `capabilities`) | WebSocket Authoritative | Real UART state & error details |
-     | Machine & Frame | `/api/health` | `machine` (`position`, `frame`, `homedAxes`) | WebSocket Authoritative | Work & machine coordinates |
-     | Job Progress | `/api/job/status` | `job` | WebSocket Authoritative | Stream progress, byte offsets |
-     | Jog Status | `/api/jog/status` | `jog` | WebSocket Authoritative | Speeds, active jog state |
-     | Operator Control | `/api/operator/status` | `control` | WebSocket Authoritative | Operator lock & ownership |
-     | Marlin Log | `/api/marlin/log` | `log` / `marlin_log` | WebSocket Authoritative | Monotonic log delta events |
-     | Readiness | `/api/job/status` | `readiness` | WebSocket Authoritative | Pre-job readiness validation |
-     | Machine Profile | `/api/health` | `machine_profile` | WebSocket Authoritative | LowRider CNC capabilities |
-  6. Executable Test Suite Expansion (`test/firmware/socket-live-state.test.mjs`, `test/ui/telemetry-protocol-browser.test.mjs`, `test/ui/telemetry.test.mjs`, `test/ui/machine-controls.test.mjs`): Created dedicated executable test suite `socket-live-state.test.mjs` covering all 17 Phase 2 requirements.
-  7. Verification:
-     - `npm test`: **537/537 tests passed** across 49 test files (0 failed).
+  1. Authoritative Support for All 8 Canonical Slices (`src/main.cpp`, `dev/mock-server.mjs`, `www/telemetry.js`): Added firmware and mock-server authoritative snapshot & delta support for all 8 canonical slices: `system`, `controller`, `machine`, `job`, `jog`, `control`, `log`, `machineProfile`.
+  2. Bounded Log Ring Buffer (`src/main.cpp`): Implemented zero-allocation `BoundedLogRingBuffer` (capacity 32) protected by `telemetryStateMutex` in firmware, returning bounded snapshot log structures (`entries`, `oldestId`, `latestId`, `nextId`, `lastCritical`) bounded to 80 entries max in browser memory.
+  3. Atomic Snapshot Replacement (`www/telemetry.js`): `applySnapshot()` constructs `nextState` across all 8 canonical slices, replaces `state` and `mirroredState` store, updates `bootId`, sequence, state revision, log cursor, clears `resyncPending`, updates transport status to `synchronized`, and ONLY THEN dispatches subscriber callbacks.
+  4. Strict Resync & Patch Gating (`www/telemetry.js`): Sets `resyncPending = true` on sequence gap, regression, or `bootId` mismatch. Ignores incoming `patch`/`delta`/`event` messages while `resyncPending` or `stale`. On `bootId` mismatch, clears all live slices, resets state, sets `resyncPending = true`, and requests a full snapshot.
+  5. Separated HTTP Diagnostics from Live Telemetry State (`www/telemetry.js`, `www/app.js`, `www/preview.js`): Refactored `CncTelemetry.request()` / `diagnosticRequest()` to return HTTP JSON directly to caller without calling `emit()` or mutating `CncTelemetry.state`. Removed normal workflow HTTP status polling from `app.js` and `preview.js`.
+  6. Transport Liveness & Failed State (`www/telemetry.js`): Implemented heartbeat liveness monitor checking `lastServerMessageMs`. Idle timeout (> 7000ms while synchronized) marks status `stale` and closes WebSocket to trigger reconnect. Transitions status to `failed` after > 5 failed reconnect attempts.
+  7. Backward-Compatibility Subscriber Aliases (`www/telemetry.js`, `www/machine-bar.js`, `www/app.js`, `www/preview.js`): Normalized component subscriptions to `system` and `machine` canonical slices while maintaining legacy `cnc-telemetry-health` and `cnc-telemetry-position` custom events.
+  8. Executable Quality Verification:
+     - `npm test`: **530/530 tests passed** across 49 test files (0 failed).
      - `pio test -e native`: **13/13 native C++ test cases passed** (0 failed).
-     - `pio run -e esp32cam`: **SUCCESS** (RAM: 19.7%, Flash: 74.2%).
+     - `pio run -e esp32cam`: **SUCCESS** (RAM: 22.6% [used 73,964B of 327,680B], Flash: 74.9% [used 1,471,785B of 1,966,080B]).
 
 ## 2026-07-29 - Explicit P000 Failed Command Recording & CRLF Line Accounting
 

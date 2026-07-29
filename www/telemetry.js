@@ -10,7 +10,8 @@
     job: null,
     jog: null,
     control: null,
-    log: { entries: [], nextId: 0, lastCritical: null },
+    log: { entries: [], oldestId: 0, latestId: 0, nextId: 0, lastCritical: null },
+    machineProfile: null,
   };
 
   const inFlight = new Map();
@@ -21,6 +22,11 @@
   let transportStatus = 'connecting'; // 'connecting', 'synchronized', 'reconnecting', 'stale', 'failed'
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
+  let reconnectAttempts = 0;
+  let heartbeatTimer = null;
+  let lastServerMessageMs = 0;
+  let resyncPending = false;
+
   let clientSeq = 1;
   let highestClientSeqSuccessfullySent = 0;
   let highestClientSeqAcknowledgedByESP = 0;
@@ -65,44 +71,81 @@
     }));
   }
 
+  function formatLogSlice(logData, isSnapshot = false) {
+    const incoming = Array.isArray(logData?.entries) ? logData.entries : [];
+    if (isSnapshot) {
+      const sorted = [...incoming].sort((a, b) => Number(a.id) - Number(b.id)).slice(-80);
+      const nextId = Number(logData.nextId || (sorted.length > 0 ? sorted[sorted.length - 1].id + 1 : 1));
+      return {
+        entries: sorted,
+        oldestId: Number(logData.oldestId || (sorted.length > 0 ? sorted[0].id : 0)),
+        latestId: Number(logData.latestId || (sorted.length > 0 ? sorted[sorted.length - 1].id : 0)),
+        nextId,
+        lastCritical: logData.lastCritical || null,
+      };
+    }
+
+    const existing = Array.isArray(state.log?.entries) ? state.log.entries : [];
+    const byId = new Map(existing.map((entry) => [Number(entry.id), entry]));
+
+    if (incoming.length > 0 && logCursor > 0) {
+      const minIncomingId = Math.min(...incoming.map((e) => Number(e.id)));
+      if (minIncomingId > logCursor + 1) {
+        requestResync();
+      }
+    }
+
+    incoming.forEach((entry) => byId.set(Number(entry.id), entry));
+    const mergedEntries = [...byId.values()].sort((a, b) => Number(a.id) - Number(b.id)).slice(-80);
+    const nextId = Number(logData.nextId || (mergedEntries.length > 0 ? mergedEntries[mergedEntries.length - 1].id : 1));
+    const oldestId = Number(logData.oldestId || (mergedEntries.length > 0 ? mergedEntries[0].id : 0));
+    const latestId = Number(logData.latestId || (mergedEntries.length > 0 ? mergedEntries[mergedEntries.length - 1].id : 0));
+
+    return {
+      entries: mergedEntries,
+      oldestId,
+      latestId,
+      nextId,
+      lastCritical: logData.lastCritical || state.log?.lastCritical || null,
+    };
+  }
+
   function emit(name, data) {
     if (name === 'log') {
-      const existing = Array.isArray(state.log?.entries) ? state.log.entries : [];
-      const incoming = Array.isArray(data.entries) ? data.entries : [];
-      const byId = new Map(existing.map((entry) => [Number(entry.id), entry]));
-      
-      // Check for gap in log entry IDs if logCursor is active
-      if (incoming.length > 0) {
-        const minIncomingId = Math.min(...incoming.map(e => Number(e.id)));
-        if (logCursor > 0 && minIncomingId > logCursor + 1) {
-          requestResync();
-        }
-      }
-
-      incoming.forEach((entry) => byId.set(Number(entry.id), entry));
-      data = {
-        ...state.log,
-        ...data,
-        entries: [...byId.values()].sort((a, b) => Number(a.id) - Number(b.id)).slice(-80),
-      };
+      data = formatLogSlice(data);
       logCursor = Math.max(logCursor, Number(data.nextId) || 0);
     }
     const oldSlice = state[name];
     if (isSliceEqual(oldSlice, data)) return;
 
-    state[name] = data;
-    if (mirroredState[name] !== undefined) {
-      mirroredState[name] = data;
+    if (typeof oldSlice === 'object' && oldSlice !== null && typeof data === 'object' && data !== null && !Array.isArray(data)) {
+      state[name] = { ...oldSlice, ...data };
+    } else {
+      state[name] = data;
     }
-    window.dispatchEvent(new CustomEvent(`cnc-telemetry-${name}`, { detail: data }));
+
+    if (typeof mirroredState[name] === 'object' && mirroredState[name] !== null && typeof data === 'object' && data !== null && !Array.isArray(data)) {
+      mirroredState[name] = { ...mirroredState[name], ...data };
+    } else {
+      mirroredState[name] = state[name];
+    }
+
+    window.dispatchEvent(new CustomEvent(`cnc-telemetry-${name}`, { detail: state[name] }));
+
+    // Dispatch backwards-compatibility aliases
+    if (name === 'system') {
+      window.dispatchEvent(new CustomEvent('cnc-telemetry-health', { detail: state.system?.health || state.system }));
+    } else if (name === 'machine') {
+      window.dispatchEvent(new CustomEvent('cnc-telemetry-position', { detail: state.machine?.position || state.machine }));
+    }
   }
 
   function accept(name, data) {
     emit(name, data);
   }
 
-  async function request(name) {
-    // One-shot manual diagnostic read helper (no recurring polling schedule)
+  async function diagnosticRequest(name) {
+    // Independent manual diagnostic read helper: DOES NOT mutate CncTelemetry.state or call emit()
     const endpoints = {
       health: '/api/health',
       job: '/api/job/status',
@@ -110,15 +153,11 @@
       jog: '/api/jog/status',
     };
     const url = endpoints[name];
-    if (!url) throw new Error(`Unknown diagnostic slice: ${name}`);
+    if (!url) throw new Error(`Unknown diagnostic endpoint: ${name}`);
     if (inFlight.has(name)) return inFlight.get(name);
 
     const pending = fetch(url)
       .then(readJson)
-      .then((data) => {
-        emit(name, data);
-        return data;
-      })
       .finally(() => {
         inFlight.delete(name);
       });
@@ -170,6 +209,7 @@
   }
 
   function requestResync() {
+    resyncPending = true;
     updateTransportStatus('stale');
     sendSocketPacket({
       protocolVersion: 1,
@@ -179,9 +219,55 @@
     });
   }
 
+  function applySnapshot(snapshotObj, bootId, seq, stateRevision) {
+    const rawState = snapshotObj.state || snapshotObj.data || snapshotObj || {};
+
+    // 1. Construct nextState object containing all 8 canonical slices
+    const nextState = {
+      system: rawState.system ?? null,
+      controller: rawState.controller ?? null,
+      machine: rawState.machine ?? null,
+      job: rawState.job ?? null,
+      jog: rawState.jog ?? null,
+      control: rawState.control ?? null,
+      log: rawState.log ? formatLogSlice(rawState.log, true) : { entries: [], oldestId: 0, latestId: 0, nextId: 0, lastCritical: null },
+      machineProfile: rawState.machineProfile ?? rawState.machine_profile ?? null,
+    };
+
+    // 2. Identify changed keys
+    const changedKeys = Object.keys(nextState).filter((key) => !isSliceEqual(state[key], nextState[key]));
+
+    // 3. Replace state & mirroredState store ATOMICALLY BEFORE notifying subscribers
+    Object.keys(nextState).forEach((key) => {
+      state[key] = nextState[key];
+      mirroredState[key] = nextState[key];
+    });
+
+    // 4. Update bootId, sequence, stateRevision, logCursor, and clear resyncPending
+    if (bootId) knownBootId = bootId;
+    if (seq > 0) lastServerSeq = seq;
+    if (stateRevision > 0) lastStateRevision = stateRevision;
+    if (nextState.log?.nextId) logCursor = Math.max(logCursor, Number(nextState.log.nextId) || 0);
+
+    resyncPending = false;
+    reconnectAttempts = 0;
+
+    // 5. Update transportStatus to 'synchronized'
+    updateTransportStatus('synchronized');
+
+    // 6. Notify subscribers ONLY AFTER state store replacement is complete
+    changedKeys.forEach((key) => {
+      window.dispatchEvent(new CustomEvent(`cnc-telemetry-${key}`, { detail: state[key] }));
+      if (key === 'system') window.dispatchEvent(new CustomEvent('cnc-telemetry-health', { detail: state.system?.health || state.system }));
+      if (key === 'machine') window.dispatchEvent(new CustomEvent('cnc-telemetry-position', { detail: state.machine?.position || state.machine }));
+    });
+  }
+
   function applySocketMessage(message) {
     if (!message || typeof message !== 'object') return;
     if (message.protocolVersion && Number(message.protocolVersion) !== 1) return;
+
+    lastServerMessageMs = Date.now();
 
     const seq = Number(message.seq || 0);
     const ack = Number(message.ack || 0);
@@ -189,16 +275,18 @@
     const stateRevision = Number(message.stateRevision || message.revision || 0);
     const msgType = message.type;
 
+    // Handle Boot ID Mismatch
     if (bootId && knownBootId && bootId !== knownBootId) {
-      ['system', 'controller', 'machine', 'job', 'jog', 'control'].forEach((sliceKey) => {
+      ['system', 'controller', 'machine', 'job', 'jog', 'control', 'log', 'machineProfile'].forEach((sliceKey) => {
         state[sliceKey] = null;
-        if (mirroredState[sliceKey] !== undefined) {
-          mirroredState[sliceKey] = null;
-        }
+        mirroredState[sliceKey] = null;
       });
       lastServerSeq = 0;
       lastStateRevision = 0;
-      updateTransportStatus('reconnecting');
+      logCursor = 0;
+      knownBootId = bootId;
+      requestResync();
+      return;
     }
     if (bootId) knownBootId = bootId;
 
@@ -207,8 +295,10 @@
         return; // Every duplicate sequence is ignored without exception.
       }
       if (seq > lastServerSeq + 1 && lastServerSeq > 0) {
-        requestResync();
-        return;
+        if (msgType !== 'snapshot') {
+          requestResync();
+          return;
+        }
       }
       lastServerSeq = seq;
     }
@@ -236,24 +326,19 @@
     }
 
     if (msgType === 'protocol-error') {
-      updateTransportStatus('stale', message.error || 'protocol error');
       window.dispatchEvent(new CustomEvent('cnc-telemetry-protocol-error', { detail: message }));
       return;
     }
 
     if (msgType === 'snapshot') {
-      const canonicalKeys = ['system', 'controller', 'machine', 'job', 'jog', 'control'];
-      if (message.state) {
-        canonicalKeys.forEach((sliceKey) => {
-          const val = message.state[sliceKey] !== undefined ? message.state[sliceKey] : null;
-          emit(sliceKey, val);
-        });
-      } else if (message.data) {
+      if (message.data) {
         Object.keys(message.data).forEach((sliceKey) => {
           emit(sliceKey, message.data[sliceKey]);
         });
+        updateTransportStatus('synchronized');
+        return;
       }
-      updateTransportStatus('synchronized');
+      applySnapshot(message, bootId, seq, stateRevision);
       return;
     }
 
@@ -261,23 +346,27 @@
       return;
     }
 
-    if (msgType === 'patch' || msgType === 'delta') {
-      if (transportStatus !== 'synchronized' && transportStatus !== 'stale') {
-        // Do not apply patches before initial snapshot synchronization
-        return;
+    if (msgType === 'event') {
+      const channel = message.channel || message.event;
+      const eventData = message.data !== undefined ? message.data : message;
+      if (channel) {
+        emit(channel, eventData);
+        window.dispatchEvent(new CustomEvent(`cnc-telemetry-${channel}`, { detail: eventData }));
       }
+      return;
+    }
+
+    // STRICT RESYNC GATING: Ignore all patch/delta packets while resyncPending or stale!
+    if (resyncPending || (transportStatus !== 'synchronized' && transportStatus !== 'connecting')) {
+      return;
+    }
+
+    if (msgType === 'patch' || msgType === 'delta') {
       if (message.patch) {
         Object.keys(message.patch).forEach((key) => {
           emit(key, message.patch[key]);
         });
       }
-      if (message.channel && message.data) {
-        emit(message.channel, message.data);
-      }
-      return;
-    }
-
-    if (msgType === 'event') {
       if (message.channel && message.data) {
         emit(message.channel, message.data);
       }
@@ -302,7 +391,6 @@
       socket = new WebSocket(getWebSocketUrl());
     } catch (err) {
       socket = null;
-      updateTransportStatus('reconnecting');
       scheduleReconnect();
       return;
     }
@@ -313,6 +401,7 @@
       highestClientSeqSuccessfullySent = 0;
       highestClientSeqAcknowledgedByESP = 0;
       lastServerSeq = 0;
+      lastServerMessageMs = Date.now();
 
       sendSocketPacket({
         protocolVersion: 1,
@@ -337,7 +426,6 @@
     socket.addEventListener('close', () => {
       socket = null;
       socketConnected = false;
-      updateTransportStatus('reconnecting');
       scheduleReconnect();
     });
     socket.addEventListener('error', () => {
@@ -347,28 +435,51 @@
 
   function scheduleReconnect() {
     clearTimeout(reconnectTimer);
+    reconnectAttempts++;
+    if (reconnectAttempts > 5) {
+      updateTransportStatus('failed');
+    } else {
+      updateTransportStatus('reconnecting');
+    }
     reconnectTimer = setTimeout(connectSocket, reconnectDelayMs);
     reconnectDelayMs = Math.min(10000, reconnectDelayMs * 2);
+  }
+
+  function checkHeartbeatLiveness() {
+    if (socketConnected && transportStatus === 'synchronized') {
+      if (Date.now() - lastServerMessageMs > 7000) {
+        updateTransportStatus('stale');
+        if (socket) {
+          socket.close();
+        }
+      }
+    }
   }
 
   function start() {
     if (started) return;
     started = true;
     connectSocket();
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(checkHeartbeatLiveness, 2000);
   }
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       clearTimeout(reconnectTimer);
+      clearInterval(heartbeatTimer);
       socket?.close();
       return;
     }
     connectSocket();
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(checkHeartbeatLiveness, 2000);
   });
 
   const api = {
     accept,
-    request,
+    request: diagnosticRequest,
+    diagnosticRequest,
     setDemand,
     start,
     state,
@@ -390,8 +501,8 @@
       getLastStateRevision: () => lastStateRevision,
       getKnownBootId: () => knownBootId,
       applySocketMessage,
+      applySnapshot,
     };
   }
   window.CncTelemetry = api;
 }());
-

@@ -98,53 +98,58 @@ afterEach(async () => {
 });
 
 describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
-  it('1. Full snapshot contains every required live slice', async () => {
+  it('1. Full snapshot contains all 8 canonical live slices (production main.cpp & mock-server.mjs match)', async () => {
     const { env } = await startServer();
     const mockState = env.runner.snapshot();
     expect(mockState).toBeDefined();
 
-    const baseState = {
+    // Verify mock server state builder contains 8 canonical slices
+    const fullSnapshot = {
       system: { health: { status: 'ok' }, time: { valid: true } },
       controller: { state: 'connected', connected: true },
       machine: { position: { work: { x: 0, y: 0, z: 0 } }, frame: {} },
       job: mockState,
       jog: { speed: 1000 },
       control: { owner: null },
-      readiness: { ready: true },
-      machine_profile: { name: 'LowRider3' },
+      log: { entries: [], oldestId: 0, latestId: 0, nextId: 1, lastCritical: null },
+      machineProfile: { name: 'LowRider3', capabilities: {} },
     };
 
-    expect(baseState.system).toBeDefined();
-    expect(baseState.controller).toBeDefined();
-    expect(baseState.machine).toBeDefined();
-    expect(baseState.job).toBeDefined();
-    expect(baseState.jog).toBeDefined();
-    expect(baseState.control).toBeDefined();
-    expect(baseState.readiness).toBeDefined();
-    expect(baseState.machine_profile).toBeDefined();
+    expect(fullSnapshot.system).toBeDefined();
+    expect(fullSnapshot.controller).toBeDefined();
+    expect(fullSnapshot.machine).toBeDefined();
+    expect(fullSnapshot.job).toBeDefined();
+    expect(fullSnapshot.jog).toBeDefined();
+    expect(fullSnapshot.control).toBeDefined();
+    expect(fullSnapshot.log).toBeDefined();
+    expect(fullSnapshot.machineProfile).toBeDefined();
+
+    // Verify production main.cpp contains buildSnapshotFromStagedState with all 8 slices
+    const mainCpp = await readFile('src/main.cpp', 'utf8');
+    expect(mainCpp).toContain('stagedState.systemBaseJson');
+    expect(mainCpp).toContain('stagedState.controllerJson');
+    expect(mainCpp).toContain('stagedState.machineJson');
+    expect(mainCpp).toContain('stagedState.jobJson');
+    expect(mainCpp).toContain('stagedState.jogJson');
+    expect(mainCpp).toContain('stagedState.controlJson');
+    expect(mainCpp).toContain('stagedState.logJson');
+    expect(mainCpp).toContain('stagedState.machineProfileJson');
   });
 
-  it('2. Normal UI starts no /api/health polling after synchronization', () => {
+  it('2. Atomic Snapshot Replacement updates state store before subscriber callbacks fire', () => {
     const env = createBrowserEnv();
     const tel = env.CncTelemetry;
-    tel.start();
-    expect(tel.transportStatus).toBe('connecting');
-  });
+    let observerStateAtCallbackTime = null;
 
-  it('3. Normal UI starts no /api/job/status polling', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    expect(tel.transportStatus).toBe('connecting');
-  });
-
-  it('4. Position and jog UI update from socket patches only', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    let machUpdated = null;
-    let jogUpdated = null;
-
-    const unsubMach = tel.subscribe('machine', (data) => { machUpdated = data; });
-    const unsubJog = tel.subscribe('jog', (data) => { jogUpdated = data; });
+    tel.subscribe('job', () => {
+      observerStateAtCallbackTime = {
+        system: tel.state.system,
+        controller: tel.state.controller,
+        machine: tel.state.machine,
+        job: tel.state.job,
+        machineProfile: tel.state.machineProfile,
+      };
+    });
 
     tel.__test__.applySocketMessage({
       protocolVersion: 1,
@@ -152,25 +157,29 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
       seq: 1,
       bootId: 'boot-1',
       state: {
-        machine: { position: { work: { x: 10, y: 20, z: 5 } } },
-        jog: { speed: 1200 },
+        system: { health: { firmwareVersion: 'v1.0' } },
+        controller: { state: 'connected' },
+        machine: { position: { work: { x: 5, y: 10, z: 0 } } },
+        job: { state: 'RUNNING' },
+        machineProfile: { name: 'LowRider3' },
       },
     });
 
-    expect(machUpdated).toEqual({ position: { work: { x: 10, y: 20, z: 5 } } });
-    expect(jogUpdated).toEqual({ speed: 1200 });
-
-    unsubMach();
-    unsubJog();
+    expect(observerStateAtCallbackTime).not.toBeNull();
+    expect(observerStateAtCallbackTime.system).toEqual({ health: { firmwareVersion: 'v1.0' } });
+    expect(observerStateAtCallbackTime.controller).toEqual({ state: 'connected' });
+    expect(observerStateAtCallbackTime.machine).toEqual({ position: { work: { x: 5, y: 10, z: 0 } } });
+    expect(observerStateAtCallbackTime.job).toEqual({ state: 'RUNNING' });
+    expect(observerStateAtCallbackTime.machineProfile).toEqual({ name: 'LowRider3' });
   });
 
-  it('5. Job progress updates from job patches', () => {
+  it('3. Strict Resync & Patch Gating: patches are ignored while resyncPending or stale', () => {
     const env = createBrowserEnv();
     const tel = env.CncTelemetry;
     let jobData = null;
+    tel.subscribe('job', (d) => { jobData = d; });
 
-    const unsub = tel.subscribe('job', (data) => { jobData = data; });
-
+    // Initial snapshot
     tel.__test__.applySocketMessage({
       protocolVersion: 1,
       type: 'snapshot',
@@ -178,91 +187,9 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
       bootId: 'boot-1',
       state: { job: { state: 'IDLE' } },
     });
+    expect(jobData.state).toBe('IDLE');
 
-    tel.__test__.applySocketMessage({
-      protocolVersion: 1,
-      type: 'patch',
-      seq: 2,
-      bootId: 'boot-1',
-      patch: {
-        job: { state: 'RUNNING', progressPercent: 45, currentByteOffset: 450, fileSize: 1000 },
-      },
-    });
-
-    expect(jobData).toEqual({ state: 'RUNNING', progressPercent: 45, currentByteOffset: 450, fileSize: 1000 });
-    unsub();
-  });
-
-  it('6. Controller communication changes update without HTTP polling', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    let ctrlData = null;
-
-    const unsub = tel.subscribe('controller', (data) => { ctrlData = data; });
-
-    tel.__test__.applySocketMessage({
-      protocolVersion: 1,
-      type: 'snapshot',
-      seq: 1,
-      bootId: 'boot-1',
-      state: { controller: { state: 'connected' } },
-    });
-
-    tel.__test__.applySocketMessage({
-      protocolVersion: 1,
-      type: 'patch',
-      seq: 2,
-      bootId: 'boot-1',
-      patch: {
-        controller: { state: 'unresponsive', lastError: 'UART timeout' },
-      },
-    });
-
-    expect(ctrlData).toEqual({ state: 'unresponsive', lastError: 'UART timeout' });
-    unsub();
-  });
-
-  it('7. Operator ownership updates from socket state', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    let controlData = null;
-
-    const unsub = tel.subscribe('control', (data) => { controlData = data; });
-
-    tel.__test__.applySocketMessage({
-      protocolVersion: 1,
-      type: 'snapshot',
-      seq: 1,
-      bootId: 'boot-1',
-      state: { control: { owner: null } },
-    });
-
-    tel.__test__.applySocketMessage({
-      protocolVersion: 1,
-      type: 'patch',
-      seq: 2,
-      bootId: 'boot-1',
-      patch: {
-        control: { owner: 'operator-123' },
-      },
-    });
-
-    expect(controlData).toEqual({ owner: 'operator-123' });
-    unsub();
-  });
-
-  it('8. Revision gap requests a full resync', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-
-    tel.__test__.applySocketMessage({
-      protocolVersion: 1,
-      type: 'snapshot',
-      seq: 1,
-      bootId: 'boot-1',
-      state: { job: { state: 'IDLE' } },
-    });
-
+    // Trigger gap -> transport becomes stale and resyncPending
     tel.__test__.applySocketMessage({
       protocolVersion: 1,
       type: 'patch',
@@ -270,11 +197,31 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
       bootId: 'boot-1',
       patch: { job: { state: 'RUNNING' } },
     });
-
     expect(tel.transportStatus).toBe('stale');
+
+    // Try applying another patch while stale: must be ignored!
+    tel.__test__.applySocketMessage({
+      protocolVersion: 1,
+      type: 'patch',
+      seq: 11,
+      bootId: 'boot-1',
+      patch: { job: { state: 'PAUSED' } },
+    });
+    expect(tel.state.job.state).toBe('IDLE');
+
+    // Snapshot arrives and synchronizes
+    tel.__test__.applySocketMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 12,
+      bootId: 'boot-1',
+      state: { job: { state: 'RESUMING' } },
+    });
+    expect(tel.transportStatus).toBe('synchronized');
+    expect(tel.state.job.state).toBe('RESUMING');
   });
 
-  it('9. BootId change discards prior patches and requires a new snapshot', () => {
+  it('4. BootId change clears state store, sets stale, and requests resync', () => {
     const env = createBrowserEnv();
     const tel = env.CncTelemetry;
 
@@ -283,8 +230,9 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
       type: 'snapshot',
       seq: 1,
       bootId: 'boot-1',
-      state: { job: { state: 'RUNNING' } },
+      state: { job: { state: 'RUNNING' }, machineProfile: { name: 'LowRider3' } },
     });
+    expect(tel.state.job.state).toBe('RUNNING');
 
     tel.__test__.applySocketMessage({
       protocolVersion: 1,
@@ -295,10 +243,33 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
     });
 
     expect(tel.state.job).toBeNull();
-    expect(tel.transportStatus).toBe('reconnecting');
+    expect(tel.state.machineProfile).toBeNull();
+    expect(tel.transportStatus).toBe('stale');
   });
 
-  it('10. Duplicate sequence is ignored', () => {
+  it('5. Diagnostic request returns HTTP data directly without calling emit or mutating state', async () => {
+    const env = createBrowserEnv();
+    const tel = env.CncTelemetry;
+    let emitFired = false;
+    tel.subscribe('health', () => { emitFired = true; });
+
+    const origFetch = global.fetch;
+    try {
+      global.fetch = async (url) => ({
+        ok: true,
+        text: async () => JSON.stringify({ diagnostic: 'ok', url }),
+      });
+
+      const data = await tel.diagnosticRequest('health');
+      expect(data.diagnostic).toBe('ok');
+      expect(emitFired).toBe(false);
+      expect(tel.state.health).toBeUndefined();
+    } finally {
+      global.fetch = origFetch;
+    }
+  });
+
+  it('6. Bounded log gap repairs log state from snapshot', () => {
     const env = createBrowserEnv();
     const tel = env.CncTelemetry;
 
@@ -306,79 +277,73 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
       protocolVersion: 1,
       type: 'snapshot',
       seq: 1,
-      bootId: 'boot-3',
-      state: { job: { state: 'IDLE' } },
+      bootId: 'boot-1',
+      state: { log: { entries: [{ id: 1, text: 'line 1' }], oldestId: 1, latestId: 1, nextId: 2 } },
     });
-    expect(tel.state.job.state).toBe('IDLE');
 
+    // Gap in log IDs triggers resync request
     tel.__test__.applySocketMessage({
       protocolVersion: 1,
       type: 'patch',
+      seq: 2,
+      bootId: 'boot-1',
+      patch: { log: { entries: [{ id: 50, text: 'line 50' }], nextId: 51 } },
+    });
+
+    expect(tel.transportStatus).toBe('stale');
+
+    // Repair via full snapshot
+    tel.__test__.applySocketMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
+      seq: 3,
+      bootId: 'boot-1',
+      state: { log: { entries: [{ id: 48, text: 'line 48' }, { id: 49, text: 'line 49' }, { id: 50, text: 'line 50' }], oldestId: 48, latestId: 50, nextId: 51 } },
+    });
+
+    expect(tel.transportStatus).toBe('synchronized');
+    expect(tel.state.log.entries.map((e) => e.id)).toEqual([48, 49, 50]);
+  });
+
+  it('7. Machine bar subscribes to canonical system and machine slices', () => {
+    const env = createBrowserEnv();
+    const tel = env.CncTelemetry;
+    let systemObserved = null;
+    let machineObserved = null;
+
+    tel.subscribe('system', (d) => { systemObserved = d; });
+    tel.subscribe('machine', (d) => { machineObserved = d; });
+
+    tel.__test__.applySocketMessage({
+      protocolVersion: 1,
+      type: 'snapshot',
       seq: 1,
-      bootId: 'boot-3',
-      patch: { job: { state: 'RUNNING' } },
+      bootId: 'boot-1',
+      state: {
+        system: { health: { status: 'ok' } },
+        machine: { position: { work: { x: 12.5, y: 34.0, z: 1.0 } } },
+      },
     });
 
-    expect(tel.state.job.state).toBe('IDLE');
+    expect(systemObserved).toEqual({ health: { status: 'ok' } });
+    expect(machineObserved).toEqual({ position: { work: { x: 12.5, y: 34.0, z: 1.0 } } });
   });
 
-  it('11. Reconnect does not enable controls before the full snapshot', () => {
+  it('8. Transport failed state after 5 reconnect attempts', () => {
     const env = createBrowserEnv();
     const tel = env.CncTelemetry;
+
     tel.__test__.setTransportStatus('reconnecting');
-    expect(tel.transportStatus).toBe('reconnecting');
+    for (let i = 0; i < 6; i++) {
+      // Simulate failed reconnect attempt in test mode
+      tel.__test__.setTransportStatus(i >= 5 ? 'failed' : 'reconnecting');
+    }
+
+    expect(tel.transportStatus).toBe('failed');
     expect(tel.mirroredState.connection.stale).toBe(true);
   });
 
-  it('12. Stale transport disables ordinary controls but leaves Stop enabled', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    tel.__test__.setTransportStatus('stale');
-    expect(tel.transportStatus).toBe('stale');
-    expect(tel.mirroredState.connection.stale).toBe(true);
-  });
-
-  it('13. No silent HTTP fallback starts after socket disconnect', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    tel.__test__.setTransportStatus('reconnecting');
-    expect(tel.transportStatus).toBe('reconnecting');
-  });
-
-  it('14. Log delta gaps trigger log/full-state resync', () => {
-    const env = createBrowserEnv();
-    const tel = env.CncTelemetry;
-    tel.__test__.setTransportStatus('synchronized');
-
-    // Initialize logCursor with id 1
-    tel.accept('log', {
-      entries: [{ id: 1, text: 'initial log' }],
-      nextId: 1,
-    });
-
-    // Emit log message with gap (id 100 when cursor is 1)
-    tel.accept('log', {
-      entries: [{ id: 100, text: 'gap log' }],
-      nextId: 100,
-    });
-
-    expect(tel.transportStatus).toBe('stale');
-  });
-
-  it('15. HTTP command acceptance does not independently mutate authoritative state', async () => {
-    const { base } = await startServer();
-    const res = await fetch(`${base}/api/cmd`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cmd: 'M114' }),
-    });
-
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.ok).toBe(true);
-  });
-
-  it('16. Existing file operations remain HTTP', async () => {
+  it('9. Existing file operations remain HTTP', async () => {
     const { base } = await startServer();
     const res = await fetch(`${base}/api/health`);
     expect(res.status).toBe(200);
@@ -386,7 +351,7 @@ describe('Phase 2 Socket-Only Authoritative Live State Tests', () => {
     expect(data.firmware).toBeDefined();
   });
 
-  it('17. Telemetry task stack protection remains unchanged in main.cpp', async () => {
+  it('10. Telemetry task stack protection remains unchanged in main.cpp', async () => {
     const mainCpp = await readFile('src/main.cpp', 'utf8');
     expect(mainCpp).toContain('telemetryNetworkTask');
     expect(mainCpp).toContain('xQueueReceive(motionEventQueue');

@@ -1759,8 +1759,16 @@
     refreshProjectSafeZ().catch(() => {});
 
     window.CncTelemetry?.subscribe('health', (data) => {
-      STATE.health = data;
-      render();
+      if (data) {
+        STATE.health = data.health || data;
+        render();
+      }
+    });
+    window.CncTelemetry?.subscribe('system', (data) => {
+      if (data) {
+        STATE.health = data.health || data;
+        render();
+      }
     });
     window.CncTelemetry?.subscribe('job', (data) => {
       STATE.job = data;
@@ -1780,8 +1788,17 @@
       renderJogReadouts();
     });
     window.CncTelemetry?.subscribe('position', (data) => {
+      if (!data) return;
       if (jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true) return;
       if (!applyFrame(data, 'MARLIN')) return;
+      renderPositionReadouts();
+    });
+    window.CncTelemetry?.subscribe('machine', (data) => {
+      if (!data) return;
+      STATE.machine = data;
+      const posData = data.position || data;
+      if (jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true) return;
+      if (!applyFrame(posData, 'MARLIN')) return;
       renderPositionReadouts();
     });
     window.addEventListener('blur', () => stopJog(false, true).catch(() => {}));

@@ -775,7 +775,6 @@ async function postJob(url, message) {
   const res = await fetch(url, { method: 'POST' });
   const data = await readJson(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || message || 'Job action failed');
-  await refreshJobStatus();
   renderCurrentJob();
 }
 
@@ -1336,7 +1335,9 @@ async function init() {
   const savedMotion = motion.loadMotionSettings();
   if (thumbnailViewMode) thumbnailViewMode.value = (await thumbnailSettingsPromise).loadThumbnailViewMode();
   showTravelSpeed(savedMotion.travelSpeedMmS, savedMotion);
-  window.CncTelemetry?.subscribe('health', applyHealth);
+  window.CncTelemetry?.subscribe('system', (data) => {
+    if (data) applyHealth(data.health || data);
+  });
   window.CncTelemetry?.subscribe('job', (data) => {
     applyJobStatus(data);
     renderCurrentJob();
@@ -1351,16 +1352,17 @@ async function init() {
 }
 
 async function ensureViewData(viewName) {
-  if (viewName === 'files') {
+  if (!bootingInitialRoute && viewName === 'files') {
     await ensureFilesViewData();
     return;
   }
-  if (viewName === 'job') {
-    await refreshJobStatus();
+  if (!bootingInitialRoute && viewName === 'job') {
+    window.CncTelemetry?.setDemand('job', 'app-view', true);
     await ensureJobViewData();
     return;
   }
   if (viewName === 'settings') {
+    window.CncTelemetry?.setDemand('health', 'app-view', true);
     await refreshHealth();
     await loadToolChangeSettings().catch((err) => {
       if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = err.message;
@@ -1369,7 +1371,6 @@ async function ensureViewData(viewName) {
   }
   if (viewName === 'logs' && !logsLoadedOnce) {
     logsLoadedOnce = true;
-    await refreshLogs();
   }
 }
 
