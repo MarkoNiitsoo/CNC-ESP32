@@ -288,7 +288,9 @@ String controllerCommunicationStateToString(ControllerCommunicationState state) 
 }
 
 enum class ControllerCommandClass {
-  Ordinary,
+  OrdinarySync,
+  ManagedJobStream,
+  ManagedJogStream,
   SafetyStop,
   RecoveryProbe
 };
@@ -313,6 +315,7 @@ struct ControllerCommunicationTelemetry {
 ControllerCommunicationTelemetry controllerCommStatus;
 
 void stageTelemetryUpdates(void); // Forward declaration
+void addMarlinLog(const String &direction, bool priority, const String &text, const String &level = ""); // Forward declaration
 
 bool isControllerCommunicationActive() {
   return controllerCommStatus.state == ControllerCommunicationState::Connected ||
@@ -320,30 +323,51 @@ bool isControllerCommunicationActive() {
 }
 
 bool checkCommandPermission(ControllerCommandClass cmdClass, String &error) {
-  if (cmdClass == ControllerCommandClass::Ordinary) {
-    if (controllerCommStatus.state == ControllerCommunicationState::Unresponsive) {
-      error = "Marlin is not responding. Machine commands are blocked until controller communication is restored.";
-      return false;
-    }
-    if (controllerCommStatus.state == ControllerCommunicationState::Recovering) {
-      error = "Controller communication recovery is in progress. Machine commands are blocked.";
-      return false;
-    }
-    if (controllerCommStatus.state == ControllerCommunicationState::Waiting) {
-      error = "Marlin is processing a synchronous command. Second command rejected.";
-      return false;
-    }
-  } else if (cmdClass == ControllerCommandClass::RecoveryProbe) {
+  if (cmdClass == ControllerCommandClass::SafetyStop) {
+    return true;
+  }
+  if (cmdClass == ControllerCommandClass::RecoveryProbe) {
     if (controllerCommStatus.state != ControllerCommunicationState::Recovering) {
       error = "Recovery probe is allowed only during active controller recovery.";
       return false;
     }
+    return true;
+  }
+  if (controllerCommStatus.state == ControllerCommunicationState::Unresponsive) {
+    error = "Marlin is not responding. Machine commands are blocked until controller communication is restored.";
+    return false;
+  }
+  if (controllerCommStatus.state == ControllerCommunicationState::Recovering) {
+    error = "Controller communication recovery is in progress. Machine commands are blocked.";
+    return false;
+  }
+  if (cmdClass == ControllerCommandClass::OrdinarySync && controllerCommStatus.state == ControllerCommunicationState::Waiting) {
+    error = "Marlin is processing a synchronous command. Second command rejected.";
+    return false;
+  }
+  if (cmdClass == ControllerCommandClass::ManagedJogStream && controllerCommStatus.state != ControllerCommunicationState::Connected) {
+    error = "Jog stream is blocked while controller communication is unavailable.";
+    return false;
+  }
+  if (cmdClass == ControllerCommandClass::ManagedJobStream && (controllerCommStatus.state == ControllerCommunicationState::Unresponsive || controllerCommStatus.state == ControllerCommunicationState::Recovering)) {
+    error = "Job stream is blocked while controller communication is unavailable.";
+    return false;
   }
   return true;
 }
 
+bool writeControllerLine(const String &command, ControllerCommandClass commandClass, bool priorityLog, String &error) {
+  if (!checkCommandPermission(commandClass, error)) {
+    return false;
+  }
+  addMarlinLog("tx", priorityLog, command);
+  Serial.print(command);
+  Serial.print('\n');
+  return true;
+}
+
 bool ensureControllerCommunicationActive(String &error) {
-  return checkCommandPermission(ControllerCommandClass::Ordinary, error);
+  return checkCommandPermission(ControllerCommandClass::OrdinarySync, error);
 }
 
 void markControllerWaiting(const String &cmd) {
@@ -708,8 +732,8 @@ void resetFeedOverrideAfterJobIfNeeded();
 void updatePositionFromMarlinResponse(const String &response);
 String machineFrameJson();
 void drainMarlinInput();
-MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass = ControllerCommandClass::Ordinary, bool promoteConnectedOnTerminal = true);
-MarlinCommandResult executeSynchronousCommand(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass = ControllerCommandClass::Ordinary, bool promoteConnectedOnTerminal = true);
+MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass = ControllerCommandClass::OrdinarySync, bool promoteConnectedOnTerminal = true);
+MarlinCommandResult executeSynchronousCommand(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass = ControllerCommandClass::OrdinarySync, bool promoteConnectedOnTerminal = true);
 bool sendMarlinControlCommand(const String &cmd, String &response);
 void sendJsonError(int status, const String &message);
 String bytesToHex(const uint8_t *bytes, size_t length);
@@ -732,7 +756,7 @@ String marlinMessageLevel(String text) {
   return "info";
 }
 
-void addMarlinLog(const String &direction, bool priority, const String &text, const String &level = "") {
+void addMarlinLog(const String &direction, bool priority, const String &text, const String &level) {
   if (text.length() == 0) {
     return;
   }
@@ -3168,6 +3192,10 @@ MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs,
   MarlinCommandResult result;
   const uint32_t start = millis();
 
+  if (cmdClass == ControllerCommandClass::SafetyStop) {
+    promoteConnectedOnTerminal = false;
+  }
+
   while (millis() - start < timeoutMs) {
     bool received = false;
     while (Serial.available() > 0) {
@@ -3181,7 +3209,7 @@ MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs,
     delay(1);
   }
 
-  addMarlinLog("rx", cmdClass != ControllerCommandClass::Ordinary, result.response);
+  addMarlinLog("rx", cmdClass != ControllerCommandClass::OrdinarySync, result.response);
   updatePositionFromMarlinResponse(result.response);
 
   if (result.terminalReceived) {
@@ -3211,32 +3239,23 @@ MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs,
 MarlinCommandResult executeSynchronousCommand(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass, bool promoteConnectedOnTerminal) {
   MarlinCommandResult result;
   String permError;
-  if (!checkCommandPermission(cmdClass, permError)) {
-    result.error = permError;
-    return result;
+
+  if (cmdClass == ControllerCommandClass::SafetyStop) {
+    promoteConnectedOnTerminal = false;
   }
 
   drainMarlinInput();
 
-  if (cmdClass == ControllerCommandClass::Ordinary) {
+  if (cmdClass == ControllerCommandClass::OrdinarySync) {
     markControllerWaiting(cmd);
   }
 
-  addMarlinLog("tx", cmdClass != ControllerCommandClass::Ordinary, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
+  if (!writeControllerLine(cmd, cmdClass, cmdClass != ControllerCommandClass::OrdinarySync, result.error)) {
+    return result;
+  }
 
   result = readMarlinResponseFor(cmd, timeoutMs, cmdClass, promoteConnectedOnTerminal);
   return result;
-}
-
-String readMarlinResponseFor(uint32_t timeoutMs, bool priority = false) {
-  MarlinCommandResult res = readMarlinResponseFor("UART_TIMEOUT", timeoutMs, priority ? ControllerCommandClass::SafetyStop : ControllerCommandClass::Ordinary, true);
-  return res.response;
-}
-
-String readMarlinResponse(bool priority = false) {
-  return readMarlinResponseFor(kMarlinTimeoutMs, priority);
 }
 
 bool telemetryHasClient() {
@@ -3504,8 +3523,12 @@ void processMachineDiscovery() {
     machineProfile.refreshing = true;
     machineProfile.lastError = "";
     drainMarlinInput();
-    addMarlinLog("tx", false, "M115");
-    Serial.print("M115\n");
+    String writeErr;
+    if (!writeControllerLine("M115", ControllerCommandClass::OrdinarySync, false, writeErr)) {
+      machineProfile.lastError = writeErr;
+      machineProfile.refreshing = false;
+      return;
+    }
     machineDiscoveryState = MachineDiscoveryState::WaitingM115;
     return;
   }
@@ -3531,21 +3554,15 @@ void drainMarlinInput() {
 
 void sendMarlinSafetyCommand(const char *cmd) {
   drainMarlinInput();
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
-  readMarlinResponseFor(250, true);
+  String writeErr;
+  writeControllerLine(cmd, ControllerCommandClass::SafetyStop, true, writeErr);
+  readMarlinResponseFor(cmd, 250, ControllerCommandClass::SafetyStop, false);
 }
 
 bool sendMarlinControlCommand(const String &cmd, String &response) {
-  drainMarlinInput();
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
-  response = readMarlinResponseFor(500, true);
-  String upper = response;
-  upper.toUpperCase();
-  return upper.indexOf("OK") >= 0 && upper.indexOf("ERROR") < 0 && upper.indexOf("ALARM") < 0;
+  const MarlinCommandResult res = executeSynchronousCommand(cmd, 500, ControllerCommandClass::OrdinarySync, true);
+  response = res.response;
+  return res.success;
 }
 
 bool isFeedOverrideCommand(const String &cmd) {
@@ -3573,16 +3590,12 @@ String feedOverrideCommand(int percent) {
 
 bool sendFeedOverrideImmediate(int percent) {
   const String cmd = feedOverrideCommand(percent);
-  drainMarlinInput();
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
-  const String response = readMarlinResponseFor(250, true);
+  const MarlinCommandResult res = executeSynchronousCommand(cmd, 250, ControllerCommandClass::OrdinarySync, true);
   jobStatus.feedOverridePercent = percent;
-  noteFeedOverrideResult(cmd, response);
+  noteFeedOverrideResult(cmd, res.response, res.error);
   logJobEvent("feed override: " + cmd);
   touchJobStatus();
-  return true;
+  return res.success;
 }
 
 uint32_t marlinAckTimeoutForCommand(const String &command, bool toolChangeSequence = false) {
@@ -3863,6 +3876,17 @@ void startNextPriorityCommand() {
   }
 
   const String &cmd = priorityCommands[priorityCommandIndex];
+  ControllerCommandClass priorityClass = ControllerCommandClass::OrdinarySync;
+  String upperCmd = cmd;
+  upperCmd.toUpperCase();
+  upperCmd.trim();
+
+  if (upperCmd == "M410" || upperCmd == "M5") {
+    priorityClass = ControllerCommandClass::SafetyStop;
+  } else if (jobIsActive() || jobStatus.state == JobRunnerState::Resuming || jobStatus.state == JobRunnerState::Pausing) {
+    priorityClass = ControllerCommandClass::ManagedJobStream;
+  }
+
   const MotionTimingEstimate timing = estimateAndApplyMotionTiming(cmd);
   if (jobStatus.toolChangePending && jobStatus.toolChangeHandling == "park" &&
       cmd.startsWith("G53 G0") && jobStatus.toolChangePhase != "PARKING_FOR_TOOL_CHANGE") {
@@ -3872,9 +3896,17 @@ void startNextPriorityCommand() {
       return;
     }
   }
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
+
+  String writeErr;
+  if (!writeControllerLine(cmd, priorityClass, true, writeErr)) {
+    logJobEvent("priority command rejected: " + cmd + " error: " + writeErr);
+    if (jobIsActive()) {
+      setJobCommunicationLost(writeErr);
+    }
+    jobStatus.priorityCommandInProgress = false;
+    return;
+  }
+
   jobStatus.lastPriorityCommand = cmd;
   if (isFeedOverrideCommand(cmd)) {
     jobStatus.lastFeedOverrideCommand = cmd;
@@ -4070,24 +4102,16 @@ void processPriorityCommands() {
 }
 
 void sendJogCommand(const String &cmd) {
-  drainMarlinInput();
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  readMarlinResponseFor(80, true);
+  executeSynchronousCommand(cmd, 80, ControllerCommandClass::OrdinarySync, true);
   touchJogStatus();
 }
 
 String sendJogCommandForResponse(const String &cmd, uint32_t timeoutMs) {
-  drainMarlinInput();
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
   jogStatus.lastCommand = cmd;
-  const String response = readMarlinResponseFor(timeoutMs, true);
+  const MarlinCommandResult res = executeSynchronousCommand(cmd, timeoutMs, ControllerCommandClass::OrdinarySync, true);
   touchJogStatus();
-  return response;
+  return res.response;
 }
 
 bool parseAxisFromM114(const String &response, char axis, float &value) {
@@ -4674,9 +4698,13 @@ void processJogRunner() {
                          : clampFloat((xyDistance / segmentSeconds) * 60.0f, 1.0f, jogStatus.xyFeedMax);
   cmd += " F";
   cmd += String(feed, 0);
-  addMarlinLog("tx", true, cmd);
-  Serial.print(cmd);
-  Serial.print('\n');
+  String writeErr;
+  if (!writeControllerLine(cmd, ControllerCommandClass::ManagedJogStream, true, writeErr)) {
+    setJogError(writeErr);
+    jogStatus.state = JogState::Idle;
+    touchJogStatus();
+    return;
+  }
   jogStatus.lastCommand = cmd;
   ++jogStatus.pendingMoveAcks;
   jogStatus.lastMoveSentAtMs = now;
@@ -5214,8 +5242,8 @@ void setJobError(const String &message, bool resetFeedOverride) {
 void sendImmediateJobSafetyM5(const String &reason) {
   // This intentionally bypasses the normal queue: the pending command may never
   // acknowledge, but spindle shutdown must still be attempted immediately.
-  addMarlinLog("tx", true, "M5");
-  Serial.print("M5\n");
+  String writeErr;
+  writeControllerLine("M5", ControllerCommandClass::SafetyStop, true, writeErr);
   logJobEvent("immediate M5: " + reason);
 }
 
@@ -5530,9 +5558,11 @@ void processJobRunner() {
   jobStatus.lastCommand = line;
   const MotionTimingEstimate timing = estimateAndApplyMotionTiming(line);
   jobResponseBuffer = "";
-  addMarlinLog("tx", false, line);
-  Serial.print(line);
-  Serial.print('\n');
+  String writeErr;
+  if (!writeControllerLine(line, ControllerCommandClass::ManagedJobStream, false, writeErr)) {
+    setJobCommunicationLost(writeErr);
+    return;
+  }
   jobStatus.sentLineCount += 1;
   jobStatus.currentLineNumber += 1;
   queueMotionTelemetry(line, jobStatus.currentLineNumber);
@@ -6015,17 +6045,12 @@ void handleMachineApply() {
   }
 
   drainMarlinInput();
-  addMarlinLog("tx", false, command);
-  Serial.print(command);
-  Serial.print('\n');
-  const String response = readMarlinResponseFor(3000);
-  String upper = response;
-  upper.toUpperCase();
-  if (upper.indexOf("OK") < 0 || upper.indexOf("ERROR") >= 0 || upper.indexOf("ALARM") >= 0) {
-    sendJsonError(502, "Marlin rejected " + command + ": " + response);
+  const MarlinCommandResult res = executeSynchronousCommand(command, 3000, ControllerCommandClass::OrdinarySync, true);
+  if (!res.success) {
+    sendJsonError(502, "Marlin rejected " + command + ": " + res.response);
     return;
   }
-  String json = "{\"ok\":true,\"command\":\"" + jsonEscape(command) + "\",\"response\":\"" + jsonEscape(response) + "\"}";
+  String json = "{\"ok\":true,\"command\":\"" + jsonEscape(command) + "\",\"response\":\"" + jsonEscape(res.response) + "\"}";
   server.send(200, "application/json", json);
 }
 
@@ -6035,13 +6060,9 @@ void handleMachineSave() {
     return;
   }
   drainMarlinInput();
-  addMarlinLog("tx", false, "M500");
-  Serial.print("M500\n");
-  const String response = readMarlinResponseFor(5000);
-  String upper = response;
-  upper.toUpperCase();
-  if (upper.indexOf("OK") < 0 || upper.indexOf("ERROR") >= 0 || upper.indexOf("ALARM") >= 0) {
-    sendJsonError(502, "M500 failed: " + response);
+  const MarlinCommandResult res = executeSynchronousCommand("M500", 5000, ControllerCommandClass::OrdinarySync, true);
+  if (!res.success) {
+    sendJsonError(502, "M500 failed: " + res.response);
     return;
   }
   server.send(200, "application/json", "{\"ok\":true,\"command\":\"M500\",\"message\":\"Changes saved to Marlin EEPROM\"}");
@@ -6827,7 +6848,7 @@ void handleRename() {
 
 void handleCommand() {
   String commError;
-  if (!checkCommandPermission(ControllerCommandClass::Ordinary, commError)) {
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
     sendJsonError(503, commError);
     return;
   }
@@ -6871,7 +6892,7 @@ void handleCommand() {
   }
 
   const uint32_t timeoutMs = (upper == "M115" ? 12000 : (upper == "M503" ? 5000 : kMarlinTimeoutMs));
-  const MarlinCommandResult result = executeSynchronousCommand(cmd, timeoutMs, ControllerCommandClass::Ordinary, true);
+  const MarlinCommandResult result = executeSynchronousCommand(cmd, timeoutMs, ControllerCommandClass::OrdinarySync, true);
 
   if (result.timeout) {
     String json = "{\"ok\":false,\"error\":\"Marlin did not respond within timeout.\",\"controllerState\":\"unresponsive\",\"failedCommand\":\"" + jsonEscape(cmd) + "\"}";
@@ -7548,6 +7569,11 @@ void handleTestMotionStart() {
 }
 
 void handleProductionResumeStart() {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (!sdMounted) {
     sendJsonError(503, "SD card is not mounted");
     return;
@@ -7658,6 +7684,11 @@ void handleProductionResumeStart() {
 }
 
 void handleJobFeedOverride() {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
@@ -7872,8 +7903,8 @@ void handleJobPause() {
   jobStatus.pauseInterruptedForManualMotion = false;
   jobStatus.state = JobRunnerState::Pausing;
   if (machineProfile.capRealtimeReporting) {
-    addMarlinLog("tx", true, "P000");
-    Serial.print("P000\n");
+    String writeErr;
+    writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr);
     jobStatus.pauseRealtimeHold = true;
     jobStatus.pauseMode = "realtime";
     jobStatus.state = JobRunnerState::PausedIntact;
@@ -7920,8 +7951,8 @@ void handleJobResume() {
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Resuming;
   if (realtimeHold) {
-    addMarlinLog("tx", true, "R000");
-    Serial.print("R000\n");
+    String writeErr;
+    writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr);
   } else {
     jobResponseBuffer = "";
     jobWaitingForOk = false;
@@ -8119,6 +8150,11 @@ void handleJogStatus() {
 }
 
 void handleJogStart() {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (jobStatus.state == JobRunnerState::PausedIntact) {
     beginPausedManualInterruption();
     sendJsonError(409, "direct Resume was invalidated; wait for RECOVERY_REQUIRED before jogging");
@@ -8197,6 +8233,11 @@ void handleJogStart() {
 }
 
 void handleJogUpdate() {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::ManagedJogStream, commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (jogStatus.state != JogState::Jogging) {
     logSystemEvent("HTTP Jog update rejected reason=jog is not active");
     sendJsonError(409, "jog is not active");
@@ -8260,14 +8301,9 @@ bool machineFrameControlBusy() {
 }
 
 bool runFrameCommand(const String &command, String &response, uint32_t timeoutMs = 3000) {
-  drainMarlinInput();
-  addMarlinLog("tx", true, command);
-  Serial.print(command);
-  Serial.print('\n');
-  response = readMarlinResponseFor(timeoutMs, true);
-  String upper = response;
-  upper.toUpperCase();
-  return upper.indexOf("OK") >= 0 && upper.indexOf("ERROR") < 0 && upper.indexOf("ALARM") < 0;
+  const MarlinCommandResult res = executeSynchronousCommand(command, timeoutMs, ControllerCommandClass::OrdinarySync, true);
+  response = res.response;
+  return res.success;
 }
 
 void handleMachineFrame() {
@@ -8334,6 +8370,11 @@ void handleManualMachineFrame() {
 }
 
 void handleMachineHome() {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
   if (machineFrameControlBusy()) {
     sendJsonError(409, "homing requires idle Marlin transport");
     return;

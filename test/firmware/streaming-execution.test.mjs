@@ -18,7 +18,7 @@ describe('G-code memory ownership rules', () => {
     expect(firmware).toMatch(/bool openJobFileAtOffset\(\)[\s\S]*SD_MMC\.open\(jobStatus\.gcodePath, FILE_READ\)/);
     expect(firmware).toMatch(/bool readNextCleanJobLine\(String &cleanedLine\)[\s\S]*jobFile\.read\(\)/);
     expect(firmware).toMatch(/raw\.length\(\) > kMaxGcodeLineLength[\s\S]*setJobError\("G-code line is too long"\)/);
-    expect(firmware).toMatch(/processJobRunner\(\)[\s\S]*readNextCleanJobLine\(line\)[\s\S]*Serial\.print\(line\)/);
+    expect(firmware).toMatch(/processJobRunner\(\)[\s\S]*readNextCleanJobLine\(line\)[\s\S]*writeControllerLine\(line, ControllerCommandClass::ManagedJobStream/);
   });
 
   it('keeps preview warnings browser-only and non-blocking for execution', () => {

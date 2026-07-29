@@ -1,5 +1,15 @@
 # Handoff
 
+## 2026-07-29 - Centralized Raw UART Writes & Explicit Command Permission Model Enforcement Handoff
+
+- Completed centralization of raw UART writes and command permission model enforcement on `feature/phase1-websocket-transport`:
+- Key Highlights:
+  1. Centralized Production UART Writer (`src/main.cpp`): Implemented `bool writeControllerLine(const String &command, ControllerCommandClass commandClass, bool priorityLog, String &error)`. All production Marlin command TX calls in `src/main.cpp` now route through `writeControllerLine()` or `executeSynchronousCommand()`. Raw `Serial.print` calls exist ONLY inside `writeControllerLine()`.
+  2. Legacy Overload Removal (`src/main.cpp`): Deleted legacy compatibility overloads `readMarlinResponseFor(uint32_t, bool)` and `readMarlinResponse(bool)`. All command transactions carry explicit `const String &cmd`, `ControllerCommandClass cmdClass`, and `bool promoteConnectedOnTerminal`.
+  3. Explicit Command Classes (`src/main.cpp`): Updated `enum class ControllerCommandClass` to 5 explicit variants: `OrdinarySync`, `ManagedJobStream`, `ManagedJogStream`, `SafetyStop`, `RecoveryProbe`.
+  4. Permission Gating & Pre-checks (`src/main.cpp`): Gated `Production Resume`, `Feed Override`, `Home`, `Jog Start`, `Jog Update`, and `jog tick` with `checkCommandPermission()`. `M410`/`M5` safety stops are allowed unconditionally without restoring state to `Connected`.
+  5. Test Verification & Firmware Build (`test/firmware/marlin-transport.test.mjs`, `test/firmware/streaming-execution.test.mjs`): Added source-audit single-writer test in `marlin-transport.test.mjs`. Updated streaming expectations for `writeControllerLine`. Ran `npm test` passing 48/48 test files and 508/508 tests. Compiled firmware cleanly using PlatformIO (`pio run -e esp32cam`, 11.5% RAM, 62.1% Flash).
+
 ## 2026-07-28 - Controller Communication Correctness & Safety Fixes Pass 2 Handoff
 
 - Completed production firmware and browser UI controller communication correctness fixes pass on `feature/phase1-websocket-transport`:

@@ -47,7 +47,19 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('line == "OK"');
     expect(source).toContain('line.startsWith("ERROR:")');
     expect(source).toMatch(/received && marlinResponseIsTerminal\((?:result\.)?response\)/);
-    expect(source).toContain('return readMarlinResponseFor(kMarlinTimeoutMs, priority);');
+    expect(source).toContain('executeSynchronousCommand');
+  });
+
+  it('centralizes all production UART writes into writeControllerLine and removes legacy overloads', () => {
+    const printMatches = source.match(/Serial\.print\s*\(/g) || [];
+    expect(printMatches).toHaveLength(2); // Serial.print(command) and Serial.print('\n') inside writeControllerLine
+    expect(source).not.toContain('readMarlinResponseFor(uint32_t timeoutMs, bool priority)');
+    expect(source).toContain('enum class ControllerCommandClass');
+    expect(source).toContain('OrdinarySync');
+    expect(source).toContain('ManagedJobStream');
+    expect(source).toContain('ManagedJogStream');
+    expect(source).toContain('SafetyStop');
+    expect(source).toContain('RecoveryProbe');
   });
 
   it('does not let diagnostics steal active job or jog UART responses', () => {
@@ -68,7 +80,7 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('jobStatus.errorCode = "COMMUNICATION_LOST"');
     expect(source).toContain('sendImmediateJobSafetyM5("communication lost; M410 not requested")');
     const runner = source.slice(source.indexOf('void processJobRunner()'), source.indexOf('String htmlPage'));
-    expect(runner.match(/Serial\.print\(line\)/g)).toHaveLength(1);
+    expect(runner.match(/writeControllerLine\(line, ControllerCommandClass::ManagedJobStream/g)).toHaveLength(1);
   });
 
   it('uses command-specific soft and hard ACK deadlines', () => {
@@ -148,15 +160,15 @@ describe('Marlin transport safety', () => {
     const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
     const finish = source.slice(source.indexOf('void finishPrioritySequence()'), source.indexOf('void processPriorityCommands()'));
     expect(pause).toContain('machineProfile.capRealtimeReporting');
-    expect(pause).toContain('Serial.print("P000\\n")');
+    expect(pause).toContain('writeControllerLine("P000", ControllerCommandClass::ManagedJobStream');
     expect(pause).toContain('JobRunnerState::PausedIntact');
     expect(pause).not.toMatch(/\bM5\b|\bM410\b|G0 |G1 /);
     expect(resume).toContain('JobRunnerState::PausedIntact');
     expect(resume).not.toMatch(/\bM5\b|\bM410\b|G0 |G1 /);
     expect(resume).toContain('const bool realtimeHold = jobStatus.pauseRealtimeHold');
     expect(resume).toMatch(/if \(!realtimeHold && !openJobFileAtOffset\(\)\)/);
-    expect(resume).toMatch(/if \(realtimeHold\)[\s\S]*Serial\.print\("R000\\n"\)[\s\S]*else[\s\S]*jobWaitingForOk = false/);
-    expect(source).toMatch(/JobRunnerState::Resuming[\s\S]*Serial\.print\("R000\\n"\)/);
+    expect(resume).toMatch(/if \(realtimeHold\)[\s\S]*writeControllerLine\("R000", ControllerCommandClass::ManagedJobStream[\s\S]*else[\s\S]*jobWaitingForOk = false/);
+    expect(source).toMatch(/JobRunnerState::Resuming[\s\S]*writeControllerLine\("R000", ControllerCommandClass::ManagedJobStream/);
     expect(source).toMatch(/capRealtimeReporting\s*=\s*[\s\S]*capEmergencyParser[\s\S]*REALTIME_REPORTING/);
     expect(stop).toContain('startImmediateStopPrioritySequence()');
     expect(stop).toContain('invalidateMachineFrameAfterQuickstop()');
