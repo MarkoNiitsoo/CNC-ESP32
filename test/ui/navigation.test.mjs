@@ -41,9 +41,7 @@ describe('files-first navigation', () => {
     expect(app).toContain('async function ensureFilesViewData');
     expect(app).toContain('async function ensureJobViewData');
     expect(app).toContain("if (viewName === 'settings' && !machineSettingsLoaded)");
-    expect(app).toContain("setDemand('health', 'app-view', viewName === 'settings')");
-    expect(app).toContain("setDemand('job', 'app-view', viewName === 'job')");
-    expect(app).toMatch(/if \(viewName === 'settings'\)[\s\S]*await refreshHealth\(\)/);
+    expect(app).not.toContain("await refreshHealth()");
     expect(app).not.toContain("showView('files');\n  await loadFiles();\n  showView('settings');");
   });
 });

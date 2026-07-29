@@ -7,6 +7,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const telemetryJsCode = readFileSync(path.resolve(__dirname, '../../www/telemetry.js'), 'utf8');
 
+function completeState(overrides = {}) {
+  return {
+    system: {},
+    controller: {},
+    machine: {},
+    job: {},
+    jog: {},
+    control: {},
+    log: { entries: [], oldestId: 0, latestId: 0, nextId: 1, lastCritical: null, dropped: 0 },
+    machineProfile: {},
+    ...overrides,
+  };
+}
+
 function createBrowserEnv(options = {}) {
   const listeners = new Map();
   const sentPackets = [];
@@ -133,7 +147,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 2, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+      state: completeState(),
     });
 
     expect(env.CncTelemetry.__test__.getHighestClientSeqAcknowledgedByESP()).toBe(2);
@@ -144,7 +158,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 2, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+      state: completeState(),
     });
     expect(env.CncTelemetry.__test__.getHighestClientSeqAcknowledgedByESP()).toBe(2);
 
@@ -168,7 +182,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     const packetsBefore = env.sentPackets.length;
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+      state: completeState(),
     });
 
     const errEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-protocol-error');
@@ -185,7 +199,12 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     ws.receiveMessage({
-      protocolVersion: 1, type: 'protocol-error', seq: 1, ack: 0, bootId: 'boot1', stateRevision: 1,
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      state: completeState(),
+    });
+
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'protocol-error', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 1,
       error: 'test error',
     });
 
@@ -193,10 +212,10 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     expect(errEv).toBeDefined();
     expect(errEv.detail.error).toBe('test error');
 
-    // Next contiguous sequence 2 should be accepted normally
+    // Snapshot recovers transport state
     ws.receiveMessage({
-      protocolVersion: 1, type: 'patch', seq: 2, ack: 0, bootId: 'boot1', stateRevision: 2,
-      patch: { controller: { state: 'idle' } },
+      protocolVersion: 1, type: 'snapshot', seq: 3, ack: 1, bootId: 'boot1', stateRevision: 2,
+      state: completeState({ controller: { state: 'idle' } }),
     });
     expect(env.CncTelemetry.mirroredState.controller.state).toBe('idle');
   });
@@ -206,13 +225,13 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+      state: completeState(),
     });
 
     const countBefore = env.dispatchedEvents.length;
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+      state: completeState(),
     });
     expect(env.dispatchedEvents.length).toBe(countBefore);
 
@@ -230,7 +249,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: {}, jog: {}, control: {} },
+      state: completeState(),
     });
 
     const packetsBefore = env.sentPackets.length;
@@ -247,7 +266,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 10,
-      state: { system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, job: { state: 'RUNNING' }, jog: {}, control: {} },
+      state: completeState({ system: { bootId: 'boot1' }, controller: { state: 'idle' }, job: { state: 'RUNNING' } }),
     });
 
     const packetsBefore = env.sentPackets.length;
@@ -265,14 +284,12 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     expect(env.CncTelemetry.mirroredState.job.state).toBe('RUNNING');
   });
 
-  it('10. Same-boot snapshot clears absent canonical slices', async () => {
+  it('10. Same-boot partial snapshot is rejected without clearing canonical slices', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: {
-        system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, job: { state: 'RUNNING' }, jog: {}, control: {},
-      },
+      state: completeState({ system: { bootId: 'boot1' }, controller: { state: 'idle' }, job: { state: 'RUNNING' } }),
     });
     expect(env.CncTelemetry.mirroredState.job.state).toBe('RUNNING');
 
@@ -281,7 +298,8 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
       protocolVersion: 1, type: 'snapshot', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
       state: { system: { bootId: 'boot1' }, controller: { state: 'idle' }, machine: {}, jog: {}, control: {} },
     });
-    expect(env.CncTelemetry.mirroredState.job).toBeNull(); // Absent canonical slice cleared!
+    expect(env.CncTelemetry.mirroredState.job.state).toBe('RUNNING');
+    expect(env.CncTelemetry.transportStatus).toBe('stale');
   });
 
   it('11. Job and jog each emit exactly once on snapshot', async () => {
@@ -294,7 +312,7 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
 
     ws.receiveMessage({
       protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      state: { system: {}, controller: {}, machine: {}, job: { state: 'IDLE' }, jog: { state: 'Idle' }, control: {} },
+      state: completeState({ job: { state: 'IDLE' }, jog: { state: 'Idle' } }),
     });
 
     expect(jobEvents).toBe(1);
@@ -305,24 +323,36 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     ws.receiveMessage({
-      protocolVersion: 1, type: 'event', channel: 'motion', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      state: completeState(),
+    });
+
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'event', channel: 'motion', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
       data: { events: [{ sequence: 10, command: 'G1 X10' }], feedOverridePercent: 100 },
     });
 
     const motionEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-motion');
     expect(motionEv).toBeDefined();
     expect(motionEv.detail.events[0].sequence).toBe(10);
+    expect(env.CncTelemetry.state.motion).toBeUndefined();
   });
 
   it('13. Log event dispatches cnc-telemetry-log', async () => {
     const { env, ws } = await setupStartedBrowserEnv();
 
     ws.receiveMessage({
-      protocolVersion: 1, type: 'event', channel: 'log', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
-      data: { entries: [{ id: 1, text: 'ok' }], nextId: 2 },
+      protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      state: completeState(),
     });
 
-    const logEv = env.dispatchedEvents.find((e) => e.type === 'cnc-telemetry-log');
+    ws.receiveMessage({
+      protocolVersion: 1, type: 'event', channel: 'log', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
+      data: { entries: [{ id: 1, text: 'ok' }], latestId: 1, nextId: 2, dropped: 0 },
+    });
+
+    const logEvs = env.dispatchedEvents.filter((e) => e.type === 'cnc-telemetry-log');
+    const logEv = logEvs[logEvs.length - 1];
     expect(logEv).toBeDefined();
     expect(logEv.detail.entries[0].text).toBe('ok');
   });

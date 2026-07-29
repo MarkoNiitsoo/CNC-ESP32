@@ -148,6 +148,7 @@ export async function createMockEnvironment(options = {}) {
     xyFeedMax: 3000, zFeedMax: 400, lastCommand: '', lastError: '',
     lastUpdateAt: 0,
   };
+  const marlinLog = { entries: [], nextId: 1, lastCritical: null };
   const device = {
     deviceId: 'DEVM01', hostname: 'cnc', friendlyName: 'ESP32 CNC Dev Mock', ip: '127.0.0.1',
     mode: 'mock', mdnsEnabled: true,
@@ -164,7 +165,7 @@ export async function createMockEnvironment(options = {}) {
     leaseMs: 45000, otaUnlockedUntil: 0,
   };
   return {
-    projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device,
+    projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device, marlinLog,
     toolChangeSettings, recoveryCheckpoint, operator, startedAt: Date.now(),
   };
 }
@@ -971,6 +972,7 @@ export async function createMockServer(options = {}) {
         latestId: env.marlinLog?.nextId ? Math.max(0, env.marlinLog.nextId - 1) : 0,
         nextId: env.marlinLog?.nextId || 1,
         lastCritical: env.marlinLog?.lastCritical || null,
+        dropped: 0,
       },
       machineProfile: {
         name: 'LowRider3',
@@ -1115,6 +1117,7 @@ export async function createMockServer(options = {}) {
       lastServerSeqAcknowledgedByClient: 0,
       lastContiguousClientSeq: 0,
       lastOutboundAtMs: Date.now(),
+      logSubscribed: false,
     };
     wsClients.add(socket);
     wsClientStates.set(socket, clientState);
@@ -1195,6 +1198,8 @@ export async function createMockServer(options = {}) {
             sendMockWsPacket(socket, 'snapshot', {
               state: mockNormalizedAuthoritativeState(),
             });
+          } else if (msg.type === 'log') {
+            clientState.logSubscribed = msg.log === true || msg.subscribe?.log === true;
           }
         } catch {
           // ignore malformed ws message
@@ -1232,6 +1237,37 @@ export async function createMockServer(options = {}) {
         sendMockWsPacket(socket, 'patch', { patch: { [sliceName]: sliceData } });
       }
     }
+  }
+
+  function appendMockLog(entryData = {}) {
+    const id = env.marlinLog.nextId;
+    const entry = {
+      id,
+      time: String(entryData.time || Date.now()),
+      direction: entryData.direction || 'rx',
+      priority: Boolean(entryData.priority),
+      level: entryData.level || 'info',
+      text: String(entryData.text || ''),
+    };
+    env.marlinLog.nextId = id + 1;
+    env.marlinLog.entries.push(entry);
+    if (env.marlinLog.entries.length > 32) env.marlinLog.entries.splice(0, env.marlinLog.entries.length - 32);
+    if (entry.level === 'error' || entry.level === 'warning') env.marlinLog.lastCritical = entry.text;
+    mockStateRevision += 1;
+    const data = {
+      entries: [entry],
+      latestId: id,
+      nextId: id + 1,
+      lastCritical: env.marlinLog.lastCritical,
+      dropped: Number(entryData.dropped || 0),
+    };
+    for (const socket of wsClients) {
+      const cs = wsClientStates.get(socket);
+      if (cs?.handshakeComplete && cs.logSubscribed && !socket.destroyed) {
+        sendMockWsPacket(socket, 'event', { channel: 'log', data });
+      }
+    }
+    return data;
   }
 
   let coalescingMode = false;
@@ -1305,6 +1341,7 @@ export async function createMockServer(options = {}) {
     server,
     env,
     triggerStateSliceChange,
+    appendMockLog,
     coalesceStateChanges,
     getClientProtocolState,
     listClientProtocolStates,

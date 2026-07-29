@@ -56,9 +56,13 @@
         <section class="panel">
           <h2>Logs</h2>
           <p>Recent Marlin messages and priority control events.</p>
-          <button id="refresh-logs" type="button">Refresh Logs</button>
+          <button id="refresh-logs" type="button">Refresh diagnostic log snapshot</button>
           <p id="critical-log" class="warning" hidden></p>
           <pre id="marlin-log" class="log">No log entries loaded.</pre>
+          <details class="diagnostics-panel">
+            <summary>Manual diagnostic snapshot</summary>
+            <pre id="diagnostic-marlin-log" class="log">No diagnostic request made.</pre>
+          </details>
         </section>
       </section>
 

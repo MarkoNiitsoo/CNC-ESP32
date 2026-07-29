@@ -1658,8 +1658,7 @@ async function setLiveFeedOverride(percent) {
   }
 
   try {
-    const data = await postCriticalJobAction('/api/job/feed-override', { percent: value });
-    jobRunStatus = { ...(jobRunStatus || {}), ...data, feedOverridePercent: value };
+    await postCriticalJobAction('/api/job/feed-override', { percent: value });
     if (jobState) {
       jobState.feedOverride = {
         ...currentFeedOverride(),
@@ -1706,12 +1705,12 @@ async function applyJobRunStatus(data) {
   return data;
 }
 
-async function refreshJobStatus() {
-  if (window.CncTelemetry) return window.CncTelemetry.request('job');
-  const res = await fetch('/api/job/status');
-  const data = await readJsonOrThrow(res);
-  if (!res.ok) throw new Error(data.error || 'status failed');
-  return applyJobRunStatus(data);
+async function refreshJobDiagnostic() {
+  const data = window.CncTelemetry
+    ? await window.CncTelemetry.diagnosticRequest('job')
+    : await readJsonOrThrow(await fetch('/api/job/status'));
+  appendRunLog(`Diagnostic job snapshot (not live state): ${JSON.stringify(data)}`);
+  return data;
 }
 
 async function readJsonOrThrow(res) {
@@ -1733,54 +1732,7 @@ async function postJobAction(url, body = null) {
   const res = await fetch(url, options);
   const data = await readJsonOrThrow(res);
   if (!res.ok) throw new Error(data.error || `${url} failed`);
-  jobRunStatus = data;
-  jobStatusHealthy = true;
-  window.CncTelemetry?.accept?.('job', data);
-  renderRunPanel();
-  updateJobRunPolling();
   return data;
-}
-
-function optimisticCriticalStatus(url) {
-  if (url.includes('/api/job/start')) {
-    return {
-      ...(jobRunStatus || {}),
-      state: 'RUNNING',
-      gcodePath: currentRunPath(),
-      jobPath: jobPathFor(filePath),
-      lastError: 'Firmware returned malformed JSON after Start Job. Safety controls remain available.',
-    };
-  }
-  if (url.includes('/api/job/pause')) {
-    return {
-      ...(jobRunStatus || {}),
-      state: 'PAUSING',
-      streamingPausedReason: 'Pause requested; motion will hold intact and the cutter will remain running.',
-      lastError: 'Firmware returned malformed JSON after Pause.',
-    };
-  }
-  if (url.includes('/api/job/resume')) {
-    return {
-      ...(jobRunStatus || {}),
-      state: 'RESUMING',
-      lastError: 'Firmware returned malformed JSON after Resume.',
-    };
-  }
-  if (url.includes('/api/job/stop')) {
-    return {
-      ...(jobRunStatus || {}),
-      state: 'STOPPING',
-      streamingPausedReason: 'Stop Now requested; M410 quickstop and position invalidation are in progress.',
-      lastError: 'Firmware returned malformed JSON after Stop.',
-    };
-  }
-  if (url.includes('/api/job/feed-override')) {
-    return {
-      ...(jobRunStatus || {}),
-      lastFeedOverrideError: 'Firmware returned malformed JSON after Feed Override.',
-    };
-  }
-  return { ...(jobRunStatus || {}), state: 'UNKNOWN', lastError: `Malformed JSON after ${url}` };
 }
 
 async function postCriticalJobAction(url, body = null) {
@@ -1793,21 +1745,7 @@ async function postCriticalJobAction(url, body = null) {
   try {
     res = await fetch(url, options);
   } catch (networkError) {
-    if (url.includes('/api/job/')) {
-      try {
-        const statusRes = await fetch('/api/job/status', { cache: 'no-store' });
-        const status = await readJsonOrThrow(statusRes);
-        const expectedPath = url.includes('/api/job/start') ? currentRunPath() : null;
-        const acceptedStates = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING', 'STOPPED', 'RECOVERY_REQUIRED']);
-        if (statusRes.ok && acceptedStates.has(status.state) && (!expectedPath || status.gcodePath === expectedPath)) {
-          appendRunLog(`Network reply was lost; reconciled ${url} from firmware status ${status.state}.`);
-          return applyJobRunStatus(status);
-        }
-      } catch (_) {
-        // Preserve the original network error; controls remain available through the safety bar.
-      }
-    }
-    throw new Error(`ESP32 did not return a response for ${url}: ${networkError.message}`);
+    throw new Error(`Command result uncertain due to network failure (${networkError.message}). Observe socket state for updates.`);
   }
   const text = await res.text();
   let data = null;
@@ -1815,18 +1753,9 @@ async function postCriticalJobAction(url, body = null) {
     data = text ? JSON.parse(text) : {};
   } catch (err) {
     if (!res.ok) throw new Error(`HTTP ${res.status}; invalid JSON response: ${err.message}`);
-    jobStatusHealthy = false;
-    jobRunStatus = optimisticCriticalStatus(url);
-    renderRunPanel();
-    appendRunLog(jobRunStatus.streamingPausedReason || jobRunStatus.lastError || 'Command was sent.');
-    return jobRunStatus;
+    throw new Error(`Command result uncertain because ${url} returned malformed JSON. Observe authoritative socket state.`);
   }
   if (!res.ok) throw new Error(data.error || `${url} failed`);
-  jobRunStatus = data;
-  jobStatusHealthy = true;
-  window.CncTelemetry?.accept?.('job', data);
-  renderRunPanel();
-  updateJobRunPolling();
   return data;
 }
 
@@ -2051,7 +1980,6 @@ async function stopJobRun() {
   } catch (err) {
     runLogError('Stop endpoint failed', err);
     appendRunLog('M5 was not sent because motion may still be active. Use the physical emergency stop.');
-    await refreshJobStatus().catch(() => {});
   }
 }
 
@@ -3648,17 +3576,13 @@ function renderToolZeroPanel() {
   `;
 }
 
-async function canChangeZZero() {
-  try {
-    const status = await refreshJobStatus();
-    if (status.state === 'RUNNING' || status.state === 'PREPARING' || status.state === 'STOPPING') {
-      setToolZeroResult('Cannot set Z zero while a job is running or changing state.', true);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    return confirm(`Job status is unavailable: ${err.message}\n\nContinue only if the CNC is not running.`);
+function canChangeZZero() {
+  const status = window.CncTelemetry?.state?.job;
+  if (status && (status.state === 'RUNNING' || status.state === 'PREPARING' || status.state === 'STOPPING')) {
+    setToolZeroResult('Cannot set Z zero while a job is running or changing state.', true);
+    return false;
   }
+  return true;
 }
 
 function appendDryRunLog(text) {
@@ -5215,13 +5139,11 @@ async function probeTouchPlateZZero() {
   if (toolChangeResultEl && jobRunStatus?.toolChangePending) {
     toolChangeResultEl.textContent = 'Touch plate completed. Verify the tool, then continue.';
   }
-  await refreshJobStatus();
 }
 
 async function setToolChangeManualZ() {
   if (!(await setZZeroWithCapture(null, { confirm: true }))) return;
   if (toolChangeResultEl) toolChangeResultEl.textContent = 'Manual Z zero saved. Verify the tool, then continue.';
-  await refreshJobStatus();
 }
 
 async function completeToolChange() {
@@ -6671,7 +6593,7 @@ toolChangeCompleteButton?.addEventListener('click', () => completeToolChange().c
   if (toolChangeResultEl) toolChangeResultEl.textContent = err.message;
 }));
 installHoldAction(stopJobButton, stopJobRun, { holdMs: 500 });
-refreshJobStatusButton?.addEventListener('click', guardedRunClick('Status', refreshJobStatus));
+refreshJobStatusButton?.addEventListener('click', guardedRunClick('Diagnostic status', refreshJobDiagnostic));
 feedLiveButtons.forEach((button) => {
   button.addEventListener('click', () => setLiveFeedOverride(button.dataset.feedLive));
 });
@@ -6881,7 +6803,6 @@ window.CncTelemetry?.subscribe('job', (data) => {
   }
 });
 window.CncTelemetry?.subscribe('motion', handleMotionTelemetry);
-window.CncTelemetry?.subscribe('health', handleRecoveryHealth);
 window.CncTelemetry?.subscribe('system', (data) => {
   if (data) handleRecoveryHealth(data.health || data);
 });

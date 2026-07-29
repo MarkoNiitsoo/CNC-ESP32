@@ -5,16 +5,17 @@
 - Completed Phase 2: Socket-Only Authoritative Live State on `feature/phase1-websocket-transport`:
 - Key Highlights:
   1. Authoritative Support for All 8 Canonical Slices (`src/main.cpp`, `dev/mock-server.mjs`, `www/telemetry.js`): Full WebSocket snapshots emit all 8 canonical slices: `system`, `controller`, `machine`, `job`, `jog`, `control`, `log`, `machineProfile`.
-  2. Bounded Log Ring Buffer (`src/main.cpp`): Implemented zero-allocation `BoundedLogRingBuffer` (capacity 32) protected by `telemetryStateMutex` in firmware, returning bounded snapshot log structures (`entries`, `oldestId`, `latestId`, `nextId`, `lastCritical`) bounded to 80 entries max in browser memory.
+  2. Bounded Log Ring Buffer (`src/main.cpp`): Implemented zero-allocation `BoundedLogRingBuffer` (capacity 32) protected by a dedicated `logRingMutex`. The producer performs only O(1) insertion and incremental event enqueue; snapshots copy to global scratch under the short ring lock and serialize after releasing it.
   3. Atomic Snapshot Replacement (`www/telemetry.js`): `applySnapshot()` constructs `nextState` across all 8 canonical slices, replaces `state` and `mirroredState` store, updates `bootId`, sequence, state revision, log cursor, clears `resyncPending`, updates transport status to `synchronized`, and ONLY THEN dispatches subscriber callbacks.
   4. Strict Resync & Patch Gating (`www/telemetry.js`): Sets `resyncPending = true` on sequence gap, regression, or `bootId` mismatch. Ignores incoming `patch`/`delta`/`event` messages while `resyncPending` or `stale`. On `bootId` mismatch, clears all live slices, resets state, sets `resyncPending = true`, and requests a full snapshot.
-  5. Separated HTTP Diagnostics from Live Telemetry State (`www/telemetry.js`, `www/app.js`, `www/preview.js`): Refactored `CncTelemetry.request()` / `diagnosticRequest()` to return HTTP JSON directly to caller without calling `emit()` or mutating `CncTelemetry.state`. Removed normal workflow HTTP status polling from `app.js` and `preview.js`.
+  5. Separated HTTP Diagnostics from Live Telemetry State (`www/telemetry.js`, `www/app.js`, `www/machine-bar.js`, `www/preview.js`): Refactored `CncTelemetry.request()` / `diagnosticRequest()` to return HTTP JSON directly to callers without calling `emit()` or mutating `CncTelemetry.state`. Removed normal-workflow HTTP status polling; only explicit log and job diagnostic buttons retain read endpoints.
   6. Transport Liveness & Failed State (`www/telemetry.js`): Implemented heartbeat liveness monitor checking `lastServerMessageMs`. Idle timeout (> 7000ms while synchronized) marks status `stale` and closes WebSocket to trigger reconnect. Transitions status to `failed` after > 5 failed reconnect attempts.
   7. Backward-Compatibility Subscriber Aliases (`www/telemetry.js`, `www/machine-bar.js`, `www/app.js`, `www/preview.js`): Normalized component subscriptions to `system` and `machine` canonical slices while maintaining legacy `cnc-telemetry-health` and `cnc-telemetry-position` custom events.
   8. Executable Quality Verification:
-     - `npm test`: **530/530 tests passed** across 49 test files (0 failed).
+     - `npm test`: **545/545 tests passed** across 49 test files (0 failed).
      - `pio test -e native`: **13/13 native C++ test cases passed** (0 failed).
-     - `pio run -e esp32cam`: **SUCCESS** (RAM: 22.6% [used 73,964B of 327,680B], Flash: 74.9% [used 1,471,785B of 1,966,080B]).
+     - `pio run -e esp32cam`: **SUCCESS** (RAM: 25.5% [used 83,428B of 327,680B], Flash: 75.4% [used 1,481,669B of 1,966,080B]).
+  9. Physical hardware was not flashed or exercised. Machine control commands remain HTTP, and WebSocket Jog has not started.
 
 ## 2026-07-29 - Explicit P000 Failed Command Recording & CRLF Line Accounting Handoff
 
@@ -2597,4 +2598,3 @@ No firmware upload is required.
 - All 45 Vitest test files and 411 unit tests pass (`npm test`).
 - Documents `docs/protocol.md` and `docs/architecture.md` are fully updated.
 - Temporary Coexistence & Deletion Manifest Checklist recorded in `work/progress.md`.
-

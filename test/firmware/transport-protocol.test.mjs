@@ -21,8 +21,8 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
 
     it('ignores duplicate packets and triggers resync on sequence gap', () => {
-      expect(telemetryCode).toContain('if (seq <= lastServerSeq)');
-      expect(telemetryCode).toContain('if (seq > lastServerSeq + 1 && lastServerSeq > 0)');
+      expect(telemetryCode).toContain('if (!bootChanged && seq <= lastServerSeq)');
+      expect(telemetryCode).toContain('if (!bootChanged && seq > lastServerSeq + 1 && lastServerSeq > 0)');
       expect(telemetryCode).toContain('requestResync();');
     });
   });
@@ -96,9 +96,10 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(telemetryCode).toContain('msgType === \'snapshot\'');
     });
 
-    it('discards old mirrored state when bootId changes', () => {
-      expect(telemetryCode).toContain('if (bootId && knownBootId && bootId !== knownBootId)');
-      expect(telemetryCode).toContain('state[sliceKey] = null');
+    it('marks old mirrored state stale on bootId change until an atomic snapshot replaces it', () => {
+      expect(telemetryCode).toContain("if (bootChanged && msgType !== 'snapshot')");
+      expect(telemetryCode).not.toContain('state[sliceKey] = null');
+      expect(telemetryCode).toContain('if (bootId) knownBootId = bootId');
     });
   });
 
@@ -173,7 +174,7 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
 
     it('handles resource allocation and task creation failures safely without starting transport', () => {
-      expect(mainCppCode).toContain('if (telemetryStateMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr)');
+      expect(mainCppCode).toContain('if (telemetryStateMutex == nullptr || logRingMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr)');
       expect(mainCppCode).toContain('if (taskRes != pdPASS)');
       expect(mainCppCode).toContain('setTelemetryStarted(false);');
     });

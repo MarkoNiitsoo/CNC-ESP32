@@ -193,14 +193,14 @@ describe('compact machine drawer', () => {
     expect(machineBar).not.toMatch(/setInterval\([\s\S]{0,180}pollPosition/);
     expect(machineBar).not.toContain('refreshJobStatus().then(() => pollPosition())');
     expect(machineBar).toContain("button('mb-m114', refreshPosition)");
-    expect(machineBar).toContain("subscribe('position'");
-    expect(machineBar).toContain("applyFrame(data, 'MARLIN')");
+    expect(machineBar).toContain("subscribe('machine'");
+    expect(machineBar).toContain("applyFrame(posData, 'MARLIN')");
     expect(machineBar).toMatch(/async function home[\s\S]*apiPost\('\/api\/machine\/home'/);
     const update = machineBar.slice(machineBar.indexOf('async function sendJogUpdate()'), machineBar.indexOf('async function startJog'));
     expect(update).toContain('renderJogReadouts()');
     expect(update).not.toContain('render();');
     expect(machineBar).toMatch(/subscribe\('jog'[\s\S]{0,120}renderJogReadouts\(\)/);
-    expect(machineBar).toMatch(/subscribe\('position'[\s\S]{0,260}renderPositionReadouts\(\)/);
+    expect(machineBar).toMatch(/subscribe\('machine'[\s\S]{0,260}renderPositionReadouts\(\)/);
     expect(machineBar).toContain("jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true");
     expect(machineBar).toMatch(/subscribe\('log'[\s\S]{0,240}renderMarlinReadouts\(\)/);
     expect(machineBar).not.toContain("applyIcons?.(document.querySelector('.machine-shell'))");
@@ -263,7 +263,7 @@ describe('firmware-owned coordinate frames', () => {
     expect(preamble).toContain('appendPriorityCommand(command)');
     expect(firmware).toContain('jobStatus.state == JobRunnerState::Preparing');
     expect(firmware).toContain('start preamble complete: ');
-    expect(preview).toContain('Network reply was lost; reconciled');
+    expect(preview).toContain('Command result uncertain due to network failure');
   });
 
   it('enables position autoreport and parses reports while a streamed command is active', () => {

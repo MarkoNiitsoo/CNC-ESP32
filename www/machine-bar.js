@@ -363,7 +363,12 @@
   }
 
   async function criticalJobPost(url) {
-    const res = await fetch(url, { method: 'POST' });
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST' });
+    } catch (err) {
+      throw new Error(`Command result uncertain due to network failure (${err.message}). Observe socket job state for updates.`);
+    }
     const text = await res.text();
     try {
       const data = text ? JSON.parse(text) : {};
@@ -407,59 +412,14 @@
     }
   }
 
-  async function refreshHealth() {
-    try {
-      if (window.CncTelemetry) return await window.CncTelemetry.request('health');
-      const res = await fetch('/api/health');
-      STATE.health = await readJson(res);
-    } catch (err) {
-      STATE.health = null;
-    }
-    render();
-  }
-
-  async function refreshJobStatus() {
-    try {
-      if (window.CncTelemetry) return await window.CncTelemetry.request('job');
-      const res = await fetch('/api/job/status');
-      STATE.job = await readJson(res);
-      if (!res.ok) throw new Error(STATE.job.error || 'job status failed');
-    } catch (err) {
-      STATE.job = { state: 'UNKNOWN', lastError: err.message };
-    }
-    render();
-  }
-
-  async function refreshMarlinLog() {
-    try {
-      if (window.CncTelemetry) return await window.CncTelemetry.request('log');
-      const res = await fetch('/api/marlin/log');
-      const data = await readJson(res);
-      if (!res.ok || data.ok === false) throw new Error(data.error || 'Marlin log failed');
-      STATE.marlinLog = {
-        entries: Array.isArray(data.entries) ? data.entries.slice(-20) : [],
-        lastCritical: data.lastCritical || null,
-      };
-    } catch (err) {
-      STATE.marlinLog = { entries: [], lastCritical: `Marlin log unavailable: ${err.message}` };
-    }
-    render();
-  }
-
   async function pauseJob() {
     await criticalJobPost('/api/job/pause');
     setMessage('Pause requested; motion will hold intact and the cutter will remain running');
-    STATE.job = { ...(STATE.job || {}), state: 'PAUSING' };
-    render();
-    await refreshJobStatus();
   }
 
   async function resumeJob() {
     await apiPost('/api/job/resume');
     setMessage('Resume requested');
-    STATE.job = { ...(STATE.job || {}), state: 'RESUMING' };
-    render();
-    await refreshJobStatus();
   }
 
   async function pauseOrResumeJob() {
@@ -492,12 +452,9 @@
     try {
       await criticalJobPost('/api/job/stop');
       setMessage('Stop Now requested; position will require verification');
-      STATE.job = { ...(STATE.job || {}), state: 'STOPPING' };
-      render();
     } catch (err) {
       setMessage(`Stop endpoint failed; M5 was not sent because motion may still be active. Use the physical emergency stop. ${err.message}`);
     }
-    await refreshJobStatus();
   }
 
   async function refreshPosition() {
@@ -785,19 +742,6 @@
     return true;
   }
 
-  async function refreshJogStatus() {
-    try {
-      if (window.CncTelemetry) return await window.CncTelemetry.request('jog');
-      const res = await fetch('/api/jog/status');
-      const data = await readJson(res);
-      if (!res.ok || data.ok === false) throw new Error(data.error || 'Jog status unavailable');
-      STATE.jog = data;
-    } catch (err) {
-      STATE.jog = { state: 'UNAVAILABLE', lastError: err.message };
-    }
-    render();
-  }
-
   async function sendJogUpdate() {
     if (jogUpdatePending || STATE.jog?.state !== 'JOGGING') return;
     const sessionId = jogSessionId;
@@ -884,13 +828,28 @@
     if (visibleJobState() !== 'PAUSED_INTACT') return;
     setMessage('Invalidating direct Resume and stopping the cutter before manual movement…');
     await apiPost('/api/job/interrupt-for-manual-motion');
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      await refreshJobStatus();
-      if (visibleJobState() === 'RECOVERY_REQUIRED') return;
-      if (visibleJobState() === 'ERROR') throw new Error(STATE.job?.lastError || 'Could not establish a safe manual-movement state.');
+    if (!window.CncTelemetry || window.CncTelemetry.transportStatus !== 'synchronized') {
+      throw new Error('Live socket state is stale. Wait for synchronization before manual movement.');
     }
-    throw new Error('Manual movement is waiting for held motion to stop. Retry after RECOVERY_REQUIRED is shown.');
+    await new Promise((resolve, reject) => {
+      let unsubscribe = null;
+      const timer = setTimeout(() => {
+        unsubscribe?.();
+        reject(new Error('Manual movement is waiting for authoritative RECOVERY_REQUIRED state. Retry when it is shown.'));
+      }, 4000);
+      unsubscribe = window.CncTelemetry.subscribe('job', (job) => {
+        const state = String(job?.state || '').toUpperCase();
+        if (state === 'ERROR') {
+          clearTimeout(timer);
+          unsubscribe?.();
+          reject(new Error(job?.lastError || 'Could not establish a safe manual-movement state.'));
+        } else if (state === 'RECOVERY_REQUIRED') {
+          clearTimeout(timer);
+          unsubscribe?.();
+          resolve();
+        }
+      });
+    });
   }
 
   function updateDirectionalVector(event, item) {
@@ -1758,12 +1717,6 @@
     });
     refreshProjectSafeZ().catch(() => {});
 
-    window.CncTelemetry?.subscribe('health', (data) => {
-      if (data) {
-        STATE.health = data.health || data;
-        render();
-      }
-    });
     window.CncTelemetry?.subscribe('system', (data) => {
       if (data) {
         STATE.health = data.health || data;
@@ -1786,12 +1739,6 @@
       STATE.jog = data;
       applyCommandedJogPosition(data);
       renderJogReadouts();
-    });
-    window.CncTelemetry?.subscribe('position', (data) => {
-      if (!data) return;
-      if (jogIsUiActive() && STATE.jog?.commandedPositionCaptured === true) return;
-      if (!applyFrame(data, 'MARLIN')) return;
-      renderPositionReadouts();
     });
     window.CncTelemetry?.subscribe('machine', (data) => {
       if (!data) return;

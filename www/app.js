@@ -12,6 +12,7 @@ const currentJobCard = document.querySelector('#current-job-card');
 const nextActionCard = document.querySelector('#next-action-card');
 const systemSummary = document.querySelector('#system-summary');
 const marlinLogEl = document.querySelector('#marlin-log');
+const diagnosticMarlinLogEl = document.querySelector('#diagnostic-marlin-log');
 const criticalLogEl = document.querySelector('#critical-log');
 const refreshLogsButton = document.querySelector('#refresh-logs');
 const travelSpeedInput = document.querySelector('#travel-speed');
@@ -578,33 +579,11 @@ function applyHealth(data) {
     }
 }
 
-async function refreshHealth() {
-  try {
-    if (window.CncTelemetry) return await window.CncTelemetry.request('health');
-    const res = await fetch('/api/health');
-    applyHealth(await readJson(res));
-  } catch (err) {
-    if (health) health.textContent = `Offline: ${err.message}`;
-  }
-}
-
 function applyJobStatus(data) {
   jobStatus = data;
   updateDeviceSettingsLock();
   if (!currentJob && jobStatus.gcodePath) {
     saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: jobStatus.jobPath || jobPathFor(jobStatus.gcodePath) });
-  }
-}
-
-async function refreshJobStatus() {
-  try {
-    if (window.CncTelemetry) return await window.CncTelemetry.request('job');
-    const res = await fetch('/api/job/status');
-    const data = await readJson(res);
-    if (!res.ok) throw new Error(data.error || 'job status failed');
-    applyJobStatus(data);
-  } catch (err) {
-    jobStatus = { state: 'UNKNOWN', lastError: err.message };
   }
 }
 
@@ -1211,11 +1190,17 @@ function applyLogs(data) {
 
 async function refreshLogs() {
   try {
-    if (window.CncTelemetry) return await window.CncTelemetry.request('log');
-    const res = await fetch('/api/marlin/log');
-    applyLogs(await readJson(res));
+    const data = window.CncTelemetry
+      ? await window.CncTelemetry.diagnosticRequest('log')
+      : await readJson(await fetch('/api/marlin/log'));
+    const entries = Array.isArray(data.entries) ? data.entries.slice(-80) : [];
+    if (diagnosticMarlinLogEl) {
+      diagnosticMarlinLogEl.textContent = entries.length
+        ? entries.map((entry) => `${entry.time || '-'} ${entry.direction === 'tx' ? '->' : '<-'} ${entry.text || ''}`).join('\n')
+        : 'Diagnostic snapshot contains no log entries.';
+    }
   } catch (err) {
-    if (marlinLogEl) marlinLogEl.textContent = `Marlin log unavailable: ${err.message}`;
+    if (diagnosticMarlinLogEl) diagnosticMarlinLogEl.textContent = `Diagnostic log unavailable: ${err.message}`;
   }
 }
 
@@ -1362,8 +1347,9 @@ async function ensureViewData(viewName) {
     return;
   }
   if (viewName === 'settings') {
-    window.CncTelemetry?.setDemand('health', 'app-view', true);
-    await refreshHealth();
+    if (window.CncTelemetry?.state?.system) {
+      applyHealth(window.CncTelemetry.state.system.health || window.CncTelemetry.state.system);
+    }
     await loadToolChangeSettings().catch((err) => {
       if (toolChangeSettingsResult) toolChangeSettingsResult.textContent = err.message;
     });

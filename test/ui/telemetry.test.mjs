@@ -51,7 +51,7 @@ describe('shared browser telemetry', () => {
 
   it('opens the WebSocket for live state updates', () => {
     expect(telemetry).toContain("function connectSocket() {");
-    expect(telemetry).toContain("socket = new WebSocket(getWebSocketUrl());");
+    expect(telemetry).toContain("candidate = new WebSocket(getWebSocketUrl());");
   });
 
   it('keeps the Files entrypoint free of unrelated telemetry demand at startup', () => {
@@ -66,7 +66,7 @@ describe('shared browser telemetry', () => {
     expect(telemetry).toContain('getWebSocketUrl()');
     expect(telemetry).toContain("msgType === 'snapshot'");
     expect(telemetry).toContain("msgType === 'patch'");
-    expect(telemetry).toContain("emit(sliceKey, message.data[sliceKey])");
+    expect(telemetry).toContain("applySnapshot(message");
     expect(telemetry).toContain('lastStateRevision');
     expect(preview).toContain("subscribe('motion', handleMotionTelemetry)");
     expect(preview).toContain('requestAnimationFrame(frame)');

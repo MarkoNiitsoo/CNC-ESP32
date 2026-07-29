@@ -1,5 +1,53 @@
 # Progress
 
+## 2026-07-29 - Phase 2 Final Resync, Log, and Socket-Only State Correctness
+
+- Finished the interrupted Phase 2 correctness/performance pass on `feature/phase1-websocket-transport`.
+- Final snapshot schema is one atomic `message.state` (legacy `message.data` is normalized through the same path) containing all eight object slices: `system`, `controller`, `machine`, `job`, `jog`, `control`, `log`, and `machineProfile`. Partial or incoherent snapshots remain stale and cannot enable controls.
+- Production `machineProfile` changes are staged by serialized-content comparison, included in patch detection/copy/clear/build, delivered to synchronized clients, and force client resync after delivery failure.
+- Bounded log design:
+  - `addMarlinLog()` creates one POD event, inserts it into the 32-entry ring under dedicated `logRingMutex` with a bounded O(1) operation, then attempts the incremental queue send.
+  - No producer-path full-ring serialization, SD access, shared telemetry mutex acquisition, or contention-based ring omission remains.
+  - Full snapshot/resync copies the ring into global scratch under the dedicated mutex, releases the mutex, then serializes outside both the ring and staged-state locks.
+  - `dirtyLog` and staged/cached full-log JSON were removed.
+- Log cursor contract is now consistent: `latestId` is the newest included ID, `nextId = latestId + 1`, and browser `lastLogId = snapshot.latestId`. Duplicate IDs are ignored, mixed duplicate/new batches accept contiguous new entries, gaps are rejected before application, lower reboot/resync cursors replace older values, and `dropped > 0` requires resync.
+- Browser resync gating now rejects every state-bearing event/patch/delta until a validated snapshot atomically installs all canonical slices. One event dispatches once, and noncanonical motion events do not become a state slice.
+- Liveness now counts only valid protocol envelopes, prevents simultaneous sockets/timer duplication, stops while hidden, requires a full snapshot after reconnect, reaches `failed` through real repeated reconnect failures, and resets failures only after a successful full snapshot.
+- Removed automatic live-state HTTP reads from Settings navigation, machine-bar health/job/log/jog refreshes, pause/resume/stop follow-ups, manual-motion reconciliation polling, Z-zero checks, tool-change follow-ups, and command-response failure reconciliation.
+- Remaining HTTP live-state reads are explicitly user-initiated diagnostics only:
+  - Logs page: **Refresh diagnostic log snapshot** (`/api/marlin/log`).
+  - Preview run panel: **Refresh diagnostic status snapshot** (`/api/job/status`).
+  - `CncTelemetry.diagnosticRequest()` returns data without emitting or mutating live state.
+- Machine control commands remain HTTP. WebSocket Jog has not started. Controller/UART ownership, transaction tokens, Safe Z, Cut Bounds, pause/resume, recovery, and production streaming were not redesigned.
+- Tests changed versus baseline: **15 net-new test cases** and **28 existing cases modified/rewritten**.
+- Verification:
+  - `npm test`: **545/545 passed** across **49** test files.
+  - `platformio test -e native`: **13/13 passed**.
+  - `platformio run -e esp32cam`: **SUCCESS**; RAM **83,428 / 327,680 bytes (25.5%)**; Flash **1,481,669 / 1,966,080 bytes (75.4%)**.
+- Physical hardware was not flashed or exercised; no ESP32-CAM/Marlin/SKR hardware verification is claimed.
+
+## 2026-07-29 - Phase 2 Final Correctness Recovery Assessment
+
+- Preserved Antigravity's uncommitted work on `feature/phase1-websocket-transport` at baseline `28b1c212be296185b1caddca9786d0642c133bcf`.
+- Already implemented or substantially present in the recovered work:
+  1. `machineProfile` is considered by the production patch builder and mock snapshots include dropped-log metadata.
+  2. `addMarlinLog()` no longer builds the full bounded-ring JSON for every line.
+  3. Browser patches and events are gated while stale/resyncing, duplicate event dispatch was removed, snapshots route through `applySnapshot()`, and resync requests are partly idempotent.
+  4. Settings navigation, Z-zero checks, tool-change follow-up, Stop reconciliation, and lost command-response reconciliation have partial HTTP live-state removal.
+  5. Canonical `system`/`machine` subscriptions replaced duplicate `health`/`position` subscriptions in the recovered UI changes.
+- Remaining work:
+  1. Give the bounded log ring dedicated synchronization so producer insertion cannot be silently skipped, and build full log JSON outside the shared telemetry-state lock.
+  2. Remove obsolete staged log state, complete dropped-event metadata semantics, and prove full resync log contents remain correct.
+  3. Validate full snapshots before synchronization, make all snapshot forms atomic, handle log duplicates/gaps batch-wise, and count liveness only for valid protocol packets.
+  4. Complete reconnect/visibility/failure behavior and executable browser/mock tests.
+  5. Remove the remaining automatic live-state HTTP reads while retaining explicitly initiated diagnostic reads and file/configuration HTTP operations.
+- Broken or inconsistent partial implementation found:
+  1. `addMarlinLog()` waits only 10 ms for `telemetryStateMutex` and silently omits the bounded-ring entry if the lock remains busy.
+  2. `buildSnapshotFromStagedState()` serializes the complete ring while holding `telemetryStateMutex`.
+  3. `dirtyLog`/`logJson` remain staged despite no longer having a valid patch role.
+  4. Browser log handling rejects a mixed duplicate-plus-new batch, does not force resync on dropped metadata, and accepts incomplete snapshots.
+  5. `lastServerMessageMs` is updated before a packet is established as a valid protocol message.
+
 ## 2026-07-29 - Phase 2: Socket-Only Authoritative Live State
 
 - Completed Phase 2: Socket-Only Authoritative Live State on `feature/phase1-websocket-transport`:
@@ -2760,4 +2808,3 @@ The following legacy endpoints and assumptions are retained temporarily during P
 - `[ ]` Legacy telemetry event channel aliases (`job`, `jog`, `position`)
 - `[ ]` Hardcoded WebSocket port/origin behavior in legacy docs
 - `[ ]` Duplicated legacy state serializers (`telemetrySnapshotData()`)
-

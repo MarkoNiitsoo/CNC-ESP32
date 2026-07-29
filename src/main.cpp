@@ -551,6 +551,7 @@ volatile bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 TaskHandle_t telemetryTaskHandle = nullptr;
 SemaphoreHandle_t telemetryStateMutex = nullptr;
+SemaphoreHandle_t logRingMutex = nullptr;
 QueueHandle_t motionEventQueue = nullptr;
 QueueHandle_t logEventQueue = nullptr;
 static portMUX_TYPE telemetryDropMux = portMUX_INITIALIZER_UNLOCKED;
@@ -602,6 +603,13 @@ inline uint32_t fetchAndResetLogTelemetryDropped() {
   return count;
 }
 
+inline uint32_t getLogTelemetryDroppedCount() {
+  portENTER_CRITICAL(&telemetryDropMux);
+  uint32_t count = logTelemetryDropped;
+  portEXIT_CRITICAL(&telemetryDropMux);
+  return count;
+}
+
 struct StagedWallClockState {
   bool valid = false;
   int64_t offsetMs = 0;
@@ -640,7 +648,7 @@ struct BoundedLogRingBuffer {
     }
   }
 
-  String buildJson() const {
+  String buildJson(uint32_t dropped) const {
     String json = "{\"entries\":[";
     for (size_t i = 0; i < count; i++) {
       size_t idx = (head + i) % CAPACITY;
@@ -667,12 +675,29 @@ struct BoundedLogRingBuffer {
     json += String(nextId);
     json += ",\"lastCritical\":";
     json += lastCritical[0] != '\0' ? "\"" + jsonEscape(lastCritical) + "\"" : "null";
+    json += ",\"dropped\":";
+    json += String(dropped);
     json += "}";
     return json;
   }
 };
 
 BoundedLogRingBuffer boundedLogRing;
+// Snapshot scratch is global so the telemetry task never places the full ring on its stack.
+BoundedLogRingBuffer boundedLogSnapshotScratch;
+
+String buildBoundedLogSnapshotJson() {
+  if (logRingMutex == nullptr) {
+    return boundedLogRing.buildJson(getLogTelemetryDroppedCount());
+  }
+  if (xSemaphoreTake(logRingMutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+    return "";
+  }
+  boundedLogSnapshotScratch = boundedLogRing;
+  const uint32_t dropped = getLogTelemetryDroppedCount();
+  xSemaphoreGive(logRingMutex);
+  return boundedLogSnapshotScratch.buildJson(dropped);
+}
 
 struct StagedTelemetryState {
   uint32_t globalRevision = 1;
@@ -682,7 +707,6 @@ struct StagedTelemetryState {
   bool dirtyJob = false;
   bool dirtyJog = false;
   bool dirtyControl = false;
-  bool dirtyLog = false;
   bool dirtyMachineProfile = false;
 
   StagedWallClockState wallClock;
@@ -693,7 +717,6 @@ struct StagedTelemetryState {
   String jobJson;
   String jogJson;
   String controlJson;
-  String logJson;
   String machineProfileJson;
 };
 
@@ -795,25 +818,25 @@ void addMarlinLog(const String &direction, bool priority, const String &text, co
     marlinLogCount += 1;
   }
 
+  LogTelemetryEvent ev;
+  ev.id = entry.id;
+  ev.timeMs = entry.timeMs;
+  snprintf(ev.direction, sizeof(ev.direction), "%s", entry.direction.c_str());
+  ev.priority = entry.priority;
+  snprintf(ev.level, sizeof(ev.level), "%s", entry.level.c_str());
+  snprintf(ev.text, sizeof(ev.text), "%s", entry.text.c_str());
+  snprintf(ev.lastCriticalMessage, sizeof(ev.lastCriticalMessage), "%s", lastCriticalMarlinMessage.c_str());
+
+  if (logRingMutex != nullptr) {
+    xSemaphoreTake(logRingMutex, portMAX_DELAY);
+    boundedLogRing.add(ev);
+    xSemaphoreGive(logRingMutex);
+  } else {
+    // Telemetry has not started yet, so no other task can access the ring.
+    boundedLogRing.add(ev);
+  }
+
   if (isTelemetryStarted() && logEventQueue != nullptr) {
-    LogTelemetryEvent ev;
-    ev.id = entry.id;
-    ev.timeMs = entry.timeMs;
-    snprintf(ev.direction, sizeof(ev.direction), "%s", entry.direction.c_str());
-    ev.priority = entry.priority;
-    snprintf(ev.level, sizeof(ev.level), "%s", entry.level.c_str());
-    snprintf(ev.text, sizeof(ev.text), "%s", entry.text.c_str());
-    snprintf(ev.lastCriticalMessage, sizeof(ev.lastCriticalMessage), "%s", lastCriticalMarlinMessage.c_str());
-
-    if (telemetryStateMutex != nullptr) {
-      if (xSemaphoreTake(telemetryStateMutex, 0) == pdTRUE) {
-        boundedLogRing.add(ev);
-        stagedState.logJson = boundedLogRing.buildJson();
-        stagedState.dirtyLog = true;
-        xSemaphoreGive(telemetryStateMutex);
-      }
-    }
-
     if (xQueueSend(logEventQueue, &ev, 0) != pdTRUE) {
       incrementLogTelemetryDropped();
     }
@@ -1522,7 +1545,6 @@ struct CachedAuthoritativeSlices {
   String jobJson;
   String jogJson;
   String controlJson;
-  String logJson;
   String machineProfileJson;
 };
 extern CachedAuthoritativeSlices cachedSlices;
@@ -2494,7 +2516,6 @@ void initializeStagedState() {
   stagedState.jobJson = buildAuthoritativeJobSliceJson();
   stagedState.jogJson = buildAuthoritativeJogSliceJson();
   stagedState.controlJson = buildControlSliceJson();
-  stagedState.logJson = boundedLogRing.buildJson();
   stagedState.machineProfileJson = buildMachineProfileSliceJson();
   stagedState.globalRevision = 1;
   stagedState.dirtySystem = false;
@@ -2503,7 +2524,6 @@ void initializeStagedState() {
   stagedState.dirtyJob = false;
   stagedState.dirtyJog = false;
   stagedState.dirtyControl = false;
-  stagedState.dirtyLog = false;
   stagedState.dirtyMachineProfile = false;
 
   cachedSlices.systemBaseJson = stagedState.systemBaseJson;
@@ -2521,7 +2541,6 @@ void initializeStagedState() {
   cachedSlices.jobJson = stagedState.jobJson;
   cachedSlices.jogJson = stagedState.jogJson;
   cachedSlices.controlJson = stagedState.controlJson;
-  cachedSlices.logJson = stagedState.logJson;
   cachedSlices.machineProfileJson = stagedState.machineProfileJson;
 }
 
@@ -2539,7 +2558,6 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
     job = stagedState.jobJson;
     jog = stagedState.jogJson;
     cntrl = stagedState.controlJson;
-    logStr = stagedState.logJson;
     machProf = stagedState.machineProfileJson;
     outRevision = stagedState.globalRevision;
     if (outRevision > netLastObservedRevision) {
@@ -2549,6 +2567,9 @@ String buildSnapshotFromStagedState(uint32_t &outRevision) {
   } else {
     return "";
   }
+
+  logStr = buildBoundedLogSnapshotJson();
+  if (logStr.length() == 0) return "";
 
   String sysJson = buildSystemSliceJsonFromBaseAndClock(sysBase, wallClock);
   String json = "{\"system\":" + sysJson + ",\"controller\":" + ctrl + ",\"machine\":" + mach + ",\"job\":" + job + ",\"jog\":" + jog + ",\"control\":" + cntrl + ",\"log\":" + logStr + ",\"machineProfile\":" + machProf + "}";
@@ -2868,7 +2889,8 @@ void processNetworkTelemetry() {
 
   if (telemetryStateMutex != nullptr && xSemaphoreTake(telemetryStateMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
     if (stagedState.dirtySystem || stagedState.dirtyController || stagedState.dirtyMachine ||
-        stagedState.dirtyJob || stagedState.dirtyJog || stagedState.dirtyControl) {
+        stagedState.dirtyJob || stagedState.dirtyJog || stagedState.dirtyControl ||
+        stagedState.dirtyMachineProfile) {
       snapshotCopy = stagedState;
       stagedState.dirtySystem = false;
       stagedState.dirtyController = false;
@@ -2876,6 +2898,7 @@ void processNetworkTelemetry() {
       stagedState.dirtyJob = false;
       stagedState.dirtyJog = false;
       stagedState.dirtyControl = false;
+      stagedState.dirtyMachineProfile = false;
       hasPatch = true;
     }
     xSemaphoreGive(telemetryStateMutex);
@@ -2914,11 +2937,16 @@ void processNetworkTelemetry() {
       patchJson += "\"control\":" + snapshotCopy.controlJson;
       first = false;
     }
+    if (snapshotCopy.dirtyMachineProfile) {
+      if (!first) patchJson += ',';
+      patchJson += "\"machineProfile\":" + snapshotCopy.machineProfileJson;
+      first = false;
+    }
     patchJson += "}";
 
     for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; ++i) {
       TelemetryClientState &cs = protocolState.clients[i];
-      if (cs.connected && cs.handshakeComplete) {
+      if (cs.connected && cs.handshakeComplete && !cs.snapshotPending && !cs.resyncPending) {
         const bool ok = sendClientPacket(i, "patch", "patch", patchJson, snapshotCopy.globalRevision);
         if (!ok) {
           cs.resyncPending = true;
@@ -2972,8 +3000,10 @@ void processNetworkTelemetry() {
       data += jsonEscape(logEv.text);
       data += "\",\"level\":\"";
       data += jsonEscape(logEv.level);
-      data += "\"}],\"nextId\":";
+      data += "\"}],\"latestId\":";
       data += String(logEv.id);
+      data += ",\"nextId\":";
+      data += String(logEv.id + 1);
       data += ",\"lastCritical\":";
       data += logEv.lastCriticalMessage[0] != '\0' ? "\"" + jsonEscape(logEv.lastCriticalMessage) + "\"" : "null";
       data += ",\"dropped\":" + String(droppedLogs);
@@ -2984,7 +3014,9 @@ void processNetworkTelemetry() {
       for (uint8_t c = 0; c < WEBSOCKETS_SERVER_CLIENT_MAX; ++c) {
         TelemetryClientState &cs = protocolState.clients[c];
         if (telemetryLogSubscribed[c] && cs.connected && cs.handshakeComplete) {
-          sendClientEvent(c, "log", data, activeRev);
+          if (!sendClientEvent(c, "log", data, activeRev)) {
+            cs.resyncPending = true;
+          }
         }
       }
     }
@@ -6216,8 +6248,11 @@ void handleMarlinLog() {
     json += marlinLogEntryJson(entry);
     first = false;
   }
-  json += "],\"nextId\":";
-  json += String(nextMarlinLogId > 0 ? nextMarlinLogId - 1 : 0);
+  const uint32_t latestId = nextMarlinLogId > 0 ? nextMarlinLogId - 1 : 0;
+  json += "],\"latestId\":";
+  json += String(latestId);
+  json += ",\"nextId\":";
+  json += String(latestId + 1);
   json += ",\"lastCritical\":";
   if (lastCriticalMarlinMessage.length() > 0) {
     json += "\"";
@@ -9448,6 +9483,7 @@ void startHttpServer() {
 
   logSystemEvent("[CHECKPOINT] Telemetry mutex creation starting");
   telemetryStateMutex = xSemaphoreCreateMutex();
+  logRingMutex = xSemaphoreCreateMutex();
   logSystemEvent("[CHECKPOINT] Telemetry mutex creation complete");
 
   logSystemEvent("[CHECKPOINT] Queue creation starting");
@@ -9455,10 +9491,11 @@ void startHttpServer() {
   logEventQueue = xQueueCreate(32, sizeof(LogTelemetryEvent));
   logSystemEvent("[CHECKPOINT] Queue creation complete");
 
-  if (telemetryStateMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr) {
+  if (telemetryStateMutex == nullptr || logRingMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr) {
     logSystemEvent("[CHECKPOINT] Telemetry initialization failed: allocation error");
     logSystemEvent("Telemetry initialization failed: allocation error");
     if (telemetryStateMutex) { vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr; }
+    if (logRingMutex) { vSemaphoreDelete(logRingMutex); logRingMutex = nullptr; }
     if (motionEventQueue) { vQueueDelete(motionEventQueue); motionEventQueue = nullptr; }
     if (logEventQueue) { vQueueDelete(logEventQueue); logEventQueue = nullptr; }
     setTelemetryStarted(false);
@@ -9475,6 +9512,7 @@ void startHttpServer() {
     logSystemEvent("Telemetry initialization failed: task creation error");
     telemetryTaskHandle = nullptr;
     vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr;
+    vSemaphoreDelete(logRingMutex); logRingMutex = nullptr;
     vQueueDelete(motionEventQueue); motionEventQueue = nullptr;
     vQueueDelete(logEventQueue); logEventQueue = nullptr;
     setTelemetryStarted(false);
