@@ -342,3 +342,112 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(restore).toContain("fabs(currentZ - jogStatus.safeLiftWorkZ) > 0.5f");
   });
 });
+
+describe('browser control disabling', () => {
+  it('disables ordinary controls while unresponsive, recovering, or waiting, while Stop and Retry remain enabled', () => {
+    expect(machineBar).toContain("const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');");
+    expect(machineBar).toContain('.requires-controller-comm');
+    expect(machineBar).toContain('#mb-home-all');
+    expect(machineBar).toContain('#mb-set-zero');
+    expect(machineBar).toContain('#mb-terminal-send');
+    expect(machineBar).toContain('#action-bounds');
+    expect(machineBar).toContain('#action-start-job');
+    expect(machineBar).toContain('#action-production-resume');
+    expect(machineBar).toContain('.feed-override-btn');
+
+    const createdElements = [];
+    function makeEl(id, className = '') {
+      const el = {
+        id,
+        className,
+        disabled: false
+      };
+      el.classList = {
+        add(c) {
+          if (!el.className.includes(c)) el.className += ' ' + c;
+        }
+      };
+      createdElements.push(el);
+      return el;
+    }
+
+    const homeBtn = makeEl('mb-home-all');
+    const jogBtn = makeEl('mb-jog-safe-z', 'machine-jog-btn');
+    const boundsBtn = makeEl('action-bounds');
+    const startBtn = makeEl('action-start-job');
+    const resumeBtn = makeEl('action-production-resume');
+    const stopBtn = makeEl('action-stop-job');
+    const retryBtn = makeEl('btn-retry-controller-conn');
+
+    const fakeDoc = {
+      querySelectorAll(selector) {
+        if (selector === '.requires-controller-comm') {
+          return createdElements.filter(e => e.className.includes('requires-controller-comm'));
+        }
+        return createdElements.filter(e => selector.includes(e.id) || (e.className && selector.includes(e.className)));
+      }
+    };
+
+    const renderFn = new Function('document', 'state', `
+      const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
+      const ordinarySelectors = [
+        '.requires-controller-comm',
+        '#mb-home-all', '#mb-home-xy', '#mb-home-z',
+        '#mb-set-zero', '#mb-goto-zero', '#mb-restore-zero', '#mb-touch-plate',
+        '#mb-set-z-zero', '#mb-set-z-zero-touch', '#mb-set-z-zero-manual',
+        '#mb-terminal-send', '#mb-terminal-cmd',
+        '.machine-jog-btn', '.machine-jog-z-btn', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
+        '#action-bounds', '#action-aircut', '#action-toolless',
+        '#action-start-job', '#action-arm-start', '#action-resume-job', '#action-production-resume',
+        '#action-feed-override-apply', '#action-feed-override-slider', '.feed-override-btn',
+        '.recovery-move-btn', '.tool-change-move-btn'
+      ];
+      ordinarySelectors.forEach((sel) => {
+        document.querySelectorAll(sel).forEach((node) => {
+          node.classList.add('requires-controller-comm');
+          node.disabled = ordinaryDisabled;
+        });
+      });
+    `);
+
+    // Test 'unresponsive'
+    renderFn(fakeDoc, 'unresponsive');
+    expect(homeBtn.disabled).toBe(true);
+    expect(jogBtn.disabled).toBe(true);
+    expect(boundsBtn.disabled).toBe(true);
+    expect(startBtn.disabled).toBe(true);
+    expect(resumeBtn.disabled).toBe(true);
+    expect(stopBtn.disabled).toBe(false);
+    expect(retryBtn.disabled).toBe(false);
+
+    // Test 'recovering'
+    renderFn(fakeDoc, 'recovering');
+    expect(homeBtn.disabled).toBe(true);
+    expect(jogBtn.disabled).toBe(true);
+    expect(boundsBtn.disabled).toBe(true);
+    expect(startBtn.disabled).toBe(true);
+    expect(resumeBtn.disabled).toBe(true);
+    expect(stopBtn.disabled).toBe(false);
+    expect(retryBtn.disabled).toBe(false);
+
+    // Test 'waiting'
+    renderFn(fakeDoc, 'waiting');
+    expect(homeBtn.disabled).toBe(true);
+    expect(jogBtn.disabled).toBe(true);
+    expect(boundsBtn.disabled).toBe(true);
+    expect(startBtn.disabled).toBe(true);
+    expect(resumeBtn.disabled).toBe(true);
+    expect(stopBtn.disabled).toBe(false);
+    expect(retryBtn.disabled).toBe(false);
+
+    // Test 'connected'
+    renderFn(fakeDoc, 'connected');
+    expect(homeBtn.disabled).toBe(false);
+    expect(jogBtn.disabled).toBe(false);
+    expect(boundsBtn.disabled).toBe(false);
+    expect(startBtn.disabled).toBe(false);
+    expect(resumeBtn.disabled).toBe(false);
+    expect(stopBtn.disabled).toBe(false);
+    expect(retryBtn.disabled).toBe(false);
+  });
+});

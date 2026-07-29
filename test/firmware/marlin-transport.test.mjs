@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
+const commHeader = await readFile(new URL('../../src/controller_comm.h', import.meta.url), 'utf8');
 const platformio = await readFile(new URL('../../platformio.ini', import.meta.url), 'utf8');
 
 describe('Marlin transport safety', () => {
@@ -54,7 +55,7 @@ describe('Marlin transport safety', () => {
     const printMatches = source.match(/Serial\.print\s*\(/g) || [];
     expect(printMatches).toHaveLength(2); // Serial.print(command) and Serial.print('\n') inside writeControllerLine
     expect(source).not.toContain('readMarlinResponseFor(uint32_t timeoutMs, bool priority)');
-    expect(source).toContain('enum class ControllerCommandClass');
+    expect(source + commHeader).toContain('enum class ControllerCommandClass');
     expect(source).toContain('OrdinarySync');
     expect(source).toContain('ManagedJobStream');
     expect(source).toContain('ManagedJogStream');

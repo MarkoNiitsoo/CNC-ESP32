@@ -111,8 +111,23 @@
     }
 
     const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
-    document.querySelectorAll('.requires-controller-comm').forEach((node) => {
-      node.disabled = ordinaryDisabled;
+    const ordinarySelectors = [
+      '.requires-controller-comm',
+      '#mb-home-all', '#mb-home-xy', '#mb-home-z',
+      '#mb-set-zero', '#mb-goto-zero', '#mb-restore-zero', '#mb-touch-plate',
+      '#mb-set-z-zero', '#mb-set-z-zero-touch', '#mb-set-z-zero-manual',
+      '#mb-terminal-send', '#mb-terminal-cmd',
+      '.machine-jog-btn', '.machine-jog-z-btn', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
+      '#action-bounds', '#action-aircut', '#action-toolless',
+      '#action-start-job', '#action-arm-start', '#action-resume-job', '#action-production-resume',
+      '#action-feed-override-apply', '#action-feed-override-slider', '.feed-override-btn',
+      '.recovery-move-btn', '.tool-change-move-btn'
+    ];
+    ordinarySelectors.forEach((sel) => {
+      document.querySelectorAll(sel).forEach((node) => {
+        node.classList.add('requires-controller-comm');
+        node.disabled = ordinaryDisabled;
+      });
     });
   }
 

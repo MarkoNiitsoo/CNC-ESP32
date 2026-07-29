@@ -19,6 +19,7 @@
 #include <mbedtls/sha256.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
+#include "controller_comm.h"
 
 extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
   (void)xTask;
@@ -269,31 +270,12 @@ struct MarlinLogEntry {
   String level = "info";
 };
 
-enum class ControllerCommunicationState {
-  Unknown,
-  Connected,
-  Waiting,
-  Unresponsive,
-  Recovering
-};
+ControllerCommManager controllerCommManager;
+#define controllerCommStatus controllerCommManager.telemetry
 
 String controllerCommunicationStateToString(ControllerCommunicationState state) {
-  switch (state) {
-    case ControllerCommunicationState::Connected: return "connected";
-    case ControllerCommunicationState::Waiting: return "waiting";
-    case ControllerCommunicationState::Unresponsive: return "unresponsive";
-    case ControllerCommunicationState::Recovering: return "recovering";
-    default: return "unknown";
-  }
+  return ControllerCommManager::stateToCStr(state);
 }
-
-enum class ControllerCommandClass {
-  OrdinarySync,
-  ManagedJobStream,
-  ManagedJogStream,
-  SafetyStop,
-  RecoveryProbe
-};
 
 struct MarlinCommandResult {
   String response = "";
@@ -304,60 +286,31 @@ struct MarlinCommandResult {
   String error = "";
 };
 
-struct ControllerCommunicationTelemetry {
-  ControllerCommunicationState state = ControllerCommunicationState::Connected;
-  uint32_t lastSuccessfulResponseMs = 0;
-  uint32_t lastTimeoutMs = 0;
-  String lastFailedCommand = "";
-  String lastError = "";
-};
-
-ControllerCommunicationTelemetry controllerCommStatus;
-
 void stageTelemetryUpdates(void); // Forward declaration
 void addMarlinLog(const String &direction, bool priority, const String &text, const String &level = ""); // Forward declaration
+bool jobIsActive(); // Forward declaration
+bool jogIsActive(); // Forward declaration
 
 bool isControllerCommunicationActive() {
-  return controllerCommStatus.state == ControllerCommunicationState::Connected ||
-         controllerCommStatus.state == ControllerCommunicationState::Unknown;
+  return controllerCommManager.telemetry.state == ControllerCommunicationState::Connected ||
+         controllerCommManager.telemetry.state == ControllerCommunicationState::Unknown;
 }
 
 bool checkCommandPermission(ControllerCommandClass cmdClass, String &error) {
-  if (cmdClass == ControllerCommandClass::SafetyStop) {
-    return true;
-  }
-  if (cmdClass == ControllerCommandClass::RecoveryProbe) {
-    if (controllerCommStatus.state != ControllerCommunicationState::Recovering) {
-      error = "Recovery probe is allowed only during active controller recovery.";
-      return false;
-    }
-    return true;
-  }
-  if (controllerCommStatus.state == ControllerCommunicationState::Unresponsive) {
-    error = "Marlin is not responding. Machine commands are blocked until controller communication is restored.";
-    return false;
-  }
-  if (controllerCommStatus.state == ControllerCommunicationState::Recovering) {
-    error = "Controller communication recovery is in progress. Machine commands are blocked.";
-    return false;
-  }
-  if (cmdClass == ControllerCommandClass::OrdinarySync && controllerCommStatus.state == ControllerCommunicationState::Waiting) {
-    error = "Marlin is processing a synchronous command. Second command rejected.";
-    return false;
-  }
-  if (cmdClass == ControllerCommandClass::ManagedJogStream && controllerCommStatus.state != ControllerCommunicationState::Connected) {
-    error = "Jog stream is blocked while controller communication is unavailable.";
-    return false;
-  }
-  if (cmdClass == ControllerCommandClass::ManagedJobStream && (controllerCommStatus.state == ControllerCommunicationState::Unresponsive || controllerCommStatus.state == ControllerCommunicationState::Recovering)) {
-    error = "Job stream is blocked while controller communication is unavailable.";
-    return false;
-  }
-  return true;
+  controllerCommManager.activeJobRunning = jobIsActive();
+  controllerCommManager.activeJogRunning = jogIsActive();
+  std::string stdErr;
+  bool ok = controllerCommManager.checkPermission(cmdClass, stdErr);
+  if (!ok) error = stdErr.c_str();
+  return ok;
 }
 
-bool writeControllerLine(const String &command, ControllerCommandClass commandClass, bool priorityLog, String &error) {
-  if (!checkCommandPermission(commandClass, error)) {
+bool writeControllerLine(const String &command, ControllerCommandClass commandClass, uint32_t transactionToken, bool priorityLog, String &error) {
+  controllerCommManager.activeJobRunning = jobIsActive();
+  controllerCommManager.activeJogRunning = jogIsActive();
+  std::string stdErr;
+  if (!controllerCommManager.validateWritePermission(commandClass, transactionToken, stdErr)) {
+    error = stdErr.c_str();
     return false;
   }
   addMarlinLog("tx", priorityLog, command);
@@ -366,36 +319,33 @@ bool writeControllerLine(const String &command, ControllerCommandClass commandCl
   return true;
 }
 
+bool writeControllerLine(const String &command, ControllerCommandClass commandClass, bool priorityLog, String &error) {
+  return writeControllerLine(command, commandClass, 0, priorityLog, error);
+}
+
 bool ensureControllerCommunicationActive(String &error) {
   return checkCommandPermission(ControllerCommandClass::OrdinarySync, error);
 }
 
 void markControllerWaiting(const String &cmd) {
-  if (controllerCommStatus.state != ControllerCommunicationState::Waiting || controllerCommStatus.lastFailedCommand != cmd) {
-    controllerCommStatus.state = ControllerCommunicationState::Waiting;
-    controllerCommStatus.lastFailedCommand = cmd;
-    stageTelemetryUpdates();
-  }
+  uint32_t token = 0;
+  std::string tokErr;
+  controllerCommManager.reserveTransaction(ControllerCommandClass::OrdinarySync, cmd.c_str(), true, token, tokErr);
+  stageTelemetryUpdates();
 }
 
 void markControllerResponseSuccess() {
-  controllerCommStatus.lastSuccessfulResponseMs = millis();
-  if (controllerCommStatus.state != ControllerCommunicationState::Connected) {
-    controllerCommStatus.state = ControllerCommunicationState::Connected;
-    stageTelemetryUpdates();
-  }
+  controllerCommManager.onRecoveryComplete(millis());
+  stageTelemetryUpdates();
 }
 
 void markControllerUnresponsive(const String &cmd, const String &errorMsg) {
-  controllerCommStatus.state = ControllerCommunicationState::Unresponsive;
-  controllerCommStatus.lastTimeoutMs = millis();
-  controllerCommStatus.lastFailedCommand = cmd;
-  controllerCommStatus.lastError = errorMsg;
+  controllerCommManager.onTimeout(0, cmd.c_str(), errorMsg.c_str(), millis());
   stageTelemetryUpdates();
 }
 
 void markControllerRecovering() {
-  controllerCommStatus.state = ControllerCommunicationState::Recovering;
+  controllerCommManager.onRecovering();
   stageTelemetryUpdates();
 }
 
@@ -1831,8 +1781,8 @@ String jobStatusJson(bool authoritativeState = false) {
   json += "\"state\":\"" + controllerCommunicationStateToString(controllerCommStatus.state) + "\"";
   json += ",\"lastSuccessfulResponseMs\":" + String(controllerCommStatus.lastSuccessfulResponseMs);
   json += ",\"lastTimeoutMs\":" + String(controllerCommStatus.lastTimeoutMs);
-  json += ",\"lastFailedCommand\":" + (controllerCommStatus.lastFailedCommand.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastFailedCommand) + "\"") : "null");
-  json += ",\"lastError\":" + (controllerCommStatus.lastError.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastError) + "\"") : "null");
+  json += ",\"lastFailedCommand\":" + (controllerCommStatus.lastFailedCommand.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastFailedCommand.c_str()) + "\"") : "null");
+  json += ",\"lastError\":" + (controllerCommStatus.lastError.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastError.c_str()) + "\"") : "null");
   json += "}";
   json += ",\"gcodePath\":\"";
   json += jsonEscape(jobStatus.gcodePath);
@@ -2370,8 +2320,8 @@ String buildControllerSliceJson() {
   patchJson += "\"state\":\"" + controllerCommunicationStateToString(controllerCommStatus.state) + "\"";
   patchJson += ",\"lastSuccessfulResponseMs\":" + String(controllerCommStatus.lastSuccessfulResponseMs);
   patchJson += ",\"lastTimeoutMs\":" + String(controllerCommStatus.lastTimeoutMs);
-  patchJson += ",\"lastFailedCommand\":" + (controllerCommStatus.lastFailedCommand.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastFailedCommand) + "\"") : "null");
-  patchJson += ",\"lastError\":" + (controllerCommStatus.lastError.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastError) + "\"") : "null");
+  patchJson += ",\"lastFailedCommand\":" + (controllerCommStatus.lastFailedCommand.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastFailedCommand.c_str()) + "\"") : "null");
+  patchJson += ",\"lastError\":" + (controllerCommStatus.lastError.length() > 0 ? ("\"" + jsonEscape(controllerCommStatus.lastError.c_str()) + "\"") : "null");
   patchJson += "}";
   patchJson += ",\"lastError\":";
   patchJson += jobStatus.lastError.length() > 0 ? "\"" + jsonEscape(jobStatus.lastError) + "\"" : "null";
@@ -3188,7 +3138,7 @@ bool marlinResponseIsTerminal(const String &response) {
   return false;
 }
 
-MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass, bool promoteConnectedOnTerminal) {
+MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass, bool promoteConnectedOnTerminal, uint32_t transactionToken) {
   MarlinCommandResult result;
   const uint32_t start = millis();
 
@@ -3215,46 +3165,56 @@ MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs,
   if (result.terminalReceived) {
     String upper = result.response;
     upper.toUpperCase();
-    if (upper.indexOf("ERROR:") >= 0 || upper.indexOf("ALARM:") >= 0 || upper.indexOf("!!") >= 0) {
+    bool isErr = upper.indexOf("ERROR:") >= 0 || upper.indexOf("ALARM:") >= 0 || upper.indexOf("!!") >= 0;
+    if (isErr) {
       result.controllerError = true;
       result.success = false;
       result.error = "Marlin returned error or alarm: " + result.response;
     } else {
       result.success = true;
     }
-    controllerCommStatus.lastSuccessfulResponseMs = millis();
-    if (promoteConnectedOnTerminal && controllerCommStatus.state != ControllerCommunicationState::Connected) {
-      controllerCommStatus.state = ControllerCommunicationState::Connected;
-      stageTelemetryUpdates();
-    }
+    controllerCommManager.onTerminalResponse(transactionToken, isErr, millis());
+    stageTelemetryUpdates();
   } else {
     result.timeout = true;
     result.error = "Marlin did not respond within timeout.";
-    markControllerUnresponsive(cmd, result.error);
+    controllerCommManager.onTimeout(transactionToken, cmd.c_str(), result.error.c_str(), millis());
+    stageTelemetryUpdates();
   }
 
   return result;
 }
 
+MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass, bool promoteConnectedOnTerminal) {
+  return readMarlinResponseFor(cmd, timeoutMs, cmdClass, promoteConnectedOnTerminal, 0);
+}
+
 MarlinCommandResult executeSynchronousCommand(const String &cmd, uint32_t timeoutMs, ControllerCommandClass cmdClass, bool promoteConnectedOnTerminal) {
   MarlinCommandResult result;
-  String permError;
+  controllerCommManager.activeJobRunning = jobIsActive();
+  controllerCommManager.activeJogRunning = jogIsActive();
 
-  if (cmdClass == ControllerCommandClass::SafetyStop) {
-    promoteConnectedOnTerminal = false;
-  }
-
+  std::string reserveErr;
+  uint32_t token = 0;
   drainMarlinInput();
 
-  if (cmdClass == ControllerCommandClass::OrdinarySync) {
-    markControllerWaiting(cmd);
+  if (!controllerCommManager.reserveTransaction(cmdClass, cmd.c_str(), promoteConnectedOnTerminal, token, reserveErr)) {
+    result.error = reserveErr.c_str();
+    result.success = false;
+    return result;
   }
+  stageTelemetryUpdates();
 
-  if (!writeControllerLine(cmd, cmdClass, cmdClass != ControllerCommandClass::OrdinarySync, result.error)) {
+  String writeErr;
+  if (!writeControllerLine(cmd, cmdClass, token, cmdClass != ControllerCommandClass::OrdinarySync, writeErr)) {
+    controllerCommManager.onPreWriteFailure(token);
+    stageTelemetryUpdates();
+    result.error = writeErr;
+    result.success = false;
     return result;
   }
 
-  result = readMarlinResponseFor(cmd, timeoutMs, cmdClass, promoteConnectedOnTerminal);
+  result = readMarlinResponseFor(cmd, timeoutMs, cmdClass, promoteConnectedOnTerminal, token);
   return result;
 }
 
@@ -3514,17 +3474,32 @@ bool toolChangeParkIsWithinMachine(String &error) {
   return true;
 }
 
+uint32_t machineDiscoveryToken = 0;
+
 void processMachineDiscovery() {
   if (machineDiscoveryState == MachineDiscoveryState::Idle) {
     if (!machineDiscoveryPending || millis() < 5000 || machineDiscoveryTransportBusy()) return;
+    
+    std::string err;
+    uint32_t token = 0;
+    if (!controllerCommManager.reserveTransaction(ControllerCommandClass::OrdinarySync, "M115", true, token, err)) {
+      return;
+    }
+    machineDiscoveryToken = token;
+    stageTelemetryUpdates();
+
     machineDiscoveryPending = false;
     machineDiscoveryResponse = "";
     machineDiscoveryStartedAtMs = millis();
     machineProfile.refreshing = true;
     machineProfile.lastError = "";
     drainMarlinInput();
+
     String writeErr;
-    if (!writeControllerLine("M115", ControllerCommandClass::OrdinarySync, false, writeErr)) {
+    if (!writeControllerLine("M115", ControllerCommandClass::OrdinarySync, token, false, writeErr)) {
+      controllerCommManager.onPreWriteFailure(token);
+      stageTelemetryUpdates();
+      machineDiscoveryToken = 0;
       machineProfile.lastError = writeErr;
       machineProfile.refreshing = false;
       return;
@@ -3539,10 +3514,19 @@ void processMachineDiscovery() {
     parseMachineProfile(machineDiscoveryResponse);
     machineProfile.refreshing = false;
     machineDiscoveryState = MachineDiscoveryState::Idle;
+    String upper = machineDiscoveryResponse;
+    upper.toUpperCase();
+    bool isErr = upper.indexOf("ERROR:") >= 0 || upper.indexOf("ALARM:") >= 0 || upper.indexOf("!!") >= 0;
+    controllerCommManager.onTerminalResponse(machineDiscoveryToken, isErr, millis());
+    stageTelemetryUpdates();
+    machineDiscoveryToken = 0;
   } else if (millis() - machineDiscoveryStartedAtMs > 12000) {
     machineProfile.lastError = "M115 discovery timed out";
     machineProfile.refreshing = false;
     machineDiscoveryState = MachineDiscoveryState::Idle;
+    controllerCommManager.onTimeout(machineDiscoveryToken, "M115", "M115 discovery timed out", millis());
+    stageTelemetryUpdates();
+    machineDiscoveryToken = 0;
   }
 }
 
@@ -3591,11 +3575,17 @@ String feedOverrideCommand(int percent) {
 bool sendFeedOverrideImmediate(int percent) {
   const String cmd = feedOverrideCommand(percent);
   const MarlinCommandResult res = executeSynchronousCommand(cmd, 250, ControllerCommandClass::OrdinarySync, true);
+  if (!res.success) {
+    noteFeedOverrideResult(cmd, res.response, res.error);
+    logJobEvent("feed override failed: " + cmd + " error: " + res.error);
+    touchJobStatus();
+    return false;
+  }
   jobStatus.feedOverridePercent = percent;
-  noteFeedOverrideResult(cmd, res.response, res.error);
+  noteFeedOverrideResult(cmd, res.response, "");
   logJobEvent("feed override: " + cmd);
   touchJobStatus();
-  return res.success;
+  return true;
 }
 
 uint32_t marlinAckTimeoutForCommand(const String &command, bool toolChangeSequence = false) {
@@ -7675,7 +7665,15 @@ void handleProductionResumeStart() {
     return;
   }
 
-  sendFeedOverrideImmediate(jobStatus.feedOverridePercent);
+  if (!sendFeedOverrideImmediate(jobStatus.feedOverridePercent)) {
+    if (jobFile) jobFile.close();
+    clearPersistentJobCheckpoint();
+    jobRunning = false;
+    jobStatus = JobRunnerStatus();
+    touchJobStatus();
+    sendJsonError(503, "Production Resume failed during preamble M220 feed override: " + jobStatus.lastFeedOverrideError);
+    return;
+  }
   logJobEvent("Production Resume stream start: " + path + " commands=" + String(commandCount));
   jobRunning = true;
   jobStatus.state = JobRunnerState::Running;
@@ -9178,7 +9176,7 @@ void handleControllerRecover() {
 
   if (!m115Res.terminalReceived || !m115Res.success || (m115Upper.indexOf("FIRMWARE_NAME") < 0 && m115Upper.indexOf("MARLIN") < 0)) {
     markControllerUnresponsive("M115", "M115 recovery probe failed to return Marlin identity content");
-    sendJsonError(503, controllerCommStatus.lastError);
+    sendJsonError(503, controllerCommStatus.lastError.c_str());
     return;
   }
 
@@ -9212,7 +9210,7 @@ void handleControllerRecover() {
   if (!m114Res.terminalReceived || !m114Res.success || !parseAxisFromM114(m114Res.response, 'X', x) ||
       !parseAxisFromM114(m114Res.response, 'Y', y) || !parseAxisFromM114(m114Res.response, 'Z', z)) {
     markControllerUnresponsive("M114", "M114 position probe failed during recovery");
-    sendJsonError(503, controllerCommStatus.lastError);
+    sendJsonError(503, controllerCommStatus.lastError.c_str());
     return;
   }
 
