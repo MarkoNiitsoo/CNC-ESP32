@@ -457,10 +457,29 @@ export async function createMockServer(options = {}) {
         return json(res, 200, await env.runner.startTestMotion(await readJson(req)));
       }
       if (req.method === 'POST' && pathname === '/api/recovery/production/start') {
-        return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
+        try {
+          return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
+        } catch (err) {
+          const status = err.message.includes('M220') ? 503 : 409;
+          return json(res, status, { ok: false, error: err.message });
+        }
       }
-      if (req.method === 'POST' && pathname === '/api/job/pause') return json(res, 200, env.runner.pause());
-      if (req.method === 'POST' && pathname === '/api/job/resume') return json(res, 200, env.runner.resume());
+      if (req.method === 'POST' && pathname === '/api/job/pause') {
+        try {
+          return json(res, 200, env.runner.pause());
+        } catch (err) {
+          const status = err.message.includes('P000') ? 503 : 409;
+          return json(res, status, { ok: false, error: err.message });
+        }
+      }
+      if (req.method === 'POST' && pathname === '/api/job/resume') {
+        try {
+          return json(res, 200, env.runner.resume());
+        } catch (err) {
+          const status = err.message.includes('R000') ? 503 : 409;
+          return json(res, status, { ok: false, error: err.message });
+        }
+      }
       if (req.method === 'POST' && pathname === '/api/job/interrupt-for-manual-motion') {
         return json(res, 202, env.runner.interruptForManualMotion());
       }

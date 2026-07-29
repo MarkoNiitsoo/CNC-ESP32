@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-07-29 - Terminal Response Error State Promotion, Gated UART Drain & Recovery Token Tightening
+
+- Completed 6 core correctness fixes on `feature/phase1-websocket-transport`:
+  1. Terminal Response Error State Promotion (`src/controller_comm.cpp`): Terminal `ok`, `Error:`, `Alarm:`, or `!!` clear active `OrdinarySync` transaction and transition communication state to `Connected`, preserving the actual Marlin error string. State never remains stuck in `Waiting`.
+  2. Gated UART Drain Order (`src/main.cpp`): `executeSynchronousCommand()` calls `reserveTransaction()` FIRST. `drainMarlinInput()` runs ONLY AFTER reservation succeeds. If reservation is denied, UART input is untouched.
+  3. Production Resume Preamble Error Capture (`src/main.cpp`): Captures `lastFeedOverrideCommand`, `lastFeedOverrideResponse`, and `lastFeedOverrideError` BEFORE resetting `jobStatus = JobRunnerStatus()`. Returns HTTP 503 with exact captured error details.
+  4. Realtime P000 / R000 Writer Failure Handling (`src/main.cpp`, `dev/mock-job-runner.mjs`): `handleJobPause()` enters `PausedIntact` ONLY when `P000` write succeeds; `handleJobResume()` continues ONLY when `R000` write succeeds. On failure, explicit HTTP 503 error is returned and state/recovery evidence are preserved.
+  5. Tightened Recovery Probe Token Ownership (`src/controller_comm.cpp`): `RecoveryProbe` writes require `transactionToken > 0 && transactionToken == activeTransaction.token`. Token 0 write is rejected, and a second probe is rejected while another recovery transaction is active.
+  6. Unit Test Expansion & Quality Verification (`test/test_controller_comm/test_controller_comm.cpp`, `test/firmware/controller-communication.test.mjs`, `test/ui/machine-controls.test.mjs`): Added 3 native state-machine unit tests (`pio test -e native`: 13/13 PASSED in 1.51s). Added mock handler tests for preamble failure, P000 failure, and R000 failure. Updated UI disabling test to execute exported `window.LowRiderMachineBar.renderControllerStatus()` directly (`npm test`: 512/512 PASSED across 48 test files).
+
 ## 2026-07-29 - OrdinarySync Transaction Ownership Fix & Native C++ Unit Tests
 
 - Resolved OrdinarySync self-blocking bug and enforced transaction ownership on `feature/phase1-websocket-transport`:

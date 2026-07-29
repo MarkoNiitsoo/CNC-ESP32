@@ -3196,7 +3196,6 @@ MarlinCommandResult executeSynchronousCommand(const String &cmd, uint32_t timeou
 
   std::string reserveErr;
   uint32_t token = 0;
-  drainMarlinInput();
 
   if (!controllerCommManager.reserveTransaction(cmdClass, cmd.c_str(), promoteConnectedOnTerminal, token, reserveErr)) {
     result.error = reserveErr.c_str();
@@ -3204,6 +3203,8 @@ MarlinCommandResult executeSynchronousCommand(const String &cmd, uint32_t timeou
     return result;
   }
   stageTelemetryUpdates();
+
+  drainMarlinInput();
 
   String writeErr;
   if (!writeControllerLine(cmd, cmdClass, token, cmdClass != ControllerCommandClass::OrdinarySync, writeErr)) {
@@ -7666,12 +7667,17 @@ void handleProductionResumeStart() {
   }
 
   if (!sendFeedOverrideImmediate(jobStatus.feedOverridePercent)) {
+    const String failedCmd = jobStatus.lastFeedOverrideCommand;
+    const String failedResp = jobStatus.lastFeedOverrideResponse;
+    const String exactErr = jobStatus.lastFeedOverrideError;
+    const String preambleError = exactErr.length() > 0 ? exactErr : (failedResp.length() > 0 ? failedResp : "M220 feed override command failed");
+
     if (jobFile) jobFile.close();
     clearPersistentJobCheckpoint();
     jobRunning = false;
     jobStatus = JobRunnerStatus();
     touchJobStatus();
-    sendJsonError(503, "Production Resume failed during preamble M220 feed override: " + jobStatus.lastFeedOverrideError);
+    sendJsonError(503, "Production Resume failed during preamble M220 feed override (" + failedCmd + "): " + preambleError);
     return;
   }
   logJobEvent("Production Resume stream start: " + path + " commands=" + String(commandCount));
@@ -7894,15 +7900,19 @@ void handleJobPause() {
     return;
   }
 
-  jobStatus.pauseRequested = true;
-  jobStatus.stopRequested = false;
-  jobStatus.directResumeValid = true;
-  jobStatus.recoveryRequired = false;
-  jobStatus.pauseInterruptedForManualMotion = false;
-  jobStatus.state = JobRunnerState::Pausing;
   if (machineProfile.capRealtimeReporting) {
     String writeErr;
-    writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr);
+    if (!writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
+      setJobError("P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed"));
+      touchJobStatus();
+      sendJsonError(503, jobStatus.lastError);
+      return;
+    }
+    jobStatus.pauseRequested = true;
+    jobStatus.stopRequested = false;
+    jobStatus.directResumeValid = true;
+    jobStatus.recoveryRequired = false;
+    jobStatus.pauseInterruptedForManualMotion = false;
     jobStatus.pauseRealtimeHold = true;
     jobStatus.pauseMode = "realtime";
     jobStatus.state = JobRunnerState::PausedIntact;
@@ -7911,8 +7921,14 @@ void handleJobPause() {
     jobStatus.streamingPausedReason =
         "Motion held — cutter remains running. Direct Resume is valid until any manual movement.";
   } else {
+    jobStatus.pauseRequested = true;
+    jobStatus.stopRequested = false;
+    jobStatus.directResumeValid = true;
+    jobStatus.recoveryRequired = false;
+    jobStatus.pauseInterruptedForManualMotion = false;
     jobStatus.pauseRealtimeHold = false;
     jobStatus.pauseMode = "boundary";
+    jobStatus.state = JobRunnerState::Pausing;
     jobStatus.streamingPausedReason =
         "Pause pending at the next safely resumable command boundary; cutter remains running.";
   }
@@ -7945,16 +7961,21 @@ void handleJobResume() {
     return;
   }
 
-  jobStatus.pauseRequested = false;
-  jobStatus.streamingPausedReason = "";
-  jobStatus.state = JobRunnerState::Resuming;
   if (realtimeHold) {
     String writeErr;
-    writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr);
+    if (!writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
+      setJobError("R000 realtime resume rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed"));
+      touchJobStatus();
+      sendJsonError(503, jobStatus.lastError);
+      return;
+    }
   } else {
     jobResponseBuffer = "";
     jobWaitingForOk = false;
   }
+  jobStatus.pauseRequested = false;
+  jobStatus.streamingPausedReason = "";
+  jobStatus.state = JobRunnerState::Resuming;
   jobStatus.pauseRealtimeHold = false;
   jobStatus.directResumeValid = false;
   jobStatus.pauseMode = "none";

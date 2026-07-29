@@ -545,6 +545,11 @@ export class MockJobRunner {
     if (!hasCuttingMove) throw new Error('Production Resume file must contain cutting motion');
 
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
+    if (this.simulateFeedOverrideError) {
+      this.jobRunning = false;
+      this.status = this.emptyStatus();
+      throw new Error(`Production Resume failed during preamble M220 feed override (M220 S${feed}): ${this.simulateFeedOverrideError}`);
+    }
     this.status = {
       ...this.emptyStatus(), state: 'RUNNING', gcodePath: path, jobPath: request.jobPath,
       startMode: 'prepared_production_resume', streamMode: 'production-resume',
@@ -569,22 +574,11 @@ export class MockJobRunner {
       if (this.status.state !== 'RUNNING' && this.status.state !== 'RESUMING') return;
       const original = lines[index];
       const command = cleanLine(original);
-      const lineBytes = Buffer.byteLength(original) + (index < lines.length - 1 ? 1 : 0);
-      offset += lineBytes;
-      this.status.currentByteOffset = Math.min(offset, this.status.fileSize);
-      if (!command) {
-        this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
-        this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
-        continue;
-      }
+      this.status.currentLineNumber = index + 1;
+      this.status.currentByteOffset = offset;
+      offset += Buffer.byteLength(original) + 1;
+      if (!command) continue;
       commandLineNumber += 1;
-      this.status.currentLineNumber = commandLineNumber;
-
-      const workspace = command.toUpperCase().match(/\bG5(?:4|5|6|7|8|9(?:\.[123])?)\b/)?.[0];
-      if (workspace && workspace !== 'G54' && !this.status.allowedWorkspaceCommands) {
-        this.fail('Non-default workspace command found. This may conflict with captured work zero.');
-        return;
-      }
       if (isM6(command)) {
         this.status.lastCommand = command;
         this.handleToolChange(command);
@@ -628,6 +622,10 @@ export class MockJobRunner {
 
   pause() {
     if (this.status.state !== 'RUNNING') throw new Error('job is not running');
+    if (this.simulateP000Failure) {
+      this.status.lastError = 'P000 realtime pause rejected: UART write failed';
+      throw new Error(this.status.lastError);
+    }
     this.status.state = 'PAUSING';
     this.status.pauseRequested = true;
     this.status.directResumeValid = true;
@@ -655,6 +653,10 @@ export class MockJobRunner {
     }
     if (this.status.state !== 'PAUSED_INTACT' || !this.status.directResumeValid) {
       throw new Error('direct Resume is unavailable; review Recovery');
+    }
+    if (this.simulateR000Failure) {
+      this.status.lastError = 'R000 realtime resume rejected: UART write failed';
+      throw new Error(this.status.lastError);
     }
     this.status.state = 'RESUMING';
     if (this.status.realtimeHoldActive) this.runCommand('R000', { priority: true });

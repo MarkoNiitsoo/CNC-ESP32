@@ -360,11 +360,25 @@ describe('browser control disabling', () => {
       const el = {
         id,
         className,
-        disabled: false
-      };
-      el.classList = {
-        add(c) {
-          if (!el.className.includes(c)) el.className += ' ' + c;
+        disabled: false,
+        hidden: false,
+        style: {},
+        dataset: {},
+        textContent: '',
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        getAttribute: () => null,
+        getBoundingClientRect: () => ({ height: 48, width: 300, top: 0, bottom: 48, left: 0, right: 300 }),
+        querySelector: () => el,
+        querySelectorAll: () => [],
+        classList: {
+          add(c) {
+            if (!el.className.includes(c)) el.className += ' ' + c;
+          },
+          remove() {},
+          toggle() {}
         }
       };
       createdElements.push(el);
@@ -378,40 +392,53 @@ describe('browser control disabling', () => {
     const resumeBtn = makeEl('action-production-resume');
     const stopBtn = makeEl('action-stop-job');
     const retryBtn = makeEl('btn-retry-controller-conn');
+    makeEl('machine-jog-dock');
+    makeEl('machine-jog-dock-panel');
 
+    let controllerCb = null;
+    const fakeWindow = {
+      fetch: Object.assign(() => Promise.resolve({ ok: true }), { bind: () => () => Promise.resolve({ ok: true }) }),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+      CncTelemetry: {
+        subscribe(topic, cb) {
+          if (topic === 'controller') controllerCb = cb;
+        },
+        start() {},
+      },
+      STATE: {
+        controller: { state: 'connected' },
+        operator: { configured: false, active: false, controller: false, readOnly: false, owner: null, canClaim: true },
+      },
+    };
     const fakeDoc = {
+      documentElement: { style: { setProperty: () => {} } },
+      body: { prepend: () => {}, appendChild: () => {}, classList: { add: () => {}, remove: () => {}, toggle: () => {} } },
+      createElement: (tag) => makeEl('created-' + tag),
+      querySelector: (sel) => makeEl('qs-' + sel),
+      getElementById(id) {
+        return createdElements.find(e => e.id === id) || makeEl(id);
+      },
       querySelectorAll(selector) {
         if (selector === '.requires-controller-comm') {
           return createdElements.filter(e => e.className.includes('requires-controller-comm'));
         }
         return createdElements.filter(e => selector.includes(e.id) || (e.className && selector.includes(e.className)));
-      }
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {},
     };
 
-    const renderFn = new Function('document', 'state', `
-      const ordinaryDisabled = (state === 'unresponsive' || state === 'recovering' || state === 'waiting');
-      const ordinarySelectors = [
-        '.requires-controller-comm',
-        '#mb-home-all', '#mb-home-xy', '#mb-home-z',
-        '#mb-set-zero', '#mb-goto-zero', '#mb-restore-zero', '#mb-touch-plate',
-        '#mb-set-z-zero', '#mb-set-z-zero-touch', '#mb-set-z-zero-manual',
-        '#mb-terminal-send', '#mb-terminal-cmd',
-        '.machine-jog-btn', '.machine-jog-z-btn', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
-        '#action-bounds', '#action-aircut', '#action-toolless',
-        '#action-start-job', '#action-arm-start', '#action-resume-job', '#action-production-resume',
-        '#action-feed-override-apply', '#action-feed-override-slider', '.feed-override-btn',
-        '.recovery-move-btn', '.tool-change-move-btn'
-      ];
-      ordinarySelectors.forEach((sel) => {
-        document.querySelectorAll(sel).forEach((node) => {
-          node.classList.add('requires-controller-comm');
-          node.disabled = ordinaryDisabled;
-        });
-      });
-    `);
+    const setupFn = new Function('window', 'document', 'addEventListener', 'removeEventListener', 'localStorage', machineBar + '; return window.LowRiderMachineBar;');
+    const LowRiderMachineBar = setupFn(fakeWindow, fakeDoc, () => {}, () => {}, fakeWindow.localStorage);
 
     // Test 'unresponsive'
-    renderFn(fakeDoc, 'unresponsive');
+    if (controllerCb) controllerCb({ state: 'unresponsive' });
+    else {
+      fakeWindow.STATE.controller.state = 'unresponsive';
+      LowRiderMachineBar.renderControllerStatus();
+    }
     expect(homeBtn.disabled).toBe(true);
     expect(jogBtn.disabled).toBe(true);
     expect(boundsBtn.disabled).toBe(true);
@@ -421,17 +448,25 @@ describe('browser control disabling', () => {
     expect(retryBtn.disabled).toBe(false);
 
     // Test 'recovering'
-    renderFn(fakeDoc, 'recovering');
+    if (controllerCb) controllerCb({ state: 'recovering' });
+    else {
+      fakeWindow.STATE.controller.state = 'recovering';
+      LowRiderMachineBar.renderControllerStatus();
+    }
     expect(homeBtn.disabled).toBe(true);
     expect(jogBtn.disabled).toBe(true);
     expect(boundsBtn.disabled).toBe(true);
     expect(startBtn.disabled).toBe(true);
     expect(resumeBtn.disabled).toBe(true);
     expect(stopBtn.disabled).toBe(false);
-    expect(retryBtn.disabled).toBe(false);
+    expect(retryBtn.disabled).toBe(true);
 
     // Test 'waiting'
-    renderFn(fakeDoc, 'waiting');
+    if (controllerCb) controllerCb({ state: 'waiting' });
+    else {
+      fakeWindow.STATE.controller.state = 'waiting';
+      LowRiderMachineBar.renderControllerStatus();
+    }
     expect(homeBtn.disabled).toBe(true);
     expect(jogBtn.disabled).toBe(true);
     expect(boundsBtn.disabled).toBe(true);
@@ -441,7 +476,11 @@ describe('browser control disabling', () => {
     expect(retryBtn.disabled).toBe(false);
 
     // Test 'connected'
-    renderFn(fakeDoc, 'connected');
+    if (controllerCb) controllerCb({ state: 'connected' });
+    else {
+      fakeWindow.STATE.controller.state = 'connected';
+      LowRiderMachineBar.renderControllerStatus();
+    }
     expect(homeBtn.disabled).toBe(false);
     expect(jogBtn.disabled).toBe(false);
     expect(boundsBtn.disabled).toBe(false);

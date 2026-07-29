@@ -144,6 +144,88 @@ void test_10_production_resume_preamble_failure_simulation(void) {
   TEST_ASSERT_EQUAL_STRING("Marlin is not responding. Machine commands are blocked until controller communication is restored.", err.c_str());
 }
 
+void test_11_terminal_error_alarm_bangbang_transitions_to_connected(void) {
+  ControllerCommManager mgr;
+
+  // 1. Terminal Error:
+  uint32_t token1 = 0;
+  std::string err;
+  mgr.reserveTransaction(ControllerCommandClass::OrdinarySync, "G0 X100", true, token1, err);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Waiting, (int)mgr.telemetry.state);
+  mgr.onTerminalResponse(token1, true, 1000); // isErrorOrAlarm = true
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)mgr.telemetry.state);
+
+  // 2. Terminal Alarm:
+  uint32_t token2 = 0;
+  mgr.reserveTransaction(ControllerCommandClass::OrdinarySync, "G28", true, token2, err);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Waiting, (int)mgr.telemetry.state);
+  mgr.onTerminalResponse(token2, true, 2000); // isErrorOrAlarm = true
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)mgr.telemetry.state);
+
+  // 3. Terminal !! (Emergency Stop / Fatal Marlin Error)
+  uint32_t token3 = 0;
+  mgr.reserveTransaction(ControllerCommandClass::OrdinarySync, "M114", true, token3, err);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Waiting, (int)mgr.telemetry.state);
+  mgr.onTerminalResponse(token3, true, 3000); // isErrorOrAlarm = true
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)mgr.telemetry.state);
+}
+
+void test_12_tightened_recovery_probe_token_ownership(void) {
+  ControllerCommManager mgr;
+  mgr.onRecovering();
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Recovering, (int)mgr.telemetry.state);
+
+  uint32_t token1 = 0;
+  std::string err;
+  bool reserved1 = mgr.reserveTransaction(ControllerCommandClass::RecoveryProbe, "M115", false, token1, err);
+  TEST_ASSERT_TRUE(reserved1);
+  TEST_ASSERT_GREATER_THAN(0, token1);
+
+  // Reject transactionToken == 0 while reserved recovery transaction exists
+  std::string writeErr;
+  bool zeroValid = mgr.validateWritePermission(ControllerCommandClass::RecoveryProbe, 0, writeErr);
+  TEST_ASSERT_FALSE(zeroValid);
+  TEST_ASSERT_EQUAL_STRING("Recovery probe requires a valid active recovery transaction token.", writeErr.c_str());
+
+  // Reject second recovery probe while first probe is active
+  uint32_t token2 = 0;
+  std::string reserveErr;
+  bool reserved2 = mgr.reserveTransaction(ControllerCommandClass::RecoveryProbe, "M114", false, token2, reserveErr);
+  TEST_ASSERT_FALSE(reserved2);
+  TEST_ASSERT_EQUAL(0, token2);
+  TEST_ASSERT_EQUAL_STRING("Recovery probe rejected while another recovery transaction is active.", reserveErr.c_str());
+
+  // Terminal response for probe 1 clears active recovery transaction
+  mgr.onTerminalResponse(token1, false, 4000);
+
+  // Now second probe can be reserved successfully
+  bool reserved3 = mgr.reserveTransaction(ControllerCommandClass::RecoveryProbe, "M114", false, token2, reserveErr);
+  TEST_ASSERT_TRUE(reserved3);
+  TEST_ASSERT_GREATER_THAN(0, token2);
+}
+
+void test_13_second_command_rejected_during_active_m115_without_disturbing_transaction(void) {
+  ControllerCommManager mgr;
+  mgr.onRecovering();
+
+  uint32_t m115Token = 0;
+  std::string err;
+  bool m115Reserved = mgr.reserveTransaction(ControllerCommandClass::RecoveryProbe, "M115", false, m115Token, err);
+  TEST_ASSERT_TRUE(m115Reserved);
+
+  // Attempting an ordinary or second probe command fails permission check before UART actions
+  uint32_t secondToken = 0;
+  std::string secondErr;
+  bool secondReserved = mgr.reserveTransaction(ControllerCommandClass::OrdinarySync, "G28", true, secondToken, secondErr);
+  TEST_ASSERT_FALSE(secondReserved);
+  TEST_ASSERT_EQUAL(0, secondToken);
+
+  // Active M115 transaction and state remain intact
+  TEST_ASSERT_EQUAL(m115Token, mgr.activeTransaction.token);
+  TEST_ASSERT_EQUAL_STRING("M115", mgr.activeTransaction.command.c_str());
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Recovering, (int)mgr.telemetry.state);
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_1_connected_reserve_ordinary_sync_transitions_to_waiting);
@@ -156,5 +238,8 @@ int main(int argc, char **argv) {
   RUN_TEST(test_8_recovery_probe_remains_recovering);
   RUN_TEST(test_9_managed_streams_require_connected_and_correct_owner);
   RUN_TEST(test_10_production_resume_preamble_failure_simulation);
+  RUN_TEST(test_11_terminal_error_alarm_bangbang_transitions_to_connected);
+  RUN_TEST(test_12_tightened_recovery_probe_token_ownership);
+  RUN_TEST(test_13_second_command_rejected_during_active_m115_without_disturbing_transaction);
   return UNITY_END();
 }

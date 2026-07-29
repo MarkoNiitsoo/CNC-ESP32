@@ -35,6 +35,10 @@ bool ControllerCommManager::checkPermission(ControllerCommandClass cmdClass, std
       error = "Recovery probe is allowed only during active controller recovery.";
       return false;
     }
+    if (activeTransaction.token != 0) {
+      error = "Recovery probe rejected while another recovery transaction is active.";
+      return false;
+    }
     return true;
   }
   if (telemetry.state == ControllerCommunicationState::Unresponsive) {
@@ -115,11 +119,11 @@ bool ControllerCommManager::validateWritePermission(ControllerCommandClass cmdCl
   }
   if (cmdClass == ControllerCommandClass::RecoveryProbe) {
     if (telemetry.state == ControllerCommunicationState::Recovering) {
-      if (transactionToken == 0 || transactionToken == activeTransaction.token) {
+      if (transactionToken > 0 && transactionToken == activeTransaction.token) {
         return true;
       }
     }
-    errorOut = "Recovery probe is allowed only during active controller recovery.";
+    errorOut = "Recovery probe requires a valid active recovery transaction token.";
     return false;
   }
   if (cmdClass == ControllerCommandClass::SafetyStop) {
@@ -154,15 +158,10 @@ void ControllerCommManager::onPreWriteFailure(uint32_t transactionToken) {
 void ControllerCommManager::onTerminalResponse(uint32_t transactionToken, bool isErrorOrAlarm, uint32_t nowMs) {
   telemetry.lastSuccessfulResponseMs = nowMs;
   if (transactionToken > 0 && transactionToken == activeTransaction.token) {
-    bool promote = activeTransaction.promoteConnectedOnTerminal;
     ControllerCommandClass cClass = activeTransaction.commandClass;
     activeTransaction = SyncTransaction();
     if (cClass == ControllerCommandClass::OrdinarySync) {
-      if (promote && !isErrorOrAlarm) {
-        telemetry.state = ControllerCommunicationState::Connected;
-      } else if (!isErrorOrAlarm && telemetry.state == ControllerCommunicationState::Waiting) {
-        telemetry.state = ControllerCommunicationState::Connected;
-      }
+      telemetry.state = ControllerCommunicationState::Connected;
     }
   }
 }

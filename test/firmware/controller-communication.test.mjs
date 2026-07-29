@@ -309,4 +309,79 @@ describe('Controller Communication Correctness Fixes', () => {
     });
     expect(snapshot.gcodePath).toBe('/jobs/generated/valid.bounds.gc');
   });
+
+  it('21. Production Resume preamble M220 failure via real handler returns HTTP 503 and exact error without stream', async () => {
+    const { base, env } = await startServer();
+    const runId = 'run-preamble-fail';
+    const streamPath = '/jobs/generated/fail.production-resume.gc';
+    const jobPath = '/jobs/fail.job.json';
+    const activeRunPath = '/jobs/fail.gc';
+    const fingerprint = 'fp-fail-123';
+    const streamText = 'G21\nG90\nG54\nG0 X5 Y5 F1000\nG1 X10 Y10 F1000\nM400\n';
+    const streamSizeBytes = Buffer.byteLength(streamText);
+    const streamFingerprint = (await import('node:crypto')).createHash('sha256').update(Buffer.from(streamText)).digest('hex');
+
+    await env.sd.writeText(activeRunPath, 'G1 X10 Y10 F1000\n', { overwrite: true });
+    await env.sd.writeText(streamPath, streamText, { overwrite: true });
+
+    await env.sd.writeText(jobPath, JSON.stringify({
+      gcodePath: activeRunPath,
+      projectSafeZ: { version: 2, programSafeZ: 15, extraClearanceMm: 0, effectiveSafeZ: 15, resolved: true },
+      productionResumeAuthorization: {
+        authorized: true, eventId: 'evt-1', interruptedRunId: runId, activeRunPath, activeRunMode: 'source',
+        streamPath, streamSizeBytes, streamFingerprint,
+      },
+      recoveryHistory: [{
+        id: 'evt-1', type: 'production-resume', state: 'started', runId, activeRunPath, activeRunMode: 'source',
+        activeRunFingerprint: fingerprint, phase1CompletedAt: '2026-07-29T10:00:00Z', manualRouterConfirmedAt: '2026-07-29T10:01:00Z', streamPath,
+      }],
+    }), { overwrite: true });
+
+    env.runner.simulateFeedOverrideError = 'Marlin M220 timeout failure simulation';
+
+    const res = await fetch(`${base}/api/recovery/production/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: streamPath, jobPath, activeRunPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
+        eventId: 'evt-1', interruptedRunId: runId, streamFingerprint, streamSizeBytes, safeZ: 15,
+      }),
+    });
+
+    expect(res.status).toBe(503);
+    const data = await res.json();
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain('Production Resume failed during preamble M220 feed override');
+    expect(data.error).toContain('Marlin M220 timeout failure simulation');
+    expect(env.runner.isActive()).toBe(false);
+  });
+
+  it('22. P000 writer failure on /api/job/pause returns HTTP 503 without entering PAUSED_INTACT', async () => {
+    const { base, env } = await startServer();
+    env.runner.status.state = 'RUNNING';
+    env.runner.simulateP000Failure = true;
+
+    const res = await fetch(`${base}/api/job/pause`, { method: 'POST' });
+    expect(res.status).toBe(503);
+    const data = await res.json();
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain('P000 realtime pause rejected: UART write failed');
+    expect(env.runner.status.state).toBe('RUNNING');
+  });
+
+  it('23. R000 writer failure on /api/job/resume returns HTTP 503 and preserves PAUSED_INTACT state', async () => {
+    const { base, env } = await startServer();
+    env.runner.status.state = 'PAUSED_INTACT';
+    env.runner.status.directResumeValid = true;
+    env.runner.status.realtimeHoldActive = true;
+    env.runner.simulateR000Failure = true;
+
+    const res = await fetch(`${base}/api/job/resume`, { method: 'POST' });
+    expect(res.status).toBe(503);
+    const data = await res.json();
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain('R000 realtime resume rejected: UART write failed');
+    expect(env.runner.status.state).toBe('PAUSED_INTACT');
+    expect(env.runner.status.directResumeValid).toBe(true);
+  });
 });
