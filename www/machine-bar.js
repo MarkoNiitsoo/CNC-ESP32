@@ -583,6 +583,14 @@
     return data;
   }
 
+  /** Generate a collision-resistant unique command ID for WS idempotency. */
+  function genCommandId(prefix = 'cmd') {
+    const rnd = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID().replace(/-/g, '')
+      : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    return `${prefix}-${rnd}`;
+  }
+
   async function criticalJobPost(url) {
     let res;
     try {
@@ -683,6 +691,20 @@
       return;
     }
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
+    // Try the authenticated WS command first (lower latency, idempotent).
+    const telemetry = window.CncTelemetry;
+    if (telemetry?.command && STATE.operator?.controller) {
+      try {
+        await telemetry.command('safety.stop', null, genCommandId('stop'), { timeoutMs: 5000 });
+        setMessage('Stop Now requested via WS; position will require verification');
+        return;
+      } catch (wsErr) {
+        // Fall through to HTTP if WS command is rejected or times out.
+        // Log but don't surface the WS error — the HTTP path is the safety net.
+        console.warn('[stop] WS command failed, falling back to HTTP:', wsErr.message);
+      }
+    }
+    // HTTP fallback (also works without operator session for non-locked setups).
     try {
       await criticalJobPost('/api/job/stop');
       setMessage('Stop Now requested; position will require verification');
@@ -791,9 +813,18 @@
       controller,
       readOnly: !controller,
     };
+    // Forward the WS command token to the telemetry module.
+    // The token appears ONLY in Claim/Reconnect response bodies; heartbeat/status never carry it.
+    const token = typeof data?.socketCommandToken === 'string' ? data.socketCommandToken : null;
+    if (controller && token) {
+      window.CncTelemetry?.setSocketCommandToken(token, controlSessionEpoch);
+    } else if (!controller) {
+      window.CncTelemetry?.clearSocketCommandToken();
+    }
     syncOperatorHeartbeat();
     return STATE.operator;
   }
+
 
   function applyGlobalControlState(data) {
     if (!data || typeof data !== 'object') return STATE.operator;

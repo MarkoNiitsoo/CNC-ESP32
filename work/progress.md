@@ -1,6 +1,15 @@
 # Progress
 
-## 2026-07-30 - Phase 3A: WebSocket Command Transport Infrastructure
+## 2026-07-30 - Phase 3B: Token Lifecycle Wiring & Stop Command Migration
+
+- Wired the WS command token into the UI operator module on `feature/phase1-websocket-transport`:
+  1. **`www/machine-bar.js` — `applyLocalOperatorAuthorization`**: On every Claim/Reconnect response body (the only HTTP responses that include `socketCommandToken`), the function now calls `window.CncTelemetry?.setSocketCommandToken(token, controlSessionEpoch)` when controller=true and the token is present. On Release or any non-controller response, it calls `window.CncTelemetry?.clearSocketCommandToken()`. Optional chaining ensures it is safe to call before telemetry finishes loading.
+  2. **`www/machine-bar.js` — `genCommandId(prefix)`**: New helper using `crypto.randomUUID()` (with `Math.random()` + `Date.now()` fallback) for collision-resistant WS command IDs.
+  3. **`www/machine-bar.js` — `stopJob()`**: Migrated to try the authenticated WS `safety.stop` command first (when operator is controller). Falls back silently to the existing HTTP `criticalJobPost('/api/job/stop')` path if WS is unavailable or rejected, preserving safety for non-operator-locked deployments. Both paths remain in the codebase.
+  4. **`test/ui/machine-controls.test.mjs`**: Added 4 new source-audit tests in a `Phase 3B: WS command token lifecycle` describe block verifying token forwarding, optional-chaining guards, `genCommandId` structure, and WS-first stop order.
+- Verification: **584/584** tests passed across 51 files (580 pre-existing + 4 new Phase 3B).
+- Physical hardware was not flashed or exercised.
+
 
 - Implemented secure, authenticated, idempotent WS command transport layer on `feature/phase1-websocket-transport`:
   1. **Firmware (`src/main.cpp`)**: Added `socketCommandToken` lifecycle (generated as a 40-hex secret per operator Claim/Reconnect session, cleared on Release), per-token authorization check comparing both `controlSessionEpoch` and `socketCommandToken`, `WsCommandEntry` queue struct, `processWsCommandQueue()` dispatcher called from `loop()`, `finishWsCommand()` helper that sends `commandAck`+`commandResult` over the originating WS socket, and a 32-entry idempotency ledger keyed by `commandId`. The `safety.stop` action is implemented as the first concrete WS command.

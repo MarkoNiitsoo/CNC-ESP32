@@ -1,6 +1,17 @@
 # Handoff
 
-## 2026-07-30 - Phase 3A: WebSocket Command Transport Infrastructure
+## 2026-07-30 - Phase 3B: Token Lifecycle Wiring & Stop Command Migration
+
+- Completed Phase 3B initial migration. All 584 tests pass.
+- **What was built**:
+  - `applyLocalOperatorAuthorization` in `machine-bar.js` now manages the WS command token lifecycle. It reads `data.socketCommandToken` from Claim/Reconnect response bodies and forwards it via `window.CncTelemetry?.setSocketCommandToken(token, epoch)`. Release and all non-controller transitions call `clearSocketCommandToken()`. Optional chaining prevents load-order issues.
+  - `genCommandId(prefix)` helper added — uses `crypto.randomUUID()` with `Math.random()+Date.now()` fallback to generate collision-resistant command IDs for idempotency.
+  - `stopJob()` now tries `CncTelemetry.command('safety.stop', ...)` first (5 s timeout) when the operator holds the controller role. WS rejections and timeouts are caught and logged; the HTTP `criticalJobPost('/api/job/stop')` fallback always runs if the WS path fails.
+- **What remains (Phase 3C)**:
+  - Add WS command handlers in `processWsCommandQueue()` for: `job.pause`, `job.resume`, `job.start`, `machine.home`, `machine.setWorkZero`, `job.setFeedOverride`, jog actions (`jog.start`, `jog.update`, `jog.stop`).
+  - Migrate corresponding JS functions in `machine-bar.js` (and `preview.js` where applicable) to use `CncTelemetry.command()` with HTTP fallback (same pattern as `stopJob`).
+  - After each batch: run all 51 test files, build firmware, update docs, commit.
+
 
 - Completed Phase 3A on `feature/phase1-websocket-transport`. All 33 mock-server tests pass.
 - **What was built**: A full round-trip for secure, authenticated WS commands:

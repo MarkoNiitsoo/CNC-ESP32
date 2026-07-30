@@ -363,3 +363,57 @@ describe('browser control disabling', () => {
     expect(machineBar).not.toContain("transportStatus || 'synchronized'");
   });
 });
+
+describe('Phase 3B: WS command token lifecycle (source audit)', () => {
+  it('applyLocalOperatorAuthorization calls setSocketCommandToken when controller + token present', () => {
+    // Extract the function body.
+    const start = machineBar.indexOf('function applyLocalOperatorAuthorization(');
+    const end = machineBar.indexOf('\n  }', start) + 4;
+    const fn = machineBar.slice(start, end);
+    expect(fn).toContain('setSocketCommandToken(token, controlSessionEpoch)');
+    expect(fn).toContain('clearSocketCommandToken()');
+    // Token comes from data.socketCommandToken, never from STATE.operator.
+    expect(fn).toContain('data?.socketCommandToken');
+    expect(fn).toContain('controller && token');
+    expect(fn).toContain('!controller');
+  });
+
+  it('applyLocalOperatorAuthorization guards setSocketCommandToken behind window.CncTelemetry?.', () => {
+    const start = machineBar.indexOf('function applyLocalOperatorAuthorization(');
+    const end = machineBar.indexOf('\n  }', start) + 4;
+    const fn = machineBar.slice(start, end);
+    // Must use optional chaining — CncTelemetry may not be loaded yet.
+    expect(fn).toContain('window.CncTelemetry?.setSocketCommandToken');
+    expect(fn).toContain('window.CncTelemetry?.clearSocketCommandToken');
+  });
+
+  it('genCommandId generates a prefix-tagged unique string', () => {
+    const start = machineBar.indexOf('function genCommandId(');
+    const end = machineBar.indexOf('\n  }', start) + 4;
+    const fn = machineBar.slice(start, end);
+    expect(fn).toContain('crypto.randomUUID');
+    // Falls back gracefully when crypto.randomUUID is unavailable.
+    expect(fn).toContain('Math.random()');
+    expect(fn).toContain('Date.now()');
+    // Output is prefixed.
+    expect(fn).toContain('`${prefix}-${rnd}`');
+  });
+
+  it('stopJob() tries WS safety.stop first and falls back to HTTP', () => {
+    const start = machineBar.indexOf('async function stopJob()');
+    const end = machineBar.indexOf('\n  }', start) + 4;
+    const fn = machineBar.slice(start, end);
+    // WS command is attempted when operator is controller.
+    expect(fn).toContain("telemetry.command('safety.stop'");
+    expect(fn).toContain("STATE.operator?.controller");
+    // genCommandId used for idempotency.
+    expect(fn).toContain("genCommandId('stop')");
+    // HTTP fallback still present.
+    expect(fn).toContain("criticalJobPost('/api/job/stop')");
+    // WS path comes before HTTP path.
+    expect(fn.indexOf("telemetry.command")).toBeLessThan(fn.indexOf("criticalJobPost"));
+    // WS failures are swallowed (console.warn) so HTTP fallback always runs.
+    expect(fn).toContain('console.warn');
+  });
+});
+
