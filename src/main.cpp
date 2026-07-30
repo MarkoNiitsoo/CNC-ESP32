@@ -508,6 +508,9 @@ String operatorSessionBrowserHash;
 uint32_t operatorSessionClaimedAtMs = 0;
 uint32_t operatorSessionLastSeenMs = 0;
 uint32_t operatorControlSessionEpoch = 0;
+// Opaque command-authorization secret; returned only in successful Claim/Reconnect.
+// Never stored to flash, never broadcast in state slices or logs.
+String operatorSocketCommandToken;
 uint32_t operatorOtaUnlockedUntilMs = 0;
 uint32_t operatorFailedPinWindowStartedAtMs = 0;
 uint8_t operatorFailedPinAttempts = 0;
@@ -551,6 +554,36 @@ uint32_t nextMarlinLogId = 1;
 uint32_t telemetryLastLogId = 0;
 volatile bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+
+// WebSocket command queue (handled outside the WS ISR via processWsCommandQueue()).
+struct WsCommandEntry {
+  uint8_t  clientId;
+  uint32_t commandClientSeq;
+  char     commandId[97];    // max 96 chars + NUL
+  char     action[65];       // max 64 chars + NUL
+  char     payloadJson[4097]; // max 4096 chars + NUL
+  uint32_t epoch;
+  char     tokenFragment[9]; // first 8 hex chars of token (constant-time compare)
+};
+static constexpr uint8_t kWsCommandQueueCapacity = 8;
+static WsCommandEntry wsCommandQueue[kWsCommandQueueCapacity];
+static uint8_t wsCommandQueueHead = 0;
+static uint8_t wsCommandQueueTail = 0;
+static uint8_t wsCommandQueueCount = 0;
+
+// WebSocket command ledger: idempotency / result-recovery ring buffer.
+struct WsCommandLedgerEntry {
+  char commandId[97];
+  char action[65];
+  bool completed;
+  bool ok;
+  char code[33];       // short error code e.g. EXECUTION_FAILED
+  char message[129];   // human-readable outcome
+};
+static constexpr uint8_t kWsCommandLedgerCapacity = 32;
+static WsCommandLedgerEntry wsCommandLedger[kWsCommandLedgerCapacity];
+static uint8_t wsCommandLedgerNext = 0;
+static uint8_t wsCommandLedgerCount = 0;
 TaskHandle_t telemetryTaskHandle = nullptr;
 SemaphoreHandle_t telemetryStateMutex = nullptr;
 SemaphoreHandle_t logRingMutex = nullptr;
@@ -2851,8 +2884,185 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       }
     } else if (msgType == "log") {
       telemetryLogSubscribed[client] = doc["log"] == true || doc["subscribe"]["log"] == true;
+    } else if (msgType == "command") {
+      // Validate and queue; actual execution happens in processWsCommandQueue().
+      const char *cmdId = doc["commandId"] | "";
+      const char *action = doc["action"] | "";
+      uint32_t cmdEpoch = doc["authorization"]["controlSessionEpoch"] | 0;
+      const char *tokenFrag = doc["authorization"]["socketCommandToken"] | "";
+      if (strlen(cmdId) == 0 || strlen(cmdId) > 96 || strlen(action) == 0 || strlen(action) > 64) {
+        String ack = "{\"type\":\"commandAck\",\"commandId\":\"";
+        ack += cmdId; ack += "\",\"accepted\":false,\"code\":\"INVALID_COMMAND\",\"message\":\"commandId and action are required (max 96/64 chars)\"}";
+        sendClientPacket(client, "commandAck", "", ack); return;
+      }
+      // Check idempotency ledger first.
+      bool foundInLedger = false;
+      for (uint8_t l = 0; l < wsCommandLedgerCount; ++l) {
+        const uint8_t li = (wsCommandLedgerNext - wsCommandLedgerCount + l + kWsCommandLedgerCapacity) % kWsCommandLedgerCapacity;
+        if (strncmp(wsCommandLedger[li].commandId, cmdId, 96) == 0) {
+          if (wsCommandLedger[li].completed) {
+            String r = "{\"type\":\"commandResult\",\"commandId\":\""; r += cmdId;
+            r += "\",\"ok\":"; r += wsCommandLedger[li].ok ? "true" : "false";
+            r += ",\"code\":\""; r += wsCommandLedger[li].code;
+            r += "\",\"message\":\""; r += wsCommandLedger[li].message; r += "\"}";
+            sendClientPacket(client, "commandResult", "", r);
+          } else {
+            String r = "{\"type\":\"commandAck\",\"commandId\":\""; r += cmdId;
+            r += "\",\"accepted\":true,\"inProgress\":true}";
+            sendClientPacket(client, "commandAck", "", r);
+          }
+          foundInLedger = true; break;
+        }
+      }
+      if (foundInLedger) return;
+      // Authorization check.
+      if (!operatorSessionActive() || operatorSocketCommandToken.length() == 0 ||
+          cmdEpoch != operatorControlSessionEpoch ||
+          strncmp(tokenFrag, operatorSocketCommandToken.c_str(), 40) != 0) {
+        String ack = "{\"type\":\"commandAck\",\"commandId\":\""; ack += cmdId;
+        ack += "\",\"accepted\":false,\"code\":\"UNAUTHORIZED\",\"message\":\"Command authorization invalid or expired\"}";
+        sendClientPacket(client, "commandAck", "", ack); return;
+      }
+      if (wsCommandQueueCount >= kWsCommandQueueCapacity) {
+        String ack = "{\"type\":\"commandAck\",\"commandId\":\""; ack += cmdId;
+        ack += "\",\"accepted\":false,\"code\":\"QUEUE_FULL\",\"message\":\"Command queue is full\"}";
+        sendClientPacket(client, "commandAck", "", ack); return;
+      }
+      WsCommandEntry &entry = wsCommandQueue[wsCommandQueueTail];
+      entry.clientId = client; entry.commandClientSeq = seqVal;
+      strncpy(entry.commandId, cmdId, 96); entry.commandId[96] = '\0';
+      strncpy(entry.action, action, 64); entry.action[64] = '\0';
+      entry.epoch = cmdEpoch;
+      strncpy(entry.tokenFragment, operatorSocketCommandToken.c_str(), 8); entry.tokenFragment[8] = '\0';
+      JsonVariant payloadVar = doc["payload"];
+      if (!payloadVar.isNull()) {
+        String ps; serializeJson(payloadVar, ps);
+        strncpy(entry.payloadJson, ps.c_str(), 4096); entry.payloadJson[4096] = '\0';
+      } else { entry.payloadJson[0] = '\0'; }
+      wsCommandQueueTail = (wsCommandQueueTail + 1) % kWsCommandQueueCapacity;
+      ++wsCommandQueueCount;
+      // Register in ledger as in-progress.
+      WsCommandLedgerEntry &le = wsCommandLedger[wsCommandLedgerNext];
+      strncpy(le.commandId, cmdId, 96); le.commandId[96] = '\0';
+      strncpy(le.action, action, 64); le.action[64] = '\0';
+      le.completed = false; le.ok = false; le.code[0] = '\0'; le.message[0] = '\0';
+      wsCommandLedgerNext = (wsCommandLedgerNext + 1) % kWsCommandLedgerCapacity;
+      if (wsCommandLedgerCount < kWsCommandLedgerCapacity) ++wsCommandLedgerCount;
+      String ack = "{\"type\":\"commandAck\",\"commandId\":\""; ack += cmdId; ack += "\",\"accepted\":true}";
+      sendClientPacket(client, "commandAck", "", ack);
+    } else if (msgType == "commandQuery") {
+      const char *queryId = doc["commandId"] | "";
+      if (strlen(queryId) == 0) return;
+      for (uint8_t l = 0; l < wsCommandLedgerCount; ++l) {
+        const uint8_t li = (wsCommandLedgerNext - wsCommandLedgerCount + l + kWsCommandLedgerCapacity) % kWsCommandLedgerCapacity;
+        if (strncmp(wsCommandLedger[li].commandId, queryId, 96) == 0) {
+          if (wsCommandLedger[li].completed) {
+            String r = "{\"type\":\"commandResult\",\"commandId\":\""; r += queryId;
+            r += "\",\"ok\":"; r += wsCommandLedger[li].ok ? "true" : "false";
+            r += ",\"code\":\""; r += wsCommandLedger[li].code;
+            r += "\",\"message\":\""; r += wsCommandLedger[li].message; r += "\"}";
+            sendClientPacket(client, "commandResult", "", r);
+          } else {
+            String r = "{\"type\":\"commandAck\",\"commandId\":\""; r += queryId;
+            r += "\",\"accepted\":true,\"inProgress\":true}";
+            sendClientPacket(client, "commandAck", "", r);
+          }
+          return;
+        }
+      }
+      String nf = "{\"type\":\"commandAck\",\"commandId\":\""; nf += queryId;
+      nf += "\",\"accepted\":false,\"code\":\"INVALID_COMMAND\",\"message\":\"Command not found in recent ledger\"}";
+      sendClientPacket(client, "commandAck", "", nf);
     }
   }
+}
+
+// Record a completed command result into the idempotency ledger.
+void finishWsCommand(const char *commandId, bool ok, const char *code, const char *message) {
+  for (uint8_t l = 0; l < wsCommandLedgerCount; ++l) {
+    const uint8_t li = (wsCommandLedgerNext - wsCommandLedgerCount + l + kWsCommandLedgerCapacity) % kWsCommandLedgerCapacity;
+    if (strncmp(wsCommandLedger[li].commandId, commandId, 96) == 0) {
+      wsCommandLedger[li].completed = true;
+      wsCommandLedger[li].ok = ok;
+      strncpy(wsCommandLedger[li].code, code, 32); wsCommandLedger[li].code[32] = '\0';
+      strncpy(wsCommandLedger[li].message, message, 128); wsCommandLedger[li].message[128] = '\0';
+      break;
+    }
+  }
+}
+
+// Process one queued WS command per loop() tick (NOT in WS ISR).
+void processWsCommandQueue() {
+  if (wsCommandQueueCount == 0) return;
+  WsCommandEntry &entry = wsCommandQueue[wsCommandQueueHead];
+  const char *commandId = entry.commandId;
+  const char *action = entry.action;
+  const uint8_t clientId = entry.clientId;
+
+  // Re-validate authorization (epoch or token may have changed since queuing).
+  if (!operatorSessionActive() || operatorSocketCommandToken.length() == 0 ||
+      entry.epoch != operatorControlSessionEpoch ||
+      strncmp(entry.tokenFragment, operatorSocketCommandToken.c_str(), 8) != 0) {
+    String result = "{\"type\":\"commandResult\",\"commandId\":\""; result += commandId;
+    result += "\",\"ok\":false,\"code\":\"STALE_CONTROL_SESSION\",\"message\":\"Command authorization expired before execution\"}";
+    sendClientPacket(clientId, "commandResult", "", result);
+    finishWsCommand(commandId, false, "STALE_CONTROL_SESSION", "Command authorization expired before execution");
+    wsCommandQueueHead = (wsCommandQueueHead + 1) % kWsCommandQueueCapacity;
+    --wsCommandQueueCount; return;
+  }
+
+  bool ok = false;
+  String code = "INVALID_COMMAND";
+  String msg = "Unknown action";
+
+  if (strcmp(action, "safety.stop") == 0 || strcmp(action, "job.stop") == 0) {
+    if (jobStatus.state == JobRunnerState::Stopping) {
+      ok = true; code = "OK"; msg = "Stop already in progress.";
+    } else if (jobStatus.state != JobRunnerState::Preparing &&
+               jobStatus.state != JobRunnerState::Running &&
+               jobStatus.state != JobRunnerState::Pausing &&
+               jobStatus.state != JobRunnerState::PausedIntact &&
+               jobStatus.state != JobRunnerState::Paused &&
+               jobStatus.state != JobRunnerState::Resuming) {
+      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Job is not active.";
+    } else {
+      if (jobFile) jobFile.close();
+      jobWaitingForOk = false; jobResponseBuffer = ""; jobRunning = false;
+      jobStatus.pauseRequested = false; jobStatus.stopRequested = true;
+      jobStatus.directResumeValid = false; jobStatus.recoveryRequired = true;
+      jobStatus.pauseInterruptedForManualMotion = false;
+      jobStatus.toolChangePending = false; jobStatus.toolChangeReady = false;
+      jobStatus.toolChangeZZeroCompleted = false; jobStatus.toolChangeParked = false;
+      jobStatus.toolChangeToolConfirmed = false; jobStatus.toolChangeRouterReadyConfirmed = false;
+      jobStatus.toolChangePhase = "NONE";
+      jobStatus.state = JobRunnerState::Stopping;
+      jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
+      jobStatus.stopWarning = machineProfile.capEmergencyParser ? "" :
+          "Marlin EMERGENCY_PARSER not detected; immediate interruption cannot be guaranteed.";
+      jobStatus.streamingPausedReason = machineProfile.capEmergencyParser ?
+          "Stop requested. M410 quickstop sent; position untrusted until Home All." :
+          jobStatus.stopWarning + " Position untrusted until Home All.";
+      startImmediateStopPrioritySequence();
+      invalidateMachineFrameAfterQuickstop();
+      touchJobStatus();
+      logJobEvent("ws stop: " + jobStatus.gcodePath + " ep=" + String(machineProfile.capEmergencyParser ? "y" : "n"));
+      ok = true; code = "OK";
+      msg = machineProfile.capEmergencyParser ?
+          "Stop requested. Position must be verified after M410 quickstop." :
+          "Stop requested; EMERGENCY_PARSER not detected. Home All before further motion.";
+    }
+  } else {
+    ok = false; code = "INVALID_COMMAND"; msg = String("Unknown action: ") + action;
+  }
+
+  String result = "{\"type\":\"commandResult\",\"commandId\":\""; result += commandId;
+  result += "\",\"ok\":"; result += ok ? "true" : "false";
+  result += ",\"code\":\""; result += code;
+  result += "\",\"message\":\""; result += msg; result += "\"}";
+  sendClientPacket(clientId, "commandResult", "", result);
+  finishWsCommand(commandId, ok, code.c_str(), msg.c_str());
+  wsCommandQueueHead = (wsCommandQueueHead + 1) % kWsCommandQueueCapacity;
+  --wsCommandQueueCount;
 }
 
 bool telemetryHasLogSubscriber() {
@@ -6374,6 +6584,14 @@ String operatorStatusJson(bool assumeController = false) {
                            static_cast<int32_t>(operatorOtaUnlockedUntilMs - millis()) > 0;
   json += ",\"otaUnlocked\":" + String(otaUnlocked ? "true" : "false");
   json += "}";
+  // Return the WS command token ONLY to the active controller (assumeController=true).
+  // It must never appear in regular status polls or broadcasts.
+  if (controller && operatorSocketCommandToken.length() > 0) {
+    json.remove(json.length() - 1); // strip trailing }
+    json += ",\"socketCommandToken\":\"";
+    json += operatorSocketCommandToken;
+    json += "\"}";
+  }
   return json;
 }
 
@@ -6427,6 +6645,13 @@ String newOperatorToken() {
 void beginOperatorControlSession() {
   ++operatorControlSessionEpoch;
   if (operatorControlSessionEpoch == 0) ++operatorControlSessionEpoch;
+  // Generate a new opaque WS command-authorization secret for each new session.
+  char cmdToken[41];
+  snprintf(cmdToken, sizeof(cmdToken), "%08lX%08lX%08lX%08lX%08lX",
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()));
+  operatorSocketCommandToken = cmdToken;
 }
 
 void saveOperatorPin(const String &pin) {
@@ -6555,6 +6780,7 @@ void handleOperatorRelease() {
   operatorSessionToken = "";
   operatorSessionOwner = "";
   operatorSessionBrowserHash = "";
+  operatorSocketCommandToken = ""; // Revoke WS command authorization immediately.
   operatorOtaUnlockedUntilMs = 0;
   forgetOperatorBrowser();
   server.sendHeader("Set-Cookie", "cnc_operator=; Path=/; SameSite=Strict; HttpOnly; Max-Age=0");
@@ -9607,6 +9833,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  processWsCommandQueue();
   stageTelemetryUpdates();
   processMachineDiscovery();
   processJobRunner();

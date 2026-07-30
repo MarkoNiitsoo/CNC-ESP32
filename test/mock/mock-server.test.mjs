@@ -739,3 +739,275 @@ describe('mock HTTP API', () => {
     expect((await unsupported.json()).error).toMatch(/not implemented/i);
   });
 });
+
+// ── Phase 3A: WebSocket command protocol ─────────────────────────────────────
+
+/** Open a raw WebSocket to the mock server and perform the hello handshake.
+ *  Returns { socket, recv } where recv() returns the next parsed message. */
+async function connectWs(base) {
+  // Node 21+ has a built-in global WebSocket (WHATWG API); no external dependency needed.
+  const wsUrl = base.replace(/^http/, 'ws');
+  const socket = new WebSocket(wsUrl);
+
+  const queue = [];
+  const waiters = [];
+
+  socket.addEventListener('message', (event) => {
+    const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
+    if (waiters.length > 0) {
+      waiters.shift()(msg);
+    } else {
+      queue.push(msg);
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve, { once: true });
+    socket.addEventListener('error', reject, { once: true });
+  });
+
+  const recv = () => new Promise((resolve) => {
+    if (queue.length > 0) resolve(queue.shift());
+    else waiters.push(resolve);
+  });
+
+  // Perform hello handshake and drain the snapshot.
+  let seq = 1;
+  socket.send(JSON.stringify({ protocolVersion: 1, type: 'hello', seq: seq++, ack: 0, knownBootId: null, lastStateRevision: 0, utcMs: Date.now(), timezoneOffsetMinutes: 0, timeZone: 'UTC' }));
+  const snapshot = await recv();
+  expect(snapshot.type).toBe('snapshot');
+
+  const send = (obj) => { obj.seq = seq++; obj.ack = snapshot.seq; socket.send(JSON.stringify(obj)); };
+  return { socket, send, recv, close: () => socket.close() };
+}
+
+describe('WS command protocol (Phase 3A)', () => {
+  it('returns socketCommandToken in Claim response and not in heartbeat', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    expect(typeof claim.socketCommandToken).toBe('string');
+    expect(claim.socketCommandToken.length).toBeGreaterThan(0);
+    expect(claim.controlSessionEpoch).toBeGreaterThan(0);
+
+    // Heartbeat must NOT expose the token.
+    const cookie = `cnc_operator=${claim.ok ? undefined : ''}`;
+    const hb = await fetch(`${base}/api/operator/heartbeat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    }).then((r) => r.json());
+    expect(hb.socketCommandToken).toBeUndefined();
+  });
+
+  it('returns socketCommandToken in Reconnect response for a new session', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    // Expire the session to force a new one on reconnect.
+    env.operator.lastSeenAt = Date.now() - 60000;
+    const reconnect = await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    expect(typeof reconnect.socketCommandToken).toBe('string');
+    expect(reconnect.socketCommandToken.length).toBeGreaterThan(0);
+    expect(reconnect.controlSessionEpoch).toBeGreaterThan(claim.controlSessionEpoch);
+    expect(reconnect.socketCommandToken).not.toBe(claim.socketCommandToken);
+  });
+
+  it('clears socketCommandToken on Release', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    });
+    expect(env.operator.socketCommandToken.length).toBeGreaterThan(0);
+    const cookie = `cnc_operator=${env.operator.token}`;
+    await fetch(`${base}/api/operator/release`, {
+      method: 'POST', headers: { Cookie: cookie },
+    });
+    expect(env.operator.socketCommandToken).toBe('');
+  });
+
+  it('rejects a WS command with missing or short commandId', async () => {
+    const { base, env } = await start();
+    // Set up a valid operator session.
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: '', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.accepted).toBe(false);
+    expect(ack.code).toBe('INVALID_COMMAND');
+    ws.close();
+  });
+
+  it('rejects a WS command with wrong token', async () => {
+    const { base } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-wrong-token', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: 'wrong-token' },
+    });
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.accepted).toBe(false);
+    expect(ack.code).toBe('UNAUTHORIZED');
+    ws.close();
+  });
+
+  it('rejects a WS command with wrong epoch', async () => {
+    const { base } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-wrong-epoch', action: 'safety.stop',
+      authorization: { controlSessionEpoch: 9999, socketCommandToken: claim.socketCommandToken },
+    });
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.accepted).toBe(false);
+    expect(ack.code).toBe('UNAUTHORIZED');
+    ws.close();
+  });
+
+  it('accepts safety.stop on an active job and returns commandResult', async () => {
+    const { base, env } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-stop-1', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.commandId).toBe('cmd-stop-1');
+    expect(ack.accepted).toBe(true);
+
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.commandId).toBe('cmd-stop-1');
+    expect(result.ok).toBe(true);
+    expect(result.code).toBe('OK');
+    ws.close();
+  });
+
+  it('returns JOB_STATE_CONFLICT for safety.stop when job is idle', async () => {
+    const { base, env } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'IDLE';
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-stop-idle', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('JOB_STATE_CONFLICT');
+    ws.close();
+  });
+
+  it('returns INVALID_COMMAND for an unknown action', async () => {
+    const { base } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-unknown', action: 'robot.dance',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('INVALID_COMMAND');
+    ws.close();
+  });
+
+  it('handles commandQuery for a completed command (idempotency)', async () => {
+    const { base, env } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+
+    const ws = await connectWs(base);
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-idempotent-1', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    await ws.recv(); // ack
+    await ws.recv(); // result
+
+    // Send the same commandId again — expect cached result.
+    ws.send({
+      protocolVersion: 1, type: 'command',
+      commandId: 'cmd-idempotent-1', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    const cached = await ws.recv();
+    expect(cached.type).toBe('commandResult');
+    expect(cached.commandId).toBe('cmd-idempotent-1');
+    expect(cached.ok).toBe(true);
+
+    // Also test commandQuery directly.
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-idempotent-1' });
+    const queried = await ws.recv();
+    expect(queried.type).toBe('commandResult');
+    expect(queried.commandId).toBe('cmd-idempotent-1');
+    expect(queried.ok).toBe(true);
+    ws.close();
+  });
+
+  it('commandQuery returns INVALID_COMMAND for an unknown commandId', async () => {
+    const { base } = await start();
+    const ws = await connectWs(base);
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'never-sent' });
+    const resp = await ws.recv();
+    expect(resp.type).toBe('commandAck');
+    expect(resp.accepted).toBe(false);
+    expect(resp.code).toBe('INVALID_COMMAND');
+    ws.close();
+  });
+});

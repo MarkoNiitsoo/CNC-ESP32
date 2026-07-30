@@ -163,6 +163,8 @@ export async function createMockEnvironment(options = {}) {
     configured: false, pin: '', token: '', owner: '', lastSeenAt: 0,
     browserId: '', rememberedBrowserId: '', rememberedOwner: '',
     leaseMs: 45000, otaUnlockedUntil: 0, controlSessionEpoch: 0,
+    // WS command-authorization secret — never sent in state slices, only in Claim/Reconnect body.
+    socketCommandToken: '',
   };
   return {
     projectRoot, wwwRoot: path.join(projectRoot, 'www'), config, sd, marlin, runner, frame, jog, device, marlinLog,
@@ -265,14 +267,17 @@ export async function createMockServer(options = {}) {
         if (env.operator.configured && pin !== env.operator.pin) {
           return json(res, 403, { ok: false, error: 'incorrect operator PIN' });
         }
+        const newEpoch = (env.operator.controlSessionEpoch + 1) || 1;
         Object.assign(env.operator, {
           configured: true, pin, token: randomBytes(20).toString('hex'), owner,
           browserId, rememberedBrowserId: browserId, rememberedOwner: owner,
           lastSeenAt: Date.now(), otaUnlockedUntil: 0,
-          controlSessionEpoch: (env.operator.controlSessionEpoch + 1) || 1,
+          controlSessionEpoch: newEpoch,
+          socketCommandToken: randomBytes(20).toString('hex'),
         });
         const cookie = `cnc_operator=${env.operator.token}`;
-        return json(res, 200, operatorStatus({ headers: { cookie } }), {
+        const claimStatus = operatorStatus({ headers: { cookie } });
+        return json(res, 200, { ...claimStatus, socketCommandToken: env.operator.socketCommandToken }, {
           'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
         });
       }
@@ -298,10 +303,12 @@ export async function createMockServer(options = {}) {
             lastSeenAt: Date.now(),
             otaUnlockedUntil: 0,
             controlSessionEpoch: (env.operator.controlSessionEpoch + 1) || 1,
+            socketCommandToken: randomBytes(20).toString('hex'),
           });
         }
         const cookie = `cnc_operator=${env.operator.token}`;
-        return json(res, 200, operatorStatus({ headers: { cookie } }), {
+        const reconnStatus = operatorStatus({ headers: { cookie } });
+        return json(res, 200, { ...reconnStatus, socketCommandToken: env.operator.socketCommandToken }, {
           'Set-Cookie': `${cookie}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
         });
       }
@@ -313,7 +320,7 @@ export async function createMockServer(options = {}) {
         if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
         Object.assign(env.operator, {
           token: '', owner: '', browserId: '', rememberedBrowserId: '', rememberedOwner: '',
-          lastSeenAt: 0, otaUnlockedUntil: 0,
+          lastSeenAt: 0, otaUnlockedUntil: 0, socketCommandToken: '', // revoke WS command auth
         });
         return json(res, 200, operatorStatus(req), { 'Set-Cookie': 'cnc_operator=; Path=/; Max-Age=0' });
       }
@@ -1222,6 +1229,62 @@ export async function createMockServer(options = {}) {
             });
           } else if (msg.type === 'log') {
             clientState.logSubscribed = msg.log === true || msg.subscribe?.log === true;
+          } else if (msg.type === 'command') {
+            const cmdId = String(msg.commandId || '');
+            const action = String(msg.action || '');
+            const auth = msg.authorization || {};
+            if (!cmdId || cmdId.length > 96 || !action || action.length > 64) {
+              sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'INVALID_COMMAND', message: 'commandId and action are required (max 96/64 chars)' });
+            } else if (!operatorActive() || !env.operator.socketCommandToken ||
+                Number(auth.controlSessionEpoch) !== env.operator.controlSessionEpoch ||
+                String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
+              sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'UNAUTHORIZED', message: 'Command authorization invalid or expired' });
+            } else {
+              // Store in ledger and process synchronously (mock is single-threaded).
+              clientState.commandLedger = clientState.commandLedger || new Map();
+              if (clientState.commandLedger.has(cmdId)) {
+                const existing = clientState.commandLedger.get(cmdId);
+                if (existing.completed) {
+                  sendMockWsPacket(socket, 'commandResult', { commandId: cmdId, ok: existing.ok, code: existing.code, message: existing.message });
+                } else {
+                  sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: true, inProgress: true });
+                }
+              } else {
+                clientState.commandLedger.set(cmdId, { completed: false, ok: false, code: '', message: '' });
+                sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: true });
+                // Execute the command.
+                let ok = false;
+                let code = 'INVALID_COMMAND';
+                let resultMsg = `Unknown action: ${action}`;
+                if (action === 'safety.stop' || action === 'job.stop') {
+                  const state = env.runner.status.state;
+                  if (['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING'].includes(state)) {
+                    env.runner.stop();
+                    ok = true; code = 'OK'; resultMsg = 'Stop requested.';
+                  } else if (state === 'STOPPING') {
+                    ok = true; code = 'OK'; resultMsg = 'Stop already in progress.';
+                  } else {
+                    ok = false; code = 'JOB_STATE_CONFLICT'; resultMsg = 'Job is not active.';
+                  }
+                }
+                clientState.commandLedger.set(cmdId, { completed: true, ok, code, message: resultMsg });
+                sendMockWsPacket(socket, 'commandResult', { commandId: cmdId, ok, code, message: resultMsg });
+              }
+            }
+          } else if (msg.type === 'commandQuery') {
+            const queryId = String(msg.commandId || '');
+            if (!queryId) return;
+            clientState.commandLedger = clientState.commandLedger || new Map();
+            const entry = clientState.commandLedger.get(queryId);
+            if (entry) {
+              if (entry.completed) {
+                sendMockWsPacket(socket, 'commandResult', { commandId: queryId, ok: entry.ok, code: entry.code, message: entry.message });
+              } else {
+                sendMockWsPacket(socket, 'commandAck', { commandId: queryId, accepted: true, inProgress: true });
+              }
+            } else {
+              sendMockWsPacket(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'INVALID_COMMAND', message: 'Command not found in recent ledger' });
+            }
           }
         } catch {
           // ignore malformed ws message

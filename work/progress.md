@@ -1,5 +1,16 @@
 # Progress
 
+## 2026-07-30 - Phase 3A: WebSocket Command Transport Infrastructure
+
+- Implemented secure, authenticated, idempotent WS command transport layer on `feature/phase1-websocket-transport`:
+  1. **Firmware (`src/main.cpp`)**: Added `socketCommandToken` lifecycle (generated as a 40-hex secret per operator Claim/Reconnect session, cleared on Release), per-token authorization check comparing both `controlSessionEpoch` and `socketCommandToken`, `WsCommandEntry` queue struct, `processWsCommandQueue()` dispatcher called from `loop()`, `finishWsCommand()` helper that sends `commandAck`+`commandResult` over the originating WS socket, and a 32-entry idempotency ledger keyed by `commandId`. The `safety.stop` action is implemented as the first concrete WS command.
+  2. **Frontend (`www/telemetry.js`)**: Added `CncTelemetry.setSocketCommandToken(token, epoch)` / `clearSocketCommandToken()` for operator module lifecycle management. Added `CncTelemetry.command(action, payload, commandId, options)` — a Promise-based API that sends a `command` WS packet with full authorization, returns on `commandResult`, rejects on `commandAck` rejection or timeout. Added `commandQuery(commandId)` for result recovery across reconnects. Added client-side idempotency ledger (64-entry cap). Both `commandAck` and `commandResult` messages bypass the telemetry protocol-envelope sequence checks and are processed immediately.
+  3. **Mock server (`dev/mock-server.mjs`)**: Added `socketCommandToken` field to operator state, generated fresh on each new Claim/Reconnect session. Claim and Reconnect responses now include `socketCommandToken` in the body; heartbeat/status deliberately do not. Release clears the token. WS message handler added for `command` (validates both epoch and token, dispatches `safety.stop` / `job.stop`, maintains per-client ledger) and `commandQuery` (replays ledger result or returns INVALID_COMMAND for unknown IDs).
+  4. **Tests (`test/mock/mock-server.test.mjs`)**: Added 11 new tests in a `WS command protocol (Phase 3A)` describe block covering: `socketCommandToken` presence in Claim/Reconnect, absence from heartbeat, clearing on Release, rejection for empty commandId, wrong token, wrong epoch, successful `safety.stop` on active job, `JOB_STATE_CONFLICT` on idle, `INVALID_COMMAND` for unknown action, idempotency via repeated commandId and `commandQuery`, and `commandQuery` for unknown ID.
+- Verification: **33/33** tests passed (22 pre-existing + 11 new Phase 3A).
+- Physical hardware was not flashed or exercised.
+
+
 ## 2026-07-29 - Final Phase 2 safety/DOM guard pass
 
 - Stale or unavailable socket state now forces both software Stop controls visible and enabled even when the last authoritative job state was IDLE, UNKNOWN, or RUNNING; synchronized state retains the normal job-state rules.

@@ -1,5 +1,25 @@
 # Handoff
 
+## 2026-07-30 - Phase 3A: WebSocket Command Transport Infrastructure
+
+- Completed Phase 3A on `feature/phase1-websocket-transport`. All 33 mock-server tests pass.
+- **What was built**: A full round-trip for secure, authenticated WS commands:
+  - The firmware generates a fresh 40-hex `socketCommandToken` on every new Claim or Reconnect and clears it on Release. It is returned only in Claim/Reconnect HTTP response bodies, never in state slices or snapshots.
+  - The browser stores the token via `CncTelemetry.setSocketCommandToken()` and uses it inside `CncTelemetry.command()` to send `{ type: "command", commandId, action, authorization: { controlSessionEpoch, socketCommandToken }, payload? }` WS packets.
+  - The firmware validates the epoch+token pair before queuing the command. It sends `commandAck` (accepted/rejected) immediately and `commandResult` after execution.
+  - A client-side idempotency ledger (64 entries) tracks completed commands so re-sending the same `commandId` returns the cached result rather than re-executing.
+  - `commandQuery` allows result recovery after a reconnect for any in-flight or recently completed command.
+  - The first concrete WS command is `safety.stop` (and its alias `job.stop`).
+- **What remains (Phase 3B/3C)**:
+  - Migrate remaining machine control commands (Jog start/update/stop, Home, Work Zero, job Start/Pause/Resume/Stop/feed-override) from HTTP POST to WS `command` packets.
+  - Wire `CncTelemetry.command()` into the UI operator module: call `setSocketCommandToken` on Claim/Reconnect, `clearSocketCommandToken` on Release/session expiry.
+  - Add firmware command handlers for each migrated action.
+- **Key design decisions**:
+  - `commandAck`/`commandResult` bypass the telemetry protocol-envelope sequence checks — they are handled before the seq/stateRevision path.
+  - `controlSessionEpoch` acts as a replay-attack barrier; mismatched epoch always returns `UNAUTHORIZED`.
+  - `socketCommandToken` is ephemeral and never persisted to SD, NVS, or state snapshots.
+
+
 ## 2026-07-29 - Final Phase 2 safety/DOM guard pass
 
 - Both machine-bar and Preview Stop are now visible/enabled whenever WebSocket live state is stale, regardless of the last job state. Synchronized views continue to use normal Stop state rules.
