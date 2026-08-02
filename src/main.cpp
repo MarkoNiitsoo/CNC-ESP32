@@ -3051,6 +3051,117 @@ void processWsCommandQueue() {
           "Stop requested. Position must be verified after M410 quickstop." :
           "Stop requested; EMERGENCY_PARSER not detected. Home All before further motion.";
     }
+  } else if (strcmp(action, "job.pause") == 0) {
+    if (jobStatus.state != JobRunnerState::Running) {
+      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Job is not running.";
+    } else if (machineProfile.capRealtimeReporting) {
+      String writeErr;
+      if (!writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
+        const String errMsg = "P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
+        setJobCommunicationLost(errMsg, "P000");
+        touchJobStatus();
+        ok = false; code = "COMM_ERROR"; msg = jobStatus.lastError;
+      } else {
+        jobStatus.pauseRequested = true;
+        jobStatus.stopRequested = false;
+        jobStatus.directResumeValid = true;
+        jobStatus.recoveryRequired = false;
+        jobStatus.pauseInterruptedForManualMotion = false;
+        jobStatus.pauseRealtimeHold = true;
+        jobStatus.pauseMode = "realtime";
+        jobStatus.state = JobRunnerState::PausedIntact;
+        jobStatus.pauseRequested = false;
+        jobStatus.pausedAtMs = millis();
+        jobStatus.streamingPausedReason =
+            "Motion held — cutter remains running. Direct Resume is valid until any manual movement.";
+        touchJobStatus();
+        logJobEvent("ws pause: " + jobStatus.gcodePath + " mode=realtime");
+        ok = true; code = "OK";
+        msg = "Realtime hold requested with P000. Motion held — cutter remains running.";
+      }
+    } else {
+      jobStatus.pauseRequested = true;
+      jobStatus.stopRequested = false;
+      jobStatus.directResumeValid = true;
+      jobStatus.recoveryRequired = false;
+      jobStatus.pauseInterruptedForManualMotion = false;
+      jobStatus.pauseRealtimeHold = false;
+      jobStatus.pauseMode = "boundary";
+      jobStatus.state = JobRunnerState::Pausing;
+      jobStatus.streamingPausedReason =
+          "Pause pending at the next safely resumable command boundary; cutter remains running.";
+      touchJobStatus();
+      logJobEvent("ws pause: " + jobStatus.gcodePath + " mode=boundary");
+      ok = true; code = "OK";
+      msg = "Pause pending. The current command will finish before PAUSED_INTACT.";
+    }
+  } else if (strcmp(action, "job.resume") == 0) {
+    if (jobStatus.state == JobRunnerState::Paused && jobStatus.toolChangePending) {
+      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Complete the pending tool change before resuming.";
+    } else if (jobStatus.state != JobRunnerState::PausedIntact || !jobStatus.directResumeValid) {
+      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Direct Resume is unavailable; review Recovery.";
+    } else if (jobStatus.stopRequested) {
+      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Job stop has been requested.";
+    } else {
+      const bool realtimeHold = jobStatus.pauseRealtimeHold;
+      if (!realtimeHold && !openJobFileAtOffset()) {
+        ok = false; code = "IO_ERROR"; msg = jobStatus.lastError;
+      } else if (realtimeHold) {
+        String writeErr;
+        if (!writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
+          jobStatus.lastError = "R000 realtime resume rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
+          touchJobStatus();
+          ok = false; code = "COMM_ERROR"; msg = jobStatus.lastError;
+        } else {
+          jobStatus.pauseRequested = false;
+          jobStatus.streamingPausedReason = "";
+          jobStatus.state = JobRunnerState::Resuming;
+          jobStatus.pauseRealtimeHold = false;
+          jobStatus.directResumeValid = false;
+          jobStatus.pauseMode = "none";
+          touchJobStatus();
+          logJobEvent("ws resume: " + jobStatus.gcodePath);
+          ok = true; code = "OK"; msg = "Resume requested.";
+        }
+      } else {
+        jobResponseBuffer = "";
+        jobWaitingForOk = false;
+        jobStatus.pauseRequested = false;
+        jobStatus.streamingPausedReason = "";
+        jobStatus.state = JobRunnerState::Resuming;
+        jobStatus.pauseRealtimeHold = false;
+        jobStatus.directResumeValid = false;
+        jobStatus.pauseMode = "none";
+        touchJobStatus();
+        logJobEvent("ws resume: " + jobStatus.gcodePath);
+        ok = true; code = "OK"; msg = "Resume requested.";
+      }
+    }
+  } else if (strcmp(action, "job.setFeedOverride") == 0) {
+    String commError;
+    if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+      ok = false; code = "COMM_ERROR"; msg = commError;
+    } else {
+      const String payload = String(entry.payloadJson);
+      const int percent = extractJsonInt(payload, "percent", -1);
+      if (percent < 10 || percent > 200) {
+        ok = false; code = "INVALID_PAYLOAD"; msg = "Feed override percent must be between 10 and 200.";
+      } else if (jobStatus.state == JobRunnerState::Preparing || jobStatus.state == JobRunnerState::Stopping) {
+        ok = false; code = "JOB_STATE_CONFLICT"; msg = "Feed override rejected while job is preparing or stopping.";
+      } else if (priorityCommandCount > 0 || jobStatus.priorityCommandInProgress) {
+        ok = false; code = "BUSY"; msg = "Higher priority command is in progress.";
+      } else {
+        const String cmd = feedOverrideCommand(percent);
+        jobStatus.feedOverridePercent = percent;
+        jobStatus.lastFeedOverrideCommand = cmd;
+        jobStatus.lastFeedOverrideResponse = "";
+        jobStatus.lastFeedOverrideError = "";
+        queuePriorityCommands(cmd.c_str());
+        touchJobStatus();
+        logJobEvent("ws feed override requested: " + cmd);
+        ok = true; code = "OK"; msg = "Feed override requested.";
+      }
+    }
   } else {
     ok = false; code = "INVALID_COMMAND"; msg = String("Unknown action: ") + action;
   }

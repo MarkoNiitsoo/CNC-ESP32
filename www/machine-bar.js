@@ -622,6 +622,21 @@
     const value = Math.max(10, Math.min(200, Math.round(Number(percent) || 100)));
     if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
     const baseline = socketSliceToken('job');
+    const telemetry = window.CncTelemetry;
+    if (telemetry?.command && STATE.operator?.controller) {
+      try {
+        await telemetry.command('job.setFeedOverride', { percent: value }, genCommandId('feed'), { timeoutMs: 5000 });
+        await waitForSocketSlice(
+          'job',
+          (job) => Number(job?.feedOverridePercent) === value,
+          { afterSequence: baseline, description: `feed override ${value}%` },
+        );
+        setMessage(`Feed override ${value}% confirmed`);
+        return;
+      } catch (wsErr) {
+        console.warn('[feed-override] WS command failed, falling back to HTTP:', wsErr.message);
+      }
+    }
     await apiPost('/api/job/feed-override', { percent: value });
     await waitForSocketSlice(
       'job',
@@ -655,11 +670,31 @@
   }
 
   async function pauseJob() {
+    const telemetry = window.CncTelemetry;
+    if (telemetry?.command && STATE.operator?.controller) {
+      try {
+        await telemetry.command('job.pause', null, genCommandId('pause'), { timeoutMs: 5000 });
+        setMessage('Pause requested via WS; motion will hold intact and the cutter will remain running');
+        return;
+      } catch (wsErr) {
+        console.warn('[pause] WS command failed, falling back to HTTP:', wsErr.message);
+      }
+    }
     await criticalJobPost('/api/job/pause');
     setMessage('Pause requested; motion will hold intact and the cutter will remain running');
   }
 
   async function resumeJob() {
+    const telemetry = window.CncTelemetry;
+    if (telemetry?.command && STATE.operator?.controller) {
+      try {
+        await telemetry.command('job.resume', null, genCommandId('resume'), { timeoutMs: 5000 });
+        setMessage('Resume requested via WS');
+        return;
+      } catch (wsErr) {
+        console.warn('[resume] WS command failed, falling back to HTTP:', wsErr.message);
+      }
+    }
     await apiPost('/api/job/resume');
     setMessage('Resume requested');
   }
