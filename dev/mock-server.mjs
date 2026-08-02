@@ -215,6 +215,53 @@ export async function createMockServer(options = {}) {
       canClaim: !active,
     };
   };
+  const wsCommandLedger = new Map();
+  const deferredWsCommands = [];
+  const wsCommandQueueCapacity = 8;
+  const stableJsonValue = (value) => {
+    if (Array.isArray(value)) return value.map(stableJsonValue);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJsonValue(value[key])]));
+    }
+    return value;
+  };
+  const rememberWsLedger = (commandId, entry) => {
+    wsCommandLedger.delete(commandId);
+    wsCommandLedger.set(commandId, entry);
+    while (wsCommandLedger.size > 32) wsCommandLedger.delete(wsCommandLedger.keys().next().value);
+  };
+  const executeSharedJobOperation = (action, payload = {}) => {
+    try {
+      let body;
+      if (action === 'safety.stop' || action === 'job.stop') {
+        if (env.runner.status.state === 'STOPPING') body = env.runner.snapshot('Stop already in progress.');
+        else body = env.runner.stop();
+      } else if (action === 'job.pause') {
+        body = env.runner.pause();
+      } else if (action === 'job.resume') {
+        body = env.runner.resume();
+      } else if (action === 'job.setFeedOverride') {
+        body = env.runner.setFeedOverride(payload.percent);
+      } else {
+        return { ok: false, accepted: true, httpStatus: 400, code: 'INVALID_COMMAND',
+          message: `Unknown action: ${action}`, body: null };
+      }
+      return { ok: true, accepted: true, httpStatus: 200, code: 'OK',
+        message: body.message || 'Command completed.', body };
+    } catch (error) {
+      const message = String(error.message || error);
+      const communicationError = /P000|R000|UART|communication/i.test(message);
+      const invalidPayload = action === 'job.setFeedOverride' && /between 10 and 200/i.test(message);
+      return {
+        ok: false,
+        accepted: true,
+        httpStatus: communicationError ? 503 : invalidPayload ? 400 : 409,
+        code: communicationError ? 'COMM_ERROR' : invalidPayload ? 'INVALID_PAYLOAD' : 'JOB_STATE_CONFLICT',
+        message,
+        body: null,
+      };
+    }
+  };
   const mutationTouchesLockedFile = (candidate) => {
     if (!env.runner.isActive() && !env.recoveryCheckpoint.requiresReview) return false;
     const normalized = String(candidate || '').replace(/\/$/, '');
@@ -275,6 +322,7 @@ export async function createMockServer(options = {}) {
           controlSessionEpoch: newEpoch,
           socketCommandToken: randomBytes(20).toString('hex'),
         });
+        wsCommandLedger.clear();
         const cookie = `cnc_operator=${env.operator.token}`;
         const claimStatus = operatorStatus({ headers: { cookie } });
         return json(res, 200, { ...claimStatus, socketCommandToken: env.operator.socketCommandToken }, {
@@ -305,6 +353,7 @@ export async function createMockServer(options = {}) {
             controlSessionEpoch: (env.operator.controlSessionEpoch + 1) || 1,
             socketCommandToken: randomBytes(20).toString('hex'),
           });
+          wsCommandLedger.clear();
         }
         const cookie = `cnc_operator=${env.operator.token}`;
         const reconnStatus = operatorStatus({ headers: { cookie } });
@@ -322,6 +371,7 @@ export async function createMockServer(options = {}) {
           token: '', owner: '', browserId: '', rememberedBrowserId: '', rememberedOwner: '',
           lastSeenAt: 0, otaUnlockedUntil: 0, socketCommandToken: '', // revoke WS command auth
         });
+        wsCommandLedger.clear();
         return json(res, 200, operatorStatus(req), { 'Set-Cookie': 'cnc_operator=; Path=/; Max-Age=0' });
       }
       if (req.method === 'PUT' && pathname === '/api/operator/pin') {
@@ -495,20 +545,12 @@ export async function createMockServer(options = {}) {
         }
       }
       if (req.method === 'POST' && pathname === '/api/job/pause') {
-        try {
-          return json(res, 200, env.runner.pause());
-        } catch (err) {
-          const status = err.message.includes('P000') ? 503 : 409;
-          return json(res, status, { ok: false, error: err.message });
-        }
+        const result = executeSharedJobOperation('job.pause');
+        return json(res, result.httpStatus, result.ok ? result.body : { ok: false, error: result.message });
       }
       if (req.method === 'POST' && pathname === '/api/job/resume') {
-        try {
-          return json(res, 200, env.runner.resume());
-        } catch (err) {
-          const status = err.message.includes('R000') ? 503 : 409;
-          return json(res, status, { ok: false, error: err.message });
-        }
+        const result = executeSharedJobOperation('job.resume');
+        return json(res, result.httpStatus, result.ok ? result.body : { ok: false, error: result.message });
       }
       if (req.method === 'POST' && pathname === '/api/job/interrupt-for-manual-motion') {
         return json(res, 202, env.runner.interruptForManualMotion());
@@ -516,9 +558,13 @@ export async function createMockServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/job/tool-change/complete') {
         return json(res, 200, env.runner.completeToolChange(await readJson(req)));
       }
-      if (req.method === 'POST' && pathname === '/api/job/stop') return json(res, 200, env.runner.stop());
+      if (req.method === 'POST' && pathname === '/api/job/stop') {
+        const result = executeSharedJobOperation('job.stop');
+        return json(res, result.httpStatus, result.ok ? result.body : { ok: false, error: result.message });
+      }
       if (req.method === 'POST' && pathname === '/api/job/feed-override') {
-        return json(res, 200, env.runner.setFeedOverride((await readJson(req)).percent));
+        const result = executeSharedJobOperation('job.setFeedOverride', await readJson(req));
+        return json(res, result.httpStatus, result.ok ? result.body : { ok: false, error: result.message });
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/goto') {
         if (env.runner.status.state === 'PAUSED_INTACT') {
@@ -1108,6 +1154,49 @@ export async function createMockServer(options = {}) {
     return false;
   }
 
+  function sendMockCommandResponse(socket, type, fields = {}) {
+    if (!socket || socket.destroyed) return false;
+    const cs = wsClientStates.get(socket);
+    if (!cs || cs.simulateWriteFailure) return false;
+    if (cs.failNextWrite) {
+      cs.failNextWrite = false;
+      return false;
+    }
+    const isResult = type === 'commandResult';
+    const message = {
+      protocolVersion: 1,
+      type,
+      commandId: String(fields.commandId || ''),
+      accepted: isResult ? true : fields.accepted === true,
+      inProgress: isResult ? false : fields.inProgress === true,
+      ok: isResult ? fields.ok === true : false,
+      code: String(fields.code || ''),
+      message: String(fields.message || ''),
+    };
+    try {
+      socket.write(buildWsFrame(JSON.stringify(message)));
+      cs.lastOutboundAtMs = Date.now();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function completeMockWsCommand(entry) {
+    const result = executeSharedJobOperation(entry.action, entry.payload || {});
+    rememberWsLedger(entry.commandId, {
+      epoch: entry.epoch, action: entry.action, payloadDigest: entry.payloadDigest,
+      completed: true, ok: result.ok, code: result.code, message: result.message,
+    });
+    sendMockCommandResponse(entry.socket, 'commandResult', {
+      commandId: entry.commandId, ok: result.ok, code: result.code, message: result.message,
+    });
+  }
+
+  function flushDeferredWsCommands() {
+    while (deferredWsCommands.length > 0) completeMockWsCommand(deferredWsCommands.shift());
+  }
+
   function broadcastMockPatch(patchData) {
     mockStateRevision += 1;
     for (const socket of wsClients) {
@@ -1171,6 +1260,13 @@ export async function createMockServer(options = {}) {
         }
 
         try {
+          if (Buffer.byteLength(parsed.payload, 'utf8') > 6144) {
+            sendMockCommandResponse(socket, 'commandAck', {
+              commandId: '', accepted: false, code: 'PAYLOAD_TOO_LARGE',
+              message: 'WebSocket message exceeds 6144 bytes',
+            });
+            continue;
+          }
           const msg = JSON.parse(parsed.payload);
           const versionVal = Number(msg.protocolVersion || 1);
           const seqVal = Number(msg.seq || 0);
@@ -1233,61 +1329,66 @@ export async function createMockServer(options = {}) {
             const cmdId = String(msg.commandId || '');
             const action = String(msg.action || '');
             const auth = msg.authorization || {};
-            if (!cmdId || cmdId.length > 96 || !action || action.length > 64) {
-              sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'INVALID_COMMAND', message: 'commandId and action are required (max 96/64 chars)' });
+            const payloadJson = msg.payload === undefined ? '' : JSON.stringify(stableJsonValue(msg.payload));
+            const payloadDigest = createHash('sha256').update(`${action}\n${payloadJson}`).digest('hex');
+            if (!/^[A-Za-z0-9._:-]{1,96}$/.test(cmdId) || !/^[A-Za-z0-9._-]{1,64}$/.test(action)) {
+              sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'INVALID_COMMAND', message: 'commandId or action contains invalid characters or length' });
+            } else if (Buffer.byteLength(payloadJson, 'utf8') > 4096) {
+              sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'PAYLOAD_TOO_LARGE', message: 'Command payload exceeds 4096 bytes' });
             } else if (!operatorActive() || !env.operator.socketCommandToken ||
                 Number(auth.controlSessionEpoch) !== env.operator.controlSessionEpoch ||
                 String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
-              sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'UNAUTHORIZED', message: 'Command authorization invalid or expired' });
+              sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'UNAUTHORIZED', message: 'Command authorization invalid or expired' });
             } else {
-              // Store in ledger and process synchronously (mock is single-threaded).
-              clientState.commandLedger = clientState.commandLedger || new Map();
-              if (clientState.commandLedger.has(cmdId)) {
-                const existing = clientState.commandLedger.get(cmdId);
-                if (existing.completed) {
-                  sendMockWsPacket(socket, 'commandResult', { commandId: cmdId, ok: existing.ok, code: existing.code, message: existing.message });
+              const existing = wsCommandLedger.get(cmdId);
+              if (existing) {
+                if (existing.epoch !== env.operator.controlSessionEpoch ||
+                    existing.action !== action || existing.payloadDigest !== payloadDigest) {
+                  sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'IDEMPOTENCY_CONFLICT', message: 'commandId was already used with a different action or payload' });
+                } else if (existing.completed) {
+                  sendMockCommandResponse(socket, 'commandResult', { commandId: cmdId, ok: existing.ok, code: existing.code, message: existing.message });
                 } else {
-                  sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: true, inProgress: true });
+                  sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: true, inProgress: true, code: 'IN_PROGRESS', message: 'Command is still in progress' });
                 }
               } else {
-                clientState.commandLedger.set(cmdId, { completed: false, ok: false, code: '', message: '' });
-                sendMockWsPacket(socket, 'commandAck', { commandId: cmdId, accepted: true });
-                // Execute the command.
-                let ok = false;
-                let code = 'INVALID_COMMAND';
-                let resultMsg = `Unknown action: ${action}`;
-                if (action === 'safety.stop' || action === 'job.stop') {
-                  const state = env.runner.status.state;
-                  if (['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING'].includes(state)) {
-                    env.runner.stop();
-                    ok = true; code = 'OK'; resultMsg = 'Stop requested.';
-                  } else if (state === 'STOPPING') {
-                    ok = true; code = 'OK'; resultMsg = 'Stop already in progress.';
-                  } else {
-                    ok = false; code = 'JOB_STATE_CONFLICT'; resultMsg = 'Job is not active.';
-                  }
+                if (env.config.deferWsCommandExecution === true && deferredWsCommands.length >= wsCommandQueueCapacity) {
+                  sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'QUEUE_FULL', message: 'Command queue is full' });
+                  continue;
                 }
-                clientState.commandLedger.set(cmdId, { completed: true, ok, code, message: resultMsg });
-                sendMockWsPacket(socket, 'commandResult', { commandId: cmdId, ok, code, message: resultMsg });
+                rememberWsLedger(cmdId, { epoch: env.operator.controlSessionEpoch, action, payloadDigest, completed: false, ok: false, code: '', message: '' });
+                sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: true, code: 'ACCEPTED', message: 'Command accepted' });
+                const queued = { socket, commandId: cmdId, action, payload: msg.payload,
+                  payloadDigest, epoch: env.operator.controlSessionEpoch };
+                if (env.config.deferWsCommandExecution === true) deferredWsCommands.push(queued);
+                else completeMockWsCommand(queued);
               }
             }
           } else if (msg.type === 'commandQuery') {
             const queryId = String(msg.commandId || '');
-            if (!queryId) return;
-            clientState.commandLedger = clientState.commandLedger || new Map();
-            const entry = clientState.commandLedger.get(queryId);
-            if (entry) {
-              if (entry.completed) {
-                sendMockWsPacket(socket, 'commandResult', { commandId: queryId, ok: entry.ok, code: entry.code, message: entry.message });
-              } else {
-                sendMockWsPacket(socket, 'commandAck', { commandId: queryId, accepted: true, inProgress: true });
-              }
+            const auth = msg.authorization || {};
+            if (!/^[A-Za-z0-9._:-]{1,96}$/.test(queryId)) {
+              sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'INVALID_COMMAND', message: 'Valid commandId is required' });
+            } else if (!operatorActive() || !env.operator.socketCommandToken ||
+                Number(auth.controlSessionEpoch) !== env.operator.controlSessionEpoch ||
+                String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
+              sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'UNAUTHORIZED', message: 'Command query authorization invalid or expired' });
             } else {
-              sendMockWsPacket(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'INVALID_COMMAND', message: 'Command not found in recent ledger' });
+              const entry = wsCommandLedger.get(queryId);
+              if (entry?.epoch === env.operator.controlSessionEpoch) {
+              if (entry.completed) {
+                  sendMockCommandResponse(socket, 'commandResult', { commandId: queryId, ok: entry.ok, code: entry.code, message: entry.message });
+              } else {
+                  sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: true, inProgress: true, code: 'IN_PROGRESS', message: 'Command is still in progress' });
+                }
+              } else {
+                sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'INVALID_COMMAND', message: 'Command not found in this control session' });
+              }
             }
           }
         } catch {
-          // ignore malformed ws message
+          sendMockCommandResponse(socket, 'commandAck', {
+            commandId: '', accepted: false, code: 'INVALID_JSON', message: 'Malformed JSON message',
+          });
         }
       }
     });
@@ -1439,6 +1540,7 @@ export async function createMockServer(options = {}) {
     listClientProtocolStates,
     simulateNextOutboundWriteFailure,
     simulateOutboundWriteFailure,
+    flushDeferredWsCommands,
     triggerIdleSync,
     wsClients,
   };

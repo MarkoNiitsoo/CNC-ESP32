@@ -174,7 +174,9 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
     });
 
     it('handles resource allocation and task creation failures safely without starting transport', () => {
-      expect(mainCppCode).toContain('if (telemetryStateMutex == nullptr || logRingMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr)');
+      expect(mainCppCode).toContain('telemetryStateMutex == nullptr || logRingMutex == nullptr || wsCommandLedgerMutex == nullptr');
+      expect(mainCppCode).toContain('motionEventQueue == nullptr || logEventQueue == nullptr ||');
+      expect(mainCppCode).toContain('wsCommandQueue == nullptr || wsCommandResponseQueue == nullptr');
       expect(mainCppCode).toContain('if (taskRes != pdPASS)');
       expect(mainCppCode).toContain('setTelemetryStarted(false);');
     });

@@ -74,7 +74,7 @@ describe('shared browser telemetry', () => {
   });
 
   it('keeps cutting independent from browser WebSocket delivery', () => {
-    const producer = firmware.slice(firmware.indexOf('void stageTelemetryUpdates()'), firmware.indexOf('void handleTelemetrySocket('));
+    const producer = firmware.slice(firmware.indexOf('void stageTelemetryUpdates()'), firmware.indexOf('bool sendWsCommandPacket('));
     expect(producer).not.toContain('telemetrySocket.broadcastTXT');
     expect(producer).not.toContain('telemetrySocket.sendTXT');
     expect(firmware).toContain('xSemaphoreTake(telemetryStateMutex, 0)');

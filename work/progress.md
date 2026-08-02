@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-08-02 - Phase 3 command-transport repair
+
+- Confirmed the firmware command-response payload-loss defect: `commandAck`/`commandResult` JSON was passed to `sendClientPacket()` with an empty body key, so only the telemetry envelope was transmitted while still consuming the authoritative server sequence.
+- Confirmed the task boundary: `handleTelemetrySocket()` runs in the pinned `ws-telemetry` task, while `processWsCommandQueue()` runs in Arduino `loop()`. The manual queue counters and global ledger are therefore unsynchronized cross-task state, and command results are currently sent from outside the WebSocket network task.
+- The mock diverges by sending complete but telemetry-sequenced command responses and keeping its ledger per socket, which prevents result recovery across reconnects.
+- Firmware transport repair now uses dedicated ArduinoJson-backed command-response builders that emit complete unsequenced packets. Commands cross into `loop()` through a FreeRTOS queue, results cross back to the network task through a second queue, and the bounded session-scoped ledger is mutex-protected with full-token revalidation and payload/action conflict detection.
+- Stop, Pause, Resume, and feed override now have shared internal operation functions used by both HTTP handlers and WebSocket dispatch, preserving their established state, communication-loss, priority, and recovery behavior.
+- Browser pending commands now use bounded listener sets, preserve unresolved sent work across socket reconnects, send authenticated `commandQuery` packets after a valid snapshot, and expose structured acceptance/disposition errors. Mock responses use the same complete unsequenced schema and session ledger as firmware.
+- Operator authorization revocation is centralized. Pause, Resume, and feed override only fall back to HTTP when the command was definitely not accepted, while accepted/ambiguous outcomes reuse the same command ID and confirm newer canonical job slices; Stop retains its deliberate safety fallback.
+- Added executable native JSON/identifier coverage plus browser and mock round-trip, rejection, reconnect recovery, real-query, sequence-continuity, epoch isolation, idempotency-conflict, escaping, queue-full, disconnect, revocation, fallback-policy, and canonical-confirmation coverage.
+- Interim verification: 18/18 native tests pass and the ESP32-CAM firmware builds at 96,388 bytes RAM (29.4%) and 1,500,489 bytes Flash (76.3%). Full JavaScript verification still remains.
+- Verification completed: `npm test` passed twice consecutively with **597/597 tests across 51 files** each time; `pio test -e native` passed **18/18 tests**; `pio run -e esp32cam` succeeded at **96,388 / 327,680 bytes RAM (29.4%)** and **1,500,489 / 1,966,080 bytes Flash (76.3%)**.
+- Physical ESP32-CAM/Marlin hardware was not tested. High-frequency Jog transport and all additional machine-action migrations were deliberately not implemented in this repair.
+- The repair is ready for its focused commit and push on `feature/phase1-websocket-transport`; the branch is not to be merged as part of this task.
+
 ## 2026-07-30 - Phase 3B: Token Lifecycle Wiring & Stop Command Migration
 
 - Wired the WS command token into the UI operator module on `feature/phase1-websocket-transport`:

@@ -20,6 +20,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include "controller_comm.h"
+#include "ws_command_protocol.h"
 
 extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
   (void)xTask;
@@ -285,12 +286,30 @@ struct MarlinCommandResult {
   bool timeout = false;
   String error = "";
 };
+struct MachineOperationResult {
+  bool ok = false;
+  bool accepted = false;
+  bool completed = true;
+  uint16_t httpStatus = 500;
+  String code = "EXECUTION_FAILED";
+  String message = "Machine operation failed";
+  MachineOperationResult() = default;
+  MachineOperationResult(bool resultOk, bool resultAccepted, bool resultCompleted,
+                         uint16_t status, const String &resultCode, const String &resultMessage)
+      : ok(resultOk), accepted(resultAccepted), completed(resultCompleted),
+        httpStatus(status), code(resultCode), message(resultMessage) {}
+};
 
 void stageTelemetryUpdates(void); // Forward declaration
 void addMarlinLog(const String &direction, bool priority, const String &text, const String &level = ""); // Forward declaration
 bool jobIsActive(); // Forward declaration
 bool jogIsActive(); // Forward declaration
 bool operatorSessionActive(); // Forward declaration
+String wsCommandPayloadDigest(const String &payloadJson); // Forward declaration
+MachineOperationResult performJobPause();
+MachineOperationResult performJobResume();
+MachineOperationResult performJobStop();
+MachineOperationResult performJobFeedOverride(int percent);
 
 bool isControllerCommunicationActive() {
   return controllerCommManager.telemetry.state == ControllerCommunicationState::Connected ||
@@ -555,26 +574,36 @@ uint32_t telemetryLastLogId = 0;
 volatile bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 
-// WebSocket command queue (handled outside the WS ISR via processWsCommandQueue()).
+// WebSocket command transport crosses from the pinned network task to Arduino loop().
 struct WsCommandEntry {
   uint8_t  clientId;
   uint32_t commandClientSeq;
-  char     commandId[97];    // max 96 chars + NUL
-  char     action[65];       // max 64 chars + NUL
-  char     payloadJson[4097]; // max 4096 chars + NUL
+  char     commandId[kWsCommandIdMaxLength + 1];
+  char     action[kWsCommandActionMaxLength + 1];
+  char     payloadJson[kWsCommandPayloadMaxBytes + 1];
+  char     payloadDigest[65];
   uint32_t epoch;
-  char     tokenFragment[9]; // first 8 hex chars of token (constant-time compare)
+  char     socketCommandToken[41];
 };
 static constexpr uint8_t kWsCommandQueueCapacity = 8;
-static WsCommandEntry wsCommandQueue[kWsCommandQueueCapacity];
-static uint8_t wsCommandQueueHead = 0;
-static uint8_t wsCommandQueueTail = 0;
-static uint8_t wsCommandQueueCount = 0;
 
-// WebSocket command ledger: idempotency / result-recovery ring buffer.
+struct WsCommandResponseEntry {
+  uint8_t clientId;
+  bool ok;
+  char commandId[kWsCommandIdMaxLength + 1];
+  char code[33];
+  char message[129];
+};
+static constexpr uint8_t kWsCommandResponseQueueCapacity = 16;
+
+// Session-scoped idempotency / result-recovery ledger.
 struct WsCommandLedgerEntry {
-  char commandId[97];
-  char action[65];
+  bool valid;
+  uint32_t epoch;
+  uint32_t order;
+  char commandId[kWsCommandIdMaxLength + 1];
+  char action[kWsCommandActionMaxLength + 1];
+  char payloadDigest[65];
   bool completed;
   bool ok;
   char code[33];       // short error code e.g. EXECUTION_FAILED
@@ -582,13 +611,15 @@ struct WsCommandLedgerEntry {
 };
 static constexpr uint8_t kWsCommandLedgerCapacity = 32;
 static WsCommandLedgerEntry wsCommandLedger[kWsCommandLedgerCapacity];
-static uint8_t wsCommandLedgerNext = 0;
-static uint8_t wsCommandLedgerCount = 0;
+static uint32_t wsCommandLedgerOrder = 0;
 TaskHandle_t telemetryTaskHandle = nullptr;
 SemaphoreHandle_t telemetryStateMutex = nullptr;
 SemaphoreHandle_t logRingMutex = nullptr;
+SemaphoreHandle_t wsCommandLedgerMutex = nullptr;
 QueueHandle_t motionEventQueue = nullptr;
 QueueHandle_t logEventQueue = nullptr;
+QueueHandle_t wsCommandQueue = nullptr;
+QueueHandle_t wsCommandResponseQueue = nullptr;
 static portMUX_TYPE telemetryDropMux = portMUX_INITIALIZER_UNLOCKED;
 static bool volatile telemetryStartedFlag = false;
 
@@ -2760,6 +2791,184 @@ void stageTelemetryUpdates() {
     cachedSlices.machineProfileJson = machineProfileStr;
   }
 }
+
+bool sendWsCommandPacket(uint8_t client, const std::string &packet) {
+  if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return false;
+  TelemetryClientState &cs = protocolState.clients[client];
+  if (!cs.connected || !cs.handshakeComplete) return false;
+  String payload(packet.c_str());
+  const bool sentOK = telemetrySocket.sendTXT(client, payload);
+  if (sentOK) cs.lastOutboundAtMs = millis();
+  return sentOK;
+}
+
+bool sendWsCommandAck(uint8_t client, const char *commandId, bool accepted, bool inProgress,
+                      const char *code = "", const char *message = "") {
+  return sendWsCommandPacket(client,
+      buildWsCommandAckJson(commandId, accepted, inProgress, code, message));
+}
+
+bool sendWsCommandResult(uint8_t client, const char *commandId, bool ok,
+                         const char *code, const char *message) {
+  return sendWsCommandPacket(client,
+      buildWsCommandResultJson(commandId, ok, code, message));
+}
+
+bool wsCommandAuthorizationMatchesLocked(uint32_t epoch, const char *token) {
+  return token != nullptr && operatorSocketCommandToken.length() == 40 &&
+         epoch == operatorControlSessionEpoch &&
+         strcmp(token, operatorSocketCommandToken.c_str()) == 0 &&
+         millis() - operatorSessionLastSeenMs <= kOperatorLeaseMs;
+}
+
+int findWsCommandLedgerEntryLocked(uint32_t epoch, const char *commandId) {
+  for (uint8_t i = 0; i < kWsCommandLedgerCapacity; ++i) {
+    if (wsCommandLedger[i].valid && wsCommandLedger[i].epoch == epoch &&
+        strcmp(wsCommandLedger[i].commandId, commandId) == 0) return i;
+  }
+  return -1;
+}
+
+int allocateWsCommandLedgerEntryLocked() {
+  int oldestIndex = 0;
+  uint32_t oldestOrder = UINT32_MAX;
+  for (uint8_t i = 0; i < kWsCommandLedgerCapacity; ++i) {
+    if (!wsCommandLedger[i].valid) return i;
+    if (wsCommandLedger[i].order < oldestOrder) {
+      oldestOrder = wsCommandLedger[i].order;
+      oldestIndex = i;
+    }
+  }
+  return oldestIndex;
+}
+
+void clearWsCommandTransportLocked() {
+  memset(wsCommandLedger, 0, sizeof(wsCommandLedger));
+  wsCommandLedgerOrder = 0;
+  if (wsCommandQueue != nullptr) xQueueReset(wsCommandQueue);
+  if (wsCommandResponseQueue != nullptr) xQueueReset(wsCommandResponseQueue);
+}
+
+enum class WsCommandRegistration : uint8_t {
+  Accepted,
+  DuplicateInProgress,
+  DuplicateCompleted,
+  IdempotencyConflict,
+  Unauthorized,
+  QueueFull,
+  Unavailable,
+};
+
+WsCommandRegistration registerAndQueueWsCommand(const WsCommandEntry &entry,
+                                                 WsCommandLedgerEntry &existing) {
+  if (wsCommandLedgerMutex == nullptr || wsCommandQueue == nullptr) return WsCommandRegistration::Unavailable;
+  if (xSemaphoreTake(wsCommandLedgerMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+    return WsCommandRegistration::Unavailable;
+  }
+  if (!wsCommandAuthorizationMatchesLocked(entry.epoch, entry.socketCommandToken)) {
+    xSemaphoreGive(wsCommandLedgerMutex);
+    return WsCommandRegistration::Unauthorized;
+  }
+  const int found = findWsCommandLedgerEntryLocked(entry.epoch, entry.commandId);
+  if (found >= 0) {
+    existing = wsCommandLedger[found];
+    const bool sameRequest = strcmp(existing.action, entry.action) == 0 &&
+                             strcmp(existing.payloadDigest, entry.payloadDigest) == 0;
+    xSemaphoreGive(wsCommandLedgerMutex);
+    if (!sameRequest) return WsCommandRegistration::IdempotencyConflict;
+    return existing.completed ? WsCommandRegistration::DuplicateCompleted
+                              : WsCommandRegistration::DuplicateInProgress;
+  }
+
+  const int slot = allocateWsCommandLedgerEntryLocked();
+  WsCommandLedgerEntry &ledger = wsCommandLedger[slot];
+  memset(&ledger, 0, sizeof(ledger));
+  ledger.valid = true;
+  ledger.epoch = entry.epoch;
+  ledger.order = ++wsCommandLedgerOrder;
+  if (ledger.order == 0) ledger.order = ++wsCommandLedgerOrder;
+  strncpy(ledger.commandId, entry.commandId, kWsCommandIdMaxLength);
+  strncpy(ledger.action, entry.action, kWsCommandActionMaxLength);
+  strncpy(ledger.payloadDigest, entry.payloadDigest, sizeof(ledger.payloadDigest) - 1);
+
+  if (xQueueSend(wsCommandQueue, &entry, 0) != pdTRUE) {
+    memset(&ledger, 0, sizeof(ledger));
+    xSemaphoreGive(wsCommandLedgerMutex);
+    return WsCommandRegistration::QueueFull;
+  }
+  xSemaphoreGive(wsCommandLedgerMutex);
+  return WsCommandRegistration::Accepted;
+}
+
+enum class WsCommandQueryStatus : uint8_t { Completed, InProgress, NotFound, Unauthorized, Unavailable };
+
+WsCommandQueryStatus queryWsCommandLedger(uint32_t epoch, const char *token,
+                                          const char *commandId, WsCommandLedgerEntry &entry) {
+  if (wsCommandLedgerMutex == nullptr) return WsCommandQueryStatus::Unavailable;
+  if (xSemaphoreTake(wsCommandLedgerMutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+    return WsCommandQueryStatus::Unavailable;
+  }
+  if (!wsCommandAuthorizationMatchesLocked(epoch, token)) {
+    xSemaphoreGive(wsCommandLedgerMutex);
+    return WsCommandQueryStatus::Unauthorized;
+  }
+  const int found = findWsCommandLedgerEntryLocked(epoch, commandId);
+  if (found < 0) {
+    xSemaphoreGive(wsCommandLedgerMutex);
+    return WsCommandQueryStatus::NotFound;
+  }
+  entry = wsCommandLedger[found];
+  xSemaphoreGive(wsCommandLedgerMutex);
+  return entry.completed ? WsCommandQueryStatus::Completed : WsCommandQueryStatus::InProgress;
+}
+
+void finishWsCommand(const char *commandId, uint32_t epoch, bool ok,
+                     const char *code, const char *message) {
+  if (wsCommandLedgerMutex == nullptr) return;
+  if (xSemaphoreTake(wsCommandLedgerMutex, pdMS_TO_TICKS(20)) != pdTRUE) return;
+  const int found = findWsCommandLedgerEntryLocked(epoch, commandId);
+  if (found >= 0) {
+    WsCommandLedgerEntry &entry = wsCommandLedger[found];
+    entry.completed = true;
+    entry.ok = ok;
+    strncpy(entry.code, code != nullptr ? code : "", sizeof(entry.code) - 1);
+    entry.code[sizeof(entry.code) - 1] = '\0';
+    strncpy(entry.message, message != nullptr ? message : "", sizeof(entry.message) - 1);
+    entry.message[sizeof(entry.message) - 1] = '\0';
+  }
+  xSemaphoreGive(wsCommandLedgerMutex);
+}
+
+bool wsQueuedCommandStillAuthorized(const WsCommandEntry &entry) {
+  if (wsCommandLedgerMutex == nullptr) return false;
+  if (xSemaphoreTake(wsCommandLedgerMutex, pdMS_TO_TICKS(20)) != pdTRUE) return false;
+  const bool authorized = wsCommandAuthorizationMatchesLocked(entry.epoch, entry.socketCommandToken);
+  xSemaphoreGive(wsCommandLedgerMutex);
+  return authorized;
+}
+
+void queueWsCommandResult(uint8_t clientId, const char *commandId, bool ok,
+                          const char *code, const char *message) {
+  if (wsCommandResponseQueue == nullptr) return;
+  WsCommandResponseEntry response = {};
+  response.clientId = clientId;
+  response.ok = ok;
+  strncpy(response.commandId, commandId != nullptr ? commandId : "", kWsCommandIdMaxLength);
+  strncpy(response.code, code != nullptr ? code : "", sizeof(response.code) - 1);
+  strncpy(response.message, message != nullptr ? message : "", sizeof(response.message) - 1);
+  xQueueSend(wsCommandResponseQueue, &response, 0);
+}
+
+void processWsCommandResponses() {
+  if (wsCommandResponseQueue == nullptr) return;
+  WsCommandResponseEntry response = {};
+  while (xQueueReceive(wsCommandResponseQueue, &response, 0) == pdTRUE) {
+    // A failed/disconnected write remains recoverable through the ledger.
+    sendWsCommandResult(response.clientId, response.commandId, response.ok,
+                        response.code, response.message);
+  }
+}
+
 void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size_t length) {
   if (client >= WEBSOCKETS_SERVER_CLIENT_MAX) return;
   TelemetryClientState &cs = protocolState.clients[client];
@@ -2784,13 +2993,21 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     telemetryLogSubscribed[client] = false;
     telemetryClientConnected[client] = false;
   } else if (type == WStype_TEXT) {
+    if (length > kWsCommandMessageMaxBytes) {
+      sendWsCommandAck(client, "", false, false, "PAYLOAD_TOO_LARGE",
+                       "WebSocket message exceeds 6144 bytes");
+      return;
+    }
     String message;
     message.reserve(length);
     for (size_t i = 0; i < length; ++i) message += static_cast<char>(payload[i]);
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, message);
-    if (err) return;
+    if (err) {
+      sendWsCommandAck(client, "", false, false, "INVALID_JSON", "Malformed JSON message");
+      return;
+    }
 
     int versionVal = doc["protocolVersion"] | 1;
     String msgType = doc["type"] | "";
@@ -2885,295 +3102,127 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     } else if (msgType == "log") {
       telemetryLogSubscribed[client] = doc["log"] == true || doc["subscribe"]["log"] == true;
     } else if (msgType == "command") {
-      // Validate and queue; actual execution happens in processWsCommandQueue().
       const char *cmdId = doc["commandId"] | "";
       const char *action = doc["action"] | "";
-      uint32_t cmdEpoch = doc["authorization"]["controlSessionEpoch"] | 0;
-      const char *tokenFrag = doc["authorization"]["socketCommandToken"] | "";
-      if (strlen(cmdId) == 0 || strlen(cmdId) > 96 || strlen(action) == 0 || strlen(action) > 64) {
-        String ack = "{\"type\":\"commandAck\",\"commandId\":\"";
-        ack += cmdId; ack += "\",\"accepted\":false,\"code\":\"INVALID_COMMAND\",\"message\":\"commandId and action are required (max 96/64 chars)\"}";
-        sendClientPacket(client, "commandAck", "", ack); return;
+      if (!validWsCommandId(cmdId) || !validWsCommandAction(action)) {
+        sendWsCommandAck(client, cmdId, false, false, "INVALID_COMMAND",
+                         "commandId or action contains invalid characters or length");
+        return;
       }
-      // Check idempotency ledger first.
-      bool foundInLedger = false;
-      for (uint8_t l = 0; l < wsCommandLedgerCount; ++l) {
-        const uint8_t li = (wsCommandLedgerNext - wsCommandLedgerCount + l + kWsCommandLedgerCapacity) % kWsCommandLedgerCapacity;
-        if (strncmp(wsCommandLedger[li].commandId, cmdId, 96) == 0) {
-          if (wsCommandLedger[li].completed) {
-            String r = "{\"type\":\"commandResult\",\"commandId\":\""; r += cmdId;
-            r += "\",\"ok\":"; r += wsCommandLedger[li].ok ? "true" : "false";
-            r += ",\"code\":\""; r += wsCommandLedger[li].code;
-            r += "\",\"message\":\""; r += wsCommandLedger[li].message; r += "\"}";
-            sendClientPacket(client, "commandResult", "", r);
-          } else {
-            String r = "{\"type\":\"commandAck\",\"commandId\":\""; r += cmdId;
-            r += "\",\"accepted\":true,\"inProgress\":true}";
-            sendClientPacket(client, "commandAck", "", r);
-          }
-          foundInLedger = true; break;
-        }
+      WsCommandEntry entry = {};
+      entry.clientId = client;
+      entry.commandClientSeq = seqVal;
+      entry.epoch = doc["authorization"]["controlSessionEpoch"] | 0;
+      const char *token = doc["authorization"]["socketCommandToken"] | "";
+      if (strlen(token) != 40) {
+        sendWsCommandAck(client, cmdId, false, false, "UNAUTHORIZED",
+                         "Command authorization invalid or expired");
+        return;
       }
-      if (foundInLedger) return;
-      // Authorization check.
-      if (!operatorSessionActive() || operatorSocketCommandToken.length() == 0 ||
-          cmdEpoch != operatorControlSessionEpoch ||
-          strncmp(tokenFrag, operatorSocketCommandToken.c_str(), 40) != 0) {
-        String ack = "{\"type\":\"commandAck\",\"commandId\":\""; ack += cmdId;
-        ack += "\",\"accepted\":false,\"code\":\"UNAUTHORIZED\",\"message\":\"Command authorization invalid or expired\"}";
-        sendClientPacket(client, "commandAck", "", ack); return;
-      }
-      if (wsCommandQueueCount >= kWsCommandQueueCapacity) {
-        String ack = "{\"type\":\"commandAck\",\"commandId\":\""; ack += cmdId;
-        ack += "\",\"accepted\":false,\"code\":\"QUEUE_FULL\",\"message\":\"Command queue is full\"}";
-        sendClientPacket(client, "commandAck", "", ack); return;
-      }
-      WsCommandEntry &entry = wsCommandQueue[wsCommandQueueTail];
-      entry.clientId = client; entry.commandClientSeq = seqVal;
-      strncpy(entry.commandId, cmdId, 96); entry.commandId[96] = '\0';
-      strncpy(entry.action, action, 64); entry.action[64] = '\0';
-      entry.epoch = cmdEpoch;
-      strncpy(entry.tokenFragment, operatorSocketCommandToken.c_str(), 8); entry.tokenFragment[8] = '\0';
+      strncpy(entry.commandId, cmdId, kWsCommandIdMaxLength);
+      strncpy(entry.action, action, kWsCommandActionMaxLength);
+      strncpy(entry.socketCommandToken, token, sizeof(entry.socketCommandToken) - 1);
       JsonVariant payloadVar = doc["payload"];
       if (!payloadVar.isNull()) {
-        String ps; serializeJson(payloadVar, ps);
-        strncpy(entry.payloadJson, ps.c_str(), 4096); entry.payloadJson[4096] = '\0';
-      } else { entry.payloadJson[0] = '\0'; }
-      wsCommandQueueTail = (wsCommandQueueTail + 1) % kWsCommandQueueCapacity;
-      ++wsCommandQueueCount;
-      // Register in ledger as in-progress.
-      WsCommandLedgerEntry &le = wsCommandLedger[wsCommandLedgerNext];
-      strncpy(le.commandId, cmdId, 96); le.commandId[96] = '\0';
-      strncpy(le.action, action, 64); le.action[64] = '\0';
-      le.completed = false; le.ok = false; le.code[0] = '\0'; le.message[0] = '\0';
-      wsCommandLedgerNext = (wsCommandLedgerNext + 1) % kWsCommandLedgerCapacity;
-      if (wsCommandLedgerCount < kWsCommandLedgerCapacity) ++wsCommandLedgerCount;
-      String ack = "{\"type\":\"commandAck\",\"commandId\":\""; ack += cmdId; ack += "\",\"accepted\":true}";
-      sendClientPacket(client, "commandAck", "", ack);
-    } else if (msgType == "commandQuery") {
-      const char *queryId = doc["commandId"] | "";
-      if (strlen(queryId) == 0) return;
-      for (uint8_t l = 0; l < wsCommandLedgerCount; ++l) {
-        const uint8_t li = (wsCommandLedgerNext - wsCommandLedgerCount + l + kWsCommandLedgerCapacity) % kWsCommandLedgerCapacity;
-        if (strncmp(wsCommandLedger[li].commandId, queryId, 96) == 0) {
-          if (wsCommandLedger[li].completed) {
-            String r = "{\"type\":\"commandResult\",\"commandId\":\""; r += queryId;
-            r += "\",\"ok\":"; r += wsCommandLedger[li].ok ? "true" : "false";
-            r += ",\"code\":\""; r += wsCommandLedger[li].code;
-            r += "\",\"message\":\""; r += wsCommandLedger[li].message; r += "\"}";
-            sendClientPacket(client, "commandResult", "", r);
-          } else {
-            String r = "{\"type\":\"commandAck\",\"commandId\":\""; r += queryId;
-            r += "\",\"accepted\":true,\"inProgress\":true}";
-            sendClientPacket(client, "commandAck", "", r);
-          }
+        String payloadJson;
+        serializeJson(payloadVar, payloadJson);
+        if (payloadJson.length() > kWsCommandPayloadMaxBytes) {
+          sendWsCommandAck(client, cmdId, false, false, "PAYLOAD_TOO_LARGE",
+                           "Command payload exceeds 4096 bytes");
           return;
         }
+        strncpy(entry.payloadJson, payloadJson.c_str(), kWsCommandPayloadMaxBytes);
       }
-      String nf = "{\"type\":\"commandAck\",\"commandId\":\""; nf += queryId;
-      nf += "\",\"accepted\":false,\"code\":\"INVALID_COMMAND\",\"message\":\"Command not found in recent ledger\"}";
-      sendClientPacket(client, "commandAck", "", nf);
-    }
-  }
-}
+      const String digest = wsCommandPayloadDigest(String(entry.action) + "\n" + entry.payloadJson);
+      strncpy(entry.payloadDigest, digest.c_str(), sizeof(entry.payloadDigest) - 1);
 
-// Record a completed command result into the idempotency ledger.
-void finishWsCommand(const char *commandId, bool ok, const char *code, const char *message) {
-  for (uint8_t l = 0; l < wsCommandLedgerCount; ++l) {
-    const uint8_t li = (wsCommandLedgerNext - wsCommandLedgerCount + l + kWsCommandLedgerCapacity) % kWsCommandLedgerCapacity;
-    if (strncmp(wsCommandLedger[li].commandId, commandId, 96) == 0) {
-      wsCommandLedger[li].completed = true;
-      wsCommandLedger[li].ok = ok;
-      strncpy(wsCommandLedger[li].code, code, 32); wsCommandLedger[li].code[32] = '\0';
-      strncpy(wsCommandLedger[li].message, message, 128); wsCommandLedger[li].message[128] = '\0';
-      break;
+      WsCommandLedgerEntry existing = {};
+      const WsCommandRegistration registration = registerAndQueueWsCommand(entry, existing);
+      if (registration == WsCommandRegistration::Accepted) {
+        sendWsCommandAck(client, cmdId, true, false, "ACCEPTED", "Command accepted");
+      } else if (registration == WsCommandRegistration::DuplicateInProgress) {
+        sendWsCommandAck(client, cmdId, true, true, "IN_PROGRESS", "Command is still in progress");
+      } else if (registration == WsCommandRegistration::DuplicateCompleted) {
+        sendWsCommandResult(client, cmdId, existing.ok, existing.code, existing.message);
+      } else if (registration == WsCommandRegistration::IdempotencyConflict) {
+        sendWsCommandAck(client, cmdId, false, false, "IDEMPOTENCY_CONFLICT",
+                         "commandId was already used with a different action or payload");
+      } else if (registration == WsCommandRegistration::Unauthorized) {
+        sendWsCommandAck(client, cmdId, false, false, "UNAUTHORIZED",
+                         "Command authorization invalid or expired");
+      } else if (registration == WsCommandRegistration::QueueFull) {
+        sendWsCommandAck(client, cmdId, false, false, "QUEUE_FULL", "Command queue is full");
+      } else {
+        sendWsCommandAck(client, cmdId, false, false, "TRANSPORT_UNAVAILABLE",
+                         "Command transport is unavailable");
+      }
+    } else if (msgType == "commandQuery") {
+      const char *queryId = doc["commandId"] | "";
+      const uint32_t queryEpoch = doc["authorization"]["controlSessionEpoch"] | 0;
+      const char *queryToken = doc["authorization"]["socketCommandToken"] | "";
+      if (!validWsCommandId(queryId)) {
+        sendWsCommandAck(client, queryId, false, false, "INVALID_COMMAND", "Valid commandId is required");
+        return;
+      }
+      if (strlen(queryToken) != 40) {
+        sendWsCommandAck(client, queryId, false, false, "UNAUTHORIZED",
+                         "Command query authorization invalid or expired");
+        return;
+      }
+      WsCommandLedgerEntry entry = {};
+      const WsCommandQueryStatus status = queryWsCommandLedger(queryEpoch, queryToken, queryId, entry);
+      if (status == WsCommandQueryStatus::Completed) {
+        sendWsCommandResult(client, queryId, entry.ok, entry.code, entry.message);
+      } else if (status == WsCommandQueryStatus::InProgress) {
+        sendWsCommandAck(client, queryId, true, true, "IN_PROGRESS", "Command is still in progress");
+      } else if (status == WsCommandQueryStatus::Unauthorized) {
+        sendWsCommandAck(client, queryId, false, false, "UNAUTHORIZED",
+                         "Command query authorization invalid or expired");
+      } else if (status == WsCommandQueryStatus::NotFound) {
+        sendWsCommandAck(client, queryId, false, false, "INVALID_COMMAND",
+                         "Command not found in this control session");
+      } else {
+        sendWsCommandAck(client, queryId, false, false, "TRANSPORT_UNAVAILABLE",
+                         "Command ledger is unavailable");
+      }
     }
   }
 }
 
 // Process one queued WS command per loop() tick (NOT in WS ISR).
 void processWsCommandQueue() {
-  if (wsCommandQueueCount == 0) return;
-  WsCommandEntry &entry = wsCommandQueue[wsCommandQueueHead];
-  const char *commandId = entry.commandId;
-  const char *action = entry.action;
-  const uint8_t clientId = entry.clientId;
+  if (wsCommandQueue == nullptr) return;
+  WsCommandEntry entry = {};
+  if (xQueueReceive(wsCommandQueue, &entry, 0) != pdTRUE) return;
 
-  // Re-validate authorization (epoch or token may have changed since queuing).
-  if (!operatorSessionActive() || operatorSocketCommandToken.length() == 0 ||
-      entry.epoch != operatorControlSessionEpoch ||
-      strncmp(entry.tokenFragment, operatorSocketCommandToken.c_str(), 8) != 0) {
-    String result = "{\"type\":\"commandResult\",\"commandId\":\""; result += commandId;
-    result += "\",\"ok\":false,\"code\":\"STALE_CONTROL_SESSION\",\"message\":\"Command authorization expired before execution\"}";
-    sendClientPacket(clientId, "commandResult", "", result);
-    finishWsCommand(commandId, false, "STALE_CONTROL_SESSION", "Command authorization expired before execution");
-    wsCommandQueueHead = (wsCommandQueueHead + 1) % kWsCommandQueueCapacity;
-    --wsCommandQueueCount; return;
+  if (!wsQueuedCommandStillAuthorized(entry)) {
+    finishWsCommand(entry.commandId, entry.epoch, false, "STALE_CONTROL_SESSION",
+                    "Command authorization expired before execution");
+    queueWsCommandResult(entry.clientId, entry.commandId, false, "STALE_CONTROL_SESSION",
+                         "Command authorization expired before execution");
+    return;
   }
 
-  bool ok = false;
-  String code = "INVALID_COMMAND";
-  String msg = "Unknown action";
-
-  if (strcmp(action, "safety.stop") == 0 || strcmp(action, "job.stop") == 0) {
-    if (jobStatus.state == JobRunnerState::Stopping) {
-      ok = true; code = "OK"; msg = "Stop already in progress.";
-    } else if (jobStatus.state != JobRunnerState::Preparing &&
-               jobStatus.state != JobRunnerState::Running &&
-               jobStatus.state != JobRunnerState::Pausing &&
-               jobStatus.state != JobRunnerState::PausedIntact &&
-               jobStatus.state != JobRunnerState::Paused &&
-               jobStatus.state != JobRunnerState::Resuming) {
-      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Job is not active.";
-    } else {
-      if (jobFile) jobFile.close();
-      jobWaitingForOk = false; jobResponseBuffer = ""; jobRunning = false;
-      jobStatus.pauseRequested = false; jobStatus.stopRequested = true;
-      jobStatus.directResumeValid = false; jobStatus.recoveryRequired = true;
-      jobStatus.pauseInterruptedForManualMotion = false;
-      jobStatus.toolChangePending = false; jobStatus.toolChangeReady = false;
-      jobStatus.toolChangeZZeroCompleted = false; jobStatus.toolChangeParked = false;
-      jobStatus.toolChangeToolConfirmed = false; jobStatus.toolChangeRouterReadyConfirmed = false;
-      jobStatus.toolChangePhase = "NONE";
-      jobStatus.state = JobRunnerState::Stopping;
-      jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
-      jobStatus.stopWarning = machineProfile.capEmergencyParser ? "" :
-          "Marlin EMERGENCY_PARSER not detected; immediate interruption cannot be guaranteed.";
-      jobStatus.streamingPausedReason = machineProfile.capEmergencyParser ?
-          "Stop requested. M410 quickstop sent; position untrusted until Home All." :
-          jobStatus.stopWarning + " Position untrusted until Home All.";
-      startImmediateStopPrioritySequence();
-      invalidateMachineFrameAfterQuickstop();
-      touchJobStatus();
-      logJobEvent("ws stop: " + jobStatus.gcodePath + " ep=" + String(machineProfile.capEmergencyParser ? "y" : "n"));
-      ok = true; code = "OK";
-      msg = machineProfile.capEmergencyParser ?
-          "Stop requested. Position must be verified after M410 quickstop." :
-          "Stop requested; EMERGENCY_PARSER not detected. Home All before further motion.";
-    }
-  } else if (strcmp(action, "job.pause") == 0) {
-    if (jobStatus.state != JobRunnerState::Running) {
-      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Job is not running.";
-    } else if (machineProfile.capRealtimeReporting) {
-      String writeErr;
-      if (!writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
-        const String errMsg = "P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
-        setJobCommunicationLost(errMsg, "P000");
-        touchJobStatus();
-        ok = false; code = "COMM_ERROR"; msg = jobStatus.lastError;
-      } else {
-        jobStatus.pauseRequested = true;
-        jobStatus.stopRequested = false;
-        jobStatus.directResumeValid = true;
-        jobStatus.recoveryRequired = false;
-        jobStatus.pauseInterruptedForManualMotion = false;
-        jobStatus.pauseRealtimeHold = true;
-        jobStatus.pauseMode = "realtime";
-        jobStatus.state = JobRunnerState::PausedIntact;
-        jobStatus.pauseRequested = false;
-        jobStatus.pausedAtMs = millis();
-        jobStatus.streamingPausedReason =
-            "Motion held — cutter remains running. Direct Resume is valid until any manual movement.";
-        touchJobStatus();
-        logJobEvent("ws pause: " + jobStatus.gcodePath + " mode=realtime");
-        ok = true; code = "OK";
-        msg = "Realtime hold requested with P000. Motion held — cutter remains running.";
-      }
-    } else {
-      jobStatus.pauseRequested = true;
-      jobStatus.stopRequested = false;
-      jobStatus.directResumeValid = true;
-      jobStatus.recoveryRequired = false;
-      jobStatus.pauseInterruptedForManualMotion = false;
-      jobStatus.pauseRealtimeHold = false;
-      jobStatus.pauseMode = "boundary";
-      jobStatus.state = JobRunnerState::Pausing;
-      jobStatus.streamingPausedReason =
-          "Pause pending at the next safely resumable command boundary; cutter remains running.";
-      touchJobStatus();
-      logJobEvent("ws pause: " + jobStatus.gcodePath + " mode=boundary");
-      ok = true; code = "OK";
-      msg = "Pause pending. The current command will finish before PAUSED_INTACT.";
-    }
-  } else if (strcmp(action, "job.resume") == 0) {
-    if (jobStatus.state == JobRunnerState::Paused && jobStatus.toolChangePending) {
-      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Complete the pending tool change before resuming.";
-    } else if (jobStatus.state != JobRunnerState::PausedIntact || !jobStatus.directResumeValid) {
-      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Direct Resume is unavailable; review Recovery.";
-    } else if (jobStatus.stopRequested) {
-      ok = false; code = "JOB_STATE_CONFLICT"; msg = "Job stop has been requested.";
-    } else {
-      const bool realtimeHold = jobStatus.pauseRealtimeHold;
-      if (!realtimeHold && !openJobFileAtOffset()) {
-        ok = false; code = "IO_ERROR"; msg = jobStatus.lastError;
-      } else if (realtimeHold) {
-        String writeErr;
-        if (!writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
-          jobStatus.lastError = "R000 realtime resume rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
-          touchJobStatus();
-          ok = false; code = "COMM_ERROR"; msg = jobStatus.lastError;
-        } else {
-          jobStatus.pauseRequested = false;
-          jobStatus.streamingPausedReason = "";
-          jobStatus.state = JobRunnerState::Resuming;
-          jobStatus.pauseRealtimeHold = false;
-          jobStatus.directResumeValid = false;
-          jobStatus.pauseMode = "none";
-          touchJobStatus();
-          logJobEvent("ws resume: " + jobStatus.gcodePath);
-          ok = true; code = "OK"; msg = "Resume requested.";
-        }
-      } else {
-        jobResponseBuffer = "";
-        jobWaitingForOk = false;
-        jobStatus.pauseRequested = false;
-        jobStatus.streamingPausedReason = "";
-        jobStatus.state = JobRunnerState::Resuming;
-        jobStatus.pauseRealtimeHold = false;
-        jobStatus.directResumeValid = false;
-        jobStatus.pauseMode = "none";
-        touchJobStatus();
-        logJobEvent("ws resume: " + jobStatus.gcodePath);
-        ok = true; code = "OK"; msg = "Resume requested.";
-      }
-    }
-  } else if (strcmp(action, "job.setFeedOverride") == 0) {
-    String commError;
-    if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
-      ok = false; code = "COMM_ERROR"; msg = commError;
-    } else {
-      const String payload = String(entry.payloadJson);
-      const int percent = extractJsonInt(payload, "percent", -1);
-      if (percent < 10 || percent > 200) {
-        ok = false; code = "INVALID_PAYLOAD"; msg = "Feed override percent must be between 10 and 200.";
-      } else if (jobStatus.state == JobRunnerState::Preparing || jobStatus.state == JobRunnerState::Stopping) {
-        ok = false; code = "JOB_STATE_CONFLICT"; msg = "Feed override rejected while job is preparing or stopping.";
-      } else if (priorityCommandCount > 0 || jobStatus.priorityCommandInProgress) {
-        ok = false; code = "BUSY"; msg = "Higher priority command is in progress.";
-      } else {
-        const String cmd = feedOverrideCommand(percent);
-        jobStatus.feedOverridePercent = percent;
-        jobStatus.lastFeedOverrideCommand = cmd;
-        jobStatus.lastFeedOverrideResponse = "";
-        jobStatus.lastFeedOverrideError = "";
-        queuePriorityCommands(cmd.c_str());
-        touchJobStatus();
-        logJobEvent("ws feed override requested: " + cmd);
-        ok = true; code = "OK"; msg = "Feed override requested.";
-      }
-    }
+  MachineOperationResult result;
+  if (strcmp(entry.action, "safety.stop") == 0 || strcmp(entry.action, "job.stop") == 0) {
+    result = performJobStop();
+  } else if (strcmp(entry.action, "job.pause") == 0) {
+    result = performJobPause();
+  } else if (strcmp(entry.action, "job.resume") == 0) {
+    result = performJobResume();
+  } else if (strcmp(entry.action, "job.setFeedOverride") == 0) {
+    JsonDocument payload;
+    const DeserializationError payloadError = deserializeJson(payload, entry.payloadJson);
+    result = payloadError
+      ? MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed feed override payload"}
+      : performJobFeedOverride(payload["percent"] | -1);
   } else {
-    ok = false; code = "INVALID_COMMAND"; msg = String("Unknown action: ") + action;
+    result = {false, true, true, 400, "INVALID_COMMAND", String("Unknown action: ") + entry.action};
   }
 
-  String result = "{\"type\":\"commandResult\",\"commandId\":\""; result += commandId;
-  result += "\",\"ok\":"; result += ok ? "true" : "false";
-  result += ",\"code\":\""; result += code;
-  result += "\",\"message\":\""; result += msg; result += "\"}";
-  sendClientPacket(clientId, "commandResult", "", result);
-  finishWsCommand(commandId, ok, code.c_str(), msg.c_str());
-  wsCommandQueueHead = (wsCommandQueueHead + 1) % kWsCommandQueueCapacity;
-  --wsCommandQueueCount;
+  finishWsCommand(entry.commandId, entry.epoch, result.ok, result.code.c_str(), result.message.c_str());
+  queueWsCommandResult(entry.clientId, entry.commandId, result.ok,
+                       result.code.c_str(), result.message.c_str());
 }
 
 bool telemetryHasLogSubscriber() {
@@ -3369,6 +3418,7 @@ void telemetryNetworkTask(void *arg) {
 
   for (;;) {
     telemetrySocket.loop();
+    processWsCommandResponses();
     processNetworkTelemetry();
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -6608,6 +6658,13 @@ void sendJsonError(int status, const String &message) {
   server.send(status, "application/json", json);
 }
 
+String wsCommandPayloadDigest(const String &payloadJson) {
+  uint8_t digest[32];
+  mbedtls_sha256_ret(reinterpret_cast<const unsigned char *>(payloadJson.c_str()),
+                     payloadJson.length(), digest, 0);
+  return bytesToHex(digest, sizeof(digest));
+}
+
 String operatorPinDigest(const String &pin) {
   const String material = deviceIdentity.deviceId + ":" + pin;
   uint8_t digest[32];
@@ -6697,7 +6754,7 @@ String operatorStatusJson(bool assumeController = false) {
   json += "}";
   // Return the WS command token ONLY to the active controller (assumeController=true).
   // It must never appear in regular status polls or broadcasts.
-  if (controller && operatorSocketCommandToken.length() > 0) {
+  if (assumeController && controller && operatorSocketCommandToken.length() > 0) {
     json.remove(json.length() - 1); // strip trailing }
     json += ",\"socketCommandToken\":\"";
     json += operatorSocketCommandToken;
@@ -6754,6 +6811,8 @@ String newOperatorToken() {
 }
 
 void beginOperatorControlSession() {
+  const bool locked = wsCommandLedgerMutex != nullptr &&
+                      xSemaphoreTake(wsCommandLedgerMutex, portMAX_DELAY) == pdTRUE;
   ++operatorControlSessionEpoch;
   if (operatorControlSessionEpoch == 0) ++operatorControlSessionEpoch;
   // Generate a new opaque WS command-authorization secret for each new session.
@@ -6763,6 +6822,10 @@ void beginOperatorControlSession() {
            static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
            static_cast<unsigned long>(esp_random()));
   operatorSocketCommandToken = cmdToken;
+  if (locked) {
+    clearWsCommandTransportLocked();
+    xSemaphoreGive(wsCommandLedgerMutex);
+  }
 }
 
 void saveOperatorPin(const String &pin) {
@@ -6891,7 +6954,14 @@ void handleOperatorRelease() {
   operatorSessionToken = "";
   operatorSessionOwner = "";
   operatorSessionBrowserHash = "";
-  operatorSocketCommandToken = ""; // Revoke WS command authorization immediately.
+  if (wsCommandLedgerMutex != nullptr &&
+      xSemaphoreTake(wsCommandLedgerMutex, portMAX_DELAY) == pdTRUE) {
+    operatorSocketCommandToken = "";
+    clearWsCommandTransportLocked();
+    xSemaphoreGive(wsCommandLedgerMutex);
+  } else {
+    operatorSocketCommandToken = "";
+  }
   operatorOtaUnlockedUntilMs = 0;
   forgetOperatorBrowser();
   server.sendHeader("Set-Cookie", "cnc_operator=; Path=/; SameSite=Strict; HttpOnly; Max-Age=0");
@@ -8215,31 +8285,21 @@ void handleProductionResumeStart() {
   server.send(200, "application/json", jobStatusJson());
 }
 
-void handleJobFeedOverride() {
+MachineOperationResult performJobFeedOverride(int percent) {
   String commError;
   if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
-    sendJsonError(503, commError);
-    return;
+    return {false, false, true, 503, "COMM_ERROR", commError};
   }
-  if (!server.hasArg("plain")) {
-    sendJsonError(400, "missing JSON body");
-    return;
-  }
-
-  const int percent = extractJsonInt(server.arg("plain"), "percent", -1);
   if (percent < 10 || percent > 200) {
-    sendJsonError(400, "feed override percent must be between 10 and 200");
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD",
+            "feed override percent must be between 10 and 200"};
   }
-
   if (jobStatus.state == JobRunnerState::Preparing || jobStatus.state == JobRunnerState::Stopping) {
-    sendJsonError(409, "feed override rejected while job is preparing or stopping");
-    return;
+    return {false, false, true, 409, "JOB_STATE_CONFLICT",
+            "feed override rejected while job is preparing or stopping"};
   }
-
   if (priorityCommandCount > 0 || jobStatus.priorityCommandInProgress) {
-    sendJsonError(409, "higher priority command is in progress");
-    return;
+    return {false, false, true, 409, "BUSY", "higher priority command is in progress"};
   }
 
   const String cmd = feedOverrideCommand(percent);
@@ -8250,7 +8310,21 @@ void handleJobFeedOverride() {
   queuePriorityCommands(cmd.c_str());
   touchJobStatus();
   logJobEvent("feed override requested: " + cmd);
-  server.send(200, "application/json", jobStatusJsonWithMessage("Feed override requested."));
+  return {true, true, true, 200, "OK", "Feed override requested."};
+}
+
+void handleJobFeedOverride() {
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+  const MachineOperationResult result =
+      performJobFeedOverride(extractJsonInt(server.arg("plain"), "percent", -1));
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
+    return;
+  }
+  server.send(200, "application/json", jobStatusJsonWithMessage(result.message));
 }
 
 void handleJobStart() {
@@ -8422,20 +8496,20 @@ void handleJobStart() {
   server.send(200, "application/json", jobStatusJson());
 }
 
-void handleJobPause() {
+MachineOperationResult performJobPause() {
   if (jobStatus.state != JobRunnerState::Running) {
-    sendJsonError(409, "job is not running");
-    return;
+    return {false, false, true, 409, "JOB_STATE_CONFLICT", "job is not running"};
   }
 
+  String message;
   if (machineProfile.capRealtimeReporting) {
     String writeErr;
     if (!writeControllerLine("P000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
-      const String errMsg = "P000 realtime pause rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
-      setJobCommunicationLost(errMsg, "P000");
+      const String error = "P000 realtime pause rejected: " +
+                           (writeErr.length() > 0 ? writeErr : "UART write failed");
+      setJobCommunicationLost(error, "P000");
       touchJobStatus();
-      sendJsonError(503, jobStatus.lastError);
-      return;
+      return {false, true, true, 503, "COMM_ERROR", jobStatus.lastError};
     }
     jobStatus.pauseRequested = true;
     jobStatus.stopRequested = false;
@@ -8449,6 +8523,7 @@ void handleJobPause() {
     jobStatus.pausedAtMs = millis();
     jobStatus.streamingPausedReason =
         "Motion held — cutter remains running. Direct Resume is valid until any manual movement.";
+    message = "Realtime hold requested with P000. Motion held — cutter remains running.";
   } else {
     jobStatus.pauseRequested = true;
     jobStatus.stopRequested = false;
@@ -8460,48 +8535,52 @@ void handleJobPause() {
     jobStatus.state = JobRunnerState::Pausing;
     jobStatus.streamingPausedReason =
         "Pause pending at the next safely resumable command boundary; cutter remains running.";
+    message = "Pause pending. The current command will finish before PAUSED_INTACT.";
   }
   touchJobStatus();
-  logJobEvent("pause requested: " + jobStatus.gcodePath +
-              " mode=" + jobStatus.pauseMode);
-  server.send(200, "application/json",
-              jobStatusJsonWithMessage(
-                  machineProfile.capRealtimeReporting
-                      ? "Realtime hold requested with P000. Motion held — cutter remains running."
-                      : "Pause pending. The current command will finish before PAUSED_INTACT."));
+  logJobEvent("pause requested: " + jobStatus.gcodePath + " mode=" + jobStatus.pauseMode);
+  return {true, true, true, 200, "OK", message};
 }
 
-void handleJobResume() {
-  if (jobStatus.state == JobRunnerState::Paused && jobStatus.toolChangePending) {
-    sendJsonError(409, "complete the pending tool change before resuming");
+void handleJobPause() {
+  const MachineOperationResult result = performJobPause();
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
     return;
+  }
+  server.send(200, "application/json", jobStatusJsonWithMessage(result.message));
+}
+
+MachineOperationResult performJobResume() {
+  if (jobStatus.state == JobRunnerState::Paused && jobStatus.toolChangePending) {
+    return {false, false, true, 409, "JOB_STATE_CONFLICT",
+            "complete the pending tool change before resuming"};
   }
   if (jobStatus.state != JobRunnerState::PausedIntact || !jobStatus.directResumeValid) {
-    sendJsonError(409, "direct Resume is unavailable; review Recovery");
-    return;
+    return {false, false, true, 409, "JOB_STATE_CONFLICT",
+            "direct Resume is unavailable; review Recovery"};
   }
   if (jobStatus.stopRequested) {
-    sendJsonError(409, "job stop has been requested");
-    return;
-  }
-  const bool realtimeHold = jobStatus.pauseRealtimeHold;
-  if (!realtimeHold && !openJobFileAtOffset()) {
-    sendJsonError(500, jobStatus.lastError);
-    return;
+    return {false, false, true, 409, "JOB_STATE_CONFLICT", "job stop has been requested"};
   }
 
+  const bool realtimeHold = jobStatus.pauseRealtimeHold;
+  if (!realtimeHold && !openJobFileAtOffset()) {
+    return {false, true, true, 500, "IO_ERROR", jobStatus.lastError};
+  }
   if (realtimeHold) {
     String writeErr;
     if (!writeControllerLine("R000", ControllerCommandClass::ManagedJobStream, true, writeErr)) {
-      jobStatus.lastError = "R000 realtime resume rejected: " + (writeErr.length() > 0 ? writeErr : "UART write failed");
+      jobStatus.lastError = "R000 realtime resume rejected: " +
+                            (writeErr.length() > 0 ? writeErr : "UART write failed");
       touchJobStatus();
-      sendJsonError(503, jobStatus.lastError);
-      return;
+      return {false, true, true, 503, "COMM_ERROR", jobStatus.lastError};
     }
   } else {
     jobResponseBuffer = "";
     jobWaitingForOk = false;
   }
+
   jobStatus.pauseRequested = false;
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Resuming;
@@ -8510,7 +8589,16 @@ void handleJobResume() {
   jobStatus.pauseMode = "none";
   touchJobStatus();
   logJobEvent("resume: " + jobStatus.gcodePath);
-  server.send(200, "application/json", jobStatusJsonWithMessage("Resume requested."));
+  return {true, true, true, 200, "OK", "Resume requested."};
+}
+
+void handleJobResume() {
+  const MachineOperationResult result = performJobResume();
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
+    return;
+  }
+  server.send(200, "application/json", jobStatusJsonWithMessage(result.message));
 }
 
 void handleToolChangeComplete() {
@@ -8640,24 +8728,20 @@ void handlePausedManualInterruption() {
                   "Direct Resume invalidated. Wait for RECOVERY_REQUIRED before manual movement."));
 }
 
-void handleJobStop() {
+MachineOperationResult performJobStop() {
   if (jobStatus.state == JobRunnerState::Stopping) {
-    server.send(200, "application/json",
-                jobStatusJsonWithMessage("Stop now already requested. M410 quickstop is in progress."));
-    return;
+    return {true, true, true, 200, "OK",
+            "Stop now already requested. M410 quickstop is in progress."};
   }
   if (jobStatus.state != JobRunnerState::Preparing && jobStatus.state != JobRunnerState::Running &&
       jobStatus.state != JobRunnerState::Pausing &&
       jobStatus.state != JobRunnerState::PausedIntact &&
       jobStatus.state != JobRunnerState::Paused &&
       jobStatus.state != JobRunnerState::Resuming) {
-    sendJsonError(409, "job is not active");
-    return;
+    return {false, false, true, 409, "JOB_STATE_CONFLICT", "job is not active"};
   }
 
-  if (jobFile) {
-    jobFile.close();
-  }
+  if (jobFile) jobFile.close();
   jobWaitingForOk = false;
   jobResponseBuffer = "";
   jobRunning = false;
@@ -8686,11 +8770,21 @@ void handleJobStop() {
   touchJobStatus();
   logJobEvent("stop requested: " + jobStatus.gcodePath +
               " emergencyParser=" + String(machineProfile.capEmergencyParser ? "detected" : "not-detected"));
-  server.send(200, "application/json",
-              jobStatusJsonWithMessage(
-                  machineProfile.capEmergencyParser
-                      ? "Stop now requested. Position and recovery must be verified after M410 quickstop."
-                      : "Stop now requested, but Marlin EMERGENCY_PARSER was not detected; immediate interruption cannot be guaranteed. Home All before further motion."));
+  return {
+    true, true, true, 200, "OK",
+    machineProfile.capEmergencyParser
+      ? "Stop now requested. Position and recovery must be verified after M410 quickstop."
+      : "Stop now requested, but Marlin EMERGENCY_PARSER was not detected; immediate interruption cannot be guaranteed. Home All before further motion."
+  };
+}
+
+void handleJobStop() {
+  const MachineOperationResult result = performJobStop();
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
+    return;
+  }
+  server.send(200, "application/json", jobStatusJsonWithMessage(result.message));
 }
 
 void handleJogStatus() {
@@ -9849,20 +9943,28 @@ void startHttpServer() {
   logSystemEvent("[CHECKPOINT] Telemetry mutex creation starting");
   telemetryStateMutex = xSemaphoreCreateMutex();
   logRingMutex = xSemaphoreCreateMutex();
+  wsCommandLedgerMutex = xSemaphoreCreateMutex();
   logSystemEvent("[CHECKPOINT] Telemetry mutex creation complete");
 
   logSystemEvent("[CHECKPOINT] Queue creation starting");
   motionEventQueue = xQueueCreate(16, sizeof(MotionTelemetryEvent));
   logEventQueue = xQueueCreate(32, sizeof(LogTelemetryEvent));
+  wsCommandQueue = xQueueCreate(kWsCommandQueueCapacity, sizeof(WsCommandEntry));
+  wsCommandResponseQueue = xQueueCreate(kWsCommandResponseQueueCapacity, sizeof(WsCommandResponseEntry));
   logSystemEvent("[CHECKPOINT] Queue creation complete");
 
-  if (telemetryStateMutex == nullptr || logRingMutex == nullptr || motionEventQueue == nullptr || logEventQueue == nullptr) {
+  if (telemetryStateMutex == nullptr || logRingMutex == nullptr || wsCommandLedgerMutex == nullptr ||
+      motionEventQueue == nullptr || logEventQueue == nullptr ||
+      wsCommandQueue == nullptr || wsCommandResponseQueue == nullptr) {
     logSystemEvent("[CHECKPOINT] Telemetry initialization failed: allocation error");
     logSystemEvent("Telemetry initialization failed: allocation error");
     if (telemetryStateMutex) { vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr; }
     if (logRingMutex) { vSemaphoreDelete(logRingMutex); logRingMutex = nullptr; }
+    if (wsCommandLedgerMutex) { vSemaphoreDelete(wsCommandLedgerMutex); wsCommandLedgerMutex = nullptr; }
     if (motionEventQueue) { vQueueDelete(motionEventQueue); motionEventQueue = nullptr; }
     if (logEventQueue) { vQueueDelete(logEventQueue); logEventQueue = nullptr; }
+    if (wsCommandQueue) { vQueueDelete(wsCommandQueue); wsCommandQueue = nullptr; }
+    if (wsCommandResponseQueue) { vQueueDelete(wsCommandResponseQueue); wsCommandResponseQueue = nullptr; }
     setTelemetryStarted(false);
     return;
   }
@@ -9878,8 +9980,11 @@ void startHttpServer() {
     telemetryTaskHandle = nullptr;
     vSemaphoreDelete(telemetryStateMutex); telemetryStateMutex = nullptr;
     vSemaphoreDelete(logRingMutex); logRingMutex = nullptr;
+    vSemaphoreDelete(wsCommandLedgerMutex); wsCommandLedgerMutex = nullptr;
     vQueueDelete(motionEventQueue); motionEventQueue = nullptr;
     vQueueDelete(logEventQueue); logEventQueue = nullptr;
+    vQueueDelete(wsCommandQueue); wsCommandQueue = nullptr;
+    vQueueDelete(wsCommandResponseQueue); wsCommandResponseQueue = nullptr;
     setTelemetryStarted(false);
     return;
   }

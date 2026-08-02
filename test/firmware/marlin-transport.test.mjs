@@ -156,9 +156,9 @@ describe('Marlin transport safety', () => {
   });
 
   it('holds an intact pause without M5, quickstop, or repositioning', () => {
-    const pause = source.slice(source.indexOf('void handleJobPause()'), source.indexOf('void handleJobResume()'));
-    const resume = source.slice(source.indexOf('void handleJobResume()'), source.indexOf('void handleToolChangeComplete()'));
-    const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
+    const pause = source.slice(source.indexOf('MachineOperationResult performJobPause() {'), source.indexOf('void handleJobPause()'));
+    const resume = source.slice(source.indexOf('MachineOperationResult performJobResume() {'), source.indexOf('void handleJobResume()'));
+    const stop = source.slice(source.indexOf('MachineOperationResult performJobStop() {'), source.indexOf('void handleJobStop()'));
     const finish = source.slice(source.indexOf('void finishPrioritySequence()'), source.indexOf('void processPriorityCommands()'));
     expect(pause).toContain('machineProfile.capRealtimeReporting');
     expect(pause).toContain('writeControllerLine("P000", ControllerCommandClass::ManagedJobStream');
@@ -199,7 +199,7 @@ describe('Marlin transport safety', () => {
   });
 
   it('lets Stop preempt streamed ACK waits and queued M220 without rewriting motion', () => {
-    const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
+    const stop = source.slice(source.indexOf('MachineOperationResult performJobStop() {'), source.indexOf('void handleJobStop()'));
     const immediate = source.slice(source.indexOf('void startImmediateStopPrioritySequence()'), source.indexOf('uint32_t priorityAckTimeoutMs()'));
     expect(stop.indexOf('jobWaitingForOk = false')).toBeLessThan(stop.indexOf('startImmediateStopPrioritySequence()'));
     expect(stop.indexOf('jobFile.close()')).toBeLessThan(stop.indexOf('startImmediateStopPrioritySequence()'));
@@ -211,8 +211,10 @@ describe('Marlin transport safety', () => {
   });
 
   it('returns Stop acceptance after immediate M410 transmission and publishes capability warnings', () => {
-    const stop = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
-    expect(stop.indexOf('startImmediateStopPrioritySequence()')).toBeLessThan(stop.lastIndexOf('server.send(200'));
+    const stop = source.slice(source.indexOf('MachineOperationResult performJobStop() {'), source.indexOf('void handleJobStop()'));
+    const stopHandler = source.slice(source.indexOf('void handleJobStop()'), source.indexOf('void handleJogStatus()'));
+    expect(stop).toContain('startImmediateStopPrioritySequence()');
+    expect(stopHandler.indexOf('performJobStop()')).toBeLessThan(stopHandler.lastIndexOf('server.send(200'));
     expect(stop).toContain('stopEmergencyParserDetected = machineProfile.capEmergencyParser');
     expect(stop).toContain('immediate interruption cannot be guaranteed');
     expect(source).toContain('\\"stopEmergencyParserDetected\\":');

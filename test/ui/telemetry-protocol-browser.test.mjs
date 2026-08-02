@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -364,5 +364,83 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     const testEnv = createBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
     expect(testEnv.CncTelemetry.__test__).toBeDefined();
     expect(typeof testEnv.CncTelemetry.__test__.getClientSeq).toBe('function');
+  });
+
+  it('15. Command responses resolve without consuming telemetry sequence or mutating canonical state', async () => {
+    const { env, ws } = await setupStartedBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+    ws.receiveMessage({ protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+      state: completeState({ job: { state: 'RUNNING', feedOverridePercent: 100 } }) });
+    env.CncTelemetry.setSocketCommandToken('a'.repeat(40), 7);
+
+    const resultPromise = env.CncTelemetry.command('job.setFeedOverride', { percent: 110 }, 'cmd-roundtrip');
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandAck', commandId: 'cmd-roundtrip', accepted: true,
+      inProgress: false, ok: false, code: 'ACCEPTED', message: 'queued' });
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-roundtrip', accepted: true,
+      inProgress: false, ok: true, code: 'OK', message: 'done' });
+
+    await expect(resultPromise).resolves.toMatchObject({ commandId: 'cmd-roundtrip', ok: true, code: 'OK' });
+    expect(env.CncTelemetry.__test__.getLastServerSeq()).toBe(1);
+    expect(env.CncTelemetry.mirroredState.job).toEqual({ state: 'RUNNING', feedOverridePercent: 100 });
+    ws.receiveMessage({ protocolVersion: 1, type: 'patch', seq: 2, ack: 1, bootId: 'boot1', stateRevision: 2,
+      patch: { job: { state: 'RUNNING', feedOverridePercent: 110 } } });
+    expect(env.CncTelemetry.mirroredState.job.feedOverridePercent).toBe(110);
+  });
+
+  it('16. Rejected command exposes a stable pre-acceptance disposition', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+    env.CncTelemetry.setSocketCommandToken('b'.repeat(40), 2);
+    const promise = env.CncTelemetry.command('job.pause', null, 'cmd-rejected');
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandAck', commandId: 'cmd-rejected', accepted: false,
+      inProgress: false, ok: false, code: 'QUEUE_FULL', message: 'queue full' });
+    await expect(promise).rejects.toMatchObject({ code: 'QUEUE_FULL', commandDisposition: 'rejected', definitelyNotAccepted: true });
+  });
+
+  it('17. commandQuery sends an authenticated packet even with existing pending listeners', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+    env.CncTelemetry.setSocketCommandToken('c'.repeat(40), 3);
+    const commandPromise = env.CncTelemetry.command('job.pause', null, 'cmd-query-pending');
+    const queryPromise = env.CncTelemetry.commandQuery('cmd-query-pending');
+    const query = env.sentPackets.filter((packet) => packet.type === 'commandQuery').at(-1);
+    expect(query).toMatchObject({ commandId: 'cmd-query-pending', authorization: { controlSessionEpoch: 3, socketCommandToken: 'c'.repeat(40) } });
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-query-pending', accepted: true,
+      inProgress: false, ok: true, code: 'OK', message: 'paused' });
+    await expect(Promise.all([commandPromise, queryPromise])).resolves.toHaveLength(2);
+  });
+
+  it('18. Reconnect snapshot queries an unresolved accepted command and recovers its result', async () => {
+    vi.useFakeTimers();
+    try {
+      const env = createBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+      env.CncTelemetry.start();
+      const firstWs = env.getWsInstance();
+      firstWs.receiveMessage({ protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 1,
+        state: completeState() });
+      env.CncTelemetry.setSocketCommandToken('d'.repeat(40), 4);
+      const promise = env.CncTelemetry.command('job.resume', null, 'cmd-reconnect');
+      firstWs.receiveMessage({ protocolVersion: 1, type: 'commandAck', commandId: 'cmd-reconnect', accepted: true,
+        inProgress: true, ok: false, code: 'IN_PROGRESS', message: 'running' });
+      firstWs.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      const secondWs = env.getWsInstance();
+      expect(secondWs).not.toBe(firstWs);
+      secondWs.receiveMessage({ protocolVersion: 1, type: 'snapshot', seq: 1, ack: 1, bootId: 'boot1', stateRevision: 2,
+        state: completeState() });
+      expect(env.sentPackets.filter((packet) => packet.type === 'commandQuery').at(-1)?.commandId).toBe('cmd-reconnect');
+      secondWs.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-reconnect', accepted: true,
+        inProgress: false, ok: true, code: 'OK', message: 'resumed' });
+      await expect(promise).resolves.toMatchObject({ code: 'OK' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('19. Authorization revocation immediately rejects pending work and clears bounded state', async () => {
+    const { env } = await setupStartedBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+    env.CncTelemetry.setSocketCommandToken('e'.repeat(40), 5);
+    const promise = env.CncTelemetry.command('job.pause', null, 'cmd-revoke');
+    env.CncTelemetry.revokeCommandAuthorization('lease lost', 'AUTHORIZATION_REVOKED');
+    await expect(promise).rejects.toMatchObject({ code: 'AUTHORIZATION_REVOKED', commandDisposition: 'outcome-unknown' });
+    expect(env.CncTelemetry.__test__.getPendingCommands().size).toBe(0);
+    expect(env.CncTelemetry.__test__.getSocketCommandToken()).toBeNull();
   });
 });

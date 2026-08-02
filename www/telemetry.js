@@ -46,6 +46,8 @@
   // It is never persisted and is cleared on page unload or explicit release.
   let socketCommandToken = null;
   let controlSessionEpoch = 0;
+  const MAX_PENDING_COMMANDS = 32;
+  const MAX_COMMAND_LEDGER = 64;
 
   // Pending command callbacks: commandId → { resolve, reject, timer }
   const pendingCommands = new Map();
@@ -54,21 +56,87 @@
   // Allows re-delivery of results to callers who reconnect before the promise resolves.
   const commandLedger = new Map(); // commandId → { accepted, ok, code, message }
 
+  function commandError(message, code, commandId, disposition, extra = {}) {
+    return Object.assign(new Error(message), {
+      code,
+      commandId,
+      commandDisposition: disposition,
+      definitelyNotSent: disposition === 'not-sent',
+      definitelyNotAccepted: disposition === 'not-sent' || disposition === 'rejected',
+      accepted: disposition === 'accepted' || disposition === 'completed',
+      ...extra,
+    });
+  }
+
+  function rememberCommandResult(commandId, entry) {
+    commandLedger.delete(commandId);
+    commandLedger.set(commandId, entry);
+    while (commandLedger.size > MAX_COMMAND_LEDGER) commandLedger.delete(commandLedger.keys().next().value);
+  }
+
+  function settleCommandListeners(entry, result, error) {
+    for (const listener of entry?.listeners || []) {
+      clearTimeout(listener.timer);
+      if (error) listener.reject(error);
+      else listener.resolve(result);
+    }
+    entry?.listeners?.clear();
+  }
+
+  function addCommandListener(entry, commandId, timeoutMs, label = 'Command') {
+    return new Promise((resolve, reject) => {
+      const listener = { resolve, reject, timer: null };
+      listener.timer = setTimeout(() => {
+        entry.listeners.delete(listener);
+        const disposition = entry.acknowledged ? 'accepted' : entry.sent ? 'outcome-unknown' : 'not-sent';
+        reject(commandError(`${label} ${commandId} timed out after ${timeoutMs}ms`,
+          'TIMEOUT', commandId, disposition, { acknowledged: entry.acknowledged, sent: entry.sent }));
+      }, timeoutMs);
+      entry.listeners.add(listener);
+    });
+  }
+
+  function createPendingCommand(commandId, action = '', payloadSignature = '') {
+    if (pendingCommands.size >= MAX_PENDING_COMMANDS) return null;
+    const entry = {
+      commandId, action, payloadSignature, epoch: controlSessionEpoch,
+      sent: false, acknowledged: false, completed: false,
+      listeners: new Set(), createdAt: Date.now(),
+    };
+    pendingCommands.set(commandId, entry);
+    return entry;
+  }
+
   // ── Public token lifecycle API (called by operator control module) ─────────
   function setSocketCommandToken(token, epoch) {
-    socketCommandToken = typeof token === 'string' && token.length > 0 ? token : null;
-    controlSessionEpoch = typeof epoch === 'number' ? epoch : 0;
+    const nextToken = typeof token === 'string' && token.length > 0 ? token : null;
+    const nextEpoch = Number.isInteger(Number(epoch)) && Number(epoch) > 0 ? Number(epoch) : 0;
+    if (!nextToken || !nextEpoch) {
+      revokeCommandAuthorization('Command authorization is invalid.');
+      return;
+    }
+    if ((socketCommandToken && socketCommandToken !== nextToken) ||
+        (controlSessionEpoch && controlSessionEpoch !== nextEpoch)) {
+      revokeCommandAuthorization('Operator control session changed.', 'CONTROL_SESSION_CHANGED');
+    }
+    socketCommandToken = nextToken;
+    controlSessionEpoch = nextEpoch;
+  }
+
+  function revokeCommandAuthorization(reason = 'Control session ended; command authorization revoked.', code = 'AUTHORIZATION_REVOKED') {
+    socketCommandToken = null;
+    controlSessionEpoch = 0;
+    for (const [id, pending] of pendingCommands) {
+      const disposition = pending.acknowledged ? 'accepted' : pending.sent ? 'outcome-unknown' : 'rejected';
+      settleCommandListeners(pending, null, commandError(reason, code, id, disposition,
+        { acknowledged: pending.acknowledged, sent: pending.sent }));
+      pendingCommands.delete(id);
+    }
+    commandLedger.clear();
   }
 
   function clearSocketCommandToken() {
-    socketCommandToken = null;
-    controlSessionEpoch = 0;
-    // Reject all pending commands immediately.
-    for (const [id, pending] of pendingCommands) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error('Control session ended; command authorization revoked.'));
-      pendingCommands.delete(id);
-    }
+    revokeCommandAuthorization();
   }
 
   // ── command() API ─────────────────────────────────────────────────────────
@@ -78,13 +146,20 @@
     const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 15000;
 
     if (!socketCommandToken) {
-      return Promise.reject(new Error('No active control session; obtain operator control first.'));
+      return Promise.reject(commandError('No active control session; obtain operator control first.', 'UNAUTHORIZED', commandId, 'not-sent'));
     }
     if (!socketConnected || socket?.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('WebSocket is not connected.'));
+      return Promise.reject(commandError('WebSocket is not connected.', 'TRANSPORT_UNAVAILABLE', commandId, 'not-sent'));
     }
-    if (typeof commandId !== 'string' || commandId.length === 0 || commandId.length > 96) {
-      return Promise.reject(new Error('commandId must be a non-empty string up to 96 characters.'));
+    if (typeof commandId !== 'string' || !/^[A-Za-z0-9._:-]{1,96}$/.test(commandId)) {
+      return Promise.reject(commandError('commandId contains invalid characters or length.', 'INVALID_COMMAND', commandId, 'not-sent'));
+    }
+    if (typeof action !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(action)) {
+      return Promise.reject(commandError('action contains invalid characters or length.', 'INVALID_COMMAND', commandId, 'not-sent'));
+    }
+    const payloadSignature = payload === undefined || payload === null ? '' : JSON.stringify(payload);
+    if (new TextEncoder().encode(payloadSignature).length > 4096) {
+      return Promise.reject(commandError('Command payload exceeds 4096 bytes.', 'PAYLOAD_TOO_LARGE', commandId, 'not-sent'));
     }
 
     // If this commandId is already in the ledger (completed), return immediately.
@@ -92,53 +167,36 @@
       const entry = commandLedger.get(commandId);
       if (entry.completed) {
         return entry.ok
-          ? Promise.resolve({ commandId, ok: true, code: entry.code, message: entry.message })
-          : Promise.reject(Object.assign(new Error(entry.message), { code: entry.code, commandId }));
+          ? Promise.resolve({ commandId, ok: true, code: entry.code, message: entry.message, accepted: true })
+          : Promise.reject(commandError(entry.message, entry.code, commandId, 'completed'));
       }
     }
 
-    // If already in-flight, just re-register a listener.
     if (pendingCommands.has(commandId)) {
-      return new Promise((resolve, reject) => {
-        const existing = pendingCommands.get(commandId);
-        const origResolve = existing.resolve;
-        const origReject = existing.reject;
-        existing.resolve = (v) => { origResolve(v); resolve(v); };
-        existing.reject = (e) => { origReject(e); reject(e); };
-      });
+      const existing = pendingCommands.get(commandId);
+      if (existing.action !== action || existing.payloadSignature !== payloadSignature) {
+        return Promise.reject(commandError('commandId is already associated with a different action or payload.', 'IDEMPOTENCY_CONFLICT', commandId, 'rejected'));
+      }
+      return addCommandListener(existing, commandId, timeoutMs);
     }
 
-    return new Promise((resolve, reject) => {
-      const packet = {
-        protocolVersion: 1,
-        type: 'command',
-        commandId,
-        action,
-        authorization: {
-          controlSessionEpoch,
-          socketCommandToken,
-        },
-      };
-      if (payload !== undefined && payload !== null) {
-        packet.payload = payload;
-      }
-
-      const timer = setTimeout(() => {
-        if (pendingCommands.has(commandId)) {
-          pendingCommands.delete(commandId);
-          reject(Object.assign(new Error(`Command ${commandId} timed out after ${timeoutMs}ms`), { code: 'TIMEOUT', commandId }));
-        }
-      }, timeoutMs);
-
-      pendingCommands.set(commandId, { resolve, reject, timer });
-
-      const sent = sendSocketPacket(packet);
-      if (!sent) {
-        clearTimeout(timer);
-        pendingCommands.delete(commandId);
-        reject(new Error('Failed to send command packet; WebSocket not ready.'));
-      }
-    });
+    const pending = createPendingCommand(commandId, action, payloadSignature);
+    if (!pending) return Promise.reject(commandError('Too many unresolved commands.', 'COMMAND_CAPACITY', commandId, 'not-sent'));
+    const promise = addCommandListener(pending, commandId, timeoutMs);
+    const packet = {
+      protocolVersion: 1,
+      type: 'command',
+      commandId,
+      action,
+      authorization: { controlSessionEpoch, socketCommandToken },
+    };
+    if (payload !== undefined && payload !== null) packet.payload = payload;
+    pending.sent = sendSocketPacket(packet);
+    if (!pending.sent) {
+      settleCommandListeners(pending, null, commandError('Failed to send command packet; WebSocket not ready.', 'SEND_FAILED', commandId, 'not-sent'));
+      pendingCommands.delete(commandId);
+    }
+    return promise;
   }
 
   // ── Handle incoming commandAck / commandResult messages ───────────────────
@@ -148,21 +206,20 @@
 
     if (!msg.accepted) {
       // Server rejected the command before queuing.
-      commandLedger.set(commandId, { completed: true, ok: false, code: msg.code || 'REJECTED', message: msg.message || 'Command rejected' });
+      rememberCommandResult(commandId, { completed: true, ok: false, code: msg.code || 'REJECTED', message: msg.message || 'Command rejected', epoch: controlSessionEpoch });
       const pending = pendingCommands.get(commandId);
       if (pending) {
-        clearTimeout(pending.timer);
+        settleCommandListeners(pending, null, commandError(msg.message || 'Command rejected', msg.code || 'REJECTED', commandId, 'rejected'));
         pendingCommands.delete(commandId);
-        pending.reject(Object.assign(new Error(msg.message || 'Command rejected'), { code: msg.code || 'REJECTED', commandId }));
       }
       window.dispatchEvent(new CustomEvent('cnc-command-rejected', { detail: { commandId, code: msg.code, message: msg.message } }));
       return;
     }
 
     // Accepted (in queue or in-progress); update ledger.
-    if (!commandLedger.has(commandId)) {
-      commandLedger.set(commandId, { completed: false, ok: false, code: '', message: '' });
-    }
+    const pending = pendingCommands.get(commandId);
+    if (pending) pending.acknowledged = true;
+    rememberCommandResult(commandId, { completed: false, ok: false, code: msg.code || 'ACCEPTED', message: msg.message || '', epoch: controlSessionEpoch });
     window.dispatchEvent(new CustomEvent('cnc-command-ack', { detail: { commandId, accepted: true, inProgress: Boolean(msg.inProgress) } }));
   }
 
@@ -174,22 +231,16 @@
     const code = String(msg.code || (ok ? 'OK' : 'ERROR'));
     const message = String(msg.message || '');
 
-    // Update the ledger.
-    commandLedger.set(commandId, { completed: true, ok, code, message });
-    // Keep ledger bounded to 64 entries.
-    if (commandLedger.size > 64) {
-      const oldest = commandLedger.keys().next().value;
-      commandLedger.delete(oldest);
-    }
+    rememberCommandResult(commandId, { completed: true, ok, code, message, epoch: controlSessionEpoch });
 
     const pending = pendingCommands.get(commandId);
     if (pending) {
-      clearTimeout(pending.timer);
+      pending.completed = true;
       pendingCommands.delete(commandId);
       if (ok) {
-        pending.resolve({ commandId, ok: true, code, message });
+        settleCommandListeners(pending, { commandId, ok: true, code, message, accepted: true }, null);
       } else {
-        pending.reject(Object.assign(new Error(message), { code, commandId }));
+        settleCommandListeners(pending, null, commandError(message, code, commandId, 'completed', { resultOk: false }));
       }
     }
 
@@ -197,40 +248,58 @@
   }
 
   // ── commandQuery: ask the server for the result of an in-flight command ───
-  function commandQuery(commandId) {
-    if (typeof commandId !== 'string' || commandId.length === 0) {
-      return Promise.reject(new Error('commandId is required.'));
+  function commandQuery(commandId, options = {}) {
+    const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 10000;
+    if (typeof commandId !== 'string' || !/^[A-Za-z0-9._:-]{1,96}$/.test(commandId)) {
+      return Promise.reject(commandError('Valid commandId is required.', 'INVALID_COMMAND', commandId, 'not-sent'));
+    }
+    if (!socketCommandToken || !controlSessionEpoch) {
+      return Promise.reject(commandError('No active control session.', 'UNAUTHORIZED', commandId, 'not-sent'));
+    }
+    if (!socketConnected || socket?.readyState !== WebSocket.OPEN) {
+      return Promise.reject(commandError('WebSocket is not connected.', 'TRANSPORT_UNAVAILABLE', commandId, 'not-sent'));
     }
     // If already completed in local ledger, return immediately.
     if (commandLedger.has(commandId)) {
       const entry = commandLedger.get(commandId);
       if (entry.completed) {
         return entry.ok
-          ? Promise.resolve({ commandId, ok: true, code: entry.code, message: entry.message })
-          : Promise.reject(Object.assign(new Error(entry.message), { code: entry.code, commandId }));
+          ? Promise.resolve({ commandId, ok: true, code: entry.code, message: entry.message, accepted: true })
+          : Promise.reject(commandError(entry.message, entry.code, commandId, 'completed'));
       }
     }
 
-    // If already in-flight, just re-register a listener.
-    if (pendingCommands.has(commandId)) {
-      return new Promise((resolve, reject) => {
-        const existing = pendingCommands.get(commandId);
-        const origResolve = existing.resolve;
-        const origReject = existing.reject;
-        existing.resolve = (v) => { origResolve(v); resolve(v); };
-        existing.reject = (e) => { origReject(e); reject(e); };
-      });
-    }
-
-    // Register as pending and send query.
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingCommands.delete(commandId);
-        reject(Object.assign(new Error(`commandQuery for ${commandId} timed out`), { code: 'TIMEOUT', commandId }));
-      }, 10000);
-      pendingCommands.set(commandId, { resolve, reject, timer });
-      sendSocketPacket({ protocolVersion: 1, type: 'commandQuery', commandId });
+    let pending = pendingCommands.get(commandId);
+    if (!pending) pending = createPendingCommand(commandId);
+    if (!pending) return Promise.reject(commandError('Too many unresolved commands.', 'COMMAND_CAPACITY', commandId, 'not-sent'));
+    const promise = addCommandListener(pending, commandId, timeoutMs, 'commandQuery for');
+    const wasSent = pending.sent;
+    const sent = sendSocketPacket({
+      protocolVersion: 1,
+      type: 'commandQuery',
+      commandId,
+      authorization: { controlSessionEpoch, socketCommandToken },
     });
+    pending.sent = wasSent || sent;
+    if (!sent) {
+      settleCommandListeners(pending, null, commandError('Failed to send command query.', 'SEND_FAILED', commandId, wasSent ? 'outcome-unknown' : 'not-sent'));
+      if (!wasSent) pendingCommands.delete(commandId);
+    }
+    return promise;
+  }
+
+  function recoverPendingCommands() {
+    if (!socketCommandToken || !controlSessionEpoch || !socketConnected) return;
+    for (const pending of pendingCommands.values()) {
+      if (!pending.completed && pending.sent && pending.epoch === controlSessionEpoch) {
+        sendSocketPacket({
+          protocolVersion: 1,
+          type: 'commandQuery',
+          commandId: pending.commandId,
+          authorization: { controlSessionEpoch, socketCommandToken },
+        });
+      }
+    }
   }
 
   async function readJson(res) {
@@ -527,13 +596,22 @@
       if (key === 'system') window.dispatchEvent(new CustomEvent('cnc-telemetry-health', { detail: state.system?.health || state.system }));
       if (key === 'machine') window.dispatchEvent(new CustomEvent('cnc-telemetry-position', { detail: state.machine?.position || state.machine }));
     });
+    recoverPendingCommands();
     return true;
+  }
+
+  function isValidCommandResponse(message) {
+    if (!isObject(message) || Number(message.protocolVersion) !== 1) return false;
+    if (message.type !== 'commandAck' && message.type !== 'commandResult') return false;
+    if (typeof message.commandId !== 'string' || message.commandId.length > 96) return false;
+    if (typeof message.accepted !== 'boolean' || typeof message.inProgress !== 'boolean' ||
+        typeof message.ok !== 'boolean' || typeof message.code !== 'string' ||
+        typeof message.message !== 'string') return false;
+    return message.seq === undefined && message.stateRevision === undefined;
   }
 
   function isValidProtocolEnvelope(message) {
     if (!isObject(message) || Number(message.protocolVersion) !== 1) return false;
-    // commandAck and commandResult do NOT require protocolVersion on the incoming side —
-    // they are server-originated responses, but we still accept them if they arrive.
     if (!protocolMessageTypes.has(message.type)) return false;
     for (const field of ['seq', 'ack', 'stateRevision']) {
       if (message[field] !== undefined && (!Number.isInteger(Number(message[field])) || Number(message[field]) < 0)) return false;
@@ -546,21 +624,22 @@
       return typeof (message.channel || message.event) === 'string' && message.data !== undefined;
     }
     if (message.type === 'protocol-error') return typeof message.error === 'string' && message.error.length > 0;
-    // commandAck / commandResult: flexible, just need commandId
     if (message.type === 'commandAck' || message.type === 'commandResult') {
-      return typeof message.commandId === 'string';
+      return isValidCommandResponse(message);
     }
     return true;
   }
 
   function applySocketMessage(message) {
-    // commandAck and commandResult are lightweight command-channel messages that bypass
-    // the full protocol-envelope validation (they don't carry seq/stateRevision).
     if (isObject(message) && message.type === 'commandAck') {
+      if (!isValidCommandResponse(message)) return false;
+      lastServerMessageMs = Date.now();
       applyCommandAck(message);
       return true;
     }
     if (isObject(message) && message.type === 'commandResult') {
+      if (!isValidCommandResponse(message)) return false;
+      lastServerMessageMs = Date.now();
       applyCommandResult(message);
       return true;
     }
@@ -813,6 +892,10 @@
     heartbeatTimer = setInterval(checkHeartbeatLiveness, 2000);
   });
 
+  window.addEventListener('pagehide', () => {
+    revokeCommandAuthorization('Page lifecycle ended the control session.', 'PAGE_LIFECYCLE_ENDED');
+  });
+
   const api = {
     request: diagnosticRequest,
     diagnosticRequest,
@@ -825,6 +908,7 @@
     commandQuery,
     setSocketCommandToken,
     clearSocketCommandToken,
+    revokeCommandAuthorization,
     get transportStatus() {
       return transportStatus;
     },
@@ -858,6 +942,8 @@
       applySnapshot,
       applyCommandAck,
       applyCommandResult,
+      recoverPendingCommands,
+      isValidCommandResponse,
     };
   }
   window.CncTelemetry = api;

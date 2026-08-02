@@ -1,6 +1,8 @@
 #include <unity.h>
+#include <ArduinoJson.h>
 #include "controller_comm.h"
 #include "../../src/controller_comm.cpp"
+#include "../../src/ws_command_protocol.cpp"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -226,6 +228,62 @@ void test_13_second_command_rejected_during_active_m115_without_disturbing_trans
   TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Recovering, (int)mgr.telemetry.state);
 }
 
+void test_14_ws_command_id_validation_is_bounded_and_safe(void) {
+  TEST_ASSERT_TRUE(validWsCommandId("cmd-123._:retry"));
+  TEST_ASSERT_FALSE(validWsCommandId(""));
+  TEST_ASSERT_FALSE(validWsCommandId("bad id"));
+  TEST_ASSERT_FALSE(validWsCommandId("bad\"id"));
+  std::string oversized(97, 'a');
+  TEST_ASSERT_FALSE(validWsCommandId(oversized.c_str()));
+}
+
+void test_15_ws_action_validation_rejects_invalid_forms(void) {
+  TEST_ASSERT_TRUE(validWsCommandAction("job.setFeedOverride"));
+  TEST_ASSERT_FALSE(validWsCommandAction("job:pause"));
+  TEST_ASSERT_FALSE(validWsCommandAction("job pause"));
+  std::string oversized(65, 'a');
+  TEST_ASSERT_FALSE(validWsCommandAction(oversized.c_str()));
+}
+
+void test_16_ws_command_ack_has_complete_unsequenced_shape(void) {
+  JsonDocument doc;
+  const std::string json = buildWsCommandAckJson("cmd-ack", true, true, "IN_PROGRESS", "queued");
+  TEST_ASSERT_FALSE(deserializeJson(doc, json));
+  TEST_ASSERT_EQUAL(1, doc["protocolVersion"].as<int>());
+  TEST_ASSERT_EQUAL_STRING("commandAck", doc["type"].as<const char *>());
+  TEST_ASSERT_EQUAL_STRING("cmd-ack", doc["commandId"].as<const char *>());
+  TEST_ASSERT_TRUE(doc["accepted"].as<bool>());
+  TEST_ASSERT_TRUE(doc["inProgress"].as<bool>());
+  TEST_ASSERT_FALSE(doc["ok"].as<bool>());
+  TEST_ASSERT_EQUAL_STRING("IN_PROGRESS", doc["code"].as<const char *>());
+  TEST_ASSERT_EQUAL_STRING("queued", doc["message"].as<const char *>());
+  TEST_ASSERT_TRUE(doc["seq"].isNull());
+  TEST_ASSERT_TRUE(doc["stateRevision"].isNull());
+}
+
+void test_17_ws_command_result_escapes_dynamic_json_values(void) {
+  JsonDocument doc;
+  const std::string json = buildWsCommandResultJson("cmd-safe", false, "COMM_ERROR", "P000 said \"hold\"\nretry\\later");
+  TEST_ASSERT_FALSE(deserializeJson(doc, json));
+  TEST_ASSERT_EQUAL_STRING("cmd-safe", doc["commandId"].as<const char *>());
+  TEST_ASSERT_EQUAL_STRING("P000 said \"hold\"\nretry\\later", doc["message"].as<const char *>());
+}
+
+void test_18_ws_command_result_has_complete_protocol_fields(void) {
+  JsonDocument doc;
+  const std::string json = buildWsCommandResultJson("cmd-result", true, "OK", "done");
+  TEST_ASSERT_FALSE(deserializeJson(doc, json));
+  TEST_ASSERT_EQUAL(1, doc["protocolVersion"].as<int>());
+  TEST_ASSERT_EQUAL_STRING("commandResult", doc["type"].as<const char *>());
+  TEST_ASSERT_TRUE(doc["accepted"].as<bool>());
+  TEST_ASSERT_FALSE(doc["inProgress"].as<bool>());
+  TEST_ASSERT_TRUE(doc["ok"].as<bool>());
+  TEST_ASSERT_EQUAL_STRING("OK", doc["code"].as<const char *>());
+  TEST_ASSERT_EQUAL_STRING("done", doc["message"].as<const char *>());
+  TEST_ASSERT_TRUE(doc["seq"].isNull());
+  TEST_ASSERT_TRUE(doc["stateRevision"].isNull());
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_1_connected_reserve_ordinary_sync_transitions_to_waiting);
@@ -241,5 +299,10 @@ int main(int argc, char **argv) {
   RUN_TEST(test_11_terminal_error_alarm_bangbang_transitions_to_connected);
   RUN_TEST(test_12_tightened_recovery_probe_token_ownership);
   RUN_TEST(test_13_second_command_rejected_during_active_m115_without_disturbing_transaction);
+  RUN_TEST(test_14_ws_command_id_validation_is_bounded_and_safe);
+  RUN_TEST(test_15_ws_action_validation_rejects_invalid_forms);
+  RUN_TEST(test_16_ws_command_ack_has_complete_unsequenced_shape);
+  RUN_TEST(test_17_ws_command_result_escapes_dynamic_json_values);
+  RUN_TEST(test_18_ws_command_result_has_complete_protocol_fields);
   return UNITY_END();
 }

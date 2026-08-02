@@ -992,7 +992,8 @@ describe('WS command protocol (Phase 3A)', () => {
     expect(cached.ok).toBe(true);
 
     // Also test commandQuery directly.
-    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-idempotent-1' });
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-idempotent-1',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
     const queried = await ws.recv();
     expect(queried.type).toBe('commandResult');
     expect(queried.commandId).toBe('cmd-idempotent-1');
@@ -1002,12 +1003,135 @@ describe('WS command protocol (Phase 3A)', () => {
 
   it('commandQuery returns INVALID_COMMAND for an unknown commandId', async () => {
     const { base } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
     const ws = await connectWs(base);
-    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'never-sent' });
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'never-sent',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
     const resp = await ws.recv();
     expect(resp.type).toBe('commandAck');
     expect(resp.accepted).toBe(false);
     expect(resp.code).toBe('INVALID_COMMAND');
     ws.close();
+  });
+
+  it('uses complete unsequenced responses and preserves the next telemetry sequence', async () => {
+    const { base, env, triggerStateSliceChange, listClientProtocolStates } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+    const ws = await connectWs(base);
+    const before = listClientProtocolStates()[0].nextServerSeq;
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-shape', action: 'job.pause',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
+    const ack = await ws.recv();
+    const result = await ws.recv();
+    for (const response of [ack, result]) {
+      expect(Object.keys(response).sort()).toEqual(['accepted', 'code', 'commandId', 'inProgress', 'message', 'ok', 'protocolVersion', 'type'].sort());
+      expect(response.protocolVersion).toBe(1);
+      expect(response.seq).toBeUndefined();
+      expect(response.stateRevision).toBeUndefined();
+    }
+    expect(listClientProtocolStates()[0].nextServerSeq).toBe(before);
+    triggerStateSliceChange('job', { state: 'PAUSED_INTACT' });
+    const patch = await ws.recv();
+    expect(patch.type).toBe('patch');
+    expect(patch.seq).toBe(before);
+    ws.close();
+  });
+
+  it('returns IDEMPOTENCY_CONFLICT for a reused ID with different action or payload', async () => {
+    const { base, env } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+    const auth = { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken };
+    const ws = await connectWs(base);
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride', payload: { percent: 110 }, authorization: auth });
+    await ws.recv();
+    await ws.recv();
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride', payload: { percent: 120 }, authorization: auth });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: false, code: 'IDEMPOTENCY_CONFLICT' });
+    ws.close();
+  });
+
+  it('recovers a completed result on a new socket but never across a new control epoch', async () => {
+    const { base, env } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+    const auth = { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken };
+    const first = await connectWs(base);
+    first.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-cross-socket', action: 'job.pause', authorization: auth });
+    await first.recv();
+    await first.recv();
+    first.close();
+    const second = await connectWs(base);
+    second.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-cross-socket', authorization: auth });
+    await expect(second.recv()).resolves.toMatchObject({ type: 'commandResult', commandId: 'cmd-cross-socket', ok: true });
+
+    env.operator.lastSeenAt = Date.now() - 60000;
+    const next = await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    second.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-cross-socket',
+      authorization: { controlSessionEpoch: next.controlSessionEpoch, socketCommandToken: next.socketCommandToken } });
+    await expect(second.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: false, code: 'INVALID_COMMAND' });
+    second.close();
+  });
+
+  it('keeps escaped error text valid JSON and queryable after an outbound result write failure', async () => {
+    const { base, simulateNextOutboundWriteFailure } = await start();
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    const auth = { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken };
+    const ws = await connectWs(base);
+    simulateNextOutboundWriteFailure(0);
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-escaped', action: 'unknown.action', authorization: auth });
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.message).toContain('unknown.action');
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-escaped', authorization: auth });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', code: 'INVALID_COMMAND' });
+    ws.close();
+  });
+
+  it('rolls back queue-full registration and preserves completed ledger state after disconnect', async () => {
+    const { base, flushDeferredWsCommands } = await start({ deferWsCommandExecution: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    const auth = { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken };
+    const first = await connectWs(base);
+    for (let index = 0; index < 8; index++) {
+      first.send({ protocolVersion: 1, type: 'command', commandId: `cmd-queued-${index}`,
+        action: 'unknown.action', authorization: auth });
+      await expect(first.recv()).resolves.toMatchObject({ accepted: true, code: 'ACCEPTED' });
+    }
+    first.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-queue-full',
+      action: 'unknown.action', authorization: auth });
+    await expect(first.recv()).resolves.toMatchObject({ accepted: false, code: 'QUEUE_FULL' });
+    first.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    flushDeferredWsCommands();
+
+    const second = await connectWs(base);
+    second.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-queued-0', authorization: auth });
+    await expect(second.recv()).resolves.toMatchObject({ type: 'commandResult', code: 'INVALID_COMMAND' });
+    second.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-queue-full', authorization: auth });
+    await expect(second.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: false, code: 'INVALID_COMMAND' });
+    second.close();
   });
 });

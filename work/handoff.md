@@ -1,5 +1,17 @@
 # Handoff
 
+## 2026-08-02 - Phase 3 command-transport repair
+
+- Audit confirms command responses must move to a dedicated unsequenced sender; the current firmware drops their payload and advances telemetry sequence state.
+- The WebSocket callback and Arduino loop are separate FreeRTOS tasks. The repair will use real cross-task command/response queues, keep machine execution on the main loop, and protect the session-scoped idempotency ledger with a dedicated mutex.
+- Firmware now follows that design: command responses never touch telemetry sequence/revision state, response writes occur only on the network task, queue-full registration rolls back cleanly, disconnected results remain queryable, and new/released operator sessions clear incompatible queue and ledger state.
+- HTTP and WS Stop/Pause/Resume/feed dispatch now share the same internal operations rather than duplicating state transitions.
+- Browser reconnect recovery, authenticated queries, bounded listener/ledger state, centralized authorization revocation, and safe ambiguous-result handling are implemented. Machine controls confirm all four migrated operations from newer canonical job slices without mutating state from command results.
+- Native protocol helpers now have 18 passing tests, including complete unsequenced packet fields and JSON escaping. The ESP32-CAM build succeeds at 29.4% RAM and 76.3% Flash; mock/browser executable transport and queue/disconnect tests have been added.
+- Final verification passed: JavaScript **597/597 across 51 files**, twice consecutively; native C++ **18/18**; ESP32-CAM build **29.4% RAM** and **76.3% Flash**.
+- Physical hardware was not tested. No high-frequency Jog transport or additional machine actions were added.
+- Next work must begin only after this repair commit: stabilize the shared operations in a separate commit, then migrate Home/Work Zero, then Job Start, and implement Jog last as a separate coalesced realtime transport rather than generic command messages.
+
 ## 2026-07-30 - Phase 3B: Token Lifecycle Wiring & Stop Command Migration
 
 - Completed Phase 3B initial migration. All 584 tests pass.

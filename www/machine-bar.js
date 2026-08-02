@@ -335,6 +335,7 @@
     safetyStopDisabled,
     recoverControllerConnection,
     setFeedOverride,
+    wsCommandDefinitelyNotAccepted,
     sendCmd,
     home,
     setWorkZero,
@@ -618,14 +619,40 @@
     await sendCmd(trimmed);
   }
 
+  function wsCommandDefinitelyNotAccepted(error) {
+    return error?.definitelyNotAccepted === true;
+  }
+
+  async function recoverWsCommandOutcome(telemetry, commandId, error, label) {
+    if (wsCommandDefinitelyNotAccepted(error)) {
+      console.warn(`[${label}] WS command was not accepted; HTTP fallback is safe:`, error.message);
+      return false;
+    }
+    if (error?.commandDisposition === 'completed') throw error;
+    try {
+      await telemetry.commandQuery(commandId, { timeoutMs: 5000 });
+    } catch (queryError) {
+      if (queryError?.commandDisposition === 'completed') throw queryError;
+      console.warn(`[${label}] WS outcome remains ambiguous; waiting for authoritative state:`, queryError.message);
+    }
+    return true;
+  }
+
   async function setFeedOverride(percent) {
     const value = Math.max(10, Math.min(200, Math.round(Number(percent) || 100)));
     if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
     const baseline = socketSliceToken('job');
     const telemetry = window.CncTelemetry;
     if (telemetry?.command && STATE.operator?.controller) {
+      const commandId = genCommandId('feed');
+      let acceptedOrUnknown = false;
       try {
-        await telemetry.command('job.setFeedOverride', { percent: value }, genCommandId('feed'), { timeoutMs: 5000 });
+        await telemetry.command('job.setFeedOverride', { percent: value }, commandId, { timeoutMs: 5000 });
+        acceptedOrUnknown = true;
+      } catch (wsErr) {
+        acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'feed-override');
+      }
+      if (acceptedOrUnknown) {
         await waitForSocketSlice(
           'job',
           (job) => Number(job?.feedOverridePercent) === value,
@@ -633,8 +660,6 @@
         );
         setMessage(`Feed override ${value}% confirmed`);
         return;
-      } catch (wsErr) {
-        console.warn('[feed-override] WS command failed, falling back to HTTP:', wsErr.message);
       }
     }
     await apiPost('/api/job/feed-override', { percent: value });
@@ -670,33 +695,57 @@
   }
 
   async function pauseJob() {
+    const baseline = socketSliceToken('job');
     const telemetry = window.CncTelemetry;
     if (telemetry?.command && STATE.operator?.controller) {
+      const commandId = genCommandId('pause');
+      let acceptedOrUnknown = false;
       try {
-        await telemetry.command('job.pause', null, genCommandId('pause'), { timeoutMs: 5000 });
-        setMessage('Pause requested via WS; motion will hold intact and the cutter will remain running');
-        return;
+        await telemetry.command('job.pause', null, commandId, { timeoutMs: 5000 });
+        acceptedOrUnknown = true;
       } catch (wsErr) {
-        console.warn('[pause] WS command failed, falling back to HTTP:', wsErr.message);
+        acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'pause');
+      }
+      if (acceptedOrUnknown) {
+        await waitForSocketSlice('job',
+          (job) => ['PAUSING', 'PAUSED_INTACT', 'PAUSED'].includes(String(job?.state || '')),
+          { afterSequence: baseline, description: 'Pause transition' });
+        setMessage('Pause confirmed by live job state; motion is held intact and the cutter remains running');
+        return;
       }
     }
     await criticalJobPost('/api/job/pause');
-    setMessage('Pause requested; motion will hold intact and the cutter will remain running');
+    await waitForSocketSlice('job',
+      (job) => ['PAUSING', 'PAUSED_INTACT', 'PAUSED'].includes(String(job?.state || '')),
+      { afterSequence: baseline, description: 'Pause transition' });
+    setMessage('Pause confirmed by live job state; motion is held intact and the cutter remains running');
   }
 
   async function resumeJob() {
+    const baseline = socketSliceToken('job');
     const telemetry = window.CncTelemetry;
     if (telemetry?.command && STATE.operator?.controller) {
+      const commandId = genCommandId('resume');
+      let acceptedOrUnknown = false;
       try {
-        await telemetry.command('job.resume', null, genCommandId('resume'), { timeoutMs: 5000 });
-        setMessage('Resume requested via WS');
-        return;
+        await telemetry.command('job.resume', null, commandId, { timeoutMs: 5000 });
+        acceptedOrUnknown = true;
       } catch (wsErr) {
-        console.warn('[resume] WS command failed, falling back to HTTP:', wsErr.message);
+        acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'resume');
+      }
+      if (acceptedOrUnknown) {
+        await waitForSocketSlice('job',
+          (job) => ['RESUMING', 'RUNNING'].includes(String(job?.state || '')),
+          { afterSequence: baseline, description: 'Resume transition' });
+        setMessage('Resume confirmed by live job state');
+        return;
       }
     }
     await apiPost('/api/job/resume');
-    setMessage('Resume requested');
+    await waitForSocketSlice('job',
+      (job) => ['RESUMING', 'RUNNING'].includes(String(job?.state || '')),
+      { afterSequence: baseline, description: 'Resume transition' });
+    setMessage('Resume confirmed by live job state');
   }
 
   async function pauseOrResumeJob() {
@@ -726,12 +775,16 @@
       return;
     }
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
+    const baseline = socketSliceToken('job');
     // Try the authenticated WS command first (lower latency, idempotent).
     const telemetry = window.CncTelemetry;
     if (telemetry?.command && STATE.operator?.controller) {
       try {
         await telemetry.command('safety.stop', null, genCommandId('stop'), { timeoutMs: 5000 });
-        setMessage('Stop Now requested via WS; position will require verification');
+        await waitForSocketSlice('job',
+          (job) => ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(job?.state || '')),
+          { afterSequence: baseline, description: 'Stop transition' });
+        setMessage('Stop Now confirmed by live job state; position requires verification');
         return;
       } catch (wsErr) {
         // Fall through to HTTP if WS command is rejected or times out.
@@ -742,7 +795,10 @@
     // HTTP fallback (also works without operator session for non-locked setups).
     try {
       await criticalJobPost('/api/job/stop');
-      setMessage('Stop Now requested; position will require verification');
+      await waitForSocketSlice('job',
+        (job) => ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(job?.state || '')),
+        { afterSequence: baseline, description: 'Stop transition' });
+      setMessage('Stop Now confirmed by live job state; position requires verification');
     } catch (err) {
       setMessage(`Stop endpoint failed; M5 was not sent because motion may still be active. Use the physical emergency stop. ${err.message}`);
     }
@@ -809,7 +865,7 @@
     try { data = text ? JSON.parse(text) : {}; } catch (err) {
       throw new Error(`Invalid operator response: ${err.message}`);
     }
-    if (!res.ok) throw Object.assign(new Error(data.error || `Operator request failed (${res.status})`), { data });
+    if (!res.ok) throw Object.assign(new Error(data.error || `Operator request failed (${res.status})`), { data, status: res.status });
     return data;
   }
 
@@ -838,6 +894,19 @@
     }, OPERATOR_HEARTBEAT_INTERVAL_MS);
   }
 
+  function revokeLocalOperatorControl(reason = 'Operator control ended.', overrides = {}) {
+    STATE.operator = {
+      ...STATE.operator,
+      ...overrides,
+      controller: false,
+      readOnly: true,
+      error: reason,
+    };
+    stopOperatorHeartbeat();
+    window.CncTelemetry?.revokeCommandAuthorization?.(reason, 'AUTHORIZATION_REVOKED');
+    return STATE.operator;
+  }
+
   function applyLocalOperatorAuthorization(data) {
     const controlSessionEpoch = Number(data?.controlSessionEpoch) || 0;
     const controller = data?.controller === true && controlSessionEpoch > 0;
@@ -854,7 +923,7 @@
     if (controller && token) {
       window.CncTelemetry?.setSocketCommandToken(token, controlSessionEpoch);
     } else if (!controller) {
-      window.CncTelemetry?.clearSocketCommandToken();
+      revokeLocalOperatorControl(data?.error || 'Operator control is no longer active.', data);
     }
     syncOperatorHeartbeat();
     return STATE.operator;
@@ -870,7 +939,8 @@
     const controller = local.controller === true
       && data.active === true
       && globalSessionEpoch > 0
-      && localSessionEpoch === globalSessionEpoch;
+      && localSessionEpoch === globalSessionEpoch
+      && (!local.owner || !data.owner || local.owner === data.owner);
     STATE.operator = {
       ...local,
       configured: data.configured ?? local.configured ?? false,
@@ -883,6 +953,9 @@
       controller,
       readOnly: !controller,
     };
+    if (local.controller === true && !controller) {
+      revokeLocalOperatorControl('Authoritative control state revoked this browser session.', STATE.operator);
+    }
     syncOperatorHeartbeat();
     return STATE.operator;
   }
@@ -904,7 +977,10 @@
         applyLocalOperatorAuthorization(data);
         renderOperatorLock();
         return STATE.operator.controller === true;
-      } catch {
+      } catch (err) {
+        if (err?.status === 403 || err?.status === 423) {
+          revokeLocalOperatorControl('Remembered controller session is no longer authorized.', err.data || {});
+        }
         return false;
       } finally {
         operatorReconnectInFlight = null;
@@ -978,8 +1054,7 @@
         await readOperatorResponse(await fetch('/api/operator/heartbeat', { method: 'POST' }))
       );
     } catch (err) {
-      STATE.operator = { ...(err.data || STATE.operator), controller: false, readOnly: true, error: err.message };
-      stopOperatorHeartbeat();
+      revokeLocalOperatorControl(err.message || 'Operator heartbeat authorization failed.', err.data || {});
     } finally {
       operatorHeartbeatInFlight = false;
     }
@@ -2167,8 +2242,7 @@
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         stopJog(false, true).catch(() => {});
-        stopOperatorHeartbeat();
-        STATE.operator = { ...STATE.operator, controller: false, readOnly: true };
+        revokeLocalOperatorControl('Page is hidden; controller authorization will be re-established on return.');
         renderOperatorLock();
         return;
       }

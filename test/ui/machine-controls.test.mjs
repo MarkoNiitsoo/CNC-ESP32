@@ -371,7 +371,7 @@ describe('Phase 3B: WS command token lifecycle (source audit)', () => {
     const end = machineBar.indexOf('\n  }', start) + 4;
     const fn = machineBar.slice(start, end);
     expect(fn).toContain('setSocketCommandToken(token, controlSessionEpoch)');
-    expect(fn).toContain('clearSocketCommandToken()');
+    expect(fn).toContain('revokeLocalOperatorControl(');
     // Token comes from data.socketCommandToken, never from STATE.operator.
     expect(fn).toContain('data?.socketCommandToken');
     expect(fn).toContain('controller && token');
@@ -384,7 +384,7 @@ describe('Phase 3B: WS command token lifecycle (source audit)', () => {
     const fn = machineBar.slice(start, end);
     // Must use optional chaining — CncTelemetry may not be loaded yet.
     expect(fn).toContain('window.CncTelemetry?.setSocketCommandToken');
-    expect(fn).toContain('window.CncTelemetry?.clearSocketCommandToken');
+    expect(machineBar).toContain('window.CncTelemetry?.revokeCommandAuthorization?.');
   });
 
   it('genCommandId generates a prefix-tagged unique string', () => {
@@ -417,3 +417,35 @@ describe('Phase 3B: WS command token lifecycle (source audit)', () => {
   });
 });
 
+describe('Phase 3 command fallback and canonical confirmation policy', () => {
+  it('allows HTTP replay only when WebSocket non-acceptance is definite', () => {
+    const start = machineBar.indexOf('function wsCommandDefinitelyNotAccepted(');
+    const end = machineBar.indexOf('\n  }', start) + 4;
+    const policy = new Function(`return (${machineBar.slice(start, end).trim()});`)();
+    expect(policy({ definitelyNotAccepted: true, commandDisposition: 'not-sent' })).toBe(true);
+    expect(policy({ definitelyNotAccepted: false, commandDisposition: 'accepted' })).toBe(false);
+    expect(policy({ commandDisposition: 'outcome-unknown' })).toBe(false);
+  });
+
+  it('recovers ambiguous Pause, Resume, and feed outcomes by query without HTTP replay', () => {
+    const recovery = machineBar.slice(machineBar.indexOf('async function recoverWsCommandOutcome('), machineBar.indexOf('async function setFeedOverride('));
+    expect(recovery).toContain('telemetry.commandQuery(commandId');
+    expect(recovery).not.toContain('apiPost(');
+    for (const [name, endpoint] of [['setFeedOverride', '/api/job/feed-override'], ['pauseJob', '/api/job/pause'], ['resumeJob', '/api/job/resume']]) {
+      const start = machineBar.indexOf(`async function ${name}(`);
+      const next = machineBar.indexOf('\n  async function ', start + 1);
+      const body = machineBar.slice(start, next);
+      expect(body).toContain('acceptedOrUnknown');
+      expect(body.indexOf('if (acceptedOrUnknown)')).toBeLessThan(body.indexOf(endpoint));
+    }
+  });
+
+  it('keeps Stop fallback and confirms all migrated actions through canonical job slices', () => {
+    expect(machineBar).toMatch(/pauseJob\(\)[\s\S]*PAUSING[\s\S]*PAUSED_INTACT/);
+    expect(machineBar).toMatch(/resumeJob\(\)[\s\S]*RESUMING[\s\S]*RUNNING/);
+    expect(machineBar).toMatch(/setFeedOverride\(percent\)[\s\S]*feedOverridePercent/);
+    const stop = machineBar.slice(machineBar.indexOf('async function stopJob()'), machineBar.indexOf('async function refreshPosition()'));
+    expect(stop).toContain("criticalJobPost('/api/job/stop')");
+    expect(stop).toContain("['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR']");
+  });
+});

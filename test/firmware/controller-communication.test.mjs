@@ -395,19 +395,19 @@ describe('Controller Communication Correctness Fixes', () => {
     const { readFile } = await import('node:fs/promises');
     const mainCpp = await readFile('src/main.cpp', 'utf8');
 
-    // 1. Verify R000 failure in handleJobResume does NOT call setJobError
-    const resumeHandlerMatch = mainCpp.match(/void handleJobResume\(\)\s*\{([\s\S]*?)\n\}/);
+    // 1. Verify R000 failure in the shared Resume operation does NOT call setJobError
+    const resumeHandlerMatch = mainCpp.match(/MachineOperationResult performJobResume\(\)\s*\{([\s\S]*?)\n\}/);
     expect(resumeHandlerMatch).not.toBeNull();
     const resumeHandlerBody = resumeHandlerMatch[1];
     expect(resumeHandlerBody).toContain('writeControllerLine("R000"');
     expect(resumeHandlerBody).not.toMatch(/writeControllerLine\("R000"[\s\S]*?setJobError/);
 
-    // 2. Verify P000 failure in handleJobPause calls setJobCommunicationLost with explicit "P000" override
-    const pauseHandlerMatch = mainCpp.match(/void handleJobPause\(\)\s*\{([\s\S]*?)\n\}/);
+    // 2. Verify P000 failure in the shared Pause operation records the explicit command
+    const pauseHandlerMatch = mainCpp.match(/MachineOperationResult performJobPause\(\)\s*\{([\s\S]*?)\n\}/);
     expect(pauseHandlerMatch).not.toBeNull();
     const pauseHandlerBody = pauseHandlerMatch[1];
     expect(pauseHandlerBody).toContain('writeControllerLine("P000"');
-    expect(pauseHandlerBody).toContain('setJobCommunicationLost(errMsg, "P000")');
+    expect(pauseHandlerBody).toContain('setJobCommunicationLost(error, "P000")');
 
     // 3. Verify setJobCommunicationLost signature supports failedCommandOverride
     expect(mainCpp).toContain('void setJobCommunicationLost(const String &message, const String &failedCommandOverride');
