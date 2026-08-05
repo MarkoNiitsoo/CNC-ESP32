@@ -1,5 +1,97 @@
 # Progress
 
+## 2026-08-02 - Phase 3 command-transport documentation sync
+
+- Updated protocol and architecture current-state sections for authenticated `command`/
+  `commandQuery`, exact ordered payload identity, unsequenced responses, bounded recovery state, and
+  the four migrated actions while preserving labeled Phase 1 history.
+- Documented redundant Stop dispatch/canonical authority, ACK-owned feed override state, and
+  current-session-only M115 safety capability evidence.
+- Kept Home/Zero/Start/Jog migrations and physical hardware validation explicitly outstanding;
+  HTTP file/config ownership and protected command routes remain documented.
+- Documentation verification used contradiction searches and `git diff --check`; no code or tests changed.
+
+## 2026-08-02 - Current-session trust for safety capabilities
+
+- Cached machine geometry and non-safety capability metadata still load from NVS, but
+  `EMERGENCY_PARSER` and realtime-hold capability bits are no longer persisted or restored as trusted.
+  Both start false until a successful M115 response from the current controller session is parsed.
+- Controller response timeouts, asynchronous job communication loss, M115 discovery timeout, and
+  every recovery start/failure invalidate both safety flags. Recovery now parses its actual successful
+  M115 response before continuing to M114 or declaring the controller connected; an incomplete M114
+  recovery clears the parsed flags again.
+- Added focused source-contract coverage for stale-cache rejection, invalidation paths, current M115
+  capability replacement, recovery ordering, and conservative failed recovery. Focused firmware tests
+  passed **57/57**. Native/build verification was not rerun because the required PlatformIO cache/toolchain
+  escalation was rejected after the environment usage limit was reached.
+
+## 2026-08-02 - Feed override acknowledgement authority
+
+- Firmware and mock `feedOverridePercent` now change only after the exact `M220 S...` receives a
+  successful terminal response; pending, Error, and timeout diagnostics retain the prior applied value.
+- Normal Start and Production Resume preserve the applied value until their requested start M220 succeeds.
+- Machine Bar and Preview require a newer exact-command slice with terminal `ok`, no error, and the
+  matching applied percentage. Same-value requests require fresh evidence, and Preview persists only success.
+- Focused JavaScript verification passed **139/139**. PlatformIO native/build verification could not
+  start because sandbox cache access was denied and escalation hit the environment usage limit.
+
+## 2026-08-02 - Redundant Stop dispatch and communication-loss safety attempt
+
+- Machine Bar Stop now installs canonical job-state confirmation before dispatch, then starts the
+  authenticated WebSocket `safety.stop` and operator-protected HTTP `/api/job/stop` paths without
+  waiting for either response. Both rejection paths are observed, while only a newer canonical job
+  slice determines success.
+- Missing confirmation now directs the operator to the physical emergency stop without claiming that
+  M5 was not sent. A confirmed communication-loss result warns that controller receipt cannot be
+  verified. Synchronized Stop remains enabled only for the exact `ERROR` + `COMMUNICATION_LOST` case.
+- An explicit Stop in that firmware state now starts the existing priority `M410` then `M5` sequence
+  as a best-effort attempt and publishes the receipt/physical-E-stop warning; other `ERROR` states
+  remain rejected.
+- Pause confirmation wording now distinguishes `PAUSING`, where current motion may continue to the
+  command boundary, from `PAUSED_INTACT`/`PAUSED`, where motion is actually held.
+- Verification: focused UI/firmware suites passed **105/105**, and native tests passed **18/18**
+  using PlatformIO's installed MinGW host toolchain. The ESP32-CAM build succeeded at
+  **96,404 / 327,680 bytes RAM (29.4%)** and **1,501,085 / 1,966,080 bytes Flash (76.3%)**.
+
+## 2026-08-02 - Mock Phase 3 WebSocket command parity
+
+- Successful or state-mutating WebSocket job commands now emit a natural authoritative `job` patch
+  after their unsequenced `commandResult`; Pause, Resume, feed override, and Stop coverage verifies
+  that the patch remains ordinary sequenced telemetry.
+- New Claim, inactive-session Reconnect, and Release now clear both the mock command ledger and its
+  deferred execution queue. Deferred execution also revalidates the live session, epoch, and pending
+  ledger identity before touching the runner, so stale work cannot execute or recreate cleared state.
+- Mock payload identity now hashes insertion-order `JSON.stringify()` output, matching the browser
+  and firmware: an exact ordered retry is idempotent while reordered object keys conflict.
+- Verification: focused mock-server tests passed **42/42**. No firmware, browser, machine-bar, or
+  broader mock behavior was changed.
+
+## 2026-08-02 - Firmware command queue rollback and connection binding
+
+- Queue admission failure now restores the exact ledger entry selected for replacement and the
+  ledger order counter, so a rejected `QUEUE_FULL` request cannot reduce or shift the recovery
+  window.
+- Every WebSocket client slot now advances a nonzero connection generation on connect. Accepted
+  commands and deferred responses retain that generation, and the network task sends a direct result
+  only to the same connected, handshaken generation; ledger completion remains available to queries
+  after disconnect or slot reuse.
+- Added focused firmware source-audit regressions for transactional rollback, generation propagation,
+  stale-result suppression, and completion-before-response ordering.
+- Verification: focused firmware transport/runtime tests passed **57/57**, native tests passed
+  **18/18** using PlatformIO's installed MinGW toolchain, and the ESP32-CAM firmware built successfully
+  at **96,404 / 327,680 bytes RAM (29.4%)** and **1,500,649 / 1,966,080 bytes Flash (76.3%)**.
+
+## 2026-08-02 - Browser command ledger identity and pending-capacity repair
+
+- Completed command results now retain their action, serialized payload identity, and control-session
+  epoch. A cached result is replayed only for that exact request; conflicting reuse fails locally with
+  `IDEMPOTENCY_CONFLICT` and does not transmit a command packet.
+- The 32-entry pending-command bound now reclaims the oldest listenerless entry only when a new entry
+  needs capacity. Timed-out callers therefore cannot permanently exhaust the browser ledger, while
+  commands with active listeners remain protected.
+- Added browser protocol regressions for exact completed replay, action and payload conflicts,
+  post-timeout admission at capacity, and active-listener protection.
+
 ## 2026-08-02 - Phase 3 command-transport repair
 
 - Confirmed the firmware command-response payload-loss defect: `commandAck`/`commandResult` JSON was passed to `sendClientPacket()` with an empty body key, so only the telemetry envelope was transmitted while still consuming the authoritative server sequence.

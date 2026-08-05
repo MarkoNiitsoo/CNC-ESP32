@@ -1658,6 +1658,21 @@ function renderRunPanel() {
   }
 }
 
+function feedOverrideCommandCompleted(job, percent) {
+  if (String(job?.lastFeedOverrideCommand || '').trim() !== `M220 S${percent}`) return false;
+  const error = String(job?.lastFeedOverrideError || '').trim();
+  const response = String(job?.lastFeedOverrideResponse || '');
+  return error.length > 0 || /(?:^|[\r\n])\s*ok\b/i.test(response);
+}
+
+function feedOverrideCommandSucceeded(job, percent) {
+  const response = String(job?.lastFeedOverrideResponse || '');
+  return feedOverrideCommandCompleted(job, percent) &&
+    Number(job?.feedOverridePercent) === percent &&
+    String(job?.lastFeedOverrideError || '').trim() === '' &&
+    !/error:/i.test(response);
+}
+
 async function setLiveFeedOverride(percent) {
   const value = clampFeedPercent(percent, feedStatusPercent());
   if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
@@ -1671,9 +1686,13 @@ async function setLiveFeedOverride(percent) {
     await postCriticalJobAction('/api/job/feed-override', { percent: value });
     const confirmed = await waitForSocketSlice(
       'job',
-      (job) => Number(job?.feedOverridePercent) === value,
-      { afterSequence: baseline, timeoutMs: 5000, description: `feed override ${value}%` },
+      (job) => feedOverrideCommandCompleted(job, value),
+      { afterSequence: baseline, timeoutMs: 12000, description: `feed override ${value}%` },
     );
+    if (!feedOverrideCommandSucceeded(confirmed, value)) {
+      throw new Error(String(confirmed?.lastFeedOverrideError || confirmed?.lastFeedOverrideResponse ||
+        `M220 S${value} did not receive a successful terminal response`).trim());
+    }
     if (jobState) {
       jobState.feedOverride = {
         ...currentFeedOverride(),

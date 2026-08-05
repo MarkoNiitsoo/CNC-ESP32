@@ -118,6 +118,67 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
   });
 
   describe('6. Transport Isolation & Cross-Task Safety', () => {
+    it('restores the exact ledger slot and order when command queue admission fails', () => {
+      const registerBlock = mainCppCode.slice(
+        mainCppCode.indexOf('WsCommandRegistration registerAndQueueWsCommand('),
+        mainCppCode.indexOf('enum class WsCommandQueryStatus')
+      );
+      const queueFailureBlock = registerBlock.slice(
+        registerBlock.indexOf('if (xQueueSend(wsCommandQueue, &entry, 0) != pdTRUE)')
+      );
+
+      expect(registerBlock).toContain('const WsCommandLedgerEntry previousLedger = ledger;');
+      expect(registerBlock).toContain('const uint32_t previousLedgerOrder = wsCommandLedgerOrder;');
+      expect(queueFailureBlock).toContain('ledger = previousLedger;');
+      expect(queueFailureBlock).toContain('wsCommandLedgerOrder = previousLedgerOrder;');
+      expect(queueFailureBlock).not.toContain('memset(&ledger');
+    });
+
+    it('binds queued commands and deferred results to a nonzero connection generation', () => {
+      const clientStateBlock = mainCppCode.slice(
+        mainCppCode.indexOf('struct TelemetryClientState'),
+        mainCppCode.indexOf('struct TelemetryProtocolState')
+      );
+      const connectedBlock = mainCppCode.slice(
+        mainCppCode.indexOf('if (type == WStype_CONNECTED)'),
+        mainCppCode.indexOf('} else if (type == WStype_DISCONNECTED)')
+      );
+      const commandCaptureBlock = mainCppCode.slice(
+        mainCppCode.indexOf('WsCommandEntry entry = {};', mainCppCode.indexOf('msgType == "command"')),
+        mainCppCode.indexOf('WsCommandLedgerEntry existing = {};')
+      );
+      const responseQueueBlock = mainCppCode.slice(
+        mainCppCode.indexOf('void queueWsCommandResult('),
+        mainCppCode.indexOf('void processWsCommandResponses()')
+      );
+
+      expect(clientStateBlock).toContain('uint32_t connectionGeneration = 0;');
+      expect(connectedBlock).toContain('++cs.connectionGeneration;');
+      expect(connectedBlock).toContain('if (cs.connectionGeneration == 0) ++cs.connectionGeneration;');
+      expect(commandCaptureBlock).toContain('entry.connectionGeneration = cs.connectionGeneration;');
+      expect(responseQueueBlock).toContain('response.connectionGeneration = connectionGeneration;');
+    });
+
+    it('drops stale direct results without disturbing completed ledger recovery', () => {
+      const responseBlock = mainCppCode.slice(
+        mainCppCode.indexOf('void processWsCommandResponses()'),
+        mainCppCode.indexOf('void handleTelemetrySocket(')
+      );
+      const executionBlock = mainCppCode.slice(
+        mainCppCode.indexOf('void processWsCommandQueue()'),
+        mainCppCode.indexOf('bool telemetryHasLogSubscriber()')
+      );
+
+      expect(responseBlock).toContain('if (!cs.connected || !cs.handshakeComplete ||');
+      expect(responseBlock).toContain('cs.connectionGeneration != response.connectionGeneration) continue;');
+      expect(responseBlock.indexOf('cs.connectionGeneration != response.connectionGeneration')).toBeLessThan(
+        responseBlock.indexOf('sendWsCommandResult(response.clientId')
+      );
+      expect(executionBlock).toMatch(/finishWsCommand\([\s\S]*?queueWsCommandResult\(entry\.clientId, entry\.connectionGeneration/);
+      expect(executionBlock.match(/finishWsCommand\(/g)).toHaveLength(2);
+      expect(executionBlock.match(/queueWsCommandResult\(/g)).toHaveLength(2);
+    });
+
     it('ensures touchJobStatus and touch*Status helpers contain no recursive calls', () => {
       const touchJobStatusBlock = mainCppCode.match(/void touchJobStatus\(\)\s*\{([^}]*)\}/)?.[1] || '';
       expect(touchJobStatusBlock).not.toContain('touchJobStatus()');

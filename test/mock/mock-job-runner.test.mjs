@@ -76,6 +76,47 @@ async function waitForState(runner, states, timeout = 1000) {
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe('MockJobRunner', () => {
+  it('updates applied feed only after M220 success and retains it on Error or timeout', async () => {
+    const successful = await fixture();
+    successful.runner.status.feedOverridePercent = 100;
+    expect(successful.runner.setFeedOverride(125)).toMatchObject({
+      feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S125',
+      lastFeedOverrideResponse: 'ok',
+      lastFeedOverrideError: '',
+    });
+
+    const failed = await fixture({ marlinConfig: { failCommands: ['M220 S150'] } });
+    failed.runner.status.feedOverridePercent = 125;
+    expect(() => failed.runner.setFeedOverride(150)).toThrow(/Injected failure/);
+    expect(failed.runner.status).toMatchObject({
+      feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S150',
+      lastFeedOverrideError: 'Injected failure for M220 S150',
+    });
+    expect(failed.runner.status.lastFeedOverrideResponse).toContain('Error:');
+
+    const timedOut = await fixture({ marlinConfig: { simulateTimeout: true } });
+    timedOut.runner.status.feedOverridePercent = 125;
+    expect(() => timedOut.runner.setFeedOverride(175)).toThrow(/did not respond/i);
+    expect(timedOut.runner.status).toMatchObject({
+      feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S175',
+      lastFeedOverrideResponse: '',
+      lastFeedOverrideError: 'Marlin did not respond within timeout',
+    });
+
+    const startFailed = await fixture({ marlinConfig: { failCommands: ['M220 S150'] } });
+    startFailed.job.feedOverride.startPercent = 150;
+    await startFailed.sd.writeText(startFailed.jobPath, JSON.stringify(startFailed.job), { overwrite: true });
+    startFailed.runner.status.feedOverridePercent = 125;
+    expect(await startFailed.runner.start(startFailed.request)).toMatchObject({ state: 'ERROR', feedOverridePercent: 125 });
+    expect(startFailed.runner.status).toMatchObject({
+      lastFeedOverrideCommand: 'M220 S150',
+      lastFeedOverrideError: 'Injected failure for M220 S150',
+    });
+  });
+
   it('accepts an explicitly authorized manual frame only in the same boot session', async () => {
     const ctx = await fixture();
     ctx.runner.frame.trusted = false;

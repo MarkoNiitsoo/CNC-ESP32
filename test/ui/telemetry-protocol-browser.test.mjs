@@ -443,4 +443,86 @@ describe('Browser Telemetry Client (www/telemetry.js)', () => {
     expect(env.CncTelemetry.__test__.getPendingCommands().size).toBe(0);
     expect(env.CncTelemetry.__test__.getSocketCommandToken()).toBeNull();
   });
+
+  it('20. Completed command replay returns only the exact cached request without sending again', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+    env.CncTelemetry.setSocketCommandToken('f'.repeat(40), 6);
+    const first = env.CncTelemetry.command('job.setFeedOverride', { percent: 90 }, 'cmd-completed-replay');
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-completed-replay',
+      accepted: true, inProgress: false, ok: true, code: 'OK', message: 'updated' });
+    await expect(first).resolves.toMatchObject({ code: 'OK' });
+    const sentBeforeReplay = env.sentPackets.filter((packet) => packet.type === 'command').length;
+
+    await expect(env.CncTelemetry.command('job.setFeedOverride', { percent: 90 }, 'cmd-completed-replay'))
+      .resolves.toMatchObject({ code: 'OK', message: 'updated' });
+    expect(env.sentPackets.filter((packet) => packet.type === 'command')).toHaveLength(sentBeforeReplay);
+  });
+
+  it('21. Completed commandId reuse with a different action rejects locally', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+    env.CncTelemetry.setSocketCommandToken('g'.repeat(40), 7);
+    const first = env.CncTelemetry.command('job.pause', null, 'cmd-completed-action-conflict');
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-completed-action-conflict',
+      accepted: true, inProgress: false, ok: true, code: 'OK', message: 'paused' });
+    await first;
+    const sentBeforeConflict = env.sentPackets.filter((packet) => packet.type === 'command').length;
+
+    await expect(env.CncTelemetry.command('job.resume', null, 'cmd-completed-action-conflict'))
+      .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', definitelyNotAccepted: true });
+    expect(env.sentPackets.filter((packet) => packet.type === 'command')).toHaveLength(sentBeforeConflict);
+  });
+
+  it('22. Completed commandId reuse with a different payload rejects locally', async () => {
+    const { env, ws } = await setupStartedBrowserEnv();
+    env.CncTelemetry.setSocketCommandToken('h'.repeat(40), 8);
+    const first = env.CncTelemetry.command('job.setFeedOverride', { percent: 90 }, 'cmd-completed-payload-conflict');
+    ws.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-completed-payload-conflict',
+      accepted: true, inProgress: false, ok: true, code: 'OK', message: 'updated' });
+    await first;
+    const sentBeforeConflict = env.sentPackets.filter((packet) => packet.type === 'command').length;
+
+    await expect(env.CncTelemetry.command('job.setFeedOverride', { percent: 95 }, 'cmd-completed-payload-conflict'))
+      .rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', definitelyNotAccepted: true });
+    expect(env.sentPackets.filter((packet) => packet.type === 'command')).toHaveLength(sentBeforeConflict);
+  });
+
+  it('23. Capacity pressure reclaims the oldest listenerless timed-out command', async () => {
+    const { env, ws } = await setupStartedBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+    vi.useFakeTimers();
+    try {
+      env.CncTelemetry.setSocketCommandToken('i'.repeat(40), 9);
+      const timedOut = Array.from({ length: 32 }, (_, index) =>
+        env.CncTelemetry.command('job.pause', null, `cmd-timeout-${index}`, { timeoutMs: 1 })
+          .then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason })));
+      await vi.advanceTimersByTimeAsync(1);
+      const outcomes = await Promise.all(timedOut);
+      expect(outcomes.every((outcome) => outcome.status === 'rejected' && outcome.reason.code === 'TIMEOUT')).toBe(true);
+      expect(env.CncTelemetry.__test__.getPendingCommands().size).toBe(32);
+
+      const admitted = env.CncTelemetry.command('job.resume', null, 'cmd-after-timeouts');
+      expect(env.CncTelemetry.__test__.getPendingCommands().has('cmd-timeout-0')).toBe(false);
+      expect(env.CncTelemetry.__test__.getPendingCommands().has('cmd-after-timeouts')).toBe(true);
+      ws.receiveMessage({ protocolVersion: 1, type: 'commandResult', commandId: 'cmd-after-timeouts',
+        accepted: true, inProgress: false, ok: true, code: 'OK', message: 'resumed' });
+      await expect(admitted).resolves.toMatchObject({ code: 'OK' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('24. Capacity pressure does not reclaim pending commands with active listeners', async () => {
+    const { env } = await setupStartedBrowserEnv({ windowProps: { CNC_TELEMETRY_TEST_MODE: true } });
+    env.CncTelemetry.setSocketCommandToken('j'.repeat(40), 10);
+    const pending = Array.from({ length: 32 }, (_, index) =>
+      env.CncTelemetry.command('job.pause', null, `cmd-active-${index}`, { timeoutMs: 60000 }));
+    const sentBeforeCapacity = env.sentPackets.filter((packet) => packet.type === 'command').length;
+
+    await expect(env.CncTelemetry.command('job.resume', null, 'cmd-over-capacity'))
+      .rejects.toMatchObject({ code: 'COMMAND_CAPACITY', definitelyNotSent: true });
+    expect(env.sentPackets.filter((packet) => packet.type === 'command')).toHaveLength(sentBeforeCapacity);
+    expect(env.CncTelemetry.__test__.getPendingCommands().size).toBe(32);
+    expect(env.CncTelemetry.__test__.getPendingCommands().has('cmd-active-0')).toBe(true);
+    env.CncTelemetry.revokeCommandAuthorization();
+    await Promise.allSettled(pending);
+  });
 });

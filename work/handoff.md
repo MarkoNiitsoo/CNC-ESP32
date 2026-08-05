@@ -1,5 +1,86 @@
 # Handoff
 
+## 2026-08-02 - Phase 3 command-transport documentation sync
+
+- `docs/protocol.md` now defines the implemented authenticated command/query channel, ordered payload
+  identity, queue/ledger bounds, reconnect recovery, response sequencing exception, and current action split.
+- `docs/architecture.md` now distinguishes historical Phase 1 from current Phase 3, removes WebSocket
+  as a blanket out-of-scope item, and records Stop, feed ACK, and session-scoped M115 safety semantics.
+- Home/Zero/Start remain HTTP, Jog still needs a coalesced realtime design, and current transport
+  hardware validation remains outstanding. No implementation files changed in this documentation step.
+
+## 2026-08-02 - Safety capability session-trust follow-up
+
+- `capEmergencyParser` and `capRealtimeReporting` are runtime evidence from a successful current-session
+  M115 only. NVS continues to preserve geometry and non-safety metadata, but cannot restore either
+  safety flag true after boot or a controller-session change.
+- Communication loss and recovery invalidate both flags. A valid recovery M115 is parsed before the
+  existing M114 probe, and either failed probe leaves the flags false; Connected is still published
+  only after the full M115 then M114 sequence succeeds.
+- Focused firmware contracts pass **57/57**. PlatformIO native/build verification remains for the root
+  agent because escalation for its user-level cache/toolchain was rejected at the environment usage limit.
+
+## 2026-08-02 - Feed override acknowledgement authority
+
+- Feed override request admission publishes pending M220 diagnostics without changing the applied percent;
+  exact terminal success is now the only authority that updates it in firmware and the mock runner.
+- Error and timeout retain the prior applied value. Job-start and Production Resume M220 targets follow
+  the same rule, and job timing continues to use the applied percentage.
+- Machine Bar and Preview use a 12-second confirmation window and require exact command, terminal response,
+  no error, and matching applied percent. Preview metadata is written only after that proof.
+- Focused tests pass **139/139**. Native/build remain for the root agent because PlatformIO cache access
+  was sandbox-blocked and the escalation request was rejected by the environment usage limit.
+
+## 2026-08-02 - Stop and boundary-pause safety follow-up
+
+- Authorized software Stop no longer waits behind the WebSocket command timeout. WS and the existing
+  operator-protected HTTP route are dispatched redundantly, with rejection handlers attached, and a
+  preinstalled canonical job-slice waiter is the sole success authority.
+- The UI no longer infers that M5 was unsent from a missing HTTP/WS response. Unconfirmed Stop directs
+  the operator to the physical emergency stop; confirmed communication loss says controller receipt
+  cannot be verified. Only `ERROR` + `COMMUNICATION_LOST` keeps synchronized Stop enabled.
+- Firmware accepts that exact error state for an explicit best-effort priority `M410` then `M5`
+  attempt and retains rejection for every other `ERROR`. Boundary `PAUSING` is described as pending
+  motion, while only confirmed paused states are described as held.
+- Focused verification passed **105/105** tests, native verification passed **18/18**, and the
+  ESP32-CAM build succeeded at 29.4% RAM / 76.3% Flash.
+
+## 2026-08-02 - Mock Phase 3 WebSocket command parity
+
+- The dev mock now publishes a sequenced authoritative `job` patch whenever a completed WebSocket
+  operation changed runner state; command acknowledgements/results remain complete and unsequenced.
+- Session replacement/revocation clears queued work along with the session ledger, and the deferred
+  executor refuses inactive, wrong-epoch, missing-ledger, completed, or identity-mismatched entries.
+- Idempotency payload identity intentionally preserves JSON object insertion order to match the
+  browser and firmware serializers. Exact ordered duplicates recover the result; reordered keys are
+  `IDEMPOTENCY_CONFLICT`.
+- Focused mock-server verification passes **42/42**. The queue and ledger bounds, same-session
+  cross-socket recovery, and HTTP/mock job paths remain covered and unchanged.
+
+## 2026-08-02 - Firmware command transport follow-up
+
+- A full command ledger no longer loses its oldest recoverable result if the execution queue rejects
+  a new command: registration restores both the exact overwritten slot and the prior order counter.
+- Deferred command results are bound to the WebSocket connection instance that submitted them using a
+  monotonically advancing nonzero per-slot generation. Reusing a numeric client slot cannot receive a
+  prior connection's result; the completed session ledger remains the recovery source for an
+  authenticated `commandQuery`.
+- Focused transport source audits cover rollback, connect-time generation, command-to-response
+  propagation, stale-generation filtering, and ledger completion before response queueing.
+- Verification passed for **57/57** focused firmware transport/runtime JavaScript tests,
+  **18/18** native tests using PlatformIO's installed MinGW toolchain, and the ESP32-CAM build
+  (29.4% RAM, 76.3% Flash).
+
+## 2026-08-02 Browser command-ledger repair handoff
+
+- Completed client-ledger entries are request-bound by action, serialized payload, and control-session
+  epoch. Exact retries receive the cached result; conflicting command-id reuse is rejected without a
+  WebSocket send.
+- Pending command storage remains capped at 32. On capacity pressure only, the browser reclaims the
+  oldest entry whose listeners have all timed out; it never evicts an entry with an active caller.
+- Ordinary reconnect recovery and authorization-revocation clearing remain unchanged. Focused browser
+  protocol tests cover completed replay identity and bounded-capacity recovery.
+
 ## 2026-08-02 - Phase 3 command-transport repair
 
 - Audit confirms command responses must move to a dedicated unsequenced sender; the current firmware drops their payload and advances telemetry sequence state.
@@ -10,7 +91,9 @@
 - Native protocol helpers now have 18 passing tests, including complete unsequenced packet fields and JSON escaping. The ESP32-CAM build succeeds at 29.4% RAM and 76.3% Flash; mock/browser executable transport and queue/disconnect tests have been added.
 - Final verification passed: JavaScript **597/597 across 51 files**, twice consecutively; native C++ **18/18**; ESP32-CAM build **29.4% RAM** and **76.3% Flash**.
 - Physical hardware was not tested. No high-frequency Jog transport or additional machine actions were added.
-- Next work must begin only after this repair commit: stabilize the shared operations in a separate commit, then migrate Home/Work Zero, then Job Start, and implement Jog last as a separate coalesced realtime transport rather than generic command messages.
+- Shared Pause/Resume/Stop/feed operations are now used by both HTTP and WebSocket dispatch. Remaining
+  command migration is Home/Work Zero, then Job Start; Jog stays last and requires a separate
+  coalesced realtime transport rather than generic command messages.
 
 ## 2026-07-30 - Phase 3B: Token Lifecycle Wiring & Stop Command Migration
 

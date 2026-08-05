@@ -979,6 +979,7 @@ describe('WS command protocol (Phase 3A)', () => {
     });
     await ws.recv(); // ack
     await ws.recv(); // result
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'patch', patch: { job: { state: 'STOPPING' } } });
 
     // Send the same commandId again — expect cached result.
     ws.send({
@@ -1017,34 +1018,45 @@ describe('WS command protocol (Phase 3A)', () => {
     ws.close();
   });
 
-  it('uses complete unsequenced responses and preserves the next telemetry sequence', async () => {
-    const { base, env, triggerStateSliceChange, listClientProtocolStates } = await start();
+  it('uses complete unsequenced responses and naturally sequences authoritative job patches', async () => {
+    const { base, env, listClientProtocolStates } = await start();
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
     }).then((r) => r.json());
     env.runner.status.state = 'RUNNING';
     const ws = await connectWs(base);
-    const before = listClientProtocolStates()[0].nextServerSeq;
-    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-shape', action: 'job.pause',
-      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
-    const ack = await ws.recv();
-    const result = await ws.recv();
-    for (const response of [ack, result]) {
-      expect(Object.keys(response).sort()).toEqual(['accepted', 'code', 'commandId', 'inProgress', 'message', 'ok', 'protocolVersion', 'type'].sort());
-      expect(response.protocolVersion).toBe(1);
-      expect(response.seq).toBeUndefined();
-      expect(response.stateRevision).toBeUndefined();
+    const auth = { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken };
+    const commands = [
+      { commandId: 'cmd-pause-patch', action: 'job.pause', state: 'PAUSED_INTACT' },
+      { commandId: 'cmd-resume-patch', action: 'job.resume', state: 'RUNNING' },
+      { commandId: 'cmd-feed-patch', action: 'job.setFeedOverride', payload: { percent: 125 }, state: 'RUNNING', feedOverridePercent: 125 },
+      { commandId: 'cmd-stop-patch', action: 'safety.stop', state: 'STOPPING' },
+    ];
+    let expectedPatchSeq = listClientProtocolStates()[0].nextServerSeq;
+    for (const command of commands) {
+      ws.send({ protocolVersion: 1, type: 'command', commandId: command.commandId,
+        action: command.action, payload: command.payload, authorization: auth });
+      const ack = await ws.recv();
+      const result = await ws.recv();
+      for (const response of [ack, result]) {
+        expect(Object.keys(response).sort()).toEqual(['accepted', 'code', 'commandId', 'inProgress', 'message', 'ok', 'protocolVersion', 'type'].sort());
+        expect(response.protocolVersion).toBe(1);
+        expect(response.seq).toBeUndefined();
+        expect(response.stateRevision).toBeUndefined();
+      }
+      const patch = await ws.recv();
+      expect(patch).toMatchObject({ type: 'patch', seq: expectedPatchSeq,
+        patch: { job: { state: command.state } } });
+      if (command.feedOverridePercent) {
+        expect(patch.patch.job.feedOverridePercent).toBe(command.feedOverridePercent);
+      }
+      expectedPatchSeq += 1;
     }
-    expect(listClientProtocolStates()[0].nextServerSeq).toBe(before);
-    triggerStateSliceChange('job', { state: 'PAUSED_INTACT' });
-    const patch = await ws.recv();
-    expect(patch.type).toBe('patch');
-    expect(patch.seq).toBe(before);
     ws.close();
   });
 
-  it('returns IDEMPOTENCY_CONFLICT for a reused ID with different action or payload', async () => {
+  it('uses insertion-order payload identity for exact retries and reordered-key conflicts', async () => {
     const { base, env } = await start();
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1053,11 +1065,101 @@ describe('WS command protocol (Phase 3A)', () => {
     env.runner.status.state = 'RUNNING';
     const auth = { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken };
     const ws = await connectWs(base);
-    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride', payload: { percent: 110 }, authorization: auth });
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride',
+      payload: { percent: 110, source: 'dial' }, authorization: auth });
     await ws.recv();
     await ws.recv();
-    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride', payload: { percent: 120 }, authorization: auth });
+    await ws.recv(); // authoritative job patch
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride',
+      payload: { percent: 110, source: 'dial' }, authorization: auth });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', commandId: 'cmd-conflict', ok: true });
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-conflict', action: 'job.setFeedOverride',
+      payload: { source: 'dial', percent: 110 }, authorization: auth });
     await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: false, code: 'IDEMPOTENCY_CONFLICT' });
+    ws.close();
+  });
+
+  it('discards deferred commands when Release clears the command session', async () => {
+    const { base, env, flushDeferredWsCommands } = await start({ deferWsCommandExecution: true });
+    const claimResponse = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    });
+    const cookie = claimResponse.headers.get('set-cookie').split(';')[0];
+    const claim = await claimResponse.json();
+    env.runner.status.state = 'RUNNING';
+    const ws = await connectWs(base);
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-release-stale', action: 'job.pause',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: true });
+    await fetch(`${base}/api/operator/release`, { method: 'POST', headers: { Cookie: cookie } });
+    flushDeferredWsCommands();
+    expect(env.runner.status.state).toBe('RUNNING');
+    ws.close();
+  });
+
+  it('discards deferred commands when inactive Reconnect creates a new epoch', async () => {
+    const { base, env, flushDeferredWsCommands } = await start({ deferWsCommandExecution: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+    const ws = await connectWs(base);
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-epoch-stale', action: 'job.pause',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: true });
+    env.operator.lastSeenAt = Date.now() - 60000;
+    const reconnect = await fetch(`${base}/api/operator/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    flushDeferredWsCommands();
+    expect(env.runner.status.state).toBe('RUNNING');
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-epoch-stale',
+      authorization: { controlSessionEpoch: reconnect.controlSessionEpoch, socketCommandToken: reconnect.socketCommandToken } });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: false, code: 'INVALID_COMMAND' });
+    ws.close();
+  });
+
+  it('discards deferred commands when a new Claim creates a new epoch', async () => {
+    const { base, env, flushDeferredWsCommands } = await start({ deferWsCommandExecution: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+    const ws = await connectWs(base);
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-claim-stale', action: 'job.pause',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: true });
+    env.operator.lastSeenAt = Date.now() - 60000;
+    const nextClaim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Bob', pin: '111222', browserId: workshopBrowserId }),
+    }).then((r) => r.json());
+    flushDeferredWsCommands();
+    expect(env.runner.status.state).toBe('RUNNING');
+    ws.send({ protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-claim-stale',
+      authorization: { controlSessionEpoch: nextClaim.controlSessionEpoch, socketCommandToken: nextClaim.socketCommandToken } });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: false, code: 'INVALID_COMMAND' });
+    ws.close();
+  });
+
+  it('revalidates an active session immediately before deferred execution', async () => {
+    const { base, env, flushDeferredWsCommands } = await start({ deferWsCommandExecution: true });
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    env.runner.status.state = 'RUNNING';
+    const ws = await connectWs(base);
+    ws.send({ protocolVersion: 1, type: 'command', commandId: 'cmd-expired-stale', action: 'job.pause',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken } });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: true });
+    env.operator.lastSeenAt = Date.now() - 60000;
+    flushDeferredWsCommands();
+    expect(env.runner.status.state).toBe('RUNNING');
     ws.close();
   });
 

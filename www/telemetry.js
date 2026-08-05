@@ -54,7 +54,7 @@
 
   // ── Idempotency ledger (mirrors the firmware ring buffer, client-side) ─────
   // Allows re-delivery of results to callers who reconnect before the promise resolves.
-  const commandLedger = new Map(); // commandId → { accepted, ok, code, message }
+  const commandLedger = new Map(); // commandId → { completed, ok, code, message, action, payloadSignature, epoch }
 
   function commandError(message, code, commandId, disposition, extra = {}) {
     return Object.assign(new Error(message), {
@@ -96,8 +96,19 @@
     });
   }
 
-  function createPendingCommand(commandId, action = '', payloadSignature = '') {
-    if (pendingCommands.size >= MAX_PENDING_COMMANDS) return null;
+  function createPendingCommand(commandId, action = null, payloadSignature = null) {
+    if (pendingCommands.size >= MAX_PENDING_COMMANDS) {
+      let reclaimableId = null;
+      let oldestCreatedAt = Infinity;
+      for (const [id, pending] of pendingCommands) {
+        if (pending.listeners.size === 0 && pending.createdAt < oldestCreatedAt) {
+          reclaimableId = id;
+          oldestCreatedAt = pending.createdAt;
+        }
+      }
+      if (reclaimableId === null) return null;
+      pendingCommands.delete(reclaimableId);
+    }
     const entry = {
       commandId, action, payloadSignature, epoch: controlSessionEpoch,
       sent: false, acknowledged: false, completed: false,
@@ -162,10 +173,14 @@
       return Promise.reject(commandError('Command payload exceeds 4096 bytes.', 'PAYLOAD_TOO_LARGE', commandId, 'not-sent'));
     }
 
-    // If this commandId is already in the ledger (completed), return immediately.
+    // Completed results are reusable only for the exact request that produced them.
     if (commandLedger.has(commandId)) {
       const entry = commandLedger.get(commandId);
       if (entry.completed) {
+        if (entry.action !== action || entry.payloadSignature !== payloadSignature || entry.epoch !== controlSessionEpoch) {
+          return Promise.reject(commandError('commandId is already associated with a different action, payload, or control session.',
+            'IDEMPOTENCY_CONFLICT', commandId, 'rejected'));
+        }
         return entry.ok
           ? Promise.resolve({ commandId, ok: true, code: entry.code, message: entry.message, accepted: true })
           : Promise.reject(commandError(entry.message, entry.code, commandId, 'completed'));
@@ -203,11 +218,20 @@
   function applyCommandAck(msg) {
     const commandId = msg.commandId;
     if (typeof commandId !== 'string') return;
+    const pending = pendingCommands.get(commandId);
+    const prior = commandLedger.get(commandId);
+    const identity = {
+      action: pending?.action ?? prior?.action ?? null,
+      payloadSignature: pending?.payloadSignature ?? prior?.payloadSignature ?? null,
+      epoch: pending?.epoch ?? prior?.epoch ?? controlSessionEpoch,
+    };
 
     if (!msg.accepted) {
       // Server rejected the command before queuing.
-      rememberCommandResult(commandId, { completed: true, ok: false, code: msg.code || 'REJECTED', message: msg.message || 'Command rejected', epoch: controlSessionEpoch });
-      const pending = pendingCommands.get(commandId);
+      rememberCommandResult(commandId, {
+        completed: true, ok: false, code: msg.code || 'REJECTED', message: msg.message || 'Command rejected',
+        action: identity.action, payloadSignature: identity.payloadSignature, epoch: identity.epoch,
+      });
       if (pending) {
         settleCommandListeners(pending, null, commandError(msg.message || 'Command rejected', msg.code || 'REJECTED', commandId, 'rejected'));
         pendingCommands.delete(commandId);
@@ -217,9 +241,11 @@
     }
 
     // Accepted (in queue or in-progress); update ledger.
-    const pending = pendingCommands.get(commandId);
     if (pending) pending.acknowledged = true;
-    rememberCommandResult(commandId, { completed: false, ok: false, code: msg.code || 'ACCEPTED', message: msg.message || '', epoch: controlSessionEpoch });
+    rememberCommandResult(commandId, {
+      completed: false, ok: false, code: msg.code || 'ACCEPTED', message: msg.message || '',
+      action: identity.action, payloadSignature: identity.payloadSignature, epoch: identity.epoch,
+    });
     window.dispatchEvent(new CustomEvent('cnc-command-ack', { detail: { commandId, accepted: true, inProgress: Boolean(msg.inProgress) } }));
   }
 
@@ -231,9 +257,18 @@
     const code = String(msg.code || (ok ? 'OK' : 'ERROR'));
     const message = String(msg.message || '');
 
-    rememberCommandResult(commandId, { completed: true, ok, code, message, epoch: controlSessionEpoch });
-
     const pending = pendingCommands.get(commandId);
+    const prior = commandLedger.get(commandId);
+    const identity = {
+      action: pending?.action ?? prior?.action ?? null,
+      payloadSignature: pending?.payloadSignature ?? prior?.payloadSignature ?? null,
+      epoch: pending?.epoch ?? prior?.epoch ?? controlSessionEpoch,
+    };
+    rememberCommandResult(commandId, {
+      completed: true, ok, code, message,
+      action: identity.action, payloadSignature: identity.payloadSignature, epoch: identity.epoch,
+    });
+
     if (pending) {
       pending.completed = true;
       pendingCommands.delete(commandId);

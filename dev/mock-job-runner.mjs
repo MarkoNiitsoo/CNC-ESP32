@@ -313,15 +313,24 @@ export class MockJobRunner {
     }
     const safeStartZ = this.assertProjectSafeZ(job, request.safeStartZ);
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
+    const appliedFeed = this.status.feedOverridePercent;
     this.status = {
       ...this.emptyStatus(), state: 'PREPARING', gcodePath: active.path, jobPath: request.jobPath,
       startMode, safeStartZ, allowedWorkspaceCommands: Boolean(job.allowedWorkspaceCommands),
-      fileSize: bytes, feedOverridePercent: feed,
+      fileSize: bytes, feedOverridePercent: appliedFeed,
     };
 
     const preamble = ['M5', 'G21', 'G90', 'G54', `M220 S${feed}`, 'M400', 'M114'];
     preamble.push(`G0 Z${safeStartZ.toFixed(3)} F400`, 'M400');
     for (const command of preamble) {
+      if (command === `M220 S${feed}`) {
+        try {
+          this.setFeedOverride(feed, { allowDuringTransition: true });
+        } catch (error) {
+          return this.fail(error.message);
+        }
+        continue;
+      }
       const result = this.runCommand(command);
       if (!result.ok) return this.fail(result.error);
     }
@@ -545,17 +554,23 @@ export class MockJobRunner {
     if (!hasCuttingMove) throw new Error('Production Resume file must contain cutting motion');
 
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
+    const appliedFeed = this.status.feedOverridePercent;
     if (this.simulateFeedOverrideError) {
       this.jobRunning = false;
-      this.status = this.emptyStatus();
+      this.status = {
+        ...this.emptyStatus(), feedOverridePercent: appliedFeed,
+        lastFeedOverrideCommand: `M220 S${feed}`,
+        lastFeedOverrideResponse: '', lastFeedOverrideError: this.simulateFeedOverrideError,
+      };
       throw new Error(`Production Resume failed during preamble M220 feed override (M220 S${feed}): ${this.simulateFeedOverrideError}`);
     }
     this.status = {
-      ...this.emptyStatus(), state: 'RUNNING', gcodePath: path, jobPath: request.jobPath,
+      ...this.emptyStatus(), state: 'PREPARING', gcodePath: path, jobPath: request.jobPath,
       startMode: 'prepared_production_resume', streamMode: 'production-resume',
-      fileSize: Buffer.byteLength(text), feedOverridePercent: feed,
+      fileSize: Buffer.byteLength(text), feedOverridePercent: appliedFeed,
     };
     this.setFeedOverride(feed, { allowDuringTransition: true });
+    this.status.state = 'RUNNING';
     const token = ++this.runToken;
     this.stream(text, token, Boolean(job.feedOverride?.resetTo100AfterJob ?? true));
     return this.snapshot();
@@ -807,11 +822,11 @@ export class MockJobRunner {
     }
     const command = `M220 S${value}`;
     const result = this.marlin.execute(command, { priority: true });
-    this.status.feedOverridePercent = value;
     this.status.lastFeedOverrideCommand = command;
     this.status.lastFeedOverrideResponse = result.response || '';
     this.status.lastFeedOverrideError = result.error || '';
     if (!result.ok) throw new Error(result.error);
+    this.status.feedOverridePercent = value;
     return this.snapshot('Feed override requested.');
   }
 }

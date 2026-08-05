@@ -144,6 +144,9 @@ function createMachineBarEnv(options = {}) {
 
   const telemetry = options.telemetry === false ? null : {
     transportStatus: options.transportStatus || 'synchronized',
+    command: options.telemetryCommand,
+    setSocketCommandToken() {},
+    revokeCommandAuthorization() {},
     subscribe(topic, listener) {
       telemetrySubscribers.set(topic, listener);
       return () => {};
@@ -203,7 +206,7 @@ function createMachineBarEnv(options = {}) {
   };
 
   const setup = new Function(
-    'window', 'document', 'addEventListener', 'removeEventListener', 'localStorage',
+    'window', 'document', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'localStorage',
     'CustomEvent', 'MutationObserver', 'fetch',
     `${machineBarCode}; return window.LowRiderMachineBar;`
   );
@@ -212,6 +215,7 @@ function createMachineBarEnv(options = {}) {
     document,
     window.addEventListener.bind(window),
     window.removeEventListener.bind(window),
+    window.dispatchEvent.bind(window),
     localStorage,
     FakeCustomEvent,
     undefined,
@@ -275,6 +279,79 @@ describe('Phase 2 end-to-end UI correctness', () => {
     env.api.render();
     expect(env.api.safetyStopDisabled('IDLE')).toBe(true);
     expect(env.elements.get('mb-stop').disabled).toBe(true);
+  });
+
+  it('dispatches HTTP Stop without waiting for an authorized WS command and completes from canonical state', async () => {
+    const never = new Promise(() => {});
+    const telemetryCommand = vi.fn(() => never);
+    const fetch = vi.fn(() => never);
+    const env = createMachineBarEnv({ telemetryCommand, fetch });
+    env.api.applyLocalOperatorAuthorization({
+      controller: true,
+      controlSessionEpoch: 7,
+      socketCommandToken: 'a'.repeat(40),
+    });
+    env.emitTelemetry('job', { state: 'RUNNING' });
+
+    const stopping = env.api.stopJob();
+    expect(telemetryCommand).toHaveBeenCalledWith(
+      'safety.stop', null, expect.stringMatching(/^stop-/), { timeoutMs: 5000 },
+    );
+    expect(fetch).toHaveBeenCalledWith('/api/job/stop', { method: 'POST' });
+
+    env.emitTelemetry('job', { state: 'STOPPING' });
+    await stopping;
+    expect(env.elements.get('mb-status').textContent).toContain('confirmed by live job state');
+  });
+
+  it('uses communication-loss canonical state without falsely claiming M5 was not sent', async () => {
+    const env = createMachineBarEnv({
+      telemetryCommand: () => Promise.reject(new Error('WS response lost')),
+      fetch: async () => { throw new Error('HTTP response lost'); },
+    });
+    env.api.applyLocalOperatorAuthorization({
+      controller: true,
+      controlSessionEpoch: 8,
+      socketCommandToken: 'b'.repeat(40),
+    });
+    env.emitTelemetry('job', { state: 'RUNNING' });
+
+    const stopping = env.api.stopJob();
+    env.emitTelemetry('job', { state: 'ERROR', errorCode: 'COMMUNICATION_LOST' });
+    await stopping;
+    const message = env.elements.get('mb-status').textContent;
+    expect(message).toContain('controller receipt cannot be confirmed');
+    expect(message).toContain('physical emergency stop');
+    expect(message).not.toContain('M5 was not sent');
+  });
+
+  it('enables synchronized ERROR Stop only for COMMUNICATION_LOST', () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'ERROR', errorCode: 'COMMUNICATION_LOST' });
+    env.api.render();
+    expect(env.api.safetyStopDisabled('ERROR')).toBe(false);
+    expect(env.elements.get('mb-stop').disabled).toBe(false);
+
+    env.emitTelemetry('job', { state: 'ERROR', errorCode: 'MARLIN_COMMAND_REJECTED' });
+    env.api.render();
+    expect(env.api.safetyStopDisabled('ERROR')).toBe(true);
+    expect(env.elements.get('mb-stop').disabled).toBe(true);
+  });
+
+  it.each([
+    ['PAUSING', 'current motion may continue', false],
+    ['PAUSED_INTACT', 'motion is held intact', true],
+    ['PAUSED', 'motion is held intact', true],
+  ])('reports canonical pause state %s accurately', async (state, expected, held) => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'RUNNING' });
+    const pausing = env.api.pauseJob();
+    await vi.waitFor(() => expect(env.fetchCalls).toContain('/api/job/pause'));
+    env.emitTelemetry('job', { state });
+    await pausing;
+    const message = env.elements.get('mb-status').textContent;
+    expect(message).toContain(expected);
+    expect(message.includes('motion is held intact')).toBe(held);
   });
 
   it('preserves the complete canonical machine frame and publishes it to Preview listeners', () => {
@@ -408,9 +485,17 @@ describe('Phase 2 end-to-end UI correctness', () => {
     });
 
     const feedPromise = env.api.setFeedOverride(125);
+    let feedSettled = false;
+    void feedPromise.then(() => { feedSettled = true; });
     await Promise.resolve();
     expect(env.api.liveState().job.feedOverridePercent).toBe(100);
     env.emitTelemetry('job', { state: 'IDLE', feedOverridePercent: 125 });
+    await Promise.resolve();
+    expect(feedSettled).toBe(false);
+    env.emitTelemetry('job', {
+      state: 'IDLE', feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S125', lastFeedOverrideResponse: 'ok\n', lastFeedOverrideError: '',
+    });
     await feedPromise;
 
     const positionPromise = env.api.sendCmd('M114');
@@ -484,12 +569,52 @@ describe('Phase 2 end-to-end UI correctness', () => {
       const rejection = expect(command).rejects.toThrow(
         'Command accepted, but live-state confirmation timed out while waiting for feed override 125%.',
       );
-      await vi.advanceTimersByTimeAsync(5001);
+      await vi.advanceTimersByTimeAsync(12001);
       await rejection;
       expect(env.api.liveState().job.feedOverridePercent).toBe(100);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('requires matching successful M220 diagnostics even when the requested percent is unchanged', async () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('job', {
+      state: 'RUNNING', feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S110', lastFeedOverrideResponse: 'ok\n', lastFeedOverrideError: '',
+    });
+    const command = env.api.setFeedOverride(125);
+    let settled = false;
+    void command.then(() => { settled = true; });
+    await Promise.resolve();
+    env.emitTelemetry('job', {
+      state: 'RUNNING', feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S125', lastFeedOverrideResponse: '', lastFeedOverrideError: '',
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    env.emitTelemetry('job', {
+      state: 'RUNNING', feedOverridePercent: 125,
+      lastFeedOverrideCommand: 'M220 S125', lastFeedOverrideResponse: 'ok\n', lastFeedOverrideError: '',
+    });
+    await command;
+    expect(env.elements.get('mb-status').textContent).toContain('125% confirmed');
+  });
+
+  it('rejects matching M220 Error diagnostics without confirming a new applied percent', async () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('job', { state: 'RUNNING', feedOverridePercent: 100 });
+    const command = env.api.setFeedOverride(150);
+    await Promise.resolve();
+    env.emitTelemetry('job', {
+      state: 'RUNNING', feedOverridePercent: 100,
+      lastFeedOverrideCommand: 'M220 S150', lastFeedOverrideResponse: 'Error: rejected',
+      lastFeedOverrideError: 'Marlin reported Error for priority command',
+    });
+    await expect(command).rejects.toThrow(/Marlin reported Error/);
+    expect(env.api.liveState().job.feedOverridePercent).toBe(100);
   });
 
   it('attempts one stored-browser reconnect on startup and once after visibility restoration', async () => {

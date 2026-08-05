@@ -218,12 +218,9 @@ export async function createMockServer(options = {}) {
   const wsCommandLedger = new Map();
   const deferredWsCommands = [];
   const wsCommandQueueCapacity = 8;
-  const stableJsonValue = (value) => {
-    if (Array.isArray(value)) return value.map(stableJsonValue);
-    if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJsonValue(value[key])]));
-    }
-    return value;
+  const clearWsCommandSession = () => {
+    deferredWsCommands.splice(0);
+    wsCommandLedger.clear();
   };
   const rememberWsLedger = (commandId, entry) => {
     wsCommandLedger.delete(commandId);
@@ -322,7 +319,7 @@ export async function createMockServer(options = {}) {
           controlSessionEpoch: newEpoch,
           socketCommandToken: randomBytes(20).toString('hex'),
         });
-        wsCommandLedger.clear();
+        clearWsCommandSession();
         const cookie = `cnc_operator=${env.operator.token}`;
         const claimStatus = operatorStatus({ headers: { cookie } });
         return json(res, 200, { ...claimStatus, socketCommandToken: env.operator.socketCommandToken }, {
@@ -353,7 +350,7 @@ export async function createMockServer(options = {}) {
             controlSessionEpoch: (env.operator.controlSessionEpoch + 1) || 1,
             socketCommandToken: randomBytes(20).toString('hex'),
           });
-          wsCommandLedger.clear();
+          clearWsCommandSession();
         }
         const cookie = `cnc_operator=${env.operator.token}`;
         const reconnStatus = operatorStatus({ headers: { cookie } });
@@ -371,7 +368,7 @@ export async function createMockServer(options = {}) {
           token: '', owner: '', browserId: '', rememberedBrowserId: '', rememberedOwner: '',
           lastSeenAt: 0, otaUnlockedUntil: 0, socketCommandToken: '', // revoke WS command auth
         });
-        wsCommandLedger.clear();
+        clearWsCommandSession();
         return json(res, 200, operatorStatus(req), { 'Set-Cookie': 'cnc_operator=; Path=/; Max-Age=0' });
       }
       if (req.method === 'PUT' && pathname === '/api/operator/pin') {
@@ -1183,7 +1180,13 @@ export async function createMockServer(options = {}) {
   }
 
   function completeMockWsCommand(entry) {
+    const pending = wsCommandLedger.get(entry.commandId);
+    if (!operatorActive() || entry.epoch !== env.operator.controlSessionEpoch ||
+        !pending || pending.completed || pending.epoch !== entry.epoch ||
+        pending.action !== entry.action || pending.payloadDigest !== entry.payloadDigest) return;
+    const runnerStateBefore = JSON.stringify(env.runner.status);
     const result = executeSharedJobOperation(entry.action, entry.payload || {});
+    const runnerStateChanged = JSON.stringify(env.runner.status) !== runnerStateBefore;
     rememberWsLedger(entry.commandId, {
       epoch: entry.epoch, action: entry.action, payloadDigest: entry.payloadDigest,
       completed: true, ok: result.ok, code: result.code, message: result.message,
@@ -1191,6 +1194,7 @@ export async function createMockServer(options = {}) {
     sendMockCommandResponse(entry.socket, 'commandResult', {
       commandId: entry.commandId, ok: result.ok, code: result.code, message: result.message,
     });
+    if (runnerStateChanged) triggerStateSliceChange('job', env.runner.snapshot());
   }
 
   function flushDeferredWsCommands() {
@@ -1329,7 +1333,7 @@ export async function createMockServer(options = {}) {
             const cmdId = String(msg.commandId || '');
             const action = String(msg.action || '');
             const auth = msg.authorization || {};
-            const payloadJson = msg.payload === undefined ? '' : JSON.stringify(stableJsonValue(msg.payload));
+            const payloadJson = msg.payload === undefined ? '' : JSON.stringify(msg.payload);
             const payloadDigest = createHash('sha256').update(`${action}\n${payloadJson}`).digest('hex');
             if (!/^[A-Za-z0-9._:-]{1,96}$/.test(cmdId) || !/^[A-Za-z0-9._-]{1,64}$/.test(action)) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'INVALID_COMMAND', message: 'commandId or action contains invalid characters or length' });

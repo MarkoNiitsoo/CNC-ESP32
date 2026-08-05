@@ -17,10 +17,12 @@ The application-level WebSocket protocol operates full-duplex on `ws://<pendant-
 
 ### Architectural Transport Division
 
-- **WebSocket**: authoritative live state, synchronization, (later machine-control commands and absolute Jog).
+- **WebSocket**: authoritative live state, synchronization, and the migrated low-rate machine commands described below.
 - **HTTP**: static UI resources, file listing and file transfer, G-code and job JSON, generated files and thumbnails, Aircut workflow, OTA, Wi-Fi and device management.
 
-Phase 1 migrates state and synchronization. Machine commands (Home, Zero, Pause, Resume, Stop, Start, Bounding Box, Jog) remain on HTTP in Phase 1.
+Historical Phase 1 migrated only state and synchronization; all machine commands remained on HTTP
+in that phase. Current Phase 3 additionally carries Stop, Pause, Resume, and feed override over the
+authenticated command channel while retaining their operator-protected HTTP routes.
 
 ### Packet Envelope & Sequencing
 
@@ -39,8 +41,8 @@ Every application packet uses readable JSON keys and the common envelope:
 
 - `protocolVersion`: integer `1`.
 - `type`: string.
-  - Browser to ESP: `"hello"`, `"sync"`, `"resync"`, `"log"`.
-  - ESP to Browser: `"snapshot"`, `"patch"`, `"sync"`, `"event"`, `"protocol-error"`.
+  - Browser to ESP: `"hello"`, `"sync"`, `"resync"`, `"log"`, `"command"`, `"commandQuery"`.
+  - ESP to Browser: `"snapshot"`, `"patch"`, `"sync"`, `"event"`, `"commandAck"`, `"commandResult"`, `"protocol-error"`.
 - `seq`: monotonic integer counter per connection and per direction. Assigned and committed ONLY AFTER successful transmission over the transport (`sendTXT`). Failed sends do not consume sequence numbers.
 - `ack`: highest contiguous packet sequence number successfully processed from the peer. ACKs must advance monotonically (`lastAck <= ack <= highestSent`). ACKs beyond the highest sent sequence generate a protocol error and trigger resync.
 - `bootId`: unique string per ESP boot. Browser discards mirrored state when `bootId` changes.
@@ -59,7 +61,8 @@ Every application packet uses readable JSON keys and the common envelope:
     "data": { ... }
   }
   ```
-- `commands & jog`: Phase 1 machine commands and Jog remain on HTTP endpoints.
+- `commandAck` and `commandResult` are the intentional envelope exception: they are complete,
+  immediate, unsequenced responses and do not consume telemetry sequence or state-revision numbers.
 
 ### Handshake & Clock Sync Authority
 
@@ -80,7 +83,8 @@ On connection, browser sends:
 ```
 
 - The first valid browser `hello` after boot initializes the ESP wall-clock offset derived from `utcMs` relative to monotonic `millis()`, and replies with a complete authoritative `snapshot`.
-- After `wallClock.valid` becomes true, all later WebSocket clock proposals are ignored. Wall-clock correction by the active control owner is deferred until control claim is migrated to an authenticated WebSocket connection.
+- After `wallClock.valid` becomes true, all later WebSocket clock proposals are ignored. Operator
+  command authorization is established separately by HTTP Claim/Reconnect and is not carried in `hello`.
 - Rejected or unchanged clock proposals do not change timezone, set `dirtySystem`, or increment `stateRevision`.
 
 ### Low-Rate Stable System Diagnostics
@@ -126,6 +130,47 @@ Candidate system base JSON is updated on a low-rate 10-second scheduler outside 
 - When active traffic occurs, no redundant heartbeats are sent.
 - After 3000 ms of idle time, firmware broadcasts a minimal `sync` packet.
 - On sequence gaps, browser sends `resync`, and ESP replies with a fresh `snapshot`.
+
+### Phase 3 authenticated command channel
+
+A browser holding operator control receives an ephemeral `socketCommandToken` only in a successful
+HTTP Claim or Reconnect response. A command supplies that token with the active
+`controlSessionEpoch`; Release, a new Claim, or a new inactive-session Reconnect revokes the old
+epoch/token and clears incompatible queued and ledger state.
+
+```json
+{
+  "protocolVersion": 1,
+  "type": "command",
+  "commandId": "feed-550e8400-e29b-41d4-a716-446655440000",
+  "action": "job.setFeedOverride",
+  "authorization": { "controlSessionEpoch": 12, "socketCommandToken": "..." },
+  "payload": { "percent": 125 }
+}
+```
+
+- `commandId`, `action`, serialized payload, and control-session epoch form the idempotency
+  identity. Payload identity uses insertion-order JSON serialization exactly as sent by the browser
+  and firmware; reordered object keys are a conflict rather than an equivalent retry.
+- The firmware uses an 8-entry execution queue and a 32-entry session ledger. Exact retries return
+  the in-progress acknowledgement or cached result without executing again; incompatible reuse
+  returns `IDEMPOTENCY_CONFLICT`.
+- `commandQuery` uses the same authorization and `commandId`. It recovers an in-progress or completed
+  result after socket reconnect within the same control session, including across different sockets.
+- Accepted execution remains on the Arduino loop. `commandAck`/`commandResult` report disposition;
+  the subsequent normal sequenced `job` patch is the authoritative machine state.
+- Migrated actions are `safety.stop`/`job.stop`, `job.pause`, `job.resume`, and
+  `job.setFeedOverride`. Their existing operator-protected HTTP routes remain available. Home,
+  Work/Z Zero, Job Start, Bounding Box, Jog, and other actions remain HTTP/unmigrated. Jog must use
+  a separate coalesced realtime design rather than the generic command queue.
+- Stop deliberately dispatches authenticated WebSocket and protected HTTP requests immediately and
+  redundantly. Neither response proves physical success; a newer canonical job slice is the success
+  authority. Software Stop is not a physical emergency stop, and controller receipt during
+  communication loss cannot be confirmed.
+- `feedOverridePercent` is applied state, not queued intent. It changes only after the exact
+  `M220 S...` receives a successful terminal Marlin response. Error or timeout retains the prior
+  applied percentage and publishes `lastFeedOverrideCommand`, `lastFeedOverrideResponse`, and
+  `lastFeedOverrideError` diagnostics.
 
 ## Browser API
 
@@ -555,6 +600,9 @@ Sends Marlin `M220 S<percent>` as a priority control command. Valid range is `10
 values are rejected. Feed override is allowed while idle and during `RUNNING`, `PAUSING`,
 `PAUSED_INTACT`, tool-change `PAUSED`, and `RESUMING`, but it is lower priority than Pause/Resume
 state changes and Stop. It is rejected while a higher-priority command is already in progress.
+The accepted HTTP or WebSocket response records queued intent only. `feedOverridePercent` changes
+after the exact M220 receives terminal `ok`; Error or timeout retains the previous value and updates
+the command/response/error diagnostics.
 Feed override changes movement speed only and does not change router or spindle RPM.
 
 Job JSON may include:
@@ -582,7 +630,9 @@ submitting new file commands and never sends `M5`, `M410`, a Z lift, or a park m
 When `M115` explicitly reports both `EMERGENCY_PARSER` and realtime reporting commands, firmware
 sends `P000` and enters `PAUSED_INTACT`. The cutter remains running and the current stream, modal
 state, file offset, and in-flight acknowledgement remain intact. Firmware never assumes this
-capability from Marlin identity alone.
+capability from Marlin identity alone or restores it from NVS. Both safety flags are current
+controller-session evidence and are invalidated on communication loss or recovery until M115 is
+successfully reprobed.
 
 Without that explicit capability, state remains `PAUSING` while the current command finishes.
 Firmware then sends `M400` at the acknowledged file-command boundary and enters `PAUSED_INTACT`.

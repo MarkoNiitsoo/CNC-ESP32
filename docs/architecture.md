@@ -107,7 +107,8 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Scans safety-critical job metadata with a bounded streaming window, so ARMED and active-run
     checks do not fail when run history grows the JSON beyond an earlier snippet size.
 - Full-duplex WebSocket transport (Phase 1):
-  - Keeps machine commands (Home, Zero, Pause, Resume, Stop, Start, Bounding Box, Jog) on HTTP in Phase 1.
+  - Historical Phase 1 kept machine commands (Home, Zero, Pause, Resume, Stop, Start, Bounding Box,
+    Jog) on HTTP while migrating authoritative state and synchronization.
   - Carries authoritative live state, synchronization, monotonic packet sequencing, piggybacked ACKs, and ESP boot identity.
   - Establishes a controller-independent state schema normalizing system, controller, machine, job, jog, and control states.
   - Maintains separate monotonic uptime time (for motion/timeouts) and browser-synchronized wall-clock time (for file/log metadata).
@@ -130,6 +131,22 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Queue saturation increments drop counters (`motionTelemetryDropped`, `logTelemetryDropped`) without applying backpressure or blocking SD/UART streaming or Jog.
   - During a long streamed G2/G3 command, complete M154 position lines are parsed as they arrive;
     firmware does not wait for the motion command's final `ok` before publishing position changes.
+- Authenticated WebSocket commands (Phase 3 current state):
+  - Stop, Pause, Resume, and feed override use the bounded authenticated command transport; their
+    existing operator-protected HTTP routes remain. Home, Zero, Start, Bounding Box, Jog, and other
+    actions remain HTTP/unmigrated.
+  - The browser sends `command`/`commandQuery` with control-session epoch, ephemeral token, command
+    identity, and insertion-order serialized payload identity. Firmware uses an 8-entry execution
+    queue and 32-entry session ledger; reconnect queries recover results within the same session.
+  - Immediate `commandAck`/`commandResult` packets are unsequenced. Normal sequenced authoritative
+    state patches remain the success authority.
+  - Stop dispatches WebSocket and protected HTTP immediately and redundantly, then waits for newer
+    canonical job telemetry. It is not a physical E-stop; during communication loss controller
+    receipt is explicitly unconfirmed.
+  - Applied feed changes only after the exact queued M220 receives terminal success. Failure retains
+    the prior `feedOverridePercent` and publishes command/response/error diagnostics.
+  - Jog is not suitable for the generic command queue; its future migration requires a separate
+    coalesced realtime transport design.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
   - ESP32 firmware owns the jog state machine, safe Z lift, 50 ms relative movement ticks, and
@@ -170,6 +187,9 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Loads the last valid profile from Preferences namespace `machine` during boot.
   - Schedules one idle-only, non-blocking `M115` read after Marlin startup.
   - Parses 515DL `area.full` / `area.work`, identity, and selected capabilities.
+  - Safety-critical `EMERGENCY_PARSER` and realtime-hold flags are evidence from M115 in the current
+    controller communication session only. They are never trusted from NVS and are invalidated on
+    communication loss or recovery until a fresh M115 probe succeeds.
   - Uses `area.full` for Preview and guarded restore/resume bounds; falls back to compiled defaults.
   - Settings reads `M503` and `M211` on demand. Editable M92/M203/M201/M204 changes apply to
   Marlin RAM only; `M500` persistence is always a separate explicit action.
@@ -202,4 +222,6 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
 - Camera initialization or streaming.
 - G-code preview.
 - Job resume.
-- WebSocket.
+- Additional WebSocket command migrations, including Home, Zero, Start, and Jog.
+
+Physical ESP32-CAM/Marlin hardware has not been exercised for the current Phase 3 command transport.

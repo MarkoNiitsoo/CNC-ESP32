@@ -222,6 +222,88 @@ describe('Marlin transport safety', () => {
     expect(source).toContain('Marlin EMERGENCY_PARSER detected=');
   });
 
+  it('publishes feed override intent but changes applied percent only after exact M220 success', () => {
+    const operation = source.slice(source.indexOf('MachineOperationResult performJobFeedOverride('), source.indexOf('void handleJobFeedOverride()'));
+    const result = source.slice(source.indexOf('void noteFeedOverrideResult('), source.indexOf('String feedOverrideCommand('));
+    const immediate = source.slice(source.indexOf('bool sendFeedOverrideImmediate('), source.indexOf('uint32_t marlinAckTimeoutForCommand('));
+    expect(operation).toContain('jobStatus.lastFeedOverrideCommand = cmd');
+    expect(operation).toContain('jobStatus.lastFeedOverrideResponse = ""');
+    expect(operation).toContain('jobStatus.lastFeedOverrideError = ""');
+    expect(operation).not.toContain('jobStatus.feedOverridePercent = percent');
+    expect(result).toContain('error.length() == 0');
+    expect(result).toContain('responseContainsToken(response, "ok")');
+    expect(result).toContain('feedOverridePercentFromCommand(cmd, acknowledgedPercent)');
+    expect(result).toContain('jobStatus.feedOverridePercent = acknowledgedPercent');
+    expect(immediate).not.toContain('jobStatus.feedOverridePercent = percent');
+    expect(immediate).toContain('noteFeedOverrideResult(cmd, res.response, "")');
+    expect(source).toContain('runJobStartPreamble(requestedFeedOverridePercent)');
+    expect(source).toContain('jobStatus.feedOverridePercent = appliedFeedOverridePercent');
+    expect(source).toContain('static_cast<float>(jobStatus.feedOverridePercent) / 100.0f');
+  });
+
+  it('allows only communication-loss ERROR to attempt the existing M410 then M5 Stop sequence', () => {
+    const stop = source.slice(source.indexOf('MachineOperationResult performJobStop() {'), source.indexOf('void handleJobStop()'));
+    const immediate = source.slice(source.indexOf('void startImmediateStopPrioritySequence()'), source.indexOf('uint32_t priorityAckTimeoutMs()'));
+    expect(stop).toContain('jobStatus.state == JobRunnerState::Error && jobStatus.errorCode == "COMMUNICATION_LOST"');
+    expect(stop).toContain('jobStatus.state != JobRunnerState::Resuming && !communicationLostStop');
+    expect(stop).toContain('startImmediateStopPrioritySequence()');
+    expect(stop).toContain('receipt cannot be confirmed; use the physical emergency stop');
+    expect(immediate).toContain('queuePriorityCommands("M410", "M5")');
+    expect(immediate.indexOf('queuePriorityCommands("M410", "M5")')).toBeLessThan(
+      immediate.indexOf('startNextPriorityCommand()'),
+    );
+  });
+
+  it('never restores safety capabilities from the cached machine profile', () => {
+    const save = source.slice(source.indexOf('void saveMachineProfile()'), source.indexOf('void loadMachineProfile()'));
+    const load = source.slice(source.indexOf('void loadMachineProfile()'), source.indexOf('String toolChangeSettingsJson()'));
+    expect(save).not.toContain('machineProfile.capEmergencyParser ? 1');
+    expect(save).not.toContain('machineProfile.capRealtimeReporting ? 64');
+    expect(load).toContain('machineProfile.capEmergencyParser = false;');
+    expect(load).toContain('machineProfile.capRealtimeReporting = false;');
+    expect(load).not.toContain('machineProfile.capEmergencyParser = caps & 1');
+    expect(load).not.toContain('machineProfile.capRealtimeReporting = caps & 64');
+    expect(load).toContain('machineProfile.capArcs = caps & 2');
+    expect(load).toContain('machineProfile.capMotionModes = caps & 32');
+  });
+
+  it('invalidates current-session safety capabilities on communication loss and before recovery', () => {
+    const invalidator = source.slice(
+      source.indexOf('void invalidateControllerSessionSafetyCapabilities() {'),
+      source.indexOf('String toolChangeSettingsJson()'),
+    );
+    const readStart = source.indexOf('MarlinCommandResult readMarlinResponseFor(', source.indexOf('bool marlinResponseIsTerminal('));
+    const readResponse = source.slice(readStart, source.indexOf('MarlinCommandResult executeSynchronousCommand(', readStart));
+    const communicationLost = source.slice(source.indexOf('void setJobCommunicationLost('), source.indexOf('bool openJobFileAtOffset()'));
+    const recovery = source.slice(source.indexOf('void handleControllerRecover()'), source.indexOf('void startHttpServer()'));
+    expect(invalidator).toContain('machineProfile.capEmergencyParser = false;');
+    expect(invalidator).toContain('machineProfile.capRealtimeReporting = false;');
+    expect(readResponse).toMatch(/else \{[\s\S]*invalidateControllerSessionSafetyCapabilities\(\);[\s\S]*controllerCommManager\.onTimeout/);
+    expect(communicationLost).toMatch(/void setJobCommunicationLost\([^)]*\) \{\s*invalidateControllerSessionSafetyCapabilities\(\);/);
+    expect(recovery.indexOf('invalidateControllerSessionSafetyCapabilities();')).toBeLessThan(
+      recovery.indexOf('executeSynchronousCommand("M115"'),
+    );
+    expect(source).toMatch(/void markControllerUnresponsive\([^}]*invalidateControllerSessionSafetyCapabilities\(\);/);
+  });
+
+  it('reparses the successful recovery M115 before M114 and keeps failed recovery conservative', () => {
+    const recovery = source.slice(source.indexOf('void handleControllerRecover()'), source.indexOf('void startHttpServer()'));
+    const parser = source.slice(source.indexOf('bool parseMachineProfile('), source.indexOf('String machineProfileJson()'));
+    const parsePosition = recovery.indexOf('parseMachineProfile(m115Res.response);');
+    expect(parsePosition).toBeGreaterThan(recovery.indexOf('if (!m115Res.terminalReceived'));
+    expect(parsePosition).toBeLessThan(recovery.indexOf('executeSynchronousCommand("M114"'));
+    expect(recovery).toContain('markControllerUnresponsive("M115", "M115 recovery probe failed');
+    expect(recovery).toContain('markControllerUnresponsive("M114", "M114 position probe failed');
+    expect(recovery.indexOf('parseMachineProfile(m115Res.response);')).toBeLessThan(
+      recovery.indexOf('markControllerResponseSuccess();'),
+    );
+    expect(parser).toContain('machineProfile.capEmergencyParser = responseCapability(response, "EMERGENCY_PARSER");');
+    expect(parser).toContain('responseCapability(response, "REALTIME_REPORTING")');
+    expect(parser.indexOf('machineProfile.capEmergencyParser = responseCapability')).toBeLessThan(
+      parser.indexOf('machineProfile.capRealtimeReporting ='),
+    );
+  });
+
   it('owns validated Aircut and Toolless streams in firmware', () => {
     expect(source).toContain('operatorRoute("/api/test-motion/start", HTTP_POST, handleTestMotionStart)');
     expect(source).toContain('validateTestMotionFile(path, mode, safeZ');

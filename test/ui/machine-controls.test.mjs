@@ -256,7 +256,7 @@ describe('firmware-owned coordinate frames', () => {
   });
 
   it('never reapplies G92 from the normal Start Job preamble', () => {
-    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble('), firmware.indexOf('void handleJobStatus()'));
     expect(preamble).not.toMatch(/G92/);
     expect(firmware).toContain('startMode must use an active homed or manually confirmed work frame');
     expect(preview).toContain("'use_manual_work_frame'");
@@ -264,7 +264,7 @@ describe('firmware-owned coordinate frames', () => {
   });
 
   it('runs Start Job preamble asynchronously before streaming file lines', () => {
-    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble('), firmware.indexOf('void handleJobStatus()'));
     expect(preamble).toContain('appendPriorityCommand(command)');
     expect(firmware).toContain('jobStatus.state == JobRunnerState::Preparing');
     expect(firmware).toContain('start preamble complete: ');
@@ -272,7 +272,7 @@ describe('firmware-owned coordinate frames', () => {
   });
 
   it('enables position autoreport and parses reports while a streamed command is active', () => {
-    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble('), firmware.indexOf('void handleJobStatus()'));
     const runner = firmware.slice(firmware.indexOf('void processJobRunner() {'), firmware.indexOf('String htmlPage'));
     expect(preamble).toContain('appendPriorityCommand("M154 S1")');
     expect(machineBar).toContain('`M X ${fmtAxis(machine.x)}');
@@ -399,7 +399,7 @@ describe('Phase 3B: WS command token lifecycle (source audit)', () => {
     expect(fn).toContain('`${prefix}-${rnd}`');
   });
 
-  it('stopJob() tries WS safety.stop first and falls back to HTTP', () => {
+  it('stopJob() dispatches redundant WS and HTTP Stop with canonical confirmation', () => {
     const start = machineBar.indexOf('async function stopJob()');
     const end = machineBar.indexOf('\n  }', start) + 4;
     const fn = machineBar.slice(start, end);
@@ -408,11 +408,14 @@ describe('Phase 3B: WS command token lifecycle (source audit)', () => {
     expect(fn).toContain("STATE.operator?.controller");
     // genCommandId used for idempotency.
     expect(fn).toContain("genCommandId('stop')");
-    // HTTP fallback still present.
+    // HTTP path remains present and does not wait for WS settlement.
     expect(fn).toContain("criticalJobPost('/api/job/stop')");
     // WS path comes before HTTP path.
     expect(fn.indexOf("telemetry.command")).toBeLessThan(fn.indexOf("criticalJobPost"));
-    // WS failures are swallowed (console.warn) so HTTP fallback always runs.
+    expect(fn).toContain('const stopConfirmation = waitForSocketSlice');
+    expect(fn).toContain('void Promise.resolve(');
+    expect(fn).not.toContain('M5 was not sent');
+    // Both request promises have rejection handlers; canonical state is authoritative.
     expect(fn).toContain('console.warn');
   });
 });
@@ -443,9 +446,35 @@ describe('Phase 3 command fallback and canonical confirmation policy', () => {
   it('keeps Stop fallback and confirms all migrated actions through canonical job slices', () => {
     expect(machineBar).toMatch(/pauseJob\(\)[\s\S]*PAUSING[\s\S]*PAUSED_INTACT/);
     expect(machineBar).toMatch(/resumeJob\(\)[\s\S]*RESUMING[\s\S]*RUNNING/);
-    expect(machineBar).toMatch(/setFeedOverride\(percent\)[\s\S]*feedOverridePercent/);
+    expect(machineBar).toMatch(/setFeedOverride\(percent\)[\s\S]*waitForFeedOverrideConfirmation/);
     const stop = machineBar.slice(machineBar.indexOf('async function stopJob()'), machineBar.indexOf('async function refreshPosition()'));
     expect(stop).toContain("criticalJobPost('/api/job/stop')");
-    expect(stop).toContain("['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR']");
+    expect(stop).toContain("['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED']");
+    expect(stop).toContain("confirmedState === 'ERROR' && job?.errorCode === 'COMMUNICATION_LOST'");
+    expect(stop.indexOf('const stopConfirmation = waitForSocketSlice')).toBeLessThan(stop.indexOf("telemetry.command('safety.stop'"));
+  });
+
+  it('requires terminal command-specific feed diagnostics before Machine Bar or Preview confirms', () => {
+    const machineFeed = machineBar.slice(
+      machineBar.indexOf('function feedOverrideCommandCompleted('),
+      machineBar.indexOf('async function sendCmd('),
+    );
+    expect(machineFeed).toContain('lastFeedOverrideCommand');
+    expect(machineFeed).toContain('lastFeedOverrideResponse');
+    expect(machineFeed).toContain('lastFeedOverrideError');
+    expect(machineFeed).toContain('feedOverridePercent');
+    expect(machineFeed).toContain('timeoutMs: 12000');
+
+    const previewFeed = preview.slice(
+      preview.indexOf('function feedOverrideCommandCompleted('),
+      preview.indexOf('function updateJobRunPolling()'),
+    );
+    expect(previewFeed).toContain('lastFeedOverrideCommand');
+    expect(previewFeed).toContain('lastFeedOverrideResponse');
+    expect(previewFeed).toContain('lastFeedOverrideError');
+    expect(previewFeed).toContain('timeoutMs: 12000');
+    expect(previewFeed.indexOf('if (!feedOverrideCommandSucceeded(confirmed, value))')).toBeLessThan(
+      previewFeed.indexOf('lastUsedPercent: Number(confirmed.feedOverridePercent)'),
+    );
   });
 });

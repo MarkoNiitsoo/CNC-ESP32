@@ -310,6 +310,7 @@ MachineOperationResult performJobPause();
 MachineOperationResult performJobResume();
 MachineOperationResult performJobStop();
 MachineOperationResult performJobFeedOverride(int percent);
+void invalidateControllerSessionSafetyCapabilities();
 
 bool isControllerCommunicationActive() {
   return controllerCommManager.telemetry.state == ControllerCommunicationState::Connected ||
@@ -360,6 +361,7 @@ void markControllerResponseSuccess() {
 }
 
 void markControllerUnresponsive(const String &cmd, const String &errorMsg) {
+  invalidateControllerSessionSafetyCapabilities();
   controllerCommManager.onTimeout(0, cmd.c_str(), errorMsg.c_str(), millis());
   stageTelemetryUpdates();
 }
@@ -577,6 +579,7 @@ volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 // WebSocket command transport crosses from the pinned network task to Arduino loop().
 struct WsCommandEntry {
   uint8_t  clientId;
+  uint32_t connectionGeneration;
   uint32_t commandClientSeq;
   char     commandId[kWsCommandIdMaxLength + 1];
   char     action[kWsCommandActionMaxLength + 1];
@@ -589,6 +592,7 @@ static constexpr uint8_t kWsCommandQueueCapacity = 8;
 
 struct WsCommandResponseEntry {
   uint8_t clientId;
+  uint32_t connectionGeneration;
   bool ok;
   char commandId[kWsCommandIdMaxLength + 1];
   char code[33];
@@ -821,7 +825,7 @@ bool machineDiscoveryPending = true;
 
 String extractWorkspaceCommand(const String &line);
 bool handleWorkspaceCommand(const String &line);
-bool runJobStartPreamble();
+bool runJobStartPreamble(int requestedFeedOverridePercent);
 bool responseContainsToken(const String &response, const char *token);
 bool extractGcodeIntegerWord(const String &line, char wanted, int &value);
 bool extractGcodeWordValue(const String &line, char wanted, float &value);
@@ -2317,6 +2321,7 @@ struct TelemetryClientState {
   bool handshakeComplete = false;
   bool snapshotPending = false;
   bool resyncPending = false;
+  uint32_t connectionGeneration = 0;
   uint32_t nextServerSeq = 1;
   uint32_t highestServerSeqSuccessfullySent = 0;
   uint32_t lastContiguousClientSeq = 0;
@@ -2882,6 +2887,8 @@ WsCommandRegistration registerAndQueueWsCommand(const WsCommandEntry &entry,
 
   const int slot = allocateWsCommandLedgerEntryLocked();
   WsCommandLedgerEntry &ledger = wsCommandLedger[slot];
+  const WsCommandLedgerEntry previousLedger = ledger;
+  const uint32_t previousLedgerOrder = wsCommandLedgerOrder;
   memset(&ledger, 0, sizeof(ledger));
   ledger.valid = true;
   ledger.epoch = entry.epoch;
@@ -2892,7 +2899,8 @@ WsCommandRegistration registerAndQueueWsCommand(const WsCommandEntry &entry,
   strncpy(ledger.payloadDigest, entry.payloadDigest, sizeof(ledger.payloadDigest) - 1);
 
   if (xQueueSend(wsCommandQueue, &entry, 0) != pdTRUE) {
-    memset(&ledger, 0, sizeof(ledger));
+    ledger = previousLedger;
+    wsCommandLedgerOrder = previousLedgerOrder;
     xSemaphoreGive(wsCommandLedgerMutex);
     return WsCommandRegistration::QueueFull;
   }
@@ -2947,11 +2955,13 @@ bool wsQueuedCommandStillAuthorized(const WsCommandEntry &entry) {
   return authorized;
 }
 
-void queueWsCommandResult(uint8_t clientId, const char *commandId, bool ok,
+void queueWsCommandResult(uint8_t clientId, uint32_t connectionGeneration,
+                          const char *commandId, bool ok,
                           const char *code, const char *message) {
   if (wsCommandResponseQueue == nullptr) return;
   WsCommandResponseEntry response = {};
   response.clientId = clientId;
+  response.connectionGeneration = connectionGeneration;
   response.ok = ok;
   strncpy(response.commandId, commandId != nullptr ? commandId : "", kWsCommandIdMaxLength);
   strncpy(response.code, code != nullptr ? code : "", sizeof(response.code) - 1);
@@ -2964,6 +2974,10 @@ void processWsCommandResponses() {
   WsCommandResponseEntry response = {};
   while (xQueueReceive(wsCommandResponseQueue, &response, 0) == pdTRUE) {
     // A failed/disconnected write remains recoverable through the ledger.
+    if (response.clientId >= WEBSOCKETS_SERVER_CLIENT_MAX) continue;
+    TelemetryClientState &cs = protocolState.clients[response.clientId];
+    if (!cs.connected || !cs.handshakeComplete ||
+        cs.connectionGeneration != response.connectionGeneration) continue;
     sendWsCommandResult(response.clientId, response.commandId, response.ok,
                         response.code, response.message);
   }
@@ -2974,6 +2988,8 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
   TelemetryClientState &cs = protocolState.clients[client];
 
   if (type == WStype_CONNECTED) {
+    ++cs.connectionGeneration;
+    if (cs.connectionGeneration == 0) ++cs.connectionGeneration;
     cs.connected = true;
     cs.handshakeComplete = false;
     cs.snapshotPending = false;
@@ -3111,6 +3127,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       }
       WsCommandEntry entry = {};
       entry.clientId = client;
+      entry.connectionGeneration = cs.connectionGeneration;
       entry.commandClientSeq = seqVal;
       entry.epoch = doc["authorization"]["controlSessionEpoch"] | 0;
       const char *token = doc["authorization"]["socketCommandToken"] | "";
@@ -3198,7 +3215,8 @@ void processWsCommandQueue() {
   if (!wsQueuedCommandStillAuthorized(entry)) {
     finishWsCommand(entry.commandId, entry.epoch, false, "STALE_CONTROL_SESSION",
                     "Command authorization expired before execution");
-    queueWsCommandResult(entry.clientId, entry.commandId, false, "STALE_CONTROL_SESSION",
+    queueWsCommandResult(entry.clientId, entry.connectionGeneration, entry.commandId,
+                         false, "STALE_CONTROL_SESSION",
                          "Command authorization expired before execution");
     return;
   }
@@ -3221,7 +3239,7 @@ void processWsCommandQueue() {
   }
 
   finishWsCommand(entry.commandId, entry.epoch, result.ok, result.code.c_str(), result.message.c_str());
-  queueWsCommandResult(entry.clientId, entry.commandId, result.ok,
+  queueWsCommandResult(entry.clientId, entry.connectionGeneration, entry.commandId, result.ok,
                        result.code.c_str(), result.message.c_str());
 }
 
@@ -3722,6 +3740,7 @@ MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs,
   } else {
     result.timeout = true;
     result.error = "Marlin did not respond within timeout.";
+    invalidateControllerSessionSafetyCapabilities();
     controllerCommManager.onTimeout(transactionToken, cmd.c_str(), result.error.c_str(), millis());
     stageTelemetryUpdates();
   }
@@ -3804,13 +3823,11 @@ void saveMachineProfile() {
   machinePrefs.putFloat("wy1", machineProfile.workYMax);
   machinePrefs.putFloat("wz0", machineProfile.workZMin);
   machinePrefs.putFloat("wz1", machineProfile.workZMax);
-  machinePrefs.putUChar("caps", (machineProfile.capEmergencyParser ? 1 : 0) |
-                                    (machineProfile.capArcs ? 2 : 0) |
+  machinePrefs.putUChar("caps", (machineProfile.capArcs ? 2 : 0) |
                                     (machineProfile.capAutoreportPos ? 4 : 0) |
                                     (machineProfile.capEeprom ? 8 : 0) |
                                     (machineProfile.capSdCard ? 16 : 0) |
-                                    (machineProfile.capMotionModes ? 32 : 0) |
-                                    (machineProfile.capRealtimeReporting ? 64 : 0));
+                                    (machineProfile.capMotionModes ? 32 : 0));
   machinePrefs.end();
 }
 
@@ -3834,13 +3851,19 @@ void loadMachineProfile() {
   machineProfile.workZMax = machinePrefs.getFloat("wz1", machineProfile.fullZMax);
   const uint8_t caps = machinePrefs.getUChar("caps", 0);
   machinePrefs.end();
-  machineProfile.capEmergencyParser = caps & 1;
+  // Safety capabilities are trusted only after M115 succeeds in this controller session.
+  machineProfile.capEmergencyParser = false;
   machineProfile.capArcs = caps & 2;
   machineProfile.capAutoreportPos = caps & 4;
   machineProfile.capEeprom = caps & 8;
   machineProfile.capSdCard = caps & 16;
   machineProfile.capMotionModes = caps & 32;
-  machineProfile.capRealtimeReporting = caps & 64;
+  machineProfile.capRealtimeReporting = false;
+}
+
+void invalidateControllerSessionSafetyCapabilities() {
+  machineProfile.capEmergencyParser = false;
+  machineProfile.capRealtimeReporting = false;
 }
 
 String toolChangeSettingsJson() {
@@ -4066,6 +4089,7 @@ void processMachineDiscovery() {
     stageTelemetryUpdates();
     machineDiscoveryToken = 0;
   } else if (millis() - machineDiscoveryStartedAtMs > 12000) {
+    invalidateControllerSessionSafetyCapabilities();
     machineProfile.lastError = "M115 discovery timed out";
     machineProfile.refreshing = false;
     machineDiscoveryState = MachineDiscoveryState::Idle;
@@ -4101,6 +4125,23 @@ bool isFeedOverrideCommand(const String &cmd) {
   return upper.startsWith("M220");
 }
 
+bool feedOverridePercentFromCommand(const String &cmd, int &percent) {
+  String upper = cmd;
+  upper.toUpperCase();
+  upper.trim();
+  if (!upper.startsWith("M220 S")) return false;
+  String value = upper.substring(6);
+  value.trim();
+  if (value.length() == 0) return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (value[i] < '0' || value[i] > '9') return false;
+  }
+  const int parsed = value.toInt();
+  if (parsed < 10 || parsed > 200) return false;
+  percent = parsed;
+  return true;
+}
+
 void noteFeedOverrideResult(const String &cmd, const String &response, const String &error = "") {
   if (!isFeedOverrideCommand(cmd)) {
     return;
@@ -4109,6 +4150,12 @@ void noteFeedOverrideResult(const String &cmd, const String &response, const Str
   jobStatus.lastFeedOverrideCommand = cmd;
   jobStatus.lastFeedOverrideResponse = response;
   jobStatus.lastFeedOverrideError = error;
+  int acknowledgedPercent = 0;
+  if (error.length() == 0 && responseContainsToken(response, "ok") &&
+      !responseContainsToken(response, "Error:") &&
+      feedOverridePercentFromCommand(cmd, acknowledgedPercent)) {
+    jobStatus.feedOverridePercent = acknowledgedPercent;
+  }
 }
 
 String feedOverrideCommand(int percent) {
@@ -4126,7 +4173,6 @@ bool sendFeedOverrideImmediate(int percent) {
     touchJobStatus();
     return false;
   }
-  jobStatus.feedOverridePercent = percent;
   noteFeedOverrideResult(cmd, res.response, "");
   logJobEvent("feed override: " + cmd);
   touchJobStatus();
@@ -5783,6 +5829,7 @@ void sendImmediateJobSafetyM5(const String &reason) {
 }
 
 void setJobCommunicationLost(const String &message, const String &failedCommandOverride) {
+  invalidateControllerSessionSafetyCapabilities();
   const String failedCommand = failedCommandOverride.length() > 0
                                    ? failedCommandOverride
                                    : (jobStatus.priorityCommandInProgress
@@ -7940,8 +7987,9 @@ void resetFeedOverrideAfterJobIfNeeded() {
     return;
   }
 
-  sendFeedOverrideImmediate(100);
-  logJobEvent("feed override reset to 100 after job");
+  if (sendFeedOverrideImmediate(100)) {
+    logJobEvent("feed override reset to 100 after job");
+  }
 }
 
 String extractWorkspaceCommand(const String &line) {
@@ -7996,10 +8044,10 @@ bool handleWorkspaceCommand(const String &line) {
   return true;
 }
 
-bool runJobStartPreamble() {
+bool runJobStartPreamble(int requestedFeedOverridePercent) {
   clearPriorityCommands();
   const String commands[] = {
-      "M5", "G21", "G90", "G54", feedOverrideCommand(jobStatus.feedOverridePercent), "M400", "M114",
+      "M5", "G21", "G90", "G54", feedOverrideCommand(requestedFeedOverridePercent), "M400", "M114",
       "G0 Z" + String(jobStatus.safeStartZ, 3) + " F" + String(kJobStartZFeed, 0), "M400",
       "G0 F" + String(jobStatus.travelFeedMmMin, 0),
   };
@@ -8229,7 +8277,13 @@ void handleProductionResumeStart() {
     return;
   }
 
+  const int appliedFeedOverridePercent = jobStatus.feedOverridePercent;
+  const int requestedFeedOverridePercent =
+      identity.feedStartPercent >= 10 && identity.feedStartPercent <= 200
+          ? identity.feedStartPercent
+          : 100;
   jobStatus = JobRunnerStatus();
+  jobStatus.feedOverridePercent = appliedFeedOverridePercent;
   streamMotionMode = "G0";
   resetMotionTimingState();
   resetMotionTelemetry();
@@ -8244,9 +8298,6 @@ void handleProductionResumeStart() {
   jobStatus.startMode = "prepared_production_resume";
   jobStatus.streamMode = "production-resume";
   jobStatus.allowedWorkspaceCommands = false;
-  jobStatus.feedOverridePercent = identity.feedStartPercent >= 10 && identity.feedStartPercent <= 200
-                                      ? identity.feedStartPercent
-                                      : 100;
   jobStatus.resetFeedOverrideAfterJob = identity.resetFeedAfterJob;
   jobStatus.startedAtMs = millis();
   touchJobStatus();
@@ -8264,7 +8315,7 @@ void handleProductionResumeStart() {
     return;
   }
 
-  if (!sendFeedOverrideImmediate(jobStatus.feedOverridePercent)) {
+  if (!sendFeedOverrideImmediate(requestedFeedOverridePercent)) {
     const String failedCmd = jobStatus.lastFeedOverrideCommand;
     const String failedResp = jobStatus.lastFeedOverrideResponse;
     const String exactErr = jobStatus.lastFeedOverrideError;
@@ -8274,6 +8325,7 @@ void handleProductionResumeStart() {
     clearPersistentJobCheckpoint();
     jobRunning = false;
     jobStatus = JobRunnerStatus();
+    jobStatus.feedOverridePercent = appliedFeedOverridePercent;
     touchJobStatus();
     sendJsonError(503, "Production Resume failed during preamble M220 feed override (" + failedCmd + "): " + preambleError);
     return;
@@ -8303,7 +8355,6 @@ MachineOperationResult performJobFeedOverride(int percent) {
   }
 
   const String cmd = feedOverrideCommand(percent);
-  jobStatus.feedOverridePercent = percent;
   jobStatus.lastFeedOverrideCommand = cmd;
   jobStatus.lastFeedOverrideResponse = "";
   jobStatus.lastFeedOverrideError = "";
@@ -8438,7 +8489,13 @@ void handleJobStart() {
     return;
   }
 
+  const int appliedFeedOverridePercent = jobStatus.feedOverridePercent;
+  const int requestedFeedOverridePercent =
+      authorization.feedStartPercent >= 10 && authorization.feedStartPercent <= 200
+          ? authorization.feedStartPercent
+          : 100;
   jobStatus = JobRunnerStatus();
+  jobStatus.feedOverridePercent = appliedFeedOverridePercent;
   marlinAsyncLine = "";
   streamMotionMode = "G0";
   resetMotionTimingState();
@@ -8458,9 +8515,6 @@ void handleJobStart() {
   jobStatus.safeStartZ = safeStartZ;
   jobStatus.travelFeedMmMin = travelFeedMmMin;
   jobStatus.allowedWorkspaceCommands = authorization.allowedWorkspaceCommands;
-  jobStatus.feedOverridePercent = authorization.feedStartPercent >= 10 && authorization.feedStartPercent <= 200
-                                      ? authorization.feedStartPercent
-                                      : 100;
   jobStatus.resetFeedOverrideAfterJob = authorization.resetFeedAfterJob;
   jobStatus.startedAtMs = millis();
   touchJobStatus();
@@ -8488,7 +8542,7 @@ void handleJobStart() {
   }
 
   logJobEvent("start: " + gcodePath);
-  if (!runJobStartPreamble()) {
+  if (!runJobStartPreamble(requestedFeedOverridePercent)) {
     sendJsonError(500, jobStatus.lastError);
     return;
   }
@@ -8733,11 +8787,13 @@ MachineOperationResult performJobStop() {
     return {true, true, true, 200, "OK",
             "Stop now already requested. M410 quickstop is in progress."};
   }
+  const bool communicationLostStop =
+      jobStatus.state == JobRunnerState::Error && jobStatus.errorCode == "COMMUNICATION_LOST";
   if (jobStatus.state != JobRunnerState::Preparing && jobStatus.state != JobRunnerState::Running &&
       jobStatus.state != JobRunnerState::Pausing &&
       jobStatus.state != JobRunnerState::PausedIntact &&
       jobStatus.state != JobRunnerState::Paused &&
-      jobStatus.state != JobRunnerState::Resuming) {
+      jobStatus.state != JobRunnerState::Resuming && !communicationLostStop) {
     return {false, false, true, 409, "JOB_STATE_CONFLICT", "job is not active"};
   }
 
@@ -8759,12 +8815,16 @@ MachineOperationResult performJobStop() {
   jobStatus.toolChangePhase = "NONE";
   jobStatus.state = JobRunnerState::Stopping;
   jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
-  jobStatus.stopWarning = machineProfile.capEmergencyParser
-                              ? ""
-                              : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
-  jobStatus.streamingPausedReason = machineProfile.capEmergencyParser
-                                        ? "Stop now requested. M410 quickstop was sent; M5 output shutdown will follow. Position is untrusted until Home All."
-                                        : jobStatus.stopWarning + " Position is untrusted until Home All.";
+  jobStatus.stopWarning = communicationLostStop
+                              ? "Controller communication is lost. M410 and M5 are being attempted, but receipt cannot be confirmed. Use the physical emergency stop."
+                              : machineProfile.capEmergencyParser
+                                    ? ""
+                                    : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
+  jobStatus.streamingPausedReason = communicationLostStop
+                                        ? jobStatus.stopWarning
+                                        : machineProfile.capEmergencyParser
+                                              ? "Stop now requested. M410 quickstop was sent; M5 output shutdown will follow. Position is untrusted until Home All."
+                                              : jobStatus.stopWarning + " Position is untrusted until Home All.";
   startImmediateStopPrioritySequence();
   invalidateMachineFrameAfterQuickstop();
   touchJobStatus();
@@ -8772,7 +8832,9 @@ MachineOperationResult performJobStop() {
               " emergencyParser=" + String(machineProfile.capEmergencyParser ? "detected" : "not-detected"));
   return {
     true, true, true, 200, "OK",
-    machineProfile.capEmergencyParser
+    communicationLostStop
+      ? "Best-effort remote Stop requested during communication loss. Controller receipt cannot be confirmed; use the physical emergency stop."
+      : machineProfile.capEmergencyParser
       ? "Stop now requested. Position and recovery must be verified after M410 quickstop."
       : "Stop now requested, but Marlin EMERGENCY_PARSER was not detected; immediate interruption cannot be guaranteed. Home All before further motion."
   };
@@ -9808,6 +9870,7 @@ void handleControllerRecover() {
     return;
   }
 
+  invalidateControllerSessionSafetyCapabilities();
   markControllerRecovering();
 
   drainMarlinInput();
@@ -9823,6 +9886,8 @@ void handleControllerRecover() {
     sendJsonError(503, controllerCommStatus.lastError.c_str());
     return;
   }
+
+  parseMachineProfile(m115Res.response);
 
   if (m115Upper.indexOf("START") >= 0 || m115Upper.indexOf("RESET") >= 0) {
     machineFrame.machineValid = false;

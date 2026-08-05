@@ -100,6 +100,7 @@
   function safetyStopDisabled(jobState = visibleJobState()) {
     const state = String(jobState || 'UNKNOWN').toUpperCase();
     if (!socketLiveStateSynchronized()) return false;
+    if (state === 'ERROR' && STATE.job?.errorCode === 'COMMUNICATION_LOST') return false;
     return !ACTIVE_STATES.has(state) || state === 'STOPPING';
   }
 
@@ -333,6 +334,8 @@
     socketSliceToken,
     waitForSocketSlice,
     safetyStopDisabled,
+    stopJob,
+    pauseJob,
     recoverControllerConnection,
     setFeedOverride,
     wsCommandDefinitelyNotAccepted,
@@ -638,6 +641,34 @@
     return true;
   }
 
+  function feedOverrideCommandCompleted(job, percent) {
+    if (String(job?.lastFeedOverrideCommand || '').trim() !== `M220 S${percent}`) return false;
+    const error = String(job?.lastFeedOverrideError || '').trim();
+    const response = String(job?.lastFeedOverrideResponse || '');
+    return error.length > 0 || /(?:^|[\r\n])\s*ok\b/i.test(response);
+  }
+
+  function feedOverrideCommandSucceeded(job, percent) {
+    const response = String(job?.lastFeedOverrideResponse || '');
+    return feedOverrideCommandCompleted(job, percent) &&
+      Number(job?.feedOverridePercent) === percent &&
+      String(job?.lastFeedOverrideError || '').trim() === '' &&
+      !/error:/i.test(response);
+  }
+
+  async function waitForFeedOverrideConfirmation(percent, baseline) {
+    const job = await waitForSocketSlice(
+      'job',
+      (slice) => feedOverrideCommandCompleted(slice, percent),
+      { afterSequence: baseline, timeoutMs: 12000, description: `feed override ${percent}%` },
+    );
+    if (!feedOverrideCommandSucceeded(job, percent)) {
+      throw new Error(String(job?.lastFeedOverrideError || job?.lastFeedOverrideResponse ||
+        `M220 S${percent} did not receive a successful terminal response`).trim());
+    }
+    return job;
+  }
+
   async function setFeedOverride(percent) {
     const value = Math.max(10, Math.min(200, Math.round(Number(percent) || 100)));
     if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
@@ -653,21 +684,13 @@
         acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'feed-override');
       }
       if (acceptedOrUnknown) {
-        await waitForSocketSlice(
-          'job',
-          (job) => Number(job?.feedOverridePercent) === value,
-          { afterSequence: baseline, description: `feed override ${value}%` },
-        );
+        await waitForFeedOverrideConfirmation(value, baseline);
         setMessage(`Feed override ${value}% confirmed`);
         return;
       }
     }
     await apiPost('/api/job/feed-override', { percent: value });
-    await waitForSocketSlice(
-      'job',
-      (job) => Number(job?.feedOverridePercent) === value,
-      { afterSequence: baseline, description: `feed override ${value}%` },
-    );
+    await waitForFeedOverrideConfirmation(value, baseline);
     setMessage(`Feed override ${value}% confirmed`);
   }
 
@@ -707,18 +730,26 @@
         acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'pause');
       }
       if (acceptedOrUnknown) {
-        await waitForSocketSlice('job',
+        const confirmedJob = await waitForSocketSlice('job',
           (job) => ['PAUSING', 'PAUSED_INTACT', 'PAUSED'].includes(String(job?.state || '')),
           { afterSequence: baseline, description: 'Pause transition' });
-        setMessage('Pause confirmed by live job state; motion is held intact and the cutter remains running');
+        if (String(confirmedJob?.state || '') === 'PAUSING') {
+          setMessage('Pause pending at a command boundary; current motion may continue until the boundary is reached. The cutter remains running.');
+        } else {
+          setMessage('Pause confirmed by live job state; motion is held intact and the cutter remains running');
+        }
         return;
       }
     }
     await criticalJobPost('/api/job/pause');
-    await waitForSocketSlice('job',
+    const confirmedJob = await waitForSocketSlice('job',
       (job) => ['PAUSING', 'PAUSED_INTACT', 'PAUSED'].includes(String(job?.state || '')),
       { afterSequence: baseline, description: 'Pause transition' });
-    setMessage('Pause confirmed by live job state; motion is held intact and the cutter remains running');
+    if (String(confirmedJob?.state || '') === 'PAUSING') {
+      setMessage('Pause pending at a command boundary; current motion may continue until the boundary is reached. The cutter remains running.');
+    } else {
+      setMessage('Pause confirmed by live job state; motion is held intact and the cutter remains running');
+    }
   }
 
   async function resumeJob() {
@@ -776,31 +807,41 @@
     }
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
     const baseline = socketSliceToken('job');
-    // Try the authenticated WS command first (lower latency, idempotent).
+    const stopConfirmation = waitForSocketSlice('job',
+      (job) => {
+        const confirmedState = String(job?.state || '');
+        return ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED'].includes(confirmedState) ||
+          (confirmedState === 'ERROR' && job?.errorCode === 'COMMUNICATION_LOST');
+      },
+      { afterSequence: baseline, description: 'Stop transition' });
+    // Dispatch both authenticated paths immediately. Canonical job state is the success authority.
     const telemetry = window.CncTelemetry;
     if (telemetry?.command && STATE.operator?.controller) {
       try {
-        await telemetry.command('safety.stop', null, genCommandId('stop'), { timeoutMs: 5000 });
-        await waitForSocketSlice('job',
-          (job) => ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(job?.state || '')),
-          { afterSequence: baseline, description: 'Stop transition' });
-        setMessage('Stop Now confirmed by live job state; position requires verification');
-        return;
+        void Promise.resolve(
+          telemetry.command('safety.stop', null, genCommandId('stop'), { timeoutMs: 5000 })
+        ).catch((err) => console.warn('[stop] WS command response failed:', err.message));
       } catch (wsErr) {
-        // Fall through to HTTP if WS command is rejected or times out.
         // Log but don't surface the WS error — the HTTP path is the safety net.
-        console.warn('[stop] WS command failed, falling back to HTTP:', wsErr.message);
+        console.warn('[stop] WS command dispatch failed:', wsErr.message);
       }
     }
-    // HTTP fallback (also works without operator session for non-locked setups).
+    // The existing operator route remains protected by firmware authorization.
     try {
-      await criticalJobPost('/api/job/stop');
-      await waitForSocketSlice('job',
-        (job) => ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(job?.state || '')),
-        { afterSequence: baseline, description: 'Stop transition' });
-      setMessage('Stop Now confirmed by live job state; position requires verification');
-    } catch (err) {
-      setMessage(`Stop endpoint failed; M5 was not sent because motion may still be active. Use the physical emergency stop. ${err.message}`);
+      void criticalJobPost('/api/job/stop')
+        .catch((err) => console.warn('[stop] HTTP command response failed:', err.message));
+    } catch (httpErr) {
+      console.warn('[stop] HTTP command dispatch failed:', httpErr.message);
+    }
+    try {
+      const confirmedJob = await stopConfirmation;
+      if (confirmedJob?.errorCode === 'COMMUNICATION_LOST') {
+        setMessage('Remote Stop was requested, but controller receipt cannot be confirmed. Use the physical emergency stop.');
+      } else {
+        setMessage('Stop Now confirmed by live job state; position requires verification');
+      }
+    } catch (confirmationErr) {
+      setMessage(`Remote Stop could not be confirmed. Use the physical emergency stop. ${confirmationErr.message}`);
     }
   }
 
