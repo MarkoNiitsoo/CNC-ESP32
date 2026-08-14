@@ -1237,3 +1237,142 @@ describe('WS command protocol (Phase 3A)', () => {
     second.close();
   });
 });
+
+describe('WS machine commands (Phase 3C)', () => {
+  async function claimController(base) {
+    return fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+  }
+
+  function machineCommand(ws, claim, commandId, action, payload = {}) {
+    ws.send({
+      protocolVersion: 1, type: 'command', commandId, action, payload,
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+  }
+
+  it('homes all axes over WS and establishes a trusted frame', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+    expect(env.frame.trusted).toBe(false);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-home-all-1', 'machine.home', { axes: 'all' });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandAck', accepted: true, commandId: 'cmd-home-all-1' });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true, code: 'OK', commandId: 'cmd-home-all-1' });
+
+    expect(env.frame.trusted).toBe(true);
+    expect(env.frame.homedAxes).toMatchObject({ x: true, y: true, z: true });
+    expect(Number(env.frame.homingEpoch)).toBeGreaterThan(0);
+    expect(env.frame.workZeroValid).toBe(true);
+    ws.close();
+  });
+
+  it('rejects machine.home with invalid axes payload', async () => {
+    const { base } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-home-bad-axes', 'machine.home', { axes: 'q' });
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: false, code: 'INVALID_PAYLOAD' });
+    ws.close();
+  });
+
+  it('rejects machine.home with MACHINE_STATE_CONFLICT while a job is active', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+    env.runner.status.state = 'RUNNING';
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-home-active-job', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: false, code: 'MACHINE_STATE_CONFLICT' });
+    expect(env.frame.trusted).toBe(false);
+    ws.close();
+  });
+
+  it('sets work zero over WS after homing and captures work-zero machine coordinates', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-zero-1', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    await ws.recv(); // commandResult
+
+    env.marlin.execute('G0 X25 Y40 Z5');
+    machineCommand(ws, claim, 'cmd-zero-2', 'machine.setWorkZero', { axes: 'xyz' });
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true, code: 'OK' });
+
+    expect(env.frame.workZeroValid).toBe(true);
+    expect(env.frame.workZeroMachine).toBeDefined();
+    ws.close();
+  });
+
+  it('rejects machine.setWorkZero with invalid axes instead of silently zeroing XYZ', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-zero-bad-axes-1', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    await ws.recv(); // commandResult
+
+    machineCommand(ws, claim, 'cmd-zero-bad-axes-2', 'machine.setWorkZero', { axes: 'z' });
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: false, code: 'INVALID_PAYLOAD' });
+    ws.close();
+  });
+
+  it('rejects machine.setZZero without a trusted work frame', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-zzero-no-frame', 'machine.setZZero');
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: false, code: 'MACHINE_STATE_CONFLICT' });
+    ws.close();
+  });
+
+  it('marks the M6 tool-change Z zero when machine.setZZero runs in the tool-change window', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-tc-1', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    await ws.recv(); // commandResult
+    machineCommand(ws, claim, 'cmd-tc-2', 'machine.setWorkZero', { axes: 'xyz' });
+    await ws.recv(); // commandAck
+    await ws.recv(); // commandResult
+
+    env.runner.status.state = 'PAUSED';
+    env.runner.status.toolChangePending = true;
+    env.runner.status.toolChangeReady = true;
+    machineCommand(ws, claim, 'cmd-tc-3', 'machine.setZZero');
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true, code: 'OK' });
+    expect(env.runner.status.toolChangeZZeroCompleted).toBe(true);
+    ws.close();
+  });
+
+  it('deduplicates machine.home by commandId and replays the completed result', async () => {
+    const { base, env } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-home-dedupe', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true });
+
+    machineCommand(ws, claim, 'cmd-home-dedupe', 'machine.home', { axes: 'all' });
+    await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true, commandId: 'cmd-home-dedupe' });
+    expect(env.frame.trusted).toBe(true);
+    ws.close();
+  });
+});

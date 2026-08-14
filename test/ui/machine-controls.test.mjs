@@ -255,6 +255,24 @@ describe('firmware-owned coordinate frames', () => {
     expect(machineBar).toContain("apiPost('/api/work-zero/set'");
   });
 
+  it('sends homing and zero commands over WebSocket first with safe HTTP fallback', () => {
+    expect(machineBar).toContain("telemetry.command('machine.home'");
+    expect(machineBar).toContain("telemetry.command('machine.setWorkZero'");
+    expect(machineBar).toContain("telemetry.command('machine.setZZero'");
+    // HTTP fallback must be gated on a definite WS rejection, and command ids
+    // must be collision-resistant like the job commands.
+    for (const label of ['home', 'work zero', 'z zero']) {
+      const call = machineBar.indexOf(`recoverWsCommandOutcome(telemetry, commandId, wsErr, '${label}')`);
+      expect(call).toBeGreaterThan(-1);
+      const fallback = machineBar.indexOf('apiPost(', call);
+      expect(fallback).toBeGreaterThan(call);
+    }
+    expect(machineBar).toContain("genCommandId('machine-home')");
+    expect(machineBar).toContain("genCommandId('machine-setworkzero')");
+    expect(machineBar).toContain("genCommandId('machine-setzzero')");
+    expect(machineBar).not.toContain('machine-home-${Date.now()}');
+  });
+
   it('never reapplies G92 from the normal Start Job preamble', () => {
     const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble('), firmware.indexOf('void handleJobStatus()'));
     expect(preamble).not.toMatch(/G92/);

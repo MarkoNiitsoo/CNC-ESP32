@@ -115,6 +115,20 @@ describe('Phase 1 WebSocket Transport Protocol Foundation', () => {
       expect(env.frame.bootSessionId).toBeDefined();
       await new Promise((resolve) => server.close(resolve));
     });
+
+    it('dispatches the Phase-3C machine commands in firmware and mock with shared perform cores', () => {
+      const dispatch = mainCppCode.slice(
+        mainCppCode.indexOf('void processWsCommandQueue()'),
+        mainCppCode.indexOf('bool telemetryHasLogSubscriber()')
+      );
+      for (const action of ['machine.home', 'machine.setWorkZero', 'machine.setZZero']) {
+        expect(dispatch).toContain(`strcmp(entry.action, "${action}") == 0`);
+      }
+      // HTTP routes remain available as wrappers over the same perform* cores.
+      expect(mainCppCode).toContain('operatorRoute("/api/machine/home", HTTP_POST, handleMachineHome)');
+      expect(mainCppCode).toContain('operatorRoute("/api/work-zero/set", HTTP_POST, handleSetWorkZero)');
+      expect(mainCppCode).toContain('operatorRoute("/api/work-zero/set-z", HTTP_POST, handleSetZZero)');
+    });
   });
 
   describe('6. Transport Isolation & Cross-Task Safety', () => {
