@@ -1267,6 +1267,10 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(env.frame.homedAxes).toMatchObject({ x: true, y: true, z: true });
     expect(Number(env.frame.homingEpoch)).toBeGreaterThan(0);
     expect(env.frame.workZeroValid).toBe(true);
+    // Exactly one G28 reached the controller for one accepted command.
+    const g28Count = env.marlin.log.filter(
+      (entry) => entry.direction === 'tx' && /^G28(\s|$)/i.test(String(entry.text || '').trim())).length;
+    expect(g28Count).toBe(1);
     ws.close();
   });
 
