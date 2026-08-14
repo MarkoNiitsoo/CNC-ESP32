@@ -2755,3 +2755,21 @@ No firmware upload is required.
 - All 45 Vitest test files and 411 unit tests pass (`npm test`).
 - Documents `docs/protocol.md` and `docs/architecture.md` are fully updated.
 - Temporary Coexistence & Deletion Manifest Checklist recorded in `work/progress.md`.
+
+## 2026-08-14 Phase 3C machine command migration recovery handoff
+
+- The unfinished Phase-3C migration (machine.home / machine.setWorkZero / machine.setZZero over the
+  authenticated WS command channel) was recovered and completed on
+  `feature/phase1-websocket-transport`. The broken intermediate state is preserved verbatim on
+  branch `wip/phase3c-snapshot` (commit d5f7531); do not build from it.
+- Architecture as intended: shared `perform*` cores in `src/main.cpp` serve both the WS command
+  queue (`processWsCommandQueue`) and the retained operator-protected HTTP wrapper routes. The
+  browser sends WS first (`genCommandId` ids, 130 s outcome timeout) and falls back to HTTP only on
+  a definite WS rejection; the canonical machine slice confirms every outcome.
+- Known pre-existing failures (present on the parent commit 860e65e, deliberately not fixed here):
+  `job-checkpoint` marker-ordering regex expects `runJobStartPreamble()` with no arguments,
+  `machine-controls` jog-animation audit, and `motion-settings` travel-speed audit. Fix these in a
+  separate commit; the latter two may be real regressions from 860e65e rather than stale tests.
+- PlatformIO is not installed in this environment; run `pio run -e esp32cam` and `pio test -e
+  native` before flashing. Nothing has been flashed.
+- git stash@{0} holds a superseded early Phase-3A draft; leave it untouched.

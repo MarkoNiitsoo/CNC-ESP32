@@ -21,7 +21,7 @@ The application-level WebSocket protocol operates full-duplex on `ws://<pendant-
 - **HTTP**: static UI resources, file listing and file transfer, G-code and job JSON, generated files and thumbnails, Aircut workflow, OTA, Wi-Fi and device management.
 
 Historical Phase 1 migrated only state and synchronization; all machine commands remained on HTTP
-in that phase. Current Phase 3 additionally carries Stop, Pause, Resume, and feed override over the
+in that phase. Current Phase 3 additionally carries Stop, Pause, Resume, feed override, Home, Work Zero, and Z Zero over the
 authenticated command channel while retaining their operator-protected HTTP routes.
 
 ### Packet Envelope & Sequencing
@@ -159,10 +159,9 @@ epoch/token and clears incompatible queued and ledger state.
   result after socket reconnect within the same control session, including across different sockets.
 - Accepted execution remains on the Arduino loop. `commandAck`/`commandResult` report disposition;
   the subsequent normal sequenced `job` patch is the authoritative machine state.
-- Migrated actions are `safety.stop`/`job.stop`, `job.pause`, `job.resume`, and
-  `job.setFeedOverride`. Their existing operator-protected HTTP routes remain available. Home,
-  Work/Z Zero, Job Start, Bounding Box, Jog, and other actions remain HTTP/unmigrated. Jog must use
-  a separate coalesced realtime design rather than the generic command queue.
+- Migrated actions are `safety.stop`/`job.stop`, `job.pause`, `job.resume`, `job.setFeedOverride`, `machine.home`, `machine.setWorkZero`, and
+  `machine.setZZero`. Their existing operator-protected HTTP routes remain available. Job Start, Bounding Box, Jog, and other actions remain HTTP/unmigrated. Jog must
+  use a separate coalesced realtime design rather than the generic command queue.
 - Stop deliberately dispatches authenticated WebSocket and protected HTTP requests immediately and
   redundantly. Neither response proves physical success; a newer canonical job slice is the success
   authority. Software Stop is not a physical emergency stop, and controller receipt during

@@ -127,6 +127,17 @@
 - Physical hardware was not flashed or exercised.
 
 
+## 2026-08-14 - Phase 3C: Home and Zero WebSocket Command Migration (recovered and completed)
+
+- Migrated `machine.home`, `machine.setWorkZero`, and `machine.setZZero` to the authenticated WebSocket command transport on `feature/phase1-websocket-transport`. An earlier unfinished attempt (snapshotted on `wip/phase3c-snapshot`) left the tree non-compiling; the migration was recovered without changing its design:
+  1. **Firmware (`src/main.cpp`)**: Shared internal functions `performMachineHome()`, `performSetWorkZero()`, and `performSetZZero()` hold the core logic; `processWsCommandQueue()` dispatches the three new actions. The retained operator-protected HTTP routes (`/api/machine/home`, `/api/work-zero/set`, `/api/work-zero/set-z`) are now thin wrappers over the same cores. The shared `runFrameCommand`/`machineFrameControlBusy` helpers and the untouched handlers (`handleMachineFrame`, `handleManualMachineFrame`, `handleTouchPlateZZero`, `handleGoToWorkZero`) were restored byte-identical to the previous commit after the unfinished edit had deleted them.
+  2. **Frontend (`www/machine-bar.js`)**: `home()`, `setWorkZero()`, and `setZZero()` send the WS command first with `genCommandId()` ids and a 130 s outcome timeout (the perform cores block on G28/M400 with 120 s Marlin budgets), then fall back to HTTP only when the WS command was definitely not accepted (`recoverWsCommandOutcome`), matching the pause/resume pattern. Confirmation always comes from the canonical machine slice.
+  3. **Mock server (`dev/mock-server.mjs`)**: The three actions match the firmware codes (`MACHINE_STATE_CONFLICT` for machine actions, `JOB_STATE_CONFLICT` retained for job actions), and `machine.setWorkZero` validates the axes payload instead of coercing invalid values to `xyz`.
+  4. **Documentation (`docs/protocol.md`, `docs/architecture.md`)**: migrated-actions lists updated; HTTP routes documented as retained.
+  5. **Tests**: new behavioral coverage in `test/mock/mock-server.test.mjs` (happy paths, invalid payload, active-job conflict, tool-change Z-zero window, commandId dedup) plus firmware/UI parity assertions in `transport-protocol.test.mjs` and `machine-controls.test.mjs`.
+- Verification: `npx vitest run` — 631 of 634 tests pass. The 3 failures are pre-existing on the parent commit (`job-checkpoint` stale ordering regex, `machine-controls` jog-animation audit, `motion-settings` travel-speed audit) and are intentionally not addressed in this recovery. `node --check` passes on modified JS. PlatformIO is not installed in this environment, so `pio run -e esp32cam` and `pio test -e native` could not be executed; firmware integrity was verified by symbol audit (every routed handler defined exactly once, restored functions byte-identical to the parent commit).
+- Physical hardware was not flashed or exercised.
+
 ## 2026-07-29 - Final Phase 2 safety/DOM guard pass
 
 - Stale or unavailable socket state now forces both software Stop controls visible and enabled even when the last authoritative job state was IDLE, UNKNOWN, or RUNNING; synchronized state retains the normal job-state rules.

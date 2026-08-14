@@ -31,7 +31,7 @@ or job runner functionality.
 
 ## Job hold and interruption state machine
 
-```mermaid
+```
 stateDiagram-v2
     RUNNING --> PAUSING: "Pause (500 ms hold)"
     PAUSING --> PAUSED_INTACT: "P000 detected path or confirmed boundary + M400"
@@ -132,8 +132,8 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - During a long streamed G2/G3 command, complete M154 position lines are parsed as they arrive;
     firmware does not wait for the motion command's final `ok` before publishing position changes.
 - Authenticated WebSocket commands (Phase 3 current state):
-  - Stop, Pause, Resume, and feed override use the bounded authenticated command transport; their
-    existing operator-protected HTTP routes remain. Home, Zero, Start, Bounding Box, Jog, and other
+  - Stop, Pause, Resume, feed override, Home, Work Zero, and Z Zero use the bounded authenticated command transport; their
+    existing operator-protected HTTP routes remain. Job Start, Bounding Box, Jog, and other
     actions remain HTTP/unmigrated.
   - The browser sends `command`/`commandQuery` with control-session epoch, ephemeral token, command
     identity, and insertion-order serialized payload identity. Firmware uses an 8-entry execution
@@ -222,6 +222,6 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
 - Camera initialization or streaming.
 - G-code preview.
 - Job resume.
-- Additional WebSocket command migrations, including Home, Zero, Start, and Jog.
+- Additional WebSocket command migrations, including Job Start, Bounding Box, and Jog.
 
 Physical ESP32-CAM/Marlin hardware has not been exercised for the current Phase 3 command transport.
