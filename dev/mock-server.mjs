@@ -239,6 +239,89 @@ export async function createMockServer(options = {}) {
         body = env.runner.resume();
       } else if (action === 'job.setFeedOverride') {
         body = env.runner.setFeedOverride(payload.percent);
+      } else if (action === 'machine.home') {
+        if (env.runner.isActive()) return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'homing requires idle Marlin transport', body: null };
+        const axes = String(payload.axes || 'all').toLowerCase();
+        if (!['x', 'y', 'z', 'xy', 'all'].includes(axes)) {
+          return { ok: false, accepted: true, httpStatus: 400, code: 'INVALID_PAYLOAD', message: 'axes must be x, y, z, xy, or all', body: null };
+        }
+        env.marlin.allowHoming = true;
+        const suffix = axes === 'all' ? '' : ` ${axes.toUpperCase().split('').join(' ')}`;
+        const result = env.marlin.execute(`G28${suffix}`);
+        env.marlin.allowHoming = false;
+        if (!result.ok) {
+          return { ok: false, accepted: true, httpStatus: 502, code: 'EXECUTION_FAILED', message: `Marlin homing failed: ${result.error || result.response}`, body: null };
+        }
+        
+        if (axes === 'all') {
+          env.marlin.execute('G54');
+          env.marlin.execute('G92 X0 Y0 Z0');
+          env.frame.homedAxes = { x: true, y: true, z: true };
+          env.frame.homingEpoch += 1;
+          env.frame.homingSessionId = `mock-home-${env.frame.homingEpoch}-${Date.now()}`;
+          env.frame.absoluteFromHome = true;
+          env.frame.manualWorkFrameValid = false;
+          env.frame.workZeroValid = true;
+          env.frame.frameMode = 'homed';
+          env.frame.homeReference = {
+            counts: Object.fromEntries(['x', 'y', 'z'].map((axis) => [axis, Math.round(env.marlin.machinePosition[axis] * env.marlin.stepsPerMm[axis])])),
+            stepsPerMm: { ...env.marlin.stepsPerMm },
+          };
+          env.frame.trusted = true;
+          env.frame.workZeroMachine = { ...env.marlin.machinePosition };
+        } else {
+          for (const axis of axes) env.frame.homedAxes[axis] = true;
+          env.frame.trusted = false;
+          env.frame.absoluteFromHome = false;
+          env.frame.manualWorkFrameValid = false;
+          env.frame.workZeroValid = false;
+          env.frame.frameMode = 'untrusted';
+          env.frame.homingSessionId = '';
+          env.frame.homeReference = null;
+          env.frame.workZeroMachine = null;
+        }
+        env.frame.machine = { ...env.marlin.machinePosition };
+        env.frame.work = { ...env.marlin.position };
+        syncMockFrame(env);
+        body = env.frame;
+      } else if (action === 'machine.setWorkZero') {
+        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || env.runner.isActive()) {
+          return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'Home All or a confirmed manual work frame is required before setting work zero', body: null };
+        }
+        const axes = String(payload.axes || '').toLowerCase() || 'xyz';
+        if (!['x', 'y', 'xyz'].includes(axes)) {
+          return { ok: false, accepted: true, httpStatus: 400, code: 'INVALID_PAYLOAD', message: 'axes must be x, y, or xyz', body: null };
+        }
+        const before = env.marlin.execute('M114').response;
+        env.marlin.execute(axes === 'x' ? 'G92 X0' : axes === 'y' ? 'G92 Y0' : 'G92 X0 Y0 Z0');
+        const after = env.marlin.execute('M114').response;
+        syncMockFrame(env);
+        if (env.frame.absoluteFromHome) {
+          env.frame.workZeroMachine ||= { ...env.marlin.machinePosition };
+          if (axes === 'x' || axes === 'xyz') env.frame.workZeroMachine.x = env.marlin.machinePosition.x;
+          if (axes === 'y' || axes === 'xyz') env.frame.workZeroMachine.y = env.marlin.machinePosition.y;
+          if (axes === 'xyz') env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        }
+        env.frame.workZeroValid = true;
+        updateMockSafeZ(env);
+        env.frame.revision += 1;
+        body = { ok: true, axes, before, after, frame: env.frame };
+      } else if (action === 'machine.setZZero') {
+        const toolChangeWindow = env.runner.status.state === 'PAUSED' && env.runner.status.toolChangePending && env.runner.status.toolChangeReady;
+        if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || !env.frame.workZeroValid ||
+            (env.runner.isActive() && !toolChangeWindow)) {
+          return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'an active work frame and idle transport or a ready M6 stop are required before setting Z zero', body: null };
+        }
+        const before = env.marlin.execute('M114').response;
+        env.marlin.execute('G92 Z0');
+        const after = env.marlin.execute('M114').response;
+        syncMockFrame(env);
+        if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
+        updateMockSafeZ(env);
+        if (toolChangeWindow) {
+          env.runner.markToolChangeZZero('manual');
+        }
+        body = { ok: true, before, after, frame: env.frame };
       } else {
         return { ok: false, accepted: true, httpStatus: 400, code: 'INVALID_COMMAND',
           message: `Unknown action: ${action}`, body: null };
@@ -249,11 +332,18 @@ export async function createMockServer(options = {}) {
       const message = String(error.message || error);
       const communicationError = /P000|R000|UART|communication/i.test(message);
       const invalidPayload = action === 'job.setFeedOverride' && /between 10 and 200/i.test(message);
+      // Machine actions reject with MACHINE_STATE_CONFLICT to match firmware perform* cores;
+      // job actions keep JOB_STATE_CONFLICT to match performJobPause/Stop/Resume.
+      const machineAction = action === 'machine.home' || action === 'machine.setWorkZero' ||
+        action === 'machine.setZZero';
       return {
         ok: false,
         accepted: true,
         httpStatus: communicationError ? 503 : invalidPayload ? 400 : 409,
-        code: communicationError ? 'COMM_ERROR' : invalidPayload ? 'INVALID_PAYLOAD' : 'JOB_STATE_CONFLICT',
+        code: communicationError ? 'COMM_ERROR'
+          : invalidPayload ? 'INVALID_PAYLOAD'
+          : machineAction ? 'MACHINE_STATE_CONFLICT'
+          : 'JOB_STATE_CONFLICT',
         message,
         body: null,
       };
