@@ -310,6 +310,9 @@ MachineOperationResult performJobPause();
 MachineOperationResult performJobResume();
 MachineOperationResult performJobStop();
 MachineOperationResult performJobFeedOverride(int percent);
+MachineOperationResult performMachineHome(const String& axes);
+MachineOperationResult performSetWorkZero(const String& axes);
+MachineOperationResult performSetZZero();
 void invalidateControllerSessionSafetyCapabilities();
 
 bool isControllerCommunicationActive() {
@@ -3234,6 +3237,27 @@ void processWsCommandQueue() {
     result = payloadError
       ? MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed feed override payload"}
       : performJobFeedOverride(payload["percent"] | -1);
+  } else if (strcmp(entry.action, "machine.home") == 0) {
+    JsonDocument payload;
+    const DeserializationError payloadError = deserializeJson(payload, entry.payloadJson);
+    if (payloadError) {
+      result = MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed home payload"};
+    } else {
+      const char* axes = payload["axes"] | "all";
+      result = performMachineHome(String(axes));
+    }
+  } else if (strcmp(entry.action, "machine.setWorkZero") == 0) {
+    JsonDocument payload;
+    const DeserializationError payloadError = deserializeJson(payload, entry.payloadJson);
+    if (payloadError) {
+      result = MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed setWorkZero payload"};
+    } else {
+      const char* axes = payload["axes"] | "xyz";
+      result = performSetWorkZero(String(axes));
+    }
+  } else if (strcmp(entry.action, "machine.setZZero") == 0) {
+    // No payload expected for setZZero
+    result = performSetZZero();
   } else {
     result = {false, true, true, 400, "INVALID_COMMAND", String("Unknown action: ") + entry.action};
   }
@@ -9074,60 +9098,67 @@ void handleManualMachineFrame() {
 }
 
 void handleMachineHome() {
-  String commError;
-  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
-    sendJsonError(503, commError);
-    return;
-  }
-  if (machineFrameControlBusy()) {
-    sendJsonError(409, "homing requires idle Marlin transport");
-    return;
-  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
   }
-  String axes = extractJsonString(server.arg("plain"), "axes");
-  axes.toLowerCase();
-  if (axes.length() == 0) axes = "all";
-  if (axes != "x" && axes != "y" && axes != "z" && axes != "xy" && axes != "all") {
-    sendJsonError(400, "axes must be x, y, z, xy, or all");
+  const MachineOperationResult result =
+      performMachineHome(extractJsonString(server.arg("plain"), "axes"));
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
     return;
+  }
+  server.send(200, "application/json", machineFrameJson());
+}
+
+MachineOperationResult performMachineHome(const String& axes) {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    return {false, false, true, 503, "COMM_ERROR", commError};
+  }
+  if (machineFrameControlBusy()) {
+    return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "homing requires idle Marlin transport"};
+  }
+
+  String axesLower = axes;
+  axesLower.toLowerCase();
+  if (axesLower.length() == 0) axesLower = "all";
+  if (axesLower != "x" && axesLower != "y" && axesLower != "z" && axesLower != "xy" && axesLower != "all") {
+    return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, z, xy, or all"};
   }
 
   String command = "G28";
-  if (axes == "x") command += " X";
-  else if (axes == "y") command += " Y";
-  else if (axes == "z") command += " Z";
-  else if (axes == "xy") command += " X Y";
+  if (axesLower == "x") command += " X";
+  else if (axesLower == "y") command += " Y";
+  else if (axesLower == "z") command += " Z";
+  else if (axesLower == "xy") command += " X Y";
+  
   String response;
   if (!runFrameCommand(command, response, 120000) || !runFrameCommand("M400", response, 120000)) {
-    sendJsonError(502, "Marlin homing failed: " + response);
-    return;
+    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin homing failed: " + response};
   }
 
-  if (axes == "x" || axes == "xy" || axes == "all") {
+  if (axesLower == "x" || axesLower == "xy" || axesLower == "all") {
     machineFrame.homedX = true;
     machineFrame.machineX = machineProfile.fullXMin;
   }
-  if (axes == "y" || axes == "xy" || axes == "all") {
+  if (axesLower == "y" || axesLower == "xy" || axesLower == "all") {
     machineFrame.homedY = true;
     machineFrame.machineY = machineProfile.fullYMin;
   }
-  if (axes == "z" || axes == "all") {
+  if (axesLower == "z" || axesLower == "all") {
     machineFrame.homedZ = true;
     machineFrame.machineZ = machineProfile.fullZMax;
   }
   machineFrame.machineValid = machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
 
-  if (axes == "all") {
+  if (axesLower == "all") {
     // Establish an explicit, deterministic temporary work frame at the physical home position.
     if (!runFrameCommand("G54", response) || !runFrameCommand("G92 X0 Y0 Z0", response) ||
         !runFrameCommand("M114", response)) {
       machineFrame.machineValid = false;
       machineFrame.workZeroValid = false;
-      sendJsonError(502, "Homing completed but the baseline work frame failed: " + response);
-      return;
+      return {false, true, true, 502, "EXECUTION_FAILED", "Homing completed but the baseline work frame failed: " + response};
     }
     int32_t homeCountX = 0;
     int32_t homeCountY = 0;
@@ -9143,8 +9174,7 @@ void handleMachineHome() {
       machineFrame.machineValid = false;
       machineFrame.workZeroValid = false;
       machineFrame.absoluteFromHome = false;
-      sendJsonError(502, "Homing completed but absolute machine coordinates could not be established from M114 Count and M503 M92");
-      return;
+      return {false, true, true, 502, "EXECUTION_FAILED", "Homing completed but absolute machine coordinates could not be established from M114 Count and M503 M92"};
     }
     machineFrame.stepsX = stepsX;
     machineFrame.stepsY = stepsY;
@@ -9176,44 +9206,59 @@ void handleMachineHome() {
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
   touchPositionStatus();
-  server.send(200, "application/json", machineFrameJson());
+  return {true, true, true, 200, "OK", "Machine homing completed successfully"};
 }
 
 void handleSetWorkZero() {
-  if (machineFrameControlBusy()) {
-    sendJsonError(409, "setting work zero requires idle Marlin transport");
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
     return;
+  }
+  const MachineOperationResult result =
+      performSetWorkZero(extractJsonString(server.arg("plain"), "axes"));
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
+    return;
+  }
+  server.send(200, "application/json", machineFrameJson());
+}
+
+MachineOperationResult performSetWorkZero(const String& axesParam) {
+  if (machineFrameControlBusy()) {
+    return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting work zero requires idle Marlin transport"};
   }
   const bool homedFrame = machineFrame.machineValid && machineFrame.absoluteFromHome &&
       machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
   if (!homedFrame && !machineFrame.manualWorkFrameValid) {
-    sendJsonError(409, "Home All or a confirmed manual work frame is required before setting work zero");
-    return;
+    return {false, false, true, 409, "FRAME_STATE_CONFLICT", "Home All or a confirmed manual work frame is required before setting work zero"};
   }
-  String axes = server.hasArg("plain") ? extractJsonString(server.arg("plain"), "axes") : "";
+
+  String axes = axesParam;
   axes.toLowerCase();
   if (axes.length() == 0) axes = "xyz";
   if (axes != "x" && axes != "y" && axes != "xyz") {
-    sendJsonError(400, "axes must be x, y, or xyz");
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, or xyz"};
   }
+
   String before;
   String after;
   if (!runFrameCommand("M400", before, 120000) || !runFrameCommand("M114", before)) {
-    sendJsonError(502, "Marlin work-zero capture failed: " + before);
-    return;
+    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin work-zero capture failed: " + before};
   }
+
   const float targetMachineX = machineFrame.machineX;
   const float targetMachineY = machineFrame.machineY;
   const float targetMachineZ = machineFrame.machineZ;
+
   String zeroCommand = "G92";
   if (axes == "x" || axes == "xyz") zeroCommand += " X0";
   if (axes == "y" || axes == "xyz") zeroCommand += " Y0";
   if (axes == "xyz") zeroCommand += " Z0";
+
   if (!runFrameCommand(zeroCommand, after) || !runFrameCommand("M114", after)) {
-    sendJsonError(502, "Marlin work-zero transaction failed: " + after);
-    return;
+    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin work-zero transaction failed: " + after};
   }
+
   if (homedFrame) {
     machineFrame.machineX = targetMachineX;
     machineFrame.machineY = targetMachineY;
@@ -9230,33 +9275,38 @@ void handleSetWorkZero() {
   machineFrame.updatedAtMs = millis();
   ++machineFrame.revision;
   touchPositionStatus();
-  String json = "{\"ok\":true,\"axes\":\"" + axes + "\",\"before\":\"" +
-                jsonEscape(before) + "\",\"after\":\"" + jsonEscape(after) +
-                "\",\"frame\":" + machineFrameJson() + "}";
-  server.send(200, "application/json", json);
+  return {true, true, true, 200, "OK", "Work zero set successfully for axes: " + axes};
 }
 
 void handleSetZZero() {
+  const MachineOperationResult result = performSetZZero();
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
+    return;
+  }
+  server.send(200, "application/json", machineFrameJson());
+}
+
+MachineOperationResult performSetZZero() {
   const bool toolChangeZZero = toolChangeZZeroWindowOpen();
   if (machineFrameControlBusy() && !toolChangeZZero) {
-    sendJsonError(409, "setting Z zero requires idle Marlin transport");
-    return;
+    return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting Z zero requires idle Marlin transport"};
   }
   if ((!machineFrame.machineValid && !machineFrame.manualWorkFrameValid) || !machineFrame.workZeroValid) {
-    sendJsonError(409, "an active homed or manually confirmed work frame is required before setting Z zero");
-    return;
+    return {false, false, true, 409, "FRAME_STATE_CONFLICT", "an active homed or manually confirmed work frame is required before setting Z zero"};
   }
+  
   String before;
   String after;
   if (!runFrameCommand("M400", before, 120000) || !runFrameCommand("M114", before)) {
-    sendJsonError(502, "Marlin Z-zero capture failed: " + before);
-    return;
+    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin Z-zero capture failed: " + before};
   }
+  
   const float targetMachineZ = machineFrame.machineZ;
   if (!runFrameCommand("G92 Z0", after) || !runFrameCommand("M114", after)) {
-    sendJsonError(502, "Marlin Z-zero transaction failed: " + after);
-    return;
+    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin Z-zero transaction failed: " + after};
   }
+  
   if (machineFrame.absoluteFromHome) {
     machineFrame.machineZ = targetMachineZ;
     machineFrame.workZeroMachineZ = targetMachineZ;
@@ -9270,15 +9320,12 @@ void handleSetZZero() {
     jobStatus.toolChangePhase = "READY_TO_CONTINUE";
     if (!persistToolChangeTransition()) {
       setJobError("could not persist manual tool-change Z-zero state");
-      sendJsonError(500, jobStatus.lastError);
-      return;
+      return {false, true, true, 500, "PERSISTENCE_ERROR", jobStatus.lastError};
     }
     logJobEvent("tool change Z zero completed manually");
   }
   touchPositionStatus();
-  String json = "{\"ok\":true,\"before\":\"" + jsonEscape(before) + "\",\"after\":\"" +
-                jsonEscape(after) + "\",\"frame\":" + machineFrameJson() + "}";
-  server.send(200, "application/json", json);
+  return {true, true, true, 200, "OK", "Z zero set successfully"};
 }
 
 void handleTouchPlateZZero() {
