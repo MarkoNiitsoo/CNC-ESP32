@@ -1486,7 +1486,24 @@
     if (!confirm('This will set the current tool position as work X0/Y0/Z0.')) return;
     const baseline = socketSliceToken('machine');
     const previousRevision = frameRevision(STATE.frame);
-    const data = await apiPost('/api/work-zero/set', {});
+    const telemetry = window.CncTelemetry;
+    let data = null;
+    if (telemetry?.command && STATE.operator?.controller) {
+      const commandId = genCommandId('machine-setworkzero');
+      let acceptedOrUnknown = false;
+      try {
+        // performSetWorkZero blocks on M400 (up to 120 s Marlin budget) before the
+        // commandResult is delivered; wait for the outcome, not a quick ack.
+        data = await telemetry.command('machine.setWorkZero', { axes: 'xyz' }, commandId, { timeoutMs: 130000 });
+        acceptedOrUnknown = true;
+      } catch (wsErr) {
+        acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'work zero');
+      }
+      if (!acceptedOrUnknown) data = null;
+    }
+    if (!data) {
+      data = await apiPost('/api/work-zero/set', {});
+    }
     const machine = await waitForSocketSlice(
       'machine',
       (slice) => {
@@ -1505,7 +1522,24 @@
     if (!confirm('This will set only current Z as work Z0. X/Y will not change.')) return;
     const baseline = socketSliceToken('machine');
     const previousRevision = frameRevision(STATE.frame);
-    const data = await apiPost('/api/work-zero/set-z', {});
+    const telemetry = window.CncTelemetry;
+    let data = null;
+    if (telemetry?.command && STATE.operator?.controller) {
+      const commandId = genCommandId('machine-setzzero');
+      let acceptedOrUnknown = false;
+      try {
+        // performSetZZero can block on M400 during the tool-change window; wait
+        // for the outcome like the previous synchronous HTTP route did.
+        data = await telemetry.command('machine.setZZero', null, commandId, { timeoutMs: 130000 });
+        acceptedOrUnknown = true;
+      } catch (wsErr) {
+        acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'z zero');
+      }
+      if (!acceptedOrUnknown) data = null;
+    }
+    if (!data) {
+      data = await apiPost('/api/work-zero/set-z', {});
+    }
     const machine = await waitForSocketSlice(
       'machine',
       (slice) => frameRevision(machineFrameFromSlice(slice)) > previousRevision,
@@ -1558,7 +1592,24 @@
     const baseline = socketSliceToken('machine');
     const previousRevision = frameRevision(STATE.frame);
     const previousHomingEpoch = Number(STATE.frame?.homingEpoch) || 0;
-    const result = await apiPost('/api/machine/home', { axes });
+    const telemetry = window.CncTelemetry;
+    let data = null;
+    if (telemetry?.command && STATE.operator?.controller) {
+      const commandId = genCommandId('machine-home');
+      let acceptedOrUnknown = false;
+      try {
+        // performMachineHome blocks on G28/M400 for up to 120 s; wait for the
+        // outcome, not a quick ack.
+        data = await telemetry.command('machine.home', { axes }, commandId, { timeoutMs: 130000 });
+        acceptedOrUnknown = true;
+      } catch (wsErr) {
+        acceptedOrUnknown = await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'home');
+      }
+      if (!acceptedOrUnknown) data = null;
+    }
+    if (!data) {
+      data = await apiPost('/api/machine/home', { axes });
+    }
     const machine = await waitForSocketSlice(
       'machine',
       (slice) => {
@@ -1570,7 +1621,7 @@
       { afterSequence: baseline, description: fullHoming ? 'Home All trust frame' : `${axes} homing frame` },
     );
     const frame = machineFrameFromSlice(machine);
-    dispatchConfirmedMachineEvent('cnc-position-trust', result, machine, {
+    dispatchConfirmedMachineEvent('cnc-position-trust', data, machine, {
       trusted: frame.trusted === true,
       fullHoming,
       homingEpoch: frame.homingEpoch,
