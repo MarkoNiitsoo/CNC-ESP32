@@ -1,0 +1,128 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+
+const firmware = readFileSync(new URL('../../src/main.cpp', import.meta.url), 'utf8');
+
+function blockBetween(startMarker, endMarker) {
+  const start = firmware.indexOf(startMarker);
+  expect(start, `missing ${startMarker}`).toBeGreaterThan(-1);
+  const end = firmware.indexOf(endMarker, start);
+  expect(end, `missing ${endMarker}`).toBeGreaterThan(-1);
+  return firmware.slice(start, end);
+}
+
+describe('cooperative machine-operation engine (Phase 3C)', () => {
+  it('advances the operation from loop() instead of blocking the WS command queue', () => {
+    const loop = blockBetween('void loop() {', '}').slice(0, 400);
+    expect(loop).toContain('processWsCommandQueue();');
+    expect(loop.indexOf('processMachineOperation();')).toBeGreaterThan(loop.indexOf('processWsCommandQueue();'));
+    expect(loop.indexOf('processMachineOperation();')).toBeLessThan(loop.indexOf('processJobRunner();'));
+
+    const dispatch = blockBetween('void processWsCommandQueue()', 'bool telemetryHasLogSubscriber()');
+    for (const action of ['machine.home', 'machine.setWorkZero', 'machine.setZZero']) {
+      expect(dispatch).toContain(`strcmp(entry.action, "${action}") == 0`);
+      expect(dispatch).toContain('admitMachineOperation(');
+    }
+    // Accepted machine operations defer their terminal result: the common
+    // finishWsCommand tail must be skipped when admission succeeded.
+    expect(dispatch).toContain('bool completionDeferred = false;');
+    expect(dispatch).toContain('if (completionDeferred) return;');
+  });
+
+  it('builds the exact Marlin sequences the synchronous handlers used', () => {
+    const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
+    // Home: axis-specific G28, drain, baseline frame for Home All, evidence capture.
+    expect(admit).toContain('command += " X Y";');
+    expect(admit).toContain('appendMachineOpStep("M400", 120000, "Marlin homing failed: ")');
+    expect(admit).toContain('appendMachineOpStep("G54", 3000');
+    expect(admit).toContain('appendMachineOpStep("G92 X0 Y0 Z0", 3000');
+    expect(admit).toContain('appendMachineOpStep("M114", 3000, "Homing completed but the baseline work frame failed: "');
+    expect(admit).toContain('appendMachineOpStep("M503", 10000');
+    // Work Zero / Z Zero: drain before capture, exact G92, M114 after.
+    expect(admit).toContain('appendMachineOpStep("M400", 120000, "Marlin work-zero capture failed: ")');
+    expect(admit).toContain('appendMachineOpStep(zeroCommand.c_str(), 3000');
+    expect(admit).toContain('appendMachineOpStep("G92 Z0", 3000');
+  });
+
+  it('preserves Home All frame semantics in the finalize step', () => {
+    const finalize = blockBetween('MachineOperationResult finalizeMachineOperation()', '// One cooperative tick:');
+    expect(finalize).toContain('parseM114Counts(machineOp.countsResponse');
+    expect(finalize).toContain('parseM92Steps(machineOp.stepsResponse');
+    expect(finalize).toContain('machineFrame.absoluteFromHome = true;');
+    expect(finalize).toContain('machineFrame.manualWorkFrameValid = false;');
+    expect(finalize).toContain('++machineFrame.homingEpoch;');
+    expect(finalize).toContain('snprintf(session, sizeof(session), "%08lX-%lu"');
+    // Partial Home keeps its trust-invalidating behavior.
+    expect(finalize).toContain('machineFrame.workZeroValid = false;');
+    expect(finalize).toContain('machineFrame.homingSessionId = "";');
+    // Baseline/evidence failures invalidate the frame like the synchronous path.
+    expect(finalize).toContain('machineFrame.machineValid = false;');
+  });
+
+  it('preserves Work Zero / Z Zero finalize semantics', () => {
+    const finalize = blockBetween('MachineOperationResult finalizeMachineOperation()', '// One cooperative tick:');
+    expect(finalize).toContain('machineOp.homedFrame');
+    expect(finalize).toContain('machineOp.targetMachineX');
+    expect(finalize).toContain('machineFrame.workZeroValid = true;');
+    expect(finalize).toContain('marlinPosition.z = 0;');
+    expect(finalize).toContain('jobStatus.toolChangeZZeroCompleted = true;');
+    expect(finalize).toContain('persistToolChangeTransition()');
+    expect(finalize).toContain('PERSISTENCE_ERROR');
+  });
+
+  it('classifies one step per tick with per-step timeouts and terminal detection', () => {
+    const pump = blockBetween('// One cooperative tick:', 'MachineOperationResult admitMachineOperation(');
+    expect(pump).toContain('while (Serial.available() > 0)');
+    expect(pump).toContain('marlinResponseIsTerminal(machineOp.responseBuffer)');
+    expect(pump).toContain('millis() - machineOp.stepStartedAtMs >= step.timeoutMs');
+    expect(pump).toContain('MachineOpCompletion::ControllerError');
+    expect(pump).toContain('MachineOpCompletion::Timeout');
+    // A failed baseline step invalidates the frame conservatively.
+    expect(pump).toContain('MachineOpInvalidation::BaselineFrame');
+  });
+
+  it('binds the operation to its WS command and publishes exactly one terminal result', () => {
+    const complete = blockBetween(
+      'void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion) {',
+      'void cancelMachineOperation(const char *code');
+    expect(complete).toContain('if (!machineOp.active) return;');
+    expect(complete).toContain('finishWsCommand(machineOp.commandId, machineOp.epoch');
+    expect(complete).toContain('queueWsCommandResult(machineOp.clientId, machineOp.connectionGeneration');
+    const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
+    expect(admit).toContain('machineOp.fromWebSocket = true;');
+    expect(admit).toContain('strncpy(machineOp.commandId, entry->commandId');
+    // Single active operation.
+    expect(admit).toContain('if (machineOp.active)');
+    expect(admit).toContain('"another machine operation is already in progress"');
+  });
+
+  it('keeps the legacy HTTP routes synchronous over the same engine', () => {
+    const home = blockBetween('MachineOperationResult performMachineHome(', 'void handleSetWorkZero()');
+    expect(home).toContain('runMachineOperationToCompletion(MachineOpKind::Home, axes)');
+    const wz = blockBetween('MachineOperationResult performSetWorkZero(', 'void handleSetZZero()');
+    expect(wz).toContain('runMachineOperationToCompletion(MachineOpKind::SetWorkZero, axesParam)');
+    expect(wz).toContain('machineOpLastAxes');
+    const zz = blockBetween('MachineOperationResult performSetZZero(', 'void handleTouchPlateZZero()');
+    expect(zz).toContain('runMachineOperationToCompletion(MachineOpKind::SetZZero, "")');
+  });
+
+  it('gates concurrent machine activity on the active operation', () => {
+    const busy = blockBetween('bool machineFrameControlBusy()', 'bool runFrameCommand(');
+    expect(busy).toContain('machineOperationActive()');
+    const jobStart = blockBetween('void handleJobStart()', 'MachineOperationResult performJobPause()');
+    expect(jobStart).toContain('machineOperationActive()');
+    const toolChange = blockBetween('void handleToolChangeComplete()', 'bool beginPausedManualInterruption()');
+    expect(toolChange).toContain('machineOperationActive()');
+  });
+
+  it('holds controller-communication ownership for the whole transaction', () => {
+    const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
+    expect(admit).toContain('reserveTransaction(ControllerCommandClass::OrdinarySync');
+    const complete = blockBetween(
+      'void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion) {',
+      'void cancelMachineOperation(const char *code');
+    expect(complete).toContain('controllerCommManager.onTerminalResponse');
+    expect(complete).toContain('controllerCommManager.onTimeout');
+    expect(complete).toContain('controllerCommManager.onPreWriteFailure');
+  });
+});

@@ -315,6 +315,10 @@ MachineOperationResult performSetWorkZero(const String& axes, String* axesOut = 
                                           String* beforeOut = nullptr, String* afterOut = nullptr);
 MachineOperationResult performSetZZero(String* beforeOut = nullptr, String* afterOut = nullptr);
 void invalidateControllerSessionSafetyCapabilities();
+bool machineOperationActive();
+enum class MachineOpKind : uint8_t;
+MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
+                                             const WsCommandEntry *entry);
 
 bool isControllerCommunicationActive() {
   return controllerCommManager.telemetry.state == ControllerCommunicationState::Connected ||
@@ -3226,6 +3230,7 @@ void processWsCommandQueue() {
   }
 
   MachineOperationResult result;
+  bool completionDeferred = false;
   if (strcmp(entry.action, "safety.stop") == 0 || strcmp(entry.action, "job.stop") == 0) {
     result = performJobStop();
   } else if (strcmp(entry.action, "job.pause") == 0) {
@@ -3244,8 +3249,11 @@ void processWsCommandQueue() {
     if (payloadError) {
       result = MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed home payload"};
     } else {
-      const char* axes = payload["axes"] | "all";
-      result = performMachineHome(String(axes));
+      // Cooperative execution: admission validates and writes the first Marlin
+      // step here; loop() advances the transaction and completeMachineOperation
+      // publishes the terminal commandResult. The ledger entry stays in-progress.
+      result = admitMachineOperation(MachineOpKind::Home, String(payload["axes"] | "all"), &entry);
+      completionDeferred = result.ok;
     }
   } else if (strcmp(entry.action, "machine.setWorkZero") == 0) {
     JsonDocument payload;
@@ -3253,15 +3261,18 @@ void processWsCommandQueue() {
     if (payloadError) {
       result = MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed setWorkZero payload"};
     } else {
-      const char* axes = payload["axes"] | "xyz";
-      result = performSetWorkZero(String(axes));
+      result = admitMachineOperation(MachineOpKind::SetWorkZero, String(payload["axes"] | "xyz"), &entry);
+      completionDeferred = result.ok;
     }
   } else if (strcmp(entry.action, "machine.setZZero") == 0) {
     // No payload expected for setZZero
-    result = performSetZZero();
+    result = admitMachineOperation(MachineOpKind::SetZZero, "", &entry);
+    completionDeferred = result.ok;
   } else {
     result = {false, true, true, 400, "INVALID_COMMAND", String("Unknown action: ") + entry.action};
   }
+
+  if (completionDeferred) return;
 
   finishWsCommand(entry.commandId, entry.epoch, result.ok, result.code.c_str(), result.message.c_str());
   queueWsCommandResult(entry.clientId, entry.connectionGeneration, entry.commandId, result.ok,
@@ -8417,6 +8428,10 @@ void handleJobStart() {
     sendJsonError(409, "another job is already active");
     return;
   }
+  if (machineOperationActive()) {
+    sendJsonError(409, "a machine operation is in progress; start the job after it completes");
+    return;
+  }
   if (!server.hasArg("plain")) {
     sendJsonError(400, "missing JSON body");
     return;
@@ -8694,7 +8709,8 @@ void handleToolChangeComplete() {
     sendJsonError(400, "routerReady true is required after verifying the router or spindle state");
     return;
   }
-  if (jogIsActive() || priorityCommandCount > 0 || jobStatus.priorityCommandInProgress) {
+  if (jogIsActive() || priorityCommandCount > 0 || jobStatus.priorityCommandInProgress ||
+      machineOperationActive()) {
     sendJsonError(409, "stop jog motion before completing the tool change");
     return;
   }
@@ -9024,15 +9040,462 @@ void handleJogRestoreZ() {
   server.send(200, "application/json", jogStatusJson());
 }
 
+// ── Cooperative machine-operation engine (Phase 3C) ──────────────────────────
+// Long-running Home / Work Zero / Z Zero operations initiated over the WebSocket
+// command channel must not block loop(): admission validates the request, binds
+// the command to its ledger entry, and writes the first Marlin step; every later
+// loop() tick advances the current step in processMachineOperation(). The
+// terminal commandResult is published only when the whole transaction finished,
+// failed, or was cancelled. The legacy HTTP routes keep their synchronous
+// behavior (they run the same engine to completion inside the handler) because
+// the restored HTTP API answers with the final frame only.
+
+enum class MachineOpKind : uint8_t { Home, SetWorkZero, SetZZero };
+enum class MachineOpPhase : uint8_t { Idle, AwaitResponse, Finalize };
+
+enum class MachineOpCapture : uint8_t { None = 0, Before, After, Counts, Steps };
+enum class MachineOpInvalidation : uint8_t { None = 0, BaselineFrame };
+
+struct MachineOpStep {
+  String command;
+  uint32_t timeoutMs;
+  const char *failMessage;
+  MachineOpCapture capture;
+  MachineOpInvalidation failInvalidation;
+};
+
+struct MachineOperation {
+  bool active = false;
+  MachineOpKind kind = MachineOpKind::Home;
+  MachineOpPhase phase = MachineOpPhase::Idle;
+  String axes;
+  MachineOpStep steps[8];
+  uint8_t stepCount = 0;
+  uint8_t stepIndex = 0;
+  // Controller-communication ownership held for the whole transaction.
+  uint32_t commToken = 0;
+  // WebSocket binding (empty commandId for synchronous HTTP execution).
+  bool fromWebSocket = false;
+  uint32_t epoch = 0;
+  char commandId[kWsCommandIdMaxLength + 1] = {};
+  uint8_t clientId = 0;
+  uint32_t connectionGeneration = 0;
+  // Per-step runtime state.
+  String responseBuffer;
+  uint32_t stepStartedAtMs = 0;
+  // Pre-state captured at admission (the frame may not change mid-operation).
+  bool homedFrame = false;
+  bool toolChangeZZero = false;
+  float targetMachineX = 0;
+  float targetMachineY = 0;
+  float targetMachineZ = 0;
+  // Marlin evidence captured from step responses.
+  String before;
+  String after;
+  String countsResponse;
+  String stepsResponse;
+};
+
+MachineOperation machineOp;
+MachineOperationResult machineOpResult;
+// Snapshots of the last completed operation's captured evidence, read by the
+// legacy synchronous HTTP wrappers after the engine resets the live operation.
+String machineOpLastAxes;
+String machineOpLastBefore;
+String machineOpLastAfter;
+
+enum class MachineOpCompletion : uint8_t { Success, ControllerError, Timeout, Cancelled, PreWriteFailure };
+
+bool machineOperationActive();
+bool processMachineOperation();
+void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion);
+void cancelMachineOperation(const char *code, const String &message);
+MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
+                                             const WsCommandEntry *entry);
+
 bool machineFrameControlBusy() {
   return otaActive || jobIsActive() || jogIsActive() || priorityCommandCount > 0 ||
-         machineDiscoveryState != MachineDiscoveryState::Idle;
+         machineDiscoveryState != MachineDiscoveryState::Idle || machineOperationActive();
 }
 
 bool runFrameCommand(const String &command, String &response, uint32_t timeoutMs = 3000) {
   const MarlinCommandResult res = executeSynchronousCommand(command, timeoutMs, ControllerCommandClass::OrdinarySync, true);
   response = res.response;
   return res.success;
+}
+
+bool machineOperationActive() {
+  return machineOp.active;
+}
+
+void appendMachineOpStep(const char *command, uint32_t timeoutMs, const char *failMessage,
+                         MachineOpCapture capture = MachineOpCapture::None,
+                         MachineOpInvalidation failInvalidation = MachineOpInvalidation::None) {
+  MachineOpStep &step = machineOp.steps[machineOp.stepCount++];
+  step.command = command;
+  step.timeoutMs = timeoutMs;
+  step.failMessage = failMessage;
+  step.capture = capture;
+  step.failInvalidation = failInvalidation;
+}
+
+void startMachineOperationStep() {
+  const MachineOpStep &step = machineOp.steps[machineOp.stepIndex];
+  String writeErr;
+  if (!writeControllerLine(step.command, ControllerCommandClass::OrdinarySync,
+                           machineOp.commToken, false, writeErr)) {
+    machineOpResult = {false, true, true, 503, "COMM_ERROR", writeErr};
+    completeMachineOperation(machineOpResult, MachineOpCompletion::PreWriteFailure);
+    return;
+  }
+  machineOp.phase = MachineOpPhase::AwaitResponse;
+  machineOp.responseBuffer = "";
+  machineOp.stepStartedAtMs = millis();
+}
+
+void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion) {
+  if (!machineOp.active) return;
+  machineOpResult = result;
+  machineOpLastAxes = machineOp.axes;
+  machineOpLastBefore = machineOp.before;
+  machineOpLastAfter = machineOp.after;
+  switch (completion) {
+    case MachineOpCompletion::Success:
+    case MachineOpCompletion::ControllerError:
+      controllerCommManager.onTerminalResponse(machineOp.commToken, !result.ok, millis());
+      break;
+    case MachineOpCompletion::Timeout:
+      controllerCommManager.onTimeout(machineOp.commToken, machineOp.steps[machineOp.stepIndex].command.c_str(),
+                                      result.message.c_str(), millis());
+      break;
+    case MachineOpCompletion::Cancelled:
+      controllerCommManager.onPreWriteFailure(machineOp.commToken);
+      break;
+    case MachineOpCompletion::PreWriteFailure:
+      controllerCommManager.onPreWriteFailure(machineOp.commToken);
+      break;
+  }
+  if (machineOp.fromWebSocket) {
+    finishWsCommand(machineOp.commandId, machineOp.epoch, result.ok, result.code.c_str(),
+                    result.message.c_str());
+    queueWsCommandResult(machineOp.clientId, machineOp.connectionGeneration, machineOp.commandId,
+                         result.ok, result.code.c_str(), result.message.c_str());
+  }
+  machineOp = MachineOperation();
+  stageTelemetryUpdates();
+}
+
+void cancelMachineOperation(const char *code, const String &message) {
+  if (!machineOp.active) return;
+  completeMachineOperation({false, true, true, 409, code, message}, MachineOpCompletion::Cancelled);
+}
+
+// Applies the frame mutations that the synchronous handlers applied after their
+// final ack. Runs only when every step of the transaction acknowledged cleanly.
+MachineOperationResult finalizeMachineOperation() {
+  const String axes = machineOp.axes;
+  if (machineOp.kind == MachineOpKind::Home) {
+    if (axes == "x" || axes == "xy" || axes == "all") {
+      machineFrame.homedX = true;
+      machineFrame.machineX = machineProfile.fullXMin;
+    }
+    if (axes == "y" || axes == "xy" || axes == "all") {
+      machineFrame.homedY = true;
+      machineFrame.machineY = machineProfile.fullYMin;
+    }
+    if (axes == "z" || axes == "all") {
+      machineFrame.homedZ = true;
+      machineFrame.machineZ = machineProfile.fullZMax;
+    }
+    machineFrame.machineValid = machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
+
+    if (axes == "all") {
+      int32_t homeCountX = 0;
+      int32_t homeCountY = 0;
+      int32_t homeCountZ = 0;
+      const bool countsValid = parseM114Counts(machineOp.countsResponse, homeCountX, homeCountY, homeCountZ);
+      float stepsX = 0;
+      float stepsY = 0;
+      float stepsZ = 0;
+      const bool stepsValid = parseM92Steps(machineOp.stepsResponse, stepsX, stepsY, stepsZ);
+      if (!countsValid || !stepsValid) {
+        machineFrame.machineValid = false;
+        machineFrame.workZeroValid = false;
+        machineFrame.absoluteFromHome = false;
+        return {false, true, true, 502, "EXECUTION_FAILED",
+                "Homing completed but absolute machine coordinates could not be established from M114 Count and M503 M92"};
+      }
+      machineFrame.stepsX = stepsX;
+      machineFrame.stepsY = stepsY;
+      machineFrame.stepsZ = stepsZ;
+      machineFrame.homeCountX = homeCountX;
+      machineFrame.homeCountY = homeCountY;
+      machineFrame.homeCountZ = homeCountZ;
+      machineFrame.countX = homeCountX;
+      machineFrame.countY = homeCountY;
+      machineFrame.countZ = homeCountZ;
+      machineFrame.absoluteFromHome = true;
+      machineFrame.manualWorkFrameValid = false;
+      machineFrame.workZeroValid = true;
+      machineFrame.workZeroMachineX = machineFrame.machineX;
+      machineFrame.workZeroMachineY = machineFrame.machineY;
+      machineFrame.workZeroMachineZ = machineFrame.machineZ;
+      ++machineFrame.homingEpoch;
+      char session[24];
+      snprintf(session, sizeof(session), "%08lX-%lu", static_cast<unsigned long>(esp_random()),
+               static_cast<unsigned long>(machineFrame.homingEpoch));
+      machineFrame.homingSessionId = session;
+    } else {
+      machineFrame.workZeroValid = false;
+      machineFrame.absoluteFromHome = false;
+      machineFrame.manualWorkFrameValid = false;
+      machineFrame.homingSessionId = "";
+    }
+    machineFrame.updatedAtMs = millis();
+    ++machineFrame.revision;
+    touchPositionStatus();
+    return {true, true, true, 200, "OK", "Machine homing completed successfully"};
+  }
+
+  if (machineOp.kind == MachineOpKind::SetWorkZero) {
+    if (machineOp.homedFrame) {
+      machineFrame.machineX = machineOp.targetMachineX;
+      machineFrame.machineY = machineOp.targetMachineY;
+      machineFrame.machineZ = machineOp.targetMachineZ;
+      if (axes == "x" || axes == "xyz") machineFrame.workZeroMachineX = machineOp.targetMachineX;
+      if (axes == "y" || axes == "xyz") machineFrame.workZeroMachineY = machineOp.targetMachineY;
+      if (axes == "xyz") machineFrame.workZeroMachineZ = machineOp.targetMachineZ;
+    }
+    machineFrame.workZeroValid = true;
+    marlinPosition.valid = true;
+    if (axes == "x" || axes == "xyz") marlinPosition.x = 0;
+    if (axes == "y" || axes == "xyz") marlinPosition.y = 0;
+    if (axes == "xyz") marlinPosition.z = 0;
+    machineFrame.updatedAtMs = millis();
+    ++machineFrame.revision;
+    touchPositionStatus();
+    return {true, true, true, 200, "OK", "Work zero set successfully for axes: " + axes};
+  }
+
+  // SetZZero
+  if (machineFrame.absoluteFromHome) {
+    machineFrame.machineZ = machineOp.targetMachineZ;
+    machineFrame.workZeroMachineZ = machineOp.targetMachineZ;
+  }
+  marlinPosition.z = 0;
+  machineFrame.updatedAtMs = millis();
+  ++machineFrame.revision;
+  if (machineOp.toolChangeZZero) {
+    jobStatus.toolChangeZZeroCompleted = true;
+    jobStatus.toolChangeZZeroMethod = "manual";
+    jobStatus.toolChangePhase = "READY_TO_CONTINUE";
+    if (!persistToolChangeTransition()) {
+      setJobError("could not persist manual tool-change Z-zero state");
+      return {false, true, true, 500, "PERSISTENCE_ERROR", jobStatus.lastError};
+    }
+    logJobEvent("tool change Z zero completed manually");
+  }
+  touchPositionStatus();
+  return {true, true, true, 200, "OK", "Z zero set successfully"};
+}
+
+// One cooperative tick: consume Marlin input for the active step, advance the
+// transaction, and finalize it when the last step acknowledged. Returns true
+// while an operation is still in flight.
+bool processMachineOperation() {
+  if (!machineOp.active) return false;
+
+  if (machineOp.phase == MachineOpPhase::Finalize) {
+    const MachineOperationResult result = finalizeMachineOperation();
+    completeMachineOperation(result, result.ok ? MachineOpCompletion::Success
+                                               : MachineOpCompletion::ControllerError);
+    return false;
+  }
+  if (machineOp.phase != MachineOpPhase::AwaitResponse) return machineOp.active;
+
+  const MachineOpStep &step = machineOp.steps[machineOp.stepIndex];
+  while (Serial.available() > 0) {
+    machineOp.responseBuffer += static_cast<char>(Serial.read());
+  }
+  updatePositionFromMarlinResponse(machineOp.responseBuffer);
+
+  const String upper = machineOp.responseBuffer;
+  const bool isError = upper.indexOf("ERROR:") >= 0 || upper.indexOf("ALARM:") >= 0 ||
+                       upper.indexOf("!!") >= 0;
+  if (isError) {
+    addMarlinLog("rx", false, machineOp.responseBuffer, "error");
+    const bool invalidateBaseline = step.failInvalidation == MachineOpInvalidation::BaselineFrame;
+    completeMachineOperation(
+        {false, true, true, 502, "EXECUTION_FAILED", String(step.failMessage) + machineOp.responseBuffer},
+        MachineOpCompletion::ControllerError);
+    if (invalidateBaseline) {
+      machineFrame.machineValid = false;
+      machineFrame.workZeroValid = false;
+      touchPositionStatus();
+    }
+    return false;
+  }
+  if (marlinResponseIsTerminal(machineOp.responseBuffer)) {
+    addMarlinLog("rx", false, machineOp.responseBuffer);
+    switch (step.capture) {
+      case MachineOpCapture::Before: machineOp.before = machineOp.responseBuffer; break;
+      case MachineOpCapture::After: machineOp.after = machineOp.responseBuffer; break;
+      case MachineOpCapture::Counts: machineOp.countsResponse = machineOp.responseBuffer; break;
+      case MachineOpCapture::Steps: machineOp.stepsResponse = machineOp.responseBuffer; break;
+      case MachineOpCapture::None: break;
+    }
+    machineOp.stepIndex += 1;
+    if (machineOp.stepIndex >= machineOp.stepCount) {
+      machineOp.phase = MachineOpPhase::Finalize;
+      return true;
+    }
+    startMachineOperationStep();
+    return machineOp.active;
+  }
+  if (millis() - machineOp.stepStartedAtMs >= step.timeoutMs) {
+    addMarlinLog("rx", false, machineOp.responseBuffer.length() > 0 ? machineOp.responseBuffer : "timeout", "error");
+    const bool invalidateBaseline = step.failInvalidation == MachineOpInvalidation::BaselineFrame;
+    completeMachineOperation(
+        {false, true, true, 502, "EXECUTION_FAILED",
+         String(step.failMessage) + (machineOp.responseBuffer.length() > 0
+                                         ? machineOp.responseBuffer
+                                         : String("Marlin did not respond within timeout."))},
+        MachineOpCompletion::Timeout);
+    if (invalidateBaseline) {
+      machineFrame.machineValid = false;
+      machineFrame.workZeroValid = false;
+      touchPositionStatus();
+    }
+    return false;
+  }
+  return true;
+}
+
+// Validates the request, captures pre-state, builds the Marlin step list, and
+// writes the first step. For WebSocket commands the ledger entry stays
+// in-progress; completeMachineOperation publishes the terminal result.
+MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
+                                             const WsCommandEntry *entry) {
+  if (machineOp.active) {
+    return {false, false, true, 409, "MACHINE_STATE_CONFLICT",
+            "another machine operation is already in progress"};
+  }
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    return {false, false, true, 503, "COMM_ERROR", commError};
+  }
+
+  String axes = axesParam;
+  axes.toLowerCase();
+  machineOp = MachineOperation();
+  machineOp.kind = kind;
+
+  if (kind == MachineOpKind::Home) {
+    if (machineFrameControlBusy()) {
+      return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "homing requires idle Marlin transport"};
+    }
+    if (axes.length() == 0) axes = "all";
+    if (axes != "x" && axes != "y" && axes != "z" && axes != "xy" && axes != "all") {
+      return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, z, xy, or all"};
+    }
+    String command = "G28";
+    if (axes == "x") command += " X";
+    else if (axes == "y") command += " Y";
+    else if (axes == "z") command += " Z";
+    else if (axes == "xy") command += " X Y";
+    appendMachineOpStep(command.c_str(), 120000, "Marlin homing failed: ");
+    appendMachineOpStep("M400", 120000, "Marlin homing failed: ");
+    if (axes == "all") {
+      appendMachineOpStep("G54", 3000, "Homing completed but the baseline work frame failed: ",
+                          MachineOpCapture::None, MachineOpInvalidation::BaselineFrame);
+      appendMachineOpStep("G92 X0 Y0 Z0", 3000, "Homing completed but the baseline work frame failed: ",
+                          MachineOpCapture::None, MachineOpInvalidation::BaselineFrame);
+      appendMachineOpStep("M114", 3000, "Homing completed but the baseline work frame failed: ",
+                          MachineOpCapture::Counts, MachineOpInvalidation::BaselineFrame);
+      appendMachineOpStep("M503", 10000,
+                          "Homing completed but absolute machine coordinates could not be established from M114 Count and M503 M92",
+                          MachineOpCapture::Steps);
+    } else {
+      appendMachineOpStep("M114", 3000, "Marlin homing failed: ");
+    }
+  } else if (kind == MachineOpKind::SetWorkZero) {
+    if (machineFrameControlBusy()) {
+      return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting work zero requires idle Marlin transport"};
+    }
+    const bool homedFrame = machineFrame.machineValid && machineFrame.absoluteFromHome &&
+        machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
+    if (!homedFrame && !machineFrame.manualWorkFrameValid) {
+      return {false, false, true, 409, "FRAME_STATE_CONFLICT",
+              "Home All or a confirmed manual work frame is required before setting work zero"};
+    }
+    if (axes.length() == 0) axes = "xyz";
+    if (axes != "x" && axes != "y" && axes != "xyz") {
+      return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, or xyz"};
+    }
+    machineOp.homedFrame = homedFrame;
+    machineOp.targetMachineX = machineFrame.machineX;
+    machineOp.targetMachineY = machineFrame.machineY;
+    machineOp.targetMachineZ = machineFrame.machineZ;
+    appendMachineOpStep("M400", 120000, "Marlin work-zero capture failed: ");
+    appendMachineOpStep("M114", 3000, "Marlin work-zero capture failed: ", MachineOpCapture::Before);
+    String zeroCommand = "G92";
+    if (axes == "x" || axes == "xyz") zeroCommand += " X0";
+    if (axes == "y" || axes == "xyz") zeroCommand += " Y0";
+    if (axes == "xyz") zeroCommand += " Z0";
+    appendMachineOpStep(zeroCommand.c_str(), 3000, "Marlin work-zero transaction failed: ");
+    appendMachineOpStep("M114", 3000, "Marlin work-zero transaction failed: ", MachineOpCapture::After);
+  } else {
+    machineOp.toolChangeZZero = toolChangeZZeroWindowOpen();
+    if (machineFrameControlBusy() && !machineOp.toolChangeZZero) {
+      return {false, false, true, 409, "MACHINE_STATE_CONFLICT",
+              "setting Z zero requires idle Marlin transport"};
+    }
+    if ((!machineFrame.machineValid && !machineFrame.manualWorkFrameValid) || !machineFrame.workZeroValid) {
+      return {false, false, true, 409, "FRAME_STATE_CONFLICT",
+              "an active homed or manually confirmed work frame is required before setting Z zero"};
+    }
+    machineOp.targetMachineZ = machineFrame.machineZ;
+    appendMachineOpStep("M400", 120000, "Marlin Z-zero capture failed: ");
+    appendMachineOpStep("M114", 3000, "Marlin Z-zero capture failed: ", MachineOpCapture::Before);
+    appendMachineOpStep("G92 Z0", 3000, "Marlin Z-zero transaction failed: ");
+    appendMachineOpStep("M114", 3000, "Marlin Z-zero transaction failed: ", MachineOpCapture::After);
+  }
+
+  std::string reserveErr;
+  if (!controllerCommManager.reserveTransaction(ControllerCommandClass::OrdinarySync,
+                                                machineOp.steps[0].command.c_str(), true,
+                                                machineOp.commToken, reserveErr)) {
+    machineOp = MachineOperation();
+    return {false, false, true, 503, "COMM_ERROR", reserveErr.c_str()};
+  }
+  machineOp.axes = axes;
+  machineOp.active = true;
+  if (entry != nullptr) {
+    machineOp.fromWebSocket = true;
+    machineOp.epoch = entry->epoch;
+    strncpy(machineOp.commandId, entry->commandId, kWsCommandIdMaxLength);
+    machineOp.clientId = entry->clientId;
+    machineOp.connectionGeneration = entry->connectionGeneration;
+  }
+  logJobEvent(String("machine operation start: kind=") +
+              (kind == MachineOpKind::Home ? "home" : kind == MachineOpKind::SetWorkZero ? "setWorkZero" : "setZZero") +
+              " axes=" + axes + (entry != nullptr ? " ws=" + String(machineOp.commandId) : " http"));
+  startMachineOperationStep();
+  if (!machineOp.active) return machineOpResult;
+  return {true, true, true, 200, "OK", "Machine operation accepted"};
+}
+
+// Legacy HTTP execution: runs the same cooperative engine to completion inside
+// the handler so the restored HTTP API can answer with the final frame. The
+// authenticated WS path never enters here; it advances via loop() ticks.
+MachineOperationResult runMachineOperationToCompletion(MachineOpKind kind, const String &axesParam) {
+  MachineOperationResult admission = admitMachineOperation(kind, axesParam, nullptr);
+  if (!admission.ok) return admission;
+  while (machineOp.active) {
+    processMachineOperation();
+    if (machineOp.active) delay(1);
+  }
+  return machineOpResult;
 }
 
 void handleMachineFrame() {
@@ -9113,101 +9576,10 @@ void handleMachineHome() {
 }
 
 MachineOperationResult performMachineHome(const String& axes) {
-  String commError;
-  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
-    return {false, false, true, 503, "COMM_ERROR", commError};
-  }
-  if (machineFrameControlBusy()) {
-    return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "homing requires idle Marlin transport"};
-  }
-
-  String axesLower = axes;
-  axesLower.toLowerCase();
-  if (axesLower.length() == 0) axesLower = "all";
-  if (axesLower != "x" && axesLower != "y" && axesLower != "z" && axesLower != "xy" && axesLower != "all") {
-    return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, z, xy, or all"};
-  }
-
-  String command = "G28";
-  if (axesLower == "x") command += " X";
-  else if (axesLower == "y") command += " Y";
-  else if (axesLower == "z") command += " Z";
-  else if (axesLower == "xy") command += " X Y";
-  
-  String response;
-  if (!runFrameCommand(command, response, 120000) || !runFrameCommand("M400", response, 120000)) {
-    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin homing failed: " + response};
-  }
-
-  if (axesLower == "x" || axesLower == "xy" || axesLower == "all") {
-    machineFrame.homedX = true;
-    machineFrame.machineX = machineProfile.fullXMin;
-  }
-  if (axesLower == "y" || axesLower == "xy" || axesLower == "all") {
-    machineFrame.homedY = true;
-    machineFrame.machineY = machineProfile.fullYMin;
-  }
-  if (axesLower == "z" || axesLower == "all") {
-    machineFrame.homedZ = true;
-    machineFrame.machineZ = machineProfile.fullZMax;
-  }
-  machineFrame.machineValid = machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
-
-  if (axesLower == "all") {
-    // Establish an explicit, deterministic temporary work frame at the physical home position.
-    if (!runFrameCommand("G54", response) || !runFrameCommand("G92 X0 Y0 Z0", response) ||
-        !runFrameCommand("M114", response)) {
-      machineFrame.machineValid = false;
-      machineFrame.workZeroValid = false;
-      return {false, true, true, 502, "EXECUTION_FAILED", "Homing completed but the baseline work frame failed: " + response};
-    }
-    int32_t homeCountX = 0;
-    int32_t homeCountY = 0;
-    int32_t homeCountZ = 0;
-    const bool countsValid = parseM114Counts(response, homeCountX, homeCountY, homeCountZ);
-    String configResponse;
-    float stepsX = 0;
-    float stepsY = 0;
-    float stepsZ = 0;
-    const bool stepsValid = runFrameCommand("M503", configResponse, 10000) &&
-                            parseM92Steps(configResponse, stepsX, stepsY, stepsZ);
-    if (!countsValid || !stepsValid) {
-      machineFrame.machineValid = false;
-      machineFrame.workZeroValid = false;
-      machineFrame.absoluteFromHome = false;
-      return {false, true, true, 502, "EXECUTION_FAILED", "Homing completed but absolute machine coordinates could not be established from M114 Count and M503 M92"};
-    }
-    machineFrame.stepsX = stepsX;
-    machineFrame.stepsY = stepsY;
-    machineFrame.stepsZ = stepsZ;
-    machineFrame.homeCountX = homeCountX;
-    machineFrame.homeCountY = homeCountY;
-    machineFrame.homeCountZ = homeCountZ;
-    machineFrame.countX = homeCountX;
-    machineFrame.countY = homeCountY;
-    machineFrame.countZ = homeCountZ;
-    machineFrame.absoluteFromHome = true;
-    machineFrame.manualWorkFrameValid = false;
-    machineFrame.workZeroValid = true;
-    machineFrame.workZeroMachineX = machineFrame.machineX;
-    machineFrame.workZeroMachineY = machineFrame.machineY;
-    machineFrame.workZeroMachineZ = machineFrame.machineZ;
-    ++machineFrame.homingEpoch;
-    char session[24];
-    snprintf(session, sizeof(session), "%08lX-%lu", static_cast<unsigned long>(esp_random()),
-             static_cast<unsigned long>(machineFrame.homingEpoch));
-    machineFrame.homingSessionId = session;
-  } else {
-    machineFrame.workZeroValid = false;
-    machineFrame.absoluteFromHome = false;
-    machineFrame.manualWorkFrameValid = false;
-    machineFrame.homingSessionId = "";
-    runFrameCommand("M114", response);
-  }
-  machineFrame.updatedAtMs = millis();
-  ++machineFrame.revision;
-  touchPositionStatus();
-  return {true, true, true, 200, "OK", "Machine homing completed successfully"};
+  // Legacy HTTP execution: the same cooperative engine as the WS command path,
+  // driven to completion synchronously so the handler answers with the final
+  // frame (the restored HTTP API has no intermediate representation).
+  return runMachineOperationToCompletion(MachineOpKind::Home, axes);
 }
 
 void handleSetWorkZero() {
@@ -9231,62 +9603,14 @@ void handleSetWorkZero() {
 
 MachineOperationResult performSetWorkZero(const String& axesParam, String* axesOut,
                                           String* beforeOut, String* afterOut) {
-  if (machineFrameControlBusy()) {
-    return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting work zero requires idle Marlin transport"};
+  // Legacy HTTP execution via the cooperative engine (see performMachineHome).
+  const MachineOperationResult result = runMachineOperationToCompletion(MachineOpKind::SetWorkZero, axesParam);
+  if (result.ok) {
+    if (axesOut != nullptr) *axesOut = machineOpLastAxes;
+    if (beforeOut != nullptr) *beforeOut = machineOpLastBefore;
+    if (afterOut != nullptr) *afterOut = machineOpLastAfter;
   }
-  const bool homedFrame = machineFrame.machineValid && machineFrame.absoluteFromHome &&
-      machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
-  if (!homedFrame && !machineFrame.manualWorkFrameValid) {
-    return {false, false, true, 409, "FRAME_STATE_CONFLICT", "Home All or a confirmed manual work frame is required before setting work zero"};
-  }
-
-  String axes = axesParam;
-  axes.toLowerCase();
-  if (axes.length() == 0) axes = "xyz";
-  if (axes != "x" && axes != "y" && axes != "xyz") {
-    return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, or xyz"};
-  }
-
-  String before;
-  String after;
-  if (!runFrameCommand("M400", before, 120000) || !runFrameCommand("M114", before)) {
-    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin work-zero capture failed: " + before};
-  }
-
-  const float targetMachineX = machineFrame.machineX;
-  const float targetMachineY = machineFrame.machineY;
-  const float targetMachineZ = machineFrame.machineZ;
-
-  String zeroCommand = "G92";
-  if (axes == "x" || axes == "xyz") zeroCommand += " X0";
-  if (axes == "y" || axes == "xyz") zeroCommand += " Y0";
-  if (axes == "xyz") zeroCommand += " Z0";
-
-  if (!runFrameCommand(zeroCommand, after) || !runFrameCommand("M114", after)) {
-    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin work-zero transaction failed: " + after};
-  }
-
-  if (axesOut != nullptr) *axesOut = axes;
-  if (beforeOut != nullptr) *beforeOut = before;
-  if (afterOut != nullptr) *afterOut = after;
-
-  if (homedFrame) {
-    machineFrame.machineX = targetMachineX;
-    machineFrame.machineY = targetMachineY;
-    machineFrame.machineZ = targetMachineZ;
-    if (axes == "x" || axes == "xyz") machineFrame.workZeroMachineX = targetMachineX;
-    if (axes == "y" || axes == "xyz") machineFrame.workZeroMachineY = targetMachineY;
-    if (axes == "xyz") machineFrame.workZeroMachineZ = targetMachineZ;
-  }
-  machineFrame.workZeroValid = true;
-  marlinPosition.valid = true;
-  if (axes == "x" || axes == "xyz") marlinPosition.x = 0;
-  if (axes == "y" || axes == "xyz") marlinPosition.y = 0;
-  if (axes == "xyz") marlinPosition.z = 0;
-  machineFrame.updatedAtMs = millis();
-  ++machineFrame.revision;
-  touchPositionStatus();
-  return {true, true, true, 200, "OK", "Work zero set successfully for axes: " + axes};
+  return result;
 }
 
 void handleSetZZero() {
@@ -9304,47 +9628,13 @@ void handleSetZZero() {
 }
 
 MachineOperationResult performSetZZero(String* beforeOut, String* afterOut) {
-  const bool toolChangeZZero = toolChangeZZeroWindowOpen();
-  if (machineFrameControlBusy() && !toolChangeZZero) {
-    return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting Z zero requires idle Marlin transport"};
+  // Legacy HTTP execution via the cooperative engine (see performMachineHome).
+  const MachineOperationResult result = runMachineOperationToCompletion(MachineOpKind::SetZZero, "");
+  if (result.ok) {
+    if (beforeOut != nullptr) *beforeOut = machineOpLastBefore;
+    if (afterOut != nullptr) *afterOut = machineOpLastAfter;
   }
-  if ((!machineFrame.machineValid && !machineFrame.manualWorkFrameValid) || !machineFrame.workZeroValid) {
-    return {false, false, true, 409, "FRAME_STATE_CONFLICT", "an active homed or manually confirmed work frame is required before setting Z zero"};
-  }
-  
-  String before;
-  String after;
-  if (!runFrameCommand("M400", before, 120000) || !runFrameCommand("M114", before)) {
-    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin Z-zero capture failed: " + before};
-  }
-  
-  const float targetMachineZ = machineFrame.machineZ;
-  if (!runFrameCommand("G92 Z0", after) || !runFrameCommand("M114", after)) {
-    return {false, true, true, 502, "EXECUTION_FAILED", "Marlin Z-zero transaction failed: " + after};
-  }
-
-  if (beforeOut != nullptr) *beforeOut = before;
-  if (afterOut != nullptr) *afterOut = after;
-  
-  if (machineFrame.absoluteFromHome) {
-    machineFrame.machineZ = targetMachineZ;
-    machineFrame.workZeroMachineZ = targetMachineZ;
-  }
-  marlinPosition.z = 0;
-  machineFrame.updatedAtMs = millis();
-  ++machineFrame.revision;
-  if (toolChangeZZero) {
-    jobStatus.toolChangeZZeroCompleted = true;
-    jobStatus.toolChangeZZeroMethod = "manual";
-    jobStatus.toolChangePhase = "READY_TO_CONTINUE";
-    if (!persistToolChangeTransition()) {
-      setJobError("could not persist manual tool-change Z-zero state");
-      return {false, true, true, 500, "PERSISTENCE_ERROR", jobStatus.lastError};
-    }
-    logJobEvent("tool change Z zero completed manually");
-  }
-  touchPositionStatus();
-  return {true, true, true, 200, "OK", "Z zero set successfully"};
+  return result;
 }
 
 void handleTouchPlateZZero() {
@@ -10181,6 +10471,7 @@ void setup() {
 void loop() {
   server.handleClient();
   processWsCommandQueue();
+  processMachineOperation();
   stageTelemetryUpdates();
   processMachineDiscovery();
   processJobRunner();

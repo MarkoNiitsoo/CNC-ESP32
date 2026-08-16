@@ -38,16 +38,24 @@ describe('HTTP machine-route contract (Phase 3C)', () => {
   });
 
   it('exposes the captured M114 transactions from the shared perform cores', () => {
+    // The engine captures before/after per step; the HTTP wrappers copy the
+    // last completed operation's snapshots into the legacy out-parameters.
     const workZero = functionBody(
       'MachineOperationResult performSetWorkZero(', 'void handleSetZZero()');
-    expect(workZero).toContain('if (axesOut != nullptr) *axesOut = axes;');
-    expect(workZero).toContain('if (beforeOut != nullptr) *beforeOut = before;');
-    expect(workZero).toContain('if (afterOut != nullptr) *afterOut = after;');
+    expect(workZero).toContain('if (axesOut != nullptr) *axesOut = machineOpLastAxes;');
+    expect(workZero).toContain('if (beforeOut != nullptr) *beforeOut = machineOpLastBefore;');
+    expect(workZero).toContain('if (afterOut != nullptr) *afterOut = machineOpLastAfter;');
 
     const zZero = functionBody(
       'MachineOperationResult performSetZZero(', 'void handleTouchPlateZZero()');
-    expect(zZero).toContain('if (beforeOut != nullptr) *beforeOut = before;');
-    expect(zZero).toContain('if (afterOut != nullptr) *afterOut = after;');
+    expect(zZero).toContain('if (beforeOut != nullptr) *beforeOut = machineOpLastBefore;');
+    expect(zZero).toContain('if (afterOut != nullptr) *afterOut = machineOpLastAfter;');
+
+    const engine = firmware.slice(
+      firmware.indexOf('MachineOperationResult admitMachineOperation('),
+      firmware.indexOf('MachineOperationResult runMachineOperationToCompletion('));
+    expect(engine).toContain('MachineOpCapture::Before');
+    expect(engine).toContain('MachineOpCapture::After');
   });
 
   it('keeps the machine frame authoritative enough for WS-path zero verification', () => {

@@ -63,11 +63,15 @@ describe('operator Zero / Origin workflow', () => {
   });
 
   it('supports backward-compatible per-axis firmware zeroing', () => {
-    const handler = firmware.slice(firmware.indexOf('void handleSetWorkZero()'), firmware.indexOf('void handleSetZZero()'));
-    expect(handler).toContain('if (axes.length() == 0) axes = "xyz"');
-    expect(handler).toContain('axes must be x, y, or xyz');
-    expect(handler).toContain('zeroCommand += " X0"');
-    expect(handler).toContain('zeroCommand += " Y0"');
-    expect(handler).toContain('if (axes == "xyz") zeroCommand += " Z0"');
+    // Per-axis zeroing now lives in the machine-operation engine admission
+    // (performSetWorkZero is a synchronous wrapper over the same engine).
+    const admission = firmware.slice(
+      firmware.indexOf('MachineOperationResult admitMachineOperation('),
+      firmware.indexOf('MachineOperationResult runMachineOperationToCompletion('));
+    expect(admission).toContain('if (axes.length() == 0) axes = "xyz"');
+    expect(admission).toContain('axes must be x, y, or xyz');
+    expect(admission).toContain('zeroCommand += " X0"');
+    expect(admission).toContain('zeroCommand += " Y0"');
+    expect(admission).toContain('if (axes == "xyz") zeroCommand += " Z0"');
   });
 });

@@ -1411,6 +1411,109 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(invalid.data.error).toContain('axes must be x, y, or xyz');
   });
 
+  it('executes machine.home cooperatively: immediate ACK, deferred result, one G28', async () => {
+    const { base, env } = await start({ machineOperationDelayMs: 60 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-coop-home', 'machine.home', { axes: 'all' });
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.accepted).toBe(true);
+    expect(ack.commandId).toBe('cmd-coop-home');
+    // The operation has not executed yet: no G28 on the wire, frame untrusted,
+    // and the ledger entry is still in progress.
+    const g28Before = env.marlin.log.filter((e) => e.direction === 'tx' && /^G28(\s|$)/i.test(e.text)).length;
+    expect(g28Before).toBe(0);
+    expect(env.frame.trusted).toBe(false);
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.commandId).toBe('cmd-coop-home');
+    expect(result.ok).toBe(true);
+    expect(env.frame.trusted).toBe(true);
+    const g28After = env.marlin.log.filter((e) => e.direction === 'tx' && /^G28(\s|$)/i.test(e.text)).length;
+    expect(g28After).toBe(1);
+    ws.close();
+  });
+
+  it('reports IN_PROGRESS for an exact retry while the operation is still pending', async () => {
+    const { base, env } = await start({ machineOperationDelayMs: 80 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-retry-home', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    machineCommand(ws, claim, 'cmd-retry-home', 'machine.home', { axes: 'all' });
+    const retryAck = await ws.recv();
+    expect(retryAck.type).toBe('commandAck');
+    expect(retryAck.accepted).toBe(true);
+    expect(retryAck.inProgress).toBe(true);
+    expect(retryAck.code).toBe('IN_PROGRESS');
+
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.commandId).toBe('cmd-retry-home');
+    expect(result.ok).toBe(true);
+    const g28Count = env.marlin.log.filter((e) => e.direction === 'tx' && /^G28(\s|$)/i.test(e.text)).length;
+    expect(g28Count).toBe(1);
+    ws.close();
+  });
+
+  it('rejects a second concurrent machine operation with MACHINE_STATE_CONFLICT', async () => {
+    const { base, env } = await start({ machineOperationDelayMs: 80 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-op-1', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck (accepted)
+    machineCommand(ws, claim, 'cmd-op-2', 'machine.home', { axes: 'x' });
+    await ws.recv(); // commandAck (accepted)
+    const conflict = await ws.recv();
+    expect(conflict.type).toBe('commandResult');
+    expect(conflict.ok).toBe(false);
+    expect(conflict.code).toBe('MACHINE_STATE_CONFLICT');
+    expect(conflict.commandId).toBe('cmd-op-2');
+
+    const first = await ws.recv();
+    expect(first.commandId).toBe('cmd-op-1');
+    expect(first.ok).toBe(true);
+    ws.close();
+  });
+
+  it('admits before executing: payload conflicts reject immediately without Marlin writes', async () => {
+    const { base, env } = await start({ machineOperationDelayMs: 60 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-bad-home', 'machine.home', { axes: 'q' });
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('INVALID_PAYLOAD');
+    const g28Count = env.marlin.log.filter((e) => e.direction === 'tx' && /^G28(\s|$)/i.test(e.text)).length;
+    expect(g28Count).toBe(0);
+    ws.close();
+  });
+
+  it('produces exactly one terminal failure result when Marlin rejects the operation', async () => {
+    const { base, env } = await start({ machineOperationDelayMs: 40, failCommands: ['G28'] });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-fail-home', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.commandId).toBe('cmd-fail-home');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('EXECUTION_FAILED');
+    expect(env.frame.trusted).toBe(false);
+    // No further packets for this command beyond the single terminal result.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    ws.close();
+  });
+
   it('keeps the HTTP Z-zero contract: {ok, before, after, frame} envelope', async () => {
     const { base } = await start();
     await fetch(`${base}/api/machine/home`, {

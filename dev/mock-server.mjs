@@ -217,6 +217,10 @@ export async function createMockServer(options = {}) {
   };
   const wsCommandLedger = new Map();
   const deferredWsCommands = [];
+  // Simulated cooperative machine operations: admitted at ACK time, executed
+  // after config.machineOperationDelayMs (default 0 = next macrotask), and
+  // cancellable by Stop before execution, mirroring the firmware engine.
+  const pendingMachineOps = [];
   const wsCommandQueueCapacity = 8;
   const clearWsCommandSession = () => {
     deferredWsCommands.splice(0);
@@ -227,9 +231,32 @@ export async function createMockServer(options = {}) {
     wsCommandLedger.set(commandId, entry);
     while (wsCommandLedger.size > 32) wsCommandLedger.delete(wsCommandLedger.keys().next().value);
   };
-  const executeSharedJobOperation = (action, payload = {}) => {
+  const machineActionNames = ['machine.home', 'machine.setWorkZero', 'machine.setZZero'];
+  const executeSharedJobOperation = (action, payload = {}, { validateOnly = false } = {}) => {
     try {
       let body;
+      // Cooperative machine operations: admission (guards only) runs before the
+      // ACK so payload/state conflicts reject immediately; execution happens
+      // later, mirroring the firmware engine's loop()-tick progression.
+      if (validateOnly && machineActionNames.includes(action)) {
+        if (pendingMachineOps.length > 0) {
+          return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'another machine operation is already in progress', body: null };
+        }
+        if (action === 'machine.home' && env.runner.isActive()) {
+          return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'homing requires idle Marlin transport', body: null };
+        }
+        if (action === 'machine.setWorkZero' && (!env.frame.trusted && !env.frame.manualWorkFrameValid || env.runner.isActive())) {
+          return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'Home All or a confirmed manual work frame is required before setting work zero', body: null };
+        }
+        if (action === 'machine.setZZero') {
+          const toolChangeWindow = env.runner.status.state === 'PAUSED' && env.runner.status.toolChangePending && env.runner.status.toolChangeReady;
+          if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || !env.frame.workZeroValid ||
+              (env.runner.isActive() && !toolChangeWindow)) {
+            return { ok: false, accepted: true, httpStatus: 409, code: 'MACHINE_STATE_CONFLICT', message: 'an active work frame and idle transport or a ready M6 stop are required before setting Z zero', body: null };
+          }
+        }
+        return { ok: true, accepted: true, httpStatus: 200, code: 'VALIDATED', message: 'admitted', body: null };
+      }
       if (action === 'safety.stop' || action === 'job.stop') {
         if (env.runner.status.state === 'STOPPING') body = env.runner.snapshot('Stop already in progress.');
         else body = env.runner.stop();
@@ -1274,13 +1301,57 @@ export async function createMockServer(options = {}) {
     }
   }
 
+  function cancelPendingMachineOps(code, message) {
+    while (pendingMachineOps.length > 0) {
+      const op = pendingMachineOps.shift();
+      clearTimeout(op.timer);
+      rememberWsLedger(op.entry.commandId, {
+        epoch: op.entry.epoch, action: op.entry.action, payloadDigest: op.entry.payloadDigest,
+        completed: true, ok: false, code, message,
+      });
+      sendMockCommandResponse(op.entry.socket, 'commandResult', {
+        commandId: op.entry.commandId, ok: false, code, message,
+      });
+    }
+  }
+
+  function completeMockWsCommandImmediateResult(entry, result) {
+    rememberWsLedger(entry.commandId, {
+      epoch: entry.epoch, action: entry.action, payloadDigest: entry.payloadDigest,
+      completed: true, ok: result.ok, code: result.code, message: result.message,
+    });
+    sendMockCommandResponse(entry.socket, 'commandResult', {
+      commandId: entry.commandId, ok: result.ok, code: result.code, message: result.message,
+    });
+  }
+
+  function scheduleMockMachineOp(entry) {
+    const delayMs = Math.max(0, Number(env.config.machineOperationDelayMs || 0));
+    const op = { entry, timer: null };
+    op.timer = setTimeout(() => {
+      const index = pendingMachineOps.indexOf(op);
+      if (index >= 0) pendingMachineOps.splice(index, 1);
+      completeMockWsCommand(entry);
+    }, delayMs);
+    pendingMachineOps.push(op);
+  }
+
   function completeMockWsCommand(entry) {
+    const opIndex = pendingMachineOps.findIndex((op) => op.entry.commandId === entry.commandId);
+    if (opIndex >= 0) {
+      clearTimeout(pendingMachineOps[opIndex].timer);
+      pendingMachineOps.splice(opIndex, 1);
+    }
     const pending = wsCommandLedger.get(entry.commandId);
     if (!operatorActive() || entry.epoch !== env.operator.controlSessionEpoch ||
         !pending || pending.completed || pending.epoch !== entry.epoch ||
         pending.action !== entry.action || pending.payloadDigest !== entry.payloadDigest) return;
     const runnerStateBefore = JSON.stringify(env.runner.status);
     const result = executeSharedJobOperation(entry.action, entry.payload || {});
+    if (entry.action === 'safety.stop' || entry.action === 'job.stop') {
+      // Stop preempts admitted machine operations before any later phase runs.
+      cancelPendingMachineOps('ABORTED_BY_STOP', 'Machine operation cancelled by Stop');
+    }
     const runnerStateChanged = JSON.stringify(env.runner.status) !== runnerStateBefore;
     rememberWsLedger(entry.commandId, {
       epoch: entry.epoch, action: entry.action, payloadDigest: entry.payloadDigest,
@@ -1454,11 +1525,17 @@ export async function createMockServer(options = {}) {
                   sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'QUEUE_FULL', message: 'Command queue is full' });
                   continue;
                 }
-                rememberWsLedger(cmdId, { epoch: env.operator.controlSessionEpoch, action, payloadDigest, completed: false, ok: false, code: '', message: '' });
-                sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: true, code: 'ACCEPTED', message: 'Command accepted' });
                 const queued = { socket, commandId: cmdId, action, payload: msg.payload,
                   payloadDigest, epoch: env.operator.controlSessionEpoch };
-                if (env.config.deferWsCommandExecution === true) deferredWsCommands.push(queued);
+                rememberWsLedger(cmdId, { epoch: env.operator.controlSessionEpoch, action, payloadDigest, completed: false, ok: false, code: '', message: '' });
+                sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: true, code: 'ACCEPTED', message: 'Command accepted' });
+                if (machineActionNames.includes(action)) {
+                  // Admit synchronously (payload/state conflicts reject now), then
+                  // execute after machineOperationDelayMs like the firmware engine.
+                  const admission = executeSharedJobOperation(action, msg.payload || {}, { validateOnly: true });
+                  if (admission.ok) scheduleMockMachineOp(queued);
+                  else completeMockWsCommandImmediateResult(queued, admission);
+                } else if (env.config.deferWsCommandExecution === true) deferredWsCommands.push(queued);
                 else completeMockWsCommand(queued);
               }
             }
@@ -1640,6 +1717,8 @@ export async function createMockServer(options = {}) {
     simulateNextOutboundWriteFailure,
     simulateOutboundWriteFailure,
     flushDeferredWsCommands,
+    cancelPendingMachineOps,
+    pendingMachineOps,
     triggerIdleSync,
     wsClients,
   };
