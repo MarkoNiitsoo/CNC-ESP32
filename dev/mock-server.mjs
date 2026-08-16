@@ -761,7 +761,12 @@ export async function createMockServer(options = {}) {
       if (req.method === 'POST' && pathname === '/api/work-zero/set') {
         if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || env.runner.isActive()) return json(res, 409, { ok: false, error: 'Home All or a confirmed manual work frame is required before setting work zero' });
         const body = await readJson(req);
-        const axes = ['x', 'y'].includes(String(body.axes || '').toLowerCase()) ? String(body.axes).toLowerCase() : 'xyz';
+        // Body and axes are optional (default xyz); invalid axes are rejected like
+        // the firmware handler instead of being silently coerced.
+        const axes = String(body.axes || '').toLowerCase() || 'xyz';
+        if (!['x', 'y', 'xyz'].includes(axes)) {
+          return json(res, 400, { ok: false, error: 'axes must be x, y, or xyz' });
+        }
         const before = env.marlin.execute('M114').response;
         env.marlin.execute(axes === 'x' ? 'G92 X0' : axes === 'y' ? 'G92 Y0' : 'G92 X0 Y0 Z0');
         const after = env.marlin.execute('M114').response;

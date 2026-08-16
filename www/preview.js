@@ -20,6 +20,7 @@ import {
   previewMetadataWarning,
 } from './lib/preview-job-metadata.js';
 import { jobPathForUpload as jobPathFor } from './lib/upload-thumbnail.js';
+import { zeroAxesVerified, zeroReferenceCounts } from './lib/zero-verification.js';
 
 const params = new URLSearchParams(location.search);
 const filePath = params.get('path') || '';
@@ -5341,18 +5342,17 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
   const before = parseM114(data.before || '');
   const after = parseM114(data.after || '');
   currentMachineFrame = frame;
-  const axesToVerify = selectedAxes === 'xyz' ? ['x', 'y', 'z'] : [selectedAxes];
-  const zeroConfirmed = axesToVerify.every((axis) => (
-    Number.isFinite(Number(after.position?.[axis])) && Math.abs(Number(after.position[axis])) <= 0.02
-  ));
-  if (!zeroConfirmed) {
-    throw new Error('Could not verify zero');
+  // HTTP responses carry Marlin before/after text; WS commandResults do not, so
+  // verification falls back to the socket-confirmed frame's work coordinates.
+  const verification = zeroAxesVerified({ afterPosition: after.position, frame, axes: selectedAxes });
+  if (!verification.confirmed) {
+    throw new Error(`Could not verify zero (${verification.source})`);
   }
 
   const machinePosition = frame?.workZeroMachine;
   const machineReference = machinePosition ? {
     source: 'firmware absolute Home All frame', capturedAt: nowIso(), position: { ...machinePosition },
-    counts: { ...before.counts },
+    counts: zeroReferenceCounts({ before, frame }),
     stepsPerMm: { ...(frame?.homeReference?.stepsPerMm || {}) },
   } : null;
   job.workZero.capturedAt = nowIso();

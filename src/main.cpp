@@ -311,8 +311,9 @@ MachineOperationResult performJobResume();
 MachineOperationResult performJobStop();
 MachineOperationResult performJobFeedOverride(int percent);
 MachineOperationResult performMachineHome(const String& axes);
-MachineOperationResult performSetWorkZero(const String& axes);
-MachineOperationResult performSetZZero();
+MachineOperationResult performSetWorkZero(const String& axes, String* axesOut = nullptr,
+                                          String* beforeOut = nullptr, String* afterOut = nullptr);
+MachineOperationResult performSetZZero(String* beforeOut = nullptr, String* afterOut = nullptr);
 void invalidateControllerSessionSafetyCapabilities();
 
 bool isControllerCommunicationActive() {
@@ -9210,20 +9211,26 @@ MachineOperationResult performMachineHome(const String& axes) {
 }
 
 void handleSetWorkZero() {
-  if (!server.hasArg("plain")) {
-    sendJsonError(400, "missing JSON body");
-    return;
-  }
-  const MachineOperationResult result =
-      performSetWorkZero(extractJsonString(server.arg("plain"), "axes"));
+  // The body is optional and defaults to XYZ, matching the documented HTTP contract.
+  const String axesParam = server.hasArg("plain")
+                               ? extractJsonString(server.arg("plain"), "axes")
+                               : "";
+  String axes;
+  String before;
+  String after;
+  const MachineOperationResult result = performSetWorkZero(axesParam, &axes, &before, &after);
   if (!result.ok) {
     sendJsonError(result.httpStatus, result.message);
     return;
   }
-  server.send(200, "application/json", machineFrameJson());
+  String json = "{\"ok\":true,\"axes\":\"" + axes + "\",\"before\":\"" +
+                jsonEscape(before) + "\",\"after\":\"" + jsonEscape(after) +
+                "\",\"frame\":" + machineFrameJson() + "}";
+  server.send(200, "application/json", json);
 }
 
-MachineOperationResult performSetWorkZero(const String& axesParam) {
+MachineOperationResult performSetWorkZero(const String& axesParam, String* axesOut,
+                                          String* beforeOut, String* afterOut) {
   if (machineFrameControlBusy()) {
     return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting work zero requires idle Marlin transport"};
   }
@@ -9259,6 +9266,10 @@ MachineOperationResult performSetWorkZero(const String& axesParam) {
     return {false, true, true, 502, "EXECUTION_FAILED", "Marlin work-zero transaction failed: " + after};
   }
 
+  if (axesOut != nullptr) *axesOut = axes;
+  if (beforeOut != nullptr) *beforeOut = before;
+  if (afterOut != nullptr) *afterOut = after;
+
   if (homedFrame) {
     machineFrame.machineX = targetMachineX;
     machineFrame.machineY = targetMachineY;
@@ -9279,15 +9290,20 @@ MachineOperationResult performSetWorkZero(const String& axesParam) {
 }
 
 void handleSetZZero() {
-  const MachineOperationResult result = performSetZZero();
+  String before;
+  String after;
+  const MachineOperationResult result = performSetZZero(&before, &after);
   if (!result.ok) {
     sendJsonError(result.httpStatus, result.message);
     return;
   }
-  server.send(200, "application/json", machineFrameJson());
+  String json = "{\"ok\":true,\"before\":\"" + jsonEscape(before) +
+                "\",\"after\":\"" + jsonEscape(after) +
+                "\",\"frame\":" + machineFrameJson() + "}";
+  server.send(200, "application/json", json);
 }
 
-MachineOperationResult performSetZZero() {
+MachineOperationResult performSetZZero(String* beforeOut, String* afterOut) {
   const bool toolChangeZZero = toolChangeZZeroWindowOpen();
   if (machineFrameControlBusy() && !toolChangeZZero) {
     return {false, false, true, 409, "MACHINE_STATE_CONFLICT", "setting Z zero requires idle Marlin transport"};
@@ -9306,6 +9322,9 @@ MachineOperationResult performSetZZero() {
   if (!runFrameCommand("G92 Z0", after) || !runFrameCommand("M114", after)) {
     return {false, true, true, 502, "EXECUTION_FAILED", "Marlin Z-zero transaction failed: " + after};
   }
+
+  if (beforeOut != nullptr) *beforeOut = before;
+  if (afterOut != nullptr) *afterOut = after;
   
   if (machineFrame.absoluteFromHome) {
     machineFrame.machineZ = targetMachineZ;

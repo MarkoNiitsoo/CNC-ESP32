@@ -1379,4 +1379,51 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(env.frame.trusted).toBe(true);
     ws.close();
   });
+
+  it('keeps the HTTP work-zero contract: optional body, XYZ default, full envelope', async () => {
+    const { base } = await start();
+    await fetch(`${base}/api/machine/home`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }),
+    });
+
+    const post = async (body) => fetch(`${base}/api/work-zero/set`, {
+      method: 'POST',
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }).then((res) => res.json().then((data) => ({ status: res.status, data })));
+
+    const emptyBody = await post(undefined);
+    expect(emptyBody.status).toBe(200);
+    expect(emptyBody.data.ok).toBe(true);
+    expect(emptyBody.data.axes).toBe('xyz');
+    expect(typeof emptyBody.data.before).toBe('string');
+    expect(typeof emptyBody.data.after).toBe('string');
+    expect(emptyBody.data.frame).toBeDefined();
+    expect(emptyBody.data.frame.workZeroValid).toBe(true);
+
+    const xOnly = await post({ axes: 'x' });
+    expect(xOnly.status).toBe(200);
+    expect(xOnly.data.axes).toBe('x');
+
+    const invalid = await post({ axes: 'z' });
+    expect(invalid.status).toBe(400);
+    expect(invalid.data.ok).toBe(false);
+    expect(invalid.data.error).toContain('axes must be x, y, or xyz');
+  });
+
+  it('keeps the HTTP Z-zero contract: {ok, before, after, frame} envelope', async () => {
+    const { base } = await start();
+    await fetch(`${base}/api/machine/home`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }),
+    });
+
+    const res = await fetch(`${base}/api/work-zero/set-z`, { method: 'POST' });
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    expect(data.ok).toBe(true);
+    expect(typeof data.before).toBe('string');
+    expect(typeof data.after).toBe('string');
+    expect(data.frame).toBeDefined();
+    expect(data.frame.workZeroValid).toBe(true);
+  });
 });
