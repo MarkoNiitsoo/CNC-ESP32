@@ -162,6 +162,25 @@ epoch/token and clears incompatible queued and ledger state.
 - Migrated actions are `safety.stop`/`job.stop`, `job.pause`, `job.resume`, `job.setFeedOverride`, `machine.home`, `machine.setWorkZero`, and
   `machine.setZZero`. Their existing operator-protected HTTP routes remain available. Job Start, Bounding Box, Jog, and other actions remain HTTP/unmigrated. Jog must
   use a separate coalesced realtime design rather than the generic command queue.
+- Machine commands (`machine.home`, `machine.setWorkZero`, `machine.setZZero`) run as COOPERATIVE
+  OPERATIONS: admission validates payload/state and binds the command before the `commandAck`;
+  the Marlin transaction then advances one step per Arduino-loop tick in the machine-operation
+  engine, and the terminal `commandResult` is published only when the whole transaction finishes,
+  fails, or is cancelled. `commandQuery` reports `IN_PROGRESS` meanwhile, and the authoritative
+  `machine` slice is published as a normal sequenced patch after state changes. The legacy HTTP
+  routes execute the same engine to completion synchronously and keep their documented
+  `{ok, axes, before, after, frame}` envelopes.
+- ADMISSION IS NOT COMPLETION: browsers use the two-phase `beginCommand()` API. `accepted` settles
+  on the bounded `commandAck` (only a definite rejection permits the HTTP fallback); `result`
+  settles on the terminal outcome and may legitimately take minutes for machine operations. A
+  slow, lost, or still-pending result never justifies re-executing a command over HTTP.
+- `safety.stop` preempts a running machine operation from any job state: the operation receives one
+  terminal `ABORTED_BY_STOP` result, the M410/M5 quickstop sequence replaces the UART immediately,
+  and the machine frame is invalidated — an interrupted Home can never publish a trusted frame.
+- Authenticated WebSocket activity (command admission and `commandQuery`) refreshes the 45 s
+  operator lease exactly like an authorized HTTP request, so a long operation with live queries
+  cannot expire its own session. Operation results stay scoped to the originating
+  control-session epoch.
 - Stop deliberately dispatches authenticated WebSocket and protected HTTP requests immediately and
   redundantly. Neither response proves physical success; a newer canonical job slice is the success
   authority. Software Stop is not a physical emergency stop, and controller receipt during

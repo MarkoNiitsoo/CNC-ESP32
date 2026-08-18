@@ -2981,3 +2981,28 @@ The following legacy endpoints and assumptions are retained temporarily during P
 - `[ ]` Legacy telemetry event channel aliases (`job`, `jog`, `position`)
 - `[ ]` Hardcoded WebSocket port/origin behavior in legacy docs
 - `[ ]` Duplicated legacy state serializers (`telemetrySnapshotData()`)
+
+## 2026-08-18 - Phase 3C completion: cooperative operations, Stop preemption, two-phase commands
+
+- Commit 3 (cf331b2): cooperative machine-operation engine. Home / Work Zero / Z Zero WS commands no
+  longer execute their Marlin transaction synchronously inside processWsCommandQueue(); admission
+  validates and binds the command, and the transaction advances one step per loop() tick with
+  per-step timeouts and the exact frame semantics of the old synchronous handlers. The legacy HTTP
+  routes run the same engine to completion synchronously and keep their restored envelopes.
+- Commit 4 (79b5d20): safety.stop preempts an active machine operation from any job state
+  (single ABORTED_BY_STOP disposition, M410/M5 quickstop, frame invalidated — interrupted homing
+  can never publish a trusted frame); authenticated WS command/query activity refreshes the 45 s
+  operator lease like an authorized HTTP request; OTA unlock gated on active operations.
+- Commit 5 (6daa4c4): telemetry.beginCommand() separates COMMAND ADMISSION (bounded commandAck,
+  sole gate for HTTP fallback) from OPERATION COMPLETION (long-running, commandQuery/reconnect
+  recovery). machine-bar's home/setWorkZero/setZZero migrated; the 130 s conflation is removed.
+  Mock publishes the authoritative sequenced machine patch after successful machine commands.
+- AGENTS.md: obsolete MVP bans on WebSocket/preview/resume/OTA replaced with current Phase 3
+  reality plus a cooperative-execution rule; protocol.md and architecture.md document the engine,
+  preemption, lease behavior, and admission-vs-completion semantics; mermaid fence restored.
+- Verification: full vitest suite 683/685 (only the pre-existing job-checkpoint regex and
+  motion-settings travel-speed audits fail). The third historical baseline failure
+  (machine-controls jog animation) proved to be a CRLF checkout artifact on this Windows machine
+  (core.autocrlf) — the audit regex is line-ending sensitive — and passes with LF working files.
+  PlatformIO remains unavailable in this environment; pio run -e esp32cam and pio test -e native
+  were NOT executed. Physical hardware was not flashed or exercised.

@@ -279,7 +279,7 @@ export async function createMockServer(options = {}) {
         if (!result.ok) {
           return { ok: false, accepted: true, httpStatus: 502, code: 'EXECUTION_FAILED', message: `Marlin homing failed: ${result.error || result.response}`, body: null };
         }
-        
+
         if (axes === 'all') {
           env.marlin.execute('G54');
           env.marlin.execute('G92 X0 Y0 Z0');

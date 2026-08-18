@@ -2773,3 +2773,29 @@ No firmware upload is required.
 - PlatformIO is not installed in this environment; run `pio run -e esp32cam` and `pio test -e
   native` before flashing. Nothing has been flashed.
 - git stash@{0} holds a superseded early Phase-3A draft; leave it untouched.
+
+## 2026-08-18 Phase 3C execution-architecture handoff
+
+- Commits 3-5 (cf331b2, 79b5d20, 6daa4c4) implement the agreed execution architecture:
+  - src/main.cpp machine-operation engine: `admitMachineOperation` (validation + step list + WS
+    binding + OrdinarySync reservation), `processMachineOperation` (one step per loop tick),
+    `finalizeMachineOperation` (frame mutations ported verbatim from the old handlers),
+    `completeMachineOperation` (single terminal commandResult + comm ownership release), and
+    `cancelMachineOperation` (ABORTED_BY_STOP). `runMachineOperationToCompletion` serves the
+    legacy synchronous HTTP routes over the same engine — the only remaining long-blocking HTTP
+    paths, isolated and documented.
+  - `performJobStop` preempts active operations from ANY job state and fires the quickstop; the
+    machine-op stop path deliberately transitions jobStatus to Stopping/RecoveryRequired even with
+    no job running, because M410 untrusts position.
+  - `wsCommandAuthorizationMatchesLocked` refreshes the operator lease on valid WS activity only.
+  - telemetry.js `beginCommand()` two-phase API; machine-bar uses 5 s admission / 10 min result
+    timeouts; HTTP fallback only on definite admission rejection.
+- Mock: machine ops admit synchronously and execute after `config.machineOperationDelayMs`;
+  `operatorLeaseMs` configurable; stop cancels pending ops; sequenced machine patches after
+  successful machine commands; `pendingMachineOps`/`cancelPendingMachineOps` exposed for tests.
+- PlatformIO unavailable here — run `pio run -e esp32cam` and `pio test -e native` before
+  flashing; nothing has been flashed.
+- Known baseline failures (pre-existing, untouched): job-checkpoint marker regex,
+  motion-settings travel-speed audit. The jog-animation audit is CRLF-sensitive on Windows
+  checkouts (core.autocrlf); it passes with LF files.
+- Not started (deliberately): Job Start migration, realtime Jog transport, touch-plate migration.

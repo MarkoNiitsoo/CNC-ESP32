@@ -13,7 +13,13 @@ Offline CNC web pendant firmware for an AI-Thinker ESP32-CAM talking to Marlin o
 - Job execution must be streaming-based and must not require loading the full G-code file into RAM.
 - Preview/transform may have separate file-size limits and must show a clear warning instead of affecting execution.
 - Do not initialize or use the ESP32-CAM camera yet.
-- Do not add camera streaming, G-code preview, job resume, SD upload, WebSocket, or OTA update for the MVP.
+- Do not add camera streaming or SD upload. (Historical MVP-only bans on G-code preview, job resume,
+  WebSocket transport, and OTA update are obsolete: this branch carries the Phase 1–3 WebSocket
+  telemetry/command architecture, the recovery/checkpoint resume workflow, and SD/OTA firmware
+  update. See `docs/protocol.md` and `docs/architecture.md` before changing transport behavior.)
+- Long-running machine operations (Home / Work Zero / Z Zero) must stay cooperative: never execute a
+  multi-second Marlin transaction synchronously inside `processWsCommandQueue()` or an HTTP handler
+  on the WS path — use the machine-operation engine so Stop, heartbeats, and telemetry stay live.
 
 ## Hardware Defaults
 

@@ -31,7 +31,7 @@ or job runner functionality.
 
 ## Job hold and interruption state machine
 
-```
+```mermaid
 stateDiagram-v2
     RUNNING --> PAUSING: "Pause (500 ms hold)"
     PAUSING --> PAUSED_INTACT: "P000 detected path or confirmed boundary + M400"
@@ -135,6 +135,16 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Stop, Pause, Resume, feed override, Home, Work Zero, and Z Zero use the bounded authenticated command transport; their
     existing operator-protected HTTP routes remain. Job Start, Bounding Box, Jog, and other
     actions remain HTTP/unmigrated.
+  - Home / Work Zero / Z Zero execute as cooperative machine operations: admission happens inside
+    `processWsCommandQueue()`, but the Marlin transaction advances one step per `loop()` tick in
+    the machine-operation engine (`admitMachineOperation` / `processMachineOperation` /
+    `completeMachineOperation`), which holds the OrdinarySync controller-communication
+    transaction for its whole duration. The loop never blocks for a machine command, so HTTP
+    heartbeats, `safety.stop` execution, job/jog runners, and telemetry staging stay responsive.
+  - `safety.stop` cancels an active machine operation (`ABORTED_BY_STOP`) and fires the M410/M5
+    quickstop from any job state; interrupted homing never publishes a trusted frame. The legacy
+    HTTP routes run the same engine synchronously to preserve their documented envelopes — the
+    only remaining long-blocking HTTP paths, isolated to the legacy transport.
   - The browser sends `command`/`commandQuery` with control-session epoch, ephemeral token, command
     identity, and insertion-order serialized payload identity. Firmware uses an 8-entry execution
     queue and 32-entry session ledger; reconnect queries recover results within the same session.

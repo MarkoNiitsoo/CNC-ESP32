@@ -4089,7 +4089,7 @@ uint32_t machineDiscoveryToken = 0;
 void processMachineDiscovery() {
   if (machineDiscoveryState == MachineDiscoveryState::Idle) {
     if (!machineDiscoveryPending || millis() < 5000 || machineDiscoveryTransportBusy()) return;
-    
+
     std::string err;
     uint32_t token = 0;
     if (!controllerCommManager.reserveTransaction(ControllerCommandClass::OrdinarySync, "M115", true, token, err)) {
