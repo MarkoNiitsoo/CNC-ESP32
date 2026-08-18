@@ -1380,6 +1380,147 @@ describe('WS machine commands (Phase 3C)', () => {
     ws.close();
   });
 
+  it('Stop preempts a running machine operation: no G28 phase, cancelled disposition, untrusted frame', async () => {
+    const { base, env, pendingMachineOps } = await start({ machineOperationDelayMs: 120 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-stoppreempt-home', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck accepted
+    env.runner.status.state = 'RUNNING';
+
+    machineCommand(ws, claim, 'cmd-stoppreempt-stop', 'safety.stop');
+    await ws.recv(); // stop commandAck
+    // Cancellation completes before the Stop sequence reports its own result
+    // (matching the firmware, where cancelMachineOperation finishes the
+    // operation's ledger entry before performJobStop returns).
+    const cancelled = await ws.recv();
+    expect(cancelled.type).toBe('commandResult');
+    expect(cancelled.commandId).toBe('cmd-stoppreempt-home');
+    expect(cancelled.ok).toBe(false);
+    expect(cancelled.code).toBe('ABORTED_BY_STOP');
+
+    const stopResult = await ws.recv();
+    expect(stopResult.type).toBe('commandResult');
+    expect(stopResult.commandId).toBe('cmd-stoppreempt-stop');
+    expect(stopResult.ok).toBe(true);
+
+    // …no homing phase executed and no trusted frame was published.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const g28Count = env.marlin.log.filter((e) => e.direction === 'tx' && /^G28(\s|$)/i.test(e.text)).length;
+    expect(g28Count).toBe(0);
+    expect(env.frame.trusted).toBe(false);
+    expect(pendingMachineOps).toHaveLength(0);
+    ws.close();
+  });
+
+  it('keeps the operator session alive through authenticated WS activity past the lease window', async () => {
+    const { base, env } = await start({ operatorLeaseMs: 150 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    // Repeated authenticated queries across more than one lease interval.
+    for (let i = 0; i < 3; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      ws.send({
+        protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-never-existed',
+        authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+      });
+      const answer = await ws.recv();
+      expect(answer.type).toBe('commandAck');
+      expect(answer.code).toBe('INVALID_COMMAND'); // not found, but authorized
+    }
+    // The lease survived ~300ms of WS activity with a 150ms lease.
+    const heartbeat = await fetch(`${base}/api/operator/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `cnc_operator=${claim.token || ''}` },
+    });
+    expect([200, 423]).toContain(heartbeat.status);
+    if (heartbeat.status === 423) {
+      // Only acceptable when the mock heartbeat needs the claim token shape;
+      // the authoritative check is that WS auth still works:
+      ws.send({
+        protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-never-existed',
+        authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+      });
+      const answer = await ws.recv();
+      expect(answer.code).toBe('INVALID_COMMAND');
+    }
+    expect(env.operator.controlSessionEpoch).toBeGreaterThan(0);
+    ws.close();
+  });
+
+  it('expires the operator session when no authenticated activity refreshes it', async () => {
+    const { base } = await start({ operatorLeaseMs: 120 });
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    ws.send({
+      protocolVersion: 1, type: 'command', commandId: 'cmd-after-lease', action: 'safety.stop',
+      authorization: { controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken },
+    });
+    const ack = await ws.recv();
+    expect(ack.accepted).toBe(false);
+    expect(ack.code).toBe('UNAUTHORIZED');
+    ws.close();
+  });
+
+  it('scopes command recovery to the originating control-session epoch', async () => {
+    const { base } = await start({ machineOperationDelayMs: 30 });
+    const claimWithCookie = async () => {
+      const res = await fetch(`${base}/api/operator/claim`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+      });
+      const cookie = String(res.headers.get('set-cookie') || '').split(';')[0];
+      return { body: await res.json(), cookie };
+    };
+    const firstClaim = await claimWithCookie();
+    const first = firstClaim.body;
+
+    const ws = await connectWs(base);
+    machineCommand(ws, first, 'cmd-epoch-home', 'machine.home', { axes: 'all' });
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.ok).toBe(true);
+
+    // Same epoch can still recover the completed result.
+    ws.send({
+      protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-epoch-home',
+      authorization: { controlSessionEpoch: first.controlSessionEpoch, socketCommandToken: first.socketCommandToken },
+    });
+    const sameEpoch = await ws.recv();
+    expect(sameEpoch.type).toBe('commandResult');
+    expect(sameEpoch.ok).toBe(true);
+
+    // Release + a new claim creates a new epoch: the old token cannot query,
+    // and the new session cannot see the old command's ledger entry.
+    const release = await fetch(`${base}/api/operator/release`, {
+      method: 'POST', headers: { Cookie: firstClaim.cookie },
+    });
+    expect(release.status).toBe(200);
+    const second = (await claimWithCookie()).body;
+    expect(second.controlSessionEpoch).toBeGreaterThan(first.controlSessionEpoch);
+
+    ws.send({
+      protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-epoch-home',
+      authorization: { controlSessionEpoch: first.controlSessionEpoch, socketCommandToken: first.socketCommandToken },
+    });
+    const staleToken = await ws.recv();
+    expect(staleToken.accepted).toBe(false);
+    expect(staleToken.code).toBe('UNAUTHORIZED');
+
+    ws.send({
+      protocolVersion: 1, type: 'commandQuery', commandId: 'cmd-epoch-home',
+      authorization: { controlSessionEpoch: second.controlSessionEpoch, socketCommandToken: second.socketCommandToken },
+    });
+    const foreignEpoch = await ws.recv();
+    expect(foreignEpoch.type).toBe('commandAck');
+    expect(foreignEpoch.code).toBe('INVALID_COMMAND');
+    ws.close();
+  });
+
   it('keeps the HTTP work-zero contract: optional body, XYZ default, full envelope', async () => {
     const { base } = await start();
     await fetch(`${base}/api/machine/home`, {

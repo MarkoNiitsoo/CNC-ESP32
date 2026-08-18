@@ -2828,10 +2828,16 @@ bool sendWsCommandResult(uint8_t client, const char *commandId, bool ok,
 }
 
 bool wsCommandAuthorizationMatchesLocked(uint32_t epoch, const char *token) {
-  return token != nullptr && operatorSocketCommandToken.length() == 40 &&
-         epoch == operatorControlSessionEpoch &&
-         strcmp(token, operatorSocketCommandToken.c_str()) == 0 &&
-         millis() - operatorSessionLastSeenMs <= kOperatorLeaseMs;
+  const bool matches = token != nullptr && operatorSocketCommandToken.length() == 40 &&
+                       epoch == operatorControlSessionEpoch &&
+                       strcmp(token, operatorSocketCommandToken.c_str()) == 0 &&
+                       millis() - operatorSessionLastSeenMs <= kOperatorLeaseMs;
+  // Authenticated WebSocket activity (command admission or commandQuery)
+  // refreshes the operator lease like an authorized HTTP request, so a long
+  // machine operation with live queries cannot expire its own session. Stale
+  // epochs and foreign tokens never reach this refresh.
+  if (matches) operatorSessionLastSeenMs = millis();
+  return matches;
 }
 
 int findWsCommandLedgerEntryLocked(uint32_t epoch, const char *commandId) {
@@ -7071,7 +7077,8 @@ void handleOperatorPinUpdate() {
 
 void handleOperatorOtaUnlock() {
   if (!requireOperatorControl()) return;
-  if (jobIsActive() || jobWaitingForOk || jogIsActive() || priorityCommandCount > 0) {
+  if (jobIsActive() || jobWaitingForOk || jogIsActive() || priorityCommandCount > 0 ||
+      machineOperationActive()) {
     sendJsonError(409, "OTA unlock is allowed only while the machine is idle");
     return;
   }
@@ -8824,6 +8831,40 @@ void handlePausedManualInterruption() {
 }
 
 MachineOperationResult performJobStop() {
+  if (machineOperationActive()) {
+    // Stop preempts a running Home/Zero transaction from ANY job state: no
+    // later phase may run, the operation gets exactly one terminal
+    // ABORTED_BY_STOP disposition, and the M410/M5 quickstop sequence replaces
+    // the UART immediately — cancelling the engine alone would leave Marlin
+    // executing the already-sent G28. Cancellation applies no frame mutations,
+    // so an interrupted Home can never publish a trusted frame; the quickstop
+    // below invalidates the previous frame as untrusted as well.
+    cancelMachineOperation("ABORTED_BY_STOP", "Machine operation cancelled by Stop");
+    if (jobFile) jobFile.close();
+    jobWaitingForOk = false;
+    jobResponseBuffer = "";
+    jobRunning = false;
+    jobStatus.pauseRequested = false;
+    jobStatus.stopRequested = true;
+    jobStatus.directResumeValid = false;
+    jobStatus.recoveryRequired = true;
+    jobStatus.pauseInterruptedForManualMotion = false;
+    jobStatus.state = JobRunnerState::Stopping;
+    jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
+    jobStatus.stopWarning = machineProfile.capEmergencyParser
+                                ? ""
+                                : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
+    jobStatus.streamingPausedReason =
+        "Stop cancelled a machine operation with M410 quickstop. Position is untrusted until Home All.";
+    startImmediateStopPrioritySequence();
+    invalidateMachineFrameAfterQuickstop();
+    touchJobStatus();
+    logJobEvent("stop cancelled an active machine operation");
+    return {
+      true, true, true, 200, "OK",
+      "Stop now cancelled the running machine operation with M410 quickstop. Position and recovery must be verified after the quickstop."
+    };
+  }
   if (jobStatus.state == JobRunnerState::Stopping) {
     return {true, true, true, 200, "OK",
             "Stop now already requested. M410 quickstop is in progress."};

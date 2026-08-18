@@ -115,6 +115,34 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     expect(toolChange).toContain('machineOperationActive()');
   });
 
+  it('preempts an active machine operation with the Stop quickstop sequence from any job state', () => {
+    const stop = blockBetween('MachineOperationResult performJobStop() {', 'void handleJobStop() {');
+    const preempt = stop.slice(0, stop.indexOf('if (jobStatus.state == JobRunnerState::Stopping)'));
+    expect(preempt.indexOf('if (machineOperationActive())')).toBeGreaterThan(-1);
+    expect(preempt.indexOf('cancelMachineOperation("ABORTED_BY_STOP"'))
+      .toBeGreaterThan(preempt.indexOf('if (machineOperationActive())'));
+    // The quickstop is sent for an idle-machine operation too — cancelling the
+    // engine alone would leave Marlin executing the already-sent G28.
+    expect(preempt.indexOf('startImmediateStopPrioritySequence();'))
+      .toBeGreaterThan(preempt.indexOf('cancelMachineOperation('));
+    expect(preempt).toContain('invalidateMachineFrameAfterQuickstop();');
+    expect(preempt).toContain('jobStatus.state = JobRunnerState::Stopping;');
+  });
+
+  it('refreshes the operator lease on authenticated WS activity only', () => {
+    const matcher = blockBetween('bool wsCommandAuthorizationMatchesLocked(', 'int findWsCommandLedgerEntryLocked(');
+    expect(matcher).toContain('epoch == operatorControlSessionEpoch');
+    expect(matcher).toContain('millis() - operatorSessionLastSeenMs <= kOperatorLeaseMs');
+    // The refresh happens only after the epoch+token+lease all validated.
+    expect(matcher.indexOf('if (matches) operatorSessionLastSeenMs = millis();'))
+      .toBeGreaterThan(matcher.indexOf('const bool matches ='));
+  });
+
+  it('blocks OTA unlock while a machine operation owns the transport', () => {
+    const ota = blockBetween('void handleOperatorOtaUnlock()', 'void operatorRoute(');
+    expect(ota).toContain('machineOperationActive()');
+  });
+
   it('holds controller-communication ownership for the whole transaction', () => {
     const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
     expect(admit).toContain('reserveTransaction(ControllerCommandClass::OrdinarySync');

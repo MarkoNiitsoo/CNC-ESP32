@@ -162,7 +162,7 @@ export async function createMockEnvironment(options = {}) {
   const operator = {
     configured: false, pin: '', token: '', owner: '', lastSeenAt: 0,
     browserId: '', rememberedBrowserId: '', rememberedOwner: '',
-    leaseMs: 45000, otaUnlockedUntil: 0, controlSessionEpoch: 0,
+    leaseMs: Number(config.operatorLeaseMs ?? 45000), otaUnlockedUntil: 0, controlSessionEpoch: 0,
     // WS command-authorization secret — never sent in state slices, only in Claim/Reconnect body.
     socketCommandToken: '',
   };
@@ -1510,6 +1510,10 @@ export async function createMockServer(options = {}) {
                 String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'UNAUTHORIZED', message: 'Command authorization invalid or expired' });
             } else {
+              // Authenticated WS activity refreshes the lease like the firmware's
+              // wsCommandAuthorizationMatchesLocked, so live queries during a long
+              // machine operation keep their session alive.
+              env.operator.lastSeenAt = Date.now();
               const existing = wsCommandLedger.get(cmdId);
               if (existing) {
                 if (existing.epoch !== env.operator.controlSessionEpoch ||
@@ -1549,6 +1553,7 @@ export async function createMockServer(options = {}) {
                 String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'UNAUTHORIZED', message: 'Command query authorization invalid or expired' });
             } else {
+              env.operator.lastSeenAt = Date.now();
               const entry = wsCommandLedger.get(queryId);
               if (entry?.epoch === env.operator.controlSessionEpoch) {
               if (entry.completed) {
