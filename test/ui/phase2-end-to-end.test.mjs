@@ -145,6 +145,7 @@ function createMachineBarEnv(options = {}) {
   const telemetry = options.telemetry === false ? null : {
     transportStatus: options.transportStatus || 'synchronized',
     command: options.telemetryCommand,
+    beginCommand: options.telemetryBeginCommand,
     setSocketCommandToken() {},
     revokeCommandAuthorization() {},
     subscribe(topic, listener) {
@@ -647,10 +648,10 @@ describe('Phase 3C machine command fallback policy', () => {
     position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 2, y: 3, z: 4 } },
   });
 
-  function machineFallbackEnv({ telemetryCommand, commandQuery } = {}) {
+  function machineFallbackEnv({ telemetryBeginCommand } = {}) {
     const machineFetchCalls = [];
     const env = createMachineBarEnv({
-      telemetryCommand,
+      telemetryBeginCommand,
       fetch: async (url) => {
         machineFetchCalls.push(String(url));
         return {
@@ -669,7 +670,6 @@ describe('Phase 3C machine command fallback policy', () => {
         };
       },
     });
-    if (commandQuery) env.telemetry.commandQuery = commandQuery;
     env.api.applyLocalOperatorAuthorization({
       controller: true, owner: 'Alice', controlSessionEpoch: 1, socketCommandToken: 't'.repeat(40),
     });
@@ -685,20 +685,19 @@ describe('Phase 3C machine command fallback policy', () => {
   const machineHttpCalls = (calls) => calls.filter(
     (url) => url.includes('/api/work-zero/set') || url.includes('/api/machine/home'));
 
-  const wsTimeoutError = (message = 'Command timed out') => Object.assign(new Error(message), {
-    code: 'TIMEOUT', commandDisposition: 'outcome-unknown', definitelyNotAccepted: false,
-  });
+  const twoPhaseHandle = ({ accepted = async () => ({}), result = async () => ({ ok: true, code: 'OK' }) } = {}) =>
+    ({ commandId: 'cmd-two-phase', accepted: accepted(), result: result() });
 
-  it('never falls back to HTTP when the WS command completed successfully', async () => {
+  it('never falls back to HTTP when admission and result both succeed', async () => {
     vi.stubGlobal('confirm', () => true);
     try {
-      const telemetryCommand = vi.fn(async () => ({ commandId: 'cmd-1', ok: true, code: 'OK' }));
-      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryCommand });
+      const telemetryBeginCommand = vi.fn(() => twoPhaseHandle());
+      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
       const pending = env.api.setWorkZero();
       await Promise.resolve();
       env.emitTelemetry('machine', confirmedMachineSlice());
       await pending;
-      expect(telemetryCommand).toHaveBeenCalledTimes(1);
+      expect(telemetryBeginCommand).toHaveBeenCalledTimes(1);
       expect(machineHttpCalls(machineFetchCalls)).toHaveLength(0);
       const events = env.dispatched.filter((event) => event.type === 'cnc-work-zero-set');
       expect(events).toHaveLength(1);
@@ -708,34 +707,15 @@ describe('Phase 3C machine command fallback policy', () => {
     }
   });
 
-  it('never falls back to HTTP when commandQuery recovers a completed result after a timeout', async () => {
+  it('never falls back to HTTP when the result is slow or lost (accepted command)', async () => {
     vi.stubGlobal('confirm', () => true);
     try {
-      const telemetryCommand = vi.fn(async () => { throw wsTimeoutError(); });
-      const commandQuery = vi.fn(async () => ({ commandId: 'cmd-2', ok: true, code: 'OK' }));
-      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryCommand, commandQuery });
-      const pending = env.api.setWorkZero();
-      await Promise.resolve();
-      env.emitTelemetry('machine', confirmedMachineSlice());
-      await pending;
-      expect(commandQuery).toHaveBeenCalledTimes(1);
-      expect(machineHttpCalls(machineFetchCalls)).toHaveLength(0);
-      expect(env.dispatched.filter((event) => event.type === 'cnc-work-zero-set')).toHaveLength(1);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('never falls back to HTTP while the outcome is ambiguous (IN_PROGRESS)', async () => {
-    vi.stubGlobal('confirm', () => true);
-    try {
-      const telemetryCommand = vi.fn(async () => { throw wsTimeoutError(); });
-      const commandQuery = vi.fn(async () => {
-        throw Object.assign(new Error('Command is still in progress'), {
-          code: 'IN_PROGRESS', commandDisposition: 'in-progress', definitelyNotAccepted: false,
-        });
-      });
-      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryCommand, commandQuery });
+      const telemetryBeginCommand = vi.fn(() => twoPhaseHandle({
+        result: () => Promise.reject(Object.assign(new Error('Command result timed out after 600000ms'), {
+          code: 'TIMEOUT', commandDisposition: 'outcome-unknown', definitelyNotAccepted: false,
+        })),
+      }));
+      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
       const pending = env.api.setWorkZero();
       await Promise.resolve();
       env.emitTelemetry('machine', confirmedMachineSlice());
@@ -743,26 +723,49 @@ describe('Phase 3C machine command fallback policy', () => {
       expect(machineHttpCalls(machineFetchCalls)).toHaveLength(0);
       const events = env.dispatched.filter((event) => event.type === 'cnc-work-zero-set');
       expect(events).toHaveLength(1);
-      expect(events[0].detail).toMatchObject({ accepted: true, outcome: 'outcome-pending' });
+      expect(events[0].detail).toMatchObject({ accepted: true, outcome: 'result-pending' });
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('falls back to HTTP exactly once after a definite WS rejection', async () => {
+  it('never falls back to HTTP after an ambiguous admission timeout (packet possibly sent)', async () => {
     vi.stubGlobal('confirm', () => true);
     try {
-      const telemetryCommand = vi.fn(async () => {
-        throw Object.assign(new Error('Command authorization invalid or expired'), {
-          code: 'UNAUTHORIZED', definitelyNotAccepted: true,
-        });
-      });
-      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryCommand });
+      const telemetryBeginCommand = vi.fn(() => twoPhaseHandle({
+        accepted: () => Promise.reject(Object.assign(new Error('Command admission timed out'), {
+          code: 'TIMEOUT', commandDisposition: 'outcome-unknown', definitelyNotAccepted: false,
+        })),
+        result: () => Promise.reject(Object.assign(new Error('Command result timed out'), {
+          code: 'TIMEOUT', commandDisposition: 'outcome-unknown', definitelyNotAccepted: false,
+        })),
+      }));
+      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
       const pending = env.api.setWorkZero();
       await Promise.resolve();
       env.emitTelemetry('machine', confirmedMachineSlice());
       await pending;
-      expect(telemetryCommand).toHaveBeenCalledTimes(1);
+      expect(machineHttpCalls(machineFetchCalls)).toHaveLength(0);
+      expect(env.dispatched.filter((event) => event.type === 'cnc-work-zero-set')).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('falls back to HTTP exactly once after a definite admission rejection', async () => {
+    vi.stubGlobal('confirm', () => true);
+    try {
+      const telemetryBeginCommand = vi.fn(() => twoPhaseHandle({
+        accepted: () => Promise.reject(Object.assign(new Error('Command authorization invalid or expired'), {
+          code: 'UNAUTHORIZED', definitelyNotAccepted: true,
+        })),
+      }));
+      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
+      const pending = env.api.setWorkZero();
+      await Promise.resolve();
+      env.emitTelemetry('machine', confirmedMachineSlice());
+      await pending;
+      expect(telemetryBeginCommand).toHaveBeenCalledTimes(1);
       expect(machineHttpCalls(machineFetchCalls)).toHaveLength(1);
       expect(machineHttpCalls(machineFetchCalls)[0]).toContain('/api/work-zero/set');
       expect(env.dispatched.filter((event) => event.type === 'cnc-work-zero-set')).toHaveLength(1);
@@ -771,20 +774,15 @@ describe('Phase 3C machine command fallback policy', () => {
     }
   });
 
-  it('propagates recovered completed-failure outcomes without any HTTP execution', async () => {
+  it('propagates terminal result failures without any HTTP execution', async () => {
     vi.stubGlobal('confirm', () => true);
     try {
-      const telemetryCommand = vi.fn(async () => {
-        throw Object.assign(new Error('Marlin work-zero transaction failed'), {
-          code: 'EXECUTION_FAILED', commandDisposition: 'outcome-unknown', definitelyNotAccepted: false,
-        });
-      });
-      const commandQuery = vi.fn(async () => {
-        throw Object.assign(new Error('Marlin work-zero transaction failed'), {
+      const telemetryBeginCommand = vi.fn(() => twoPhaseHandle({
+        result: () => Promise.reject(Object.assign(new Error('Marlin work-zero transaction failed'), {
           code: 'EXECUTION_FAILED', commandDisposition: 'completed', definitelyNotAccepted: false,
-        });
-      });
-      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryCommand, commandQuery });
+        })),
+      }));
+      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
       await expect(env.api.setWorkZero()).rejects.toThrow('Marlin work-zero transaction failed');
       expect(machineHttpCalls(machineFetchCalls)).toHaveLength(0);
       expect(env.dispatched.filter((event) => event.type === 'cnc-work-zero-set')).toHaveLength(0);
@@ -793,24 +791,45 @@ describe('Phase 3C machine command fallback policy', () => {
     }
   });
 
-  it('homes exactly once per invocation across WS outcome classes', async () => {
+  it('treats authorization revocation after acceptance as outcome-pending, never HTTP', async () => {
+    vi.stubGlobal('confirm', () => true);
+    try {
+      const telemetryBeginCommand = vi.fn(() => twoPhaseHandle({
+        result: () => Promise.reject(Object.assign(new Error('Operator control session changed.'), {
+          code: 'CONTROL_SESSION_CHANGED', commandDisposition: 'accepted', definitelyNotAccepted: false,
+        })),
+      }));
+      const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
+      const pending = env.api.setWorkZero();
+      await Promise.resolve();
+      env.emitTelemetry('machine', confirmedMachineSlice());
+      await pending;
+      expect(machineHttpCalls(machineFetchCalls)).toHaveLength(0);
+      expect(env.dispatched.filter((event) => event.type === 'cnc-work-zero-set')).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('homes exactly once per invocation across admission outcome classes', async () => {
     vi.stubGlobal('confirm', () => true);
     try {
       const outcomes = [
-        ['ws-completed', async () => ({ commandId: 'c1', ok: true }), null, 0],
-        ['query-recovered', async () => { throw wsTimeoutError(); }, async () => ({ ok: true }), 0],
-        ['ambiguous-in-progress', async () => { throw wsTimeoutError(); }, async () => {
-          throw Object.assign(new Error('in progress'), { code: 'IN_PROGRESS', definitelyNotAccepted: false });
-        }, 0],
-        ['definite-rejection', async () => {
-          throw Object.assign(new Error('rejected'), { code: 'INVALID_COMMAND', definitelyNotAccepted: true });
-        }, null, 1],
+        ['admitted-and-completed', () => twoPhaseHandle(), 0],
+        ['result-lost', () => twoPhaseHandle({
+          result: () => Promise.reject(Object.assign(new Error('result timeout'), {
+            code: 'TIMEOUT', commandDisposition: 'outcome-unknown', definitelyNotAccepted: false,
+          })),
+        }), 0],
+        ['admission-rejected', () => twoPhaseHandle({
+          accepted: () => Promise.reject(Object.assign(new Error('rejected'), {
+            code: 'INVALID_COMMAND', definitelyNotAccepted: true,
+          })),
+        }), 1],
       ];
-      for (const [label, commandImpl, queryImpl, expectedHttp] of outcomes) {
-        const telemetryCommand = vi.fn(commandImpl);
-        const { env, machineFetchCalls } = machineFallbackEnv({
-          telemetryCommand, commandQuery: queryImpl ? vi.fn(queryImpl) : undefined,
-        });
+      for (const [label, beginImpl, expectedHttp] of outcomes) {
+        const telemetryBeginCommand = vi.fn(beginImpl);
+        const { env, machineFetchCalls } = machineFallbackEnv({ telemetryBeginCommand });
         const pending = env.api.home('G28', 'Home all now?');
         await Promise.resolve();
         env.emitTelemetry('machine', confirmedMachineSlice());
@@ -818,7 +837,7 @@ describe('Phase 3C machine command fallback policy', () => {
         const homingHttpCalls = machineFetchCalls.filter((url) => url.includes('/api/machine/home'));
         // Exactly one G28-equivalent operation per invocation: one WS command
         // plus an HTTP call only in the definite-rejection case, never both.
-        expect(telemetryCommand, label).toHaveBeenCalledTimes(1);
+        expect(telemetryBeginCommand, label).toHaveBeenCalledTimes(1);
         expect(homingHttpCalls, label).toHaveLength(expectedHttp);
         expect(env.dispatched.filter((event) => event.type === 'cnc-position-trust'), label).toHaveLength(1);
       }

@@ -1246,6 +1246,15 @@ describe('WS machine commands (Phase 3C)', () => {
     }).then((r) => r.json());
   }
 
+  // Successful machine mutations now publish a sequenced machine patch after
+  // the unsequenced commandResult; drain it where a test continues reading.
+  async function drainMachinePatch(ws) {
+    const patch = await ws.recv();
+    expect(patch.type).toBe('patch');
+    expect(patch.patch?.machine).toBeDefined();
+    return patch;
+  }
+
   function machineCommand(ws, claim, commandId, action, payload = {}) {
     ws.send({
       protocolVersion: 1, type: 'command', commandId, action, payload,
@@ -1306,11 +1315,13 @@ describe('WS machine commands (Phase 3C)', () => {
     machineCommand(ws, claim, 'cmd-zero-1', 'machine.home', { axes: 'all' });
     await ws.recv(); // commandAck
     await ws.recv(); // commandResult
+    await drainMachinePatch(ws);
 
     env.marlin.execute('G0 X25 Y40 Z5');
     machineCommand(ws, claim, 'cmd-zero-2', 'machine.setWorkZero', { axes: 'xyz' });
     await ws.recv(); // commandAck
     await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true, code: 'OK' });
+    await drainMachinePatch(ws);
 
     expect(env.frame.workZeroValid).toBe(true);
     expect(env.frame.workZeroMachine).toBeDefined();
@@ -1325,6 +1336,7 @@ describe('WS machine commands (Phase 3C)', () => {
     machineCommand(ws, claim, 'cmd-zero-bad-axes-1', 'machine.home', { axes: 'all' });
     await ws.recv(); // commandAck
     await ws.recv(); // commandResult
+    await drainMachinePatch(ws);
 
     machineCommand(ws, claim, 'cmd-zero-bad-axes-2', 'machine.setWorkZero', { axes: 'z' });
     await ws.recv(); // commandAck
@@ -1351,9 +1363,11 @@ describe('WS machine commands (Phase 3C)', () => {
     machineCommand(ws, claim, 'cmd-tc-1', 'machine.home', { axes: 'all' });
     await ws.recv(); // commandAck
     await ws.recv(); // commandResult
+    await drainMachinePatch(ws);
     machineCommand(ws, claim, 'cmd-tc-2', 'machine.setWorkZero', { axes: 'xyz' });
     await ws.recv(); // commandAck
     await ws.recv(); // commandResult
+    await drainMachinePatch(ws);
 
     env.runner.status.state = 'PAUSED';
     env.runner.status.toolChangePending = true;
@@ -1373,6 +1387,7 @@ describe('WS machine commands (Phase 3C)', () => {
     machineCommand(ws, claim, 'cmd-home-dedupe', 'machine.home', { axes: 'all' });
     await ws.recv(); // commandAck
     await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true });
+    await drainMachinePatch(ws);
 
     machineCommand(ws, claim, 'cmd-home-dedupe', 'machine.home', { axes: 'all' });
     await expect(ws.recv()).resolves.toMatchObject({ type: 'commandResult', ok: true, commandId: 'cmd-home-dedupe' });
@@ -1484,6 +1499,7 @@ describe('WS machine commands (Phase 3C)', () => {
     await ws.recv(); // commandAck
     const result = await ws.recv();
     expect(result.ok).toBe(true);
+    await drainMachinePatch(ws);
 
     // Same epoch can still recover the completed result.
     ws.send({
@@ -1550,6 +1566,30 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(invalid.status).toBe(400);
     expect(invalid.data.ok).toBe(false);
     expect(invalid.data.error).toContain('axes must be x, y, or xyz');
+  });
+
+  it('publishes an unsequenced result followed by a sequenced authoritative machine patch', async () => {
+    const { base } = await start();
+    const claim = await claimController(base);
+
+    const ws = await connectWs(base);
+    machineCommand(ws, claim, 'cmd-patch-home', 'machine.home', { axes: 'all' });
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.seq).toBeUndefined();
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.seq).toBeUndefined();
+
+    // The authoritative machine slice arrives as a normal sequenced patch with
+    // sequence continuity after the hello snapshot (seq 1).
+    const patch = await ws.recv();
+    expect(patch.type).toBe('patch');
+    expect(patch.seq).toBe(2);
+    expect(patch.patch?.machine).toBeDefined();
+    expect(patch.patch?.machine?.trusted).toBe(true);
+    expect(patch.patch?.machine?.workZeroValid).toBe(true);
+    ws.close();
   });
 
   it('executes machine.home cooperatively: immediate ACK, deferred result, one G28', async () => {

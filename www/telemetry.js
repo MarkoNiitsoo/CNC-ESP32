@@ -83,6 +83,28 @@
     entry?.listeners?.clear();
   }
 
+  function settleCommandAdmissions(entry, result, error) {
+    for (const listener of entry?.admissions || []) {
+      clearTimeout(listener.timer);
+      if (error) listener.reject(error);
+      else listener.resolve(result);
+    }
+    entry?.admissions?.clear();
+  }
+
+  function addCommandAdmissionListener(entry, commandId, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const listener = { resolve, reject, timer: null };
+      listener.timer = setTimeout(() => {
+        entry.admissions.delete(listener);
+        const disposition = entry.acknowledged ? 'accepted' : entry.sent ? 'outcome-unknown' : 'not-sent';
+        reject(commandError(`Command admission ${commandId} timed out after ${timeoutMs}ms`,
+          'TIMEOUT', commandId, disposition, { acknowledged: entry.acknowledged, sent: entry.sent }));
+      }, timeoutMs);
+      entry.admissions.add(listener);
+    });
+  }
+
   function addCommandListener(entry, commandId, timeoutMs, label = 'Command') {
     return new Promise((resolve, reject) => {
       const listener = { resolve, reject, timer: null };
@@ -112,7 +134,7 @@
     const entry = {
       commandId, action, payloadSignature, epoch: controlSessionEpoch,
       sent: false, acknowledged: false, completed: false,
-      listeners: new Set(), createdAt: Date.now(),
+      listeners: new Set(), admissions: new Set(), createdAt: Date.now(),
     };
     pendingCommands.set(commandId, entry);
     return entry;
@@ -139,8 +161,10 @@
     controlSessionEpoch = 0;
     for (const [id, pending] of pendingCommands) {
       const disposition = pending.acknowledged ? 'accepted' : pending.sent ? 'outcome-unknown' : 'rejected';
-      settleCommandListeners(pending, null, commandError(reason, code, id, disposition,
-        { acknowledged: pending.acknowledged, sent: pending.sent }));
+      const error = commandError(reason, code, id, disposition,
+        { acknowledged: pending.acknowledged, sent: pending.sent });
+      settleCommandListeners(pending, null, error);
+      settleCommandAdmissions(pending, null, error);
       pendingCommands.delete(id);
     }
     commandLedger.clear();
@@ -214,6 +238,88 @@
     return promise;
   }
 
+  // ── beginCommand(): two-phase command API ─────────────────────────────────
+  // Separates COMMAND ADMISSION (bounded, decides whether HTTP fallback is
+  // allowed) from OPERATION COMPLETION (may legitimately take minutes for
+  // machine operations; recoverable by commandQuery and reconnect). The
+  // single-phase command() above remains for short-lived job commands.
+  function beginCommand(action, payload, commandId, options = {}) {
+    const admissionTimeoutMs = typeof options.admissionTimeoutMs === 'number' ? options.admissionTimeoutMs : 5000;
+    const resultTimeoutMs = typeof options.resultTimeoutMs === 'number' && options.resultTimeoutMs > 0
+      ? options.resultTimeoutMs : 600000;
+
+    if (!socketCommandToken) {
+      return rejectedHandle(commandError('No active control session; obtain operator control first.', 'UNAUTHORIZED', commandId, 'not-sent'));
+    }
+    if (!socketConnected || socket?.readyState !== WebSocket.OPEN) {
+      return rejectedHandle(commandError('WebSocket is not connected.', 'TRANSPORT_UNAVAILABLE', commandId, 'not-sent'));
+    }
+    if (typeof commandId !== 'string' || !/^[A-Za-z0-9._:-]{1,96}$/.test(commandId)) {
+      return rejectedHandle(commandError('commandId contains invalid characters or length.', 'INVALID_COMMAND', commandId, 'not-sent'));
+    }
+    if (typeof action !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(action)) {
+      return rejectedHandle(commandError('action contains invalid characters or length.', 'INVALID_COMMAND', commandId, 'not-sent'));
+    }
+    const payloadSignature = payload === undefined || payload === null ? '' : JSON.stringify(payload);
+    if (new TextEncoder().encode(payloadSignature).length > 4096) {
+      return rejectedHandle(commandError('Command payload exceeds 4096 bytes.', 'PAYLOAD_TOO_LARGE', commandId, 'not-sent'));
+    }
+
+    if (commandLedger.has(commandId)) {
+      const entry = commandLedger.get(commandId);
+      if (entry.completed) {
+        if (entry.action !== action || entry.payloadSignature !== payloadSignature || entry.epoch !== controlSessionEpoch) {
+          return rejectedHandle(commandError('commandId is already associated with a different action, payload, or control session.',
+            'IDEMPOTENCY_CONFLICT', commandId, 'rejected'));
+        }
+        return entry.ok
+          ? resolvedHandle({ commandId, ok: true, code: entry.code, message: entry.message, accepted: true })
+          : rejectedHandle(commandError(entry.message, entry.code, commandId, 'completed'));
+      }
+    }
+
+    let pending = pendingCommands.get(commandId);
+    if (!pending) {
+      if (pendingCommands.has(commandId)) {
+        return rejectedHandle(commandError('commandId is already associated with a different action or payload.', 'IDEMPOTENCY_CONFLICT', commandId, 'rejected'));
+      }
+      pending = createPendingCommand(commandId, action, payloadSignature);
+      if (!pending) return rejectedHandle(commandError('Too many unresolved commands.', 'COMMAND_CAPACITY', commandId, 'not-sent'));
+    } else if (pending.action !== action || pending.payloadSignature !== payloadSignature) {
+      return rejectedHandle(commandError('commandId is already associated with a different action or payload.', 'IDEMPOTENCY_CONFLICT', commandId, 'rejected'));
+    }
+
+    const accepted = pending.acknowledged
+      ? Promise.resolve({ commandId, accepted: true, inProgress: true })
+      : addCommandAdmissionListener(pending, commandId, admissionTimeoutMs);
+    const result = addCommandListener(pending, commandId, resultTimeoutMs, 'Command result for');
+    const packet = {
+      protocolVersion: 1,
+      type: 'command',
+      commandId,
+      action,
+      authorization: { controlSessionEpoch, socketCommandToken },
+    };
+    if (payload !== undefined && payload !== null) packet.payload = payload;
+    const sent = !pending.sent ? sendSocketPacket(packet) : true;
+    if (sent) pending.sent = true;
+    if (!sent && !pending.sent) {
+      const error = commandError('Failed to send command packet; WebSocket not ready.', 'SEND_FAILED', commandId, 'not-sent');
+      settleCommandListeners(pending, null, error);
+      settleCommandAdmissions(pending, null, error);
+      pendingCommands.delete(commandId);
+    }
+    return { commandId, accepted, result };
+  }
+
+  function resolvedHandle(result) {
+    return { commandId: result.commandId, accepted: Promise.resolve(result), result: Promise.resolve(result) };
+  }
+
+  function rejectedHandle(error) {
+    return { commandId: error.commandId, accepted: Promise.reject(error), result: Promise.reject(error) };
+  }
+
   // ── Handle incoming commandAck / commandResult messages ───────────────────
   function applyCommandAck(msg) {
     const commandId = msg.commandId;
@@ -233,7 +339,9 @@
         action: identity.action, payloadSignature: identity.payloadSignature, epoch: identity.epoch,
       });
       if (pending) {
-        settleCommandListeners(pending, null, commandError(msg.message || 'Command rejected', msg.code || 'REJECTED', commandId, 'rejected'));
+        const rejection = commandError(msg.message || 'Command rejected', msg.code || 'REJECTED', commandId, 'rejected');
+        settleCommandListeners(pending, null, rejection);
+        settleCommandAdmissions(pending, null, rejection);
         pendingCommands.delete(commandId);
       }
       window.dispatchEvent(new CustomEvent('cnc-command-rejected', { detail: { commandId, code: msg.code, message: msg.message } }));
@@ -241,7 +349,12 @@
     }
 
     // Accepted (in queue or in-progress); update ledger.
-    if (pending) pending.acknowledged = true;
+    if (pending && !pending.acknowledged) {
+      pending.acknowledged = true;
+      settleCommandAdmissions(pending, {
+        commandId, accepted: true, inProgress: Boolean(msg.inProgress), code: msg.code || 'ACCEPTED',
+      }, null);
+    }
     rememberCommandResult(commandId, {
       completed: false, ok: false, code: msg.code || 'ACCEPTED', message: msg.message || '',
       action: identity.action, payloadSignature: identity.payloadSignature, epoch: identity.epoch,
@@ -940,6 +1053,7 @@
     mirroredState,
     subscribe,
     command,
+    beginCommand,
     commandQuery,
     setSocketCommandToken,
     clearSocketCommandToken,

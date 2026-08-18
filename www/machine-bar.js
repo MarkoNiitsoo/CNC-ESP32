@@ -641,6 +641,21 @@
     return true;
   }
 
+  // Result phase for two-phase machine commands: a terminal failure rethrows;
+  // a lost or still-pending result falls back to the authoritative machine
+  // slice (never to HTTP). A result timeout is a liveness warning, not proof
+  // of rejection.
+  async function settleMachineCommandResult(handle, label) {
+    try {
+      return await handle.result;
+    } catch (resultError) {
+      if (resultError?.commandDisposition === 'completed') throw resultError;
+      console.warn(`[${label}] machine-command result pending or lost; confirming from authoritative machine state:`,
+        resultError.message);
+      return { commandId: handle.commandId, accepted: true, outcome: 'result-pending' };
+    }
+  }
+
   function feedOverrideCommandCompleted(job, percent) {
     if (String(job?.lastFeedOverrideCommand || '').trim() !== `M220 S${percent}`) return false;
     const error = String(job?.lastFeedOverrideError || '').trim();
@@ -1499,26 +1514,23 @@
       dispatchConfirmedMachineEvent('cnc-work-zero-set', data, machine, { axes: 'xyz' });
       setMessage('Work zero set and confirmed by live machine state');
     };
-    if (telemetry?.command && STATE.operator?.controller) {
-      const commandId = genCommandId('machine-setworkzero');
-      let fallbackAllowed = false;
+    if (telemetry?.beginCommand && STATE.operator?.controller) {
+      // Two-phase command: admission is bounded and decides the HTTP fallback;
+      // the result phase may legitimately take minutes (the firmware engine
+      // runs G28/M400 with 120 s Marlin budgets per step) and must never be
+      // mistaken for a failure to accept.
+      const handle = telemetry.beginCommand('machine.setWorkZero', { axes: 'xyz' },
+        genCommandId('machine-setworkzero'), { admissionTimeoutMs: 5000, resultTimeoutMs: 600000 });
+      let admitted = true;
       try {
-        // performSetWorkZero blocks on M400 (up to 120 s Marlin budget) before the
-        // commandResult is delivered; wait for the outcome, not a quick ack.
-        const result = await telemetry.command('machine.setWorkZero', { axes: 'xyz' }, commandId, { timeoutMs: 130000 });
-        // The operation has run (or is running). Never repeat it over HTTP;
-        // confirmation comes only from the authoritative machine slice.
-        await confirmWorkZero(result);
-        return;
-      } catch (wsErr) {
-        // recoverWsCommandOutcome returns false only for a definite rejection,
-        // and rethrows completed-failed outcomes. Anything else means the WS
-        // command was accepted or its outcome is unknown — HTTP fallback would
-        // risk a second G92 at whatever position the machine is at now.
-        fallbackAllowed = !(await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'work zero'));
+        await handle.accepted;
+      } catch (admissionError) {
+        // Only a proven non-acceptance allows the HTTP fallback; an admission
+        // timeout with the packet sent leaves the command possibly running.
+        if (wsCommandDefinitelyNotAccepted(admissionError)) admitted = false;
       }
-      if (!fallbackAllowed) {
-        await confirmWorkZero({ commandId, accepted: true, outcome: 'outcome-pending' });
+      if (admitted) {
+        await confirmWorkZero(await settleMachineCommandResult(handle, 'work zero'));
         return;
       }
     }
@@ -1541,20 +1553,17 @@
       dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z' });
       setMessage('Z zero set and confirmed by live machine state');
     };
-    if (telemetry?.command && STATE.operator?.controller) {
-      const commandId = genCommandId('machine-setzzero');
-      let fallbackAllowed = false;
+    if (telemetry?.beginCommand && STATE.operator?.controller) {
+      const handle = telemetry.beginCommand('machine.setZZero', null,
+        genCommandId('machine-setzzero'), { admissionTimeoutMs: 5000, resultTimeoutMs: 600000 });
+      let admitted = true;
       try {
-        // performSetZZero can block on M400 during the tool-change window; wait
-        // for the outcome like the previous synchronous HTTP route did.
-        const result = await telemetry.command('machine.setZZero', null, commandId, { timeoutMs: 130000 });
-        await confirmZZero(result);
-        return;
-      } catch (wsErr) {
-        fallbackAllowed = !(await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'z zero'));
+        await handle.accepted;
+      } catch (admissionError) {
+        if (wsCommandDefinitelyNotAccepted(admissionError)) admitted = false;
       }
-      if (!fallbackAllowed) {
-        await confirmZZero({ commandId, accepted: true, outcome: 'outcome-pending' });
+      if (admitted) {
+        await confirmZZero(await settleMachineCommandResult(handle, 'z zero'));
         return;
       }
     }
@@ -1625,23 +1634,17 @@
         axes,
       });
     };
-    if (telemetry?.command && STATE.operator?.controller) {
-      const commandId = genCommandId('machine-home');
-      let fallbackAllowed = false;
+    if (telemetry?.beginCommand && STATE.operator?.controller) {
+      const handle = telemetry.beginCommand('machine.home', { axes },
+        genCommandId('machine-home'), { admissionTimeoutMs: 5000, resultTimeoutMs: 600000 });
+      let admitted = true;
       try {
-        // performMachineHome blocks on G28/M400 for up to 120 s; wait for the
-        // outcome, not a quick ack.
-        const result = await telemetry.command('machine.home', { axes }, commandId, { timeoutMs: 130000 });
-        // Accepted and completed: never home again over HTTP.
-        await confirmHome(result);
-        return;
-      } catch (wsErr) {
-        // Homing may already be executing; a duplicate G28 over HTTP is never
-        // safe after acceptance or an unknown outcome.
-        fallbackAllowed = !(await recoverWsCommandOutcome(telemetry, commandId, wsErr, 'home'));
+        await handle.accepted;
+      } catch (admissionError) {
+        if (wsCommandDefinitelyNotAccepted(admissionError)) admitted = false;
       }
-      if (!fallbackAllowed) {
-        await confirmHome({ commandId, accepted: true, outcome: 'outcome-pending' });
+      if (admitted) {
+        await confirmHome(await settleMachineCommandResult(handle, 'home'));
         return;
       }
     }

@@ -1361,6 +1361,12 @@ export async function createMockServer(options = {}) {
       commandId: entry.commandId, ok: result.ok, code: result.code, message: result.message,
     });
     if (runnerStateChanged) triggerStateSliceChange('job', env.runner.snapshot());
+    // Machine commands publish the authoritative machine slice as a normal
+    // sequenced patch after the unsequenced commandResult, exactly like the
+    // firmware engine's stageTelemetryUpdates on the next telemetry tick.
+    if (machineActionNames.includes(entry.action) && result.ok) {
+      triggerStateSliceChange('machine', env.frame);
+    }
   }
 
   function flushDeferredWsCommands() {

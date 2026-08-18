@@ -255,22 +255,24 @@ describe('firmware-owned coordinate frames', () => {
     expect(machineBar).toContain("apiPost('/api/work-zero/set'");
   });
 
-  it('sends homing and zero commands over WebSocket first with safe HTTP fallback', () => {
-    expect(machineBar).toContain("telemetry.command('machine.home'");
-    expect(machineBar).toContain("telemetry.command('machine.setWorkZero'");
-    expect(machineBar).toContain("telemetry.command('machine.setZZero'");
-    // HTTP fallback must be gated on a definite WS rejection, and command ids
-    // must be collision-resistant like the job commands.
-    for (const label of ['home', 'work zero', 'z zero']) {
-      const call = machineBar.indexOf(`recoverWsCommandOutcome(telemetry, commandId, wsErr, '${label}')`);
-      expect(call).toBeGreaterThan(-1);
-      const fallback = machineBar.indexOf('apiPost(', call);
-      expect(fallback).toBeGreaterThan(call);
+  it('sends homing and zero commands over WebSocket first with two-phase admission', () => {
+    expect(machineBar).toContain("telemetry.beginCommand('machine.home'");
+    expect(machineBar).toContain("telemetry.beginCommand('machine.setWorkZero'");
+    expect(machineBar).toContain("telemetry.beginCommand('machine.setZZero'");
+    // Admission and result are separate phases; HTTP fallback is gated on a
+    // definite admission rejection only, never on a slow or lost result.
+    expect(machineBar).toContain('await handle.accepted');
+    expect(machineBar).toContain('wsCommandDefinitelyNotAccepted(admissionError)');
+    expect(machineBar).toContain('settleMachineCommandResult(handle');
+    expect((machineBar.match(/admissionTimeoutMs: 5000, resultTimeoutMs: 600000/g) || []).length).toBe(3);
+    for (const route of ["apiPost('/api/machine/home'", "apiPost('/api/work-zero/set'", "apiPost('/api/work-zero/set-z'"]) {
+      expect(machineBar).toContain(route);
     }
     expect(machineBar).toContain("genCommandId('machine-home')");
     expect(machineBar).toContain("genCommandId('machine-setworkzero')");
     expect(machineBar).toContain("genCommandId('machine-setzzero')");
     expect(machineBar).not.toContain('machine-home-${Date.now()}');
+    expect(machineBar).not.toContain('timeoutMs: 130000');
   });
 
   it('never reapplies G92 from the normal Start Job preamble', () => {
