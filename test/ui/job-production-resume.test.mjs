@@ -14,10 +14,10 @@ import {
   markProductionResumeRouterConfirmed,
 } from '../../www/lib/job-history.js';
 
-const source = await readFile(new URL('../fixtures/simple-square.gc', import.meta.url), 'utf8');
-const previewSource = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
-const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
-const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
+const source = (await readFile(new URL('../fixtures/simple-square.gc', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const previewSource = (await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const previewHtml = (await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const machineBar = (await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 const model = parseGCodeToToolpath(source);
 const limits = { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800, zMin: 0, zMax: 70 };
 const workZeroMachine = { x: 0, y: 0, z: 35 };

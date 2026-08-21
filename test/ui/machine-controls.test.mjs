@@ -1,11 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
-const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
-const styles = await readFile(new URL('../../www/style.css', import.meta.url), 'utf8');
-const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
-const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
+const machineBar = (await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const firmware = (await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const styles = (await readFile(new URL('../../www/style.css', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const preview = (await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const previewHtml = (await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 describe('compact machine drawer', () => {
   it('keeps geometry left and the guided preparation workflow together on the right', () => {
@@ -43,7 +43,7 @@ describe('compact machine drawer', () => {
   });
 
   it('sets Preview work zero through the firmware-owned frame transaction', async () => {
-    const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+    const preview = (await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
     const start = preview.indexOf('async function setWorkZeroWithCapture(');
     const end = preview.indexOf('function downloadJobJson()', start);
     const action = preview.slice(start, end);
@@ -58,7 +58,7 @@ describe('compact machine drawer', () => {
   });
 
   it('restores the captured X/Y before restoring Z after bounding box trace', async () => {
-    const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+    const preview = (await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
     const sendStart = preview.indexOf('async function sendBoundingBoxTrace()');
     const sendEnd = preview.indexOf('async function sendAircutToolpath()', sendStart);
     const send = preview.slice(sendStart, sendEnd);
@@ -87,7 +87,7 @@ describe('compact machine drawer', () => {
   });
 
   it('normalizes missing zero objects in accepted v3 job JSON before capture', async () => {
-    const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
+    const preview = (await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
     expect(preview).toContain('function ensureZeroState(job)');
     expect(preview).toMatch(/function ensureJobState\(\)[\s\S]*?ensureZeroState\(jobState\)/);
     expect(preview).toMatch(/jobState = loaded;[\s\S]*?ensureZeroState\(jobState\)/);

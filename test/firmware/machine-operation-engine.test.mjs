@@ -83,7 +83,7 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
 
   it('binds the operation to its WS command and publishes exactly one terminal result', () => {
     const complete = blockBetween(
-      'void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion) {',
+      'bool publishResult) {',
       'void cancelMachineOperation(const char *code');
     expect(complete).toContain('if (!machineOp.active) return;');
     expect(complete).toContain('finishWsCommand(machineOp.commandId, machineOp.epoch');
@@ -143,11 +143,25 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     expect(ota).toContain('machineOperationActive()');
   });
 
+  it('publishes exactly one terminal result even when the first-step write fails at admission', () => {
+    // The admission-time UART write failure completes the engine WITHOUT
+    // publishing (publishResult=false); the WS dispatch tail then publishes
+    // the single failure result through the normal path.
+    const start = blockBetween('void startMachineOperationStep()', 'void completeMachineOperation(const MachineOperationResult');
+    expect(start).toContain('completeMachineOperation(machineOpResult, MachineOpCompletion::PreWriteFailure, false)');
+    const complete = blockBetween(
+      'bool publishResult) {',
+      'void cancelMachineOperation(const char *code');
+    expect(complete).toContain('if (publishResult && machineOp.fromWebSocket)');
+    const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
+    expect(admit).toContain('return machineOpResult;');
+  });
+
   it('holds controller-communication ownership for the whole transaction', () => {
     const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
     expect(admit).toContain('reserveTransaction(ControllerCommandClass::OrdinarySync');
     const complete = blockBetween(
-      'void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion) {',
+      'bool publishResult) {',
       'void cancelMachineOperation(const char *code');
     expect(complete).toContain('controllerCommManager.onTerminalResponse');
     expect(complete).toContain('controllerCommManager.onTimeout');

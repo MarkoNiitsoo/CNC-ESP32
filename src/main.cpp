@@ -315,8 +315,12 @@ MachineOperationResult performSetWorkZero(const String& axes, String* axesOut = 
                                           String* beforeOut = nullptr, String* afterOut = nullptr);
 MachineOperationResult performSetZZero(String* beforeOut = nullptr, String* afterOut = nullptr);
 void invalidateControllerSessionSafetyCapabilities();
+// Cooperative machine-operation engine (definitions near the frame handlers).
+enum class MachineOpKind : uint8_t { Home, SetWorkZero, SetZZero };
+struct WsCommandEntry;
+bool toolChangeZZeroWindowOpen();
 bool machineOperationActive();
-enum class MachineOpKind : uint8_t;
+void cancelMachineOperation(const char *code, const String &message);
 MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
                                              const WsCommandEntry *entry);
 
@@ -9091,7 +9095,6 @@ void handleJogRestoreZ() {
 // behavior (they run the same engine to completion inside the handler) because
 // the restored HTTP API answers with the final frame only.
 
-enum class MachineOpKind : uint8_t { Home, SetWorkZero, SetZZero };
 enum class MachineOpPhase : uint8_t { Idle, AwaitResponse, Finalize };
 
 enum class MachineOpCapture : uint8_t { None = 0, Before, After, Counts, Steps };
@@ -9149,7 +9152,8 @@ enum class MachineOpCompletion : uint8_t { Success, ControllerError, Timeout, Ca
 
 bool machineOperationActive();
 bool processMachineOperation();
-void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion);
+void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion,
+                              bool publishResult = true);
 void cancelMachineOperation(const char *code, const String &message);
 MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
                                              const WsCommandEntry *entry);
@@ -9186,7 +9190,8 @@ void startMachineOperationStep() {
   if (!writeControllerLine(step.command, ControllerCommandClass::OrdinarySync,
                            machineOp.commToken, false, writeErr)) {
     machineOpResult = {false, true, true, 503, "COMM_ERROR", writeErr};
-    completeMachineOperation(machineOpResult, MachineOpCompletion::PreWriteFailure);
+    // Admission-time write failure: the dispatch tail publishes this result once.
+    completeMachineOperation(machineOpResult, MachineOpCompletion::PreWriteFailure, false);
     return;
   }
   machineOp.phase = MachineOpPhase::AwaitResponse;
@@ -9194,7 +9199,8 @@ void startMachineOperationStep() {
   machineOp.stepStartedAtMs = millis();
 }
 
-void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion) {
+void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion,
+                              bool publishResult) {
   if (!machineOp.active) return;
   machineOpResult = result;
   machineOpLastAxes = machineOp.axes;
@@ -9216,7 +9222,9 @@ void completeMachineOperation(const MachineOperationResult &result, MachineOpCom
       controllerCommManager.onPreWriteFailure(machineOp.commToken);
       break;
   }
-  if (machineOp.fromWebSocket) {
+  // publishResult=false is used when admission itself already failed before the
+  // operation started: the WS dispatch tail then publishes the single result.
+  if (publishResult && machineOp.fromWebSocket) {
     finishWsCommand(machineOp.commandId, machineOp.epoch, result.ok, result.code.c_str(),
                     result.message.c_str());
     queueWsCommandResult(machineOp.clientId, machineOp.connectionGeneration, machineOp.commandId,
@@ -9522,7 +9530,11 @@ MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &a
               (kind == MachineOpKind::Home ? "home" : kind == MachineOpKind::SetWorkZero ? "setWorkZero" : "setZZero") +
               " axes=" + axes + (entry != nullptr ? " ws=" + String(machineOp.commandId) : " http"));
   startMachineOperationStep();
-  if (!machineOp.active) return machineOpResult;
+  if (!machineOp.active) {
+    // The first-step write failed and the engine completed without publishing;
+    // return the failure so the dispatch tail publishes exactly one result.
+    return machineOpResult;
+  }
   return {true, true, true, 200, "OK", "Machine operation accepted"};
 }
 

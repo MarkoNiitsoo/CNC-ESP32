@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
-const machineBar = await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8');
-const styles = await readFile(new URL('../../www/style.css', import.meta.url), 'utf8');
+const firmware = (await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const machineBar = (await readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const styles = (await readFile(new URL('../../www/style.css', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 describe('single operator control lease', () => {
   it('stores only a PIN digest and issues one persistent HttpOnly controller cookie', () => {

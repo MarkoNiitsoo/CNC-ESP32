@@ -1,13 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-const [indexHtml, previewHtml, appCode, previewCode, machineBarCode] = await Promise.all([
+// Sources are normalized to LF so bounded-regex audits behave identically on
+// LF and CRLF checkouts (core.autocrlf on Windows rewrites working files).
+const [indexHtml, previewHtml, appCode, previewCode, machineBarCode] = (await Promise.all([
   readFile(new URL('../../www/index.html', import.meta.url), 'utf8'),
   readFile(new URL('../../www/preview.html', import.meta.url), 'utf8'),
   readFile(new URL('../../www/app.js', import.meta.url), 'utf8'),
   readFile(new URL('../../www/preview.js', import.meta.url), 'utf8'),
   readFile(new URL('../../www/machine-bar.js', import.meta.url), 'utf8'),
-]);
+])).map((text) => text.replace(/\r\n/g, '\n'));
 
 function selectorBindings(code) {
   const bindings = new Map();

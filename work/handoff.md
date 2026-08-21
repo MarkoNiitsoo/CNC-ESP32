@@ -2799,3 +2799,26 @@ No firmware upload is required.
   motion-settings travel-speed audit. The jog-animation audit is CRLF-sensitive on Windows
   checkouts (core.autocrlf); it passes with LF files.
 - Not started (deliberately): Job Start migration, realtime Jog transport, touch-plate migration.
+
+## 2026-08-21 Stabilization handoff: build environment and open hardware validation
+
+- Verification tooling (installed OUTSIDE the repository, no repo dependencies added):
+  - PlatformIO 6.1.19 in C:/Users/marko/.pio-tooling (venv); invoke via
+    `C:/Users/marko/.pio-tooling/Scripts/pio`.
+  - MinGW-W64 gcc 16.1.0 (winget WinLibs.POSIX.UCRT) — required on PATH for `pio test -e native`;
+    the esp32cam build needs no host compiler.
+- Verified state: JS 686/686, native 18/18, esp32cam build SUCCESS
+  (RAM 29.6%, Flash 76.8%). PlatformIO compiles clean with no engine warnings.
+- OPEN HARDWARE-VALIDATION ITEMS (do not claim completion without device testing):
+  1. Whether M410 actually interrupts a Marlin G28 in flight on the SKR Pro/Marlin build in use.
+     The firmware sends the quickstop and invalidates the frame; physical interruption depends on
+     Marlin's EMERGENCY_PARSER capability and has NOT been tested on hardware.
+  2. Cooperative engine timing on the real device: step latency under WiFi/telemetry load, G28 and
+     M503 response parsing against real Marlin output, and the M154 autoreport interaction.
+  3. Stop/heartbeat responsiveness during a real multi-second homing (loop-tick cadence).
+  4. Recovery checkpoint round-trip across an actual power loss during a job (writes every 2 s /
+     4 KB; SD card behavior on the AI-Thinker module).
+  5. Touch plate and OTA paths remain untouched by Phase 3C and are untested in this cycle.
+- Not started (deliberately deferred): Job Start migration, realtime Jog transport, touch-plate
+  migration, and fixes for the two historical baseline audits' underlying behaviors (the audits
+  themselves are fixed and green).

@@ -67,7 +67,7 @@ describe('shared automatic travel speed', () => {
   });
 
   it('sets XY travel feed after the slow job-start Z lift', () => {
-    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble() {'), firmware.indexOf('void handleJobStatus()'));
+    const preamble = firmware.slice(firmware.indexOf('bool runJobStartPreamble(int requestedFeedOverridePercent) {'), firmware.indexOf('void handleJobStatus()'));
     expect(preamble.indexOf('kJobStartZFeed')).toBeLessThan(preamble.indexOf('jobStatus.travelFeedMmMin'));
     expect(preamble).toContain('"M400"');
     expect(preamble).toContain('"G0 F" + String(jobStatus.travelFeedMmMin');

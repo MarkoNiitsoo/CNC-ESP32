@@ -3006,3 +3006,31 @@ The following legacy endpoints and assumptions are retained temporarily during P
   (core.autocrlf) — the audit regex is line-ending sensitive — and passes with LF working files.
   PlatformIO remains unavailable in this environment; pio run -e esp32cam and pio test -e native
   were NOT executed. Physical hardware was not flashed or exercised.
+
+## 2026-08-21 - Phase 3C stabilization: real build verification, exactly-once fix, platform-independent audits
+
+- Verified with a real PlatformIO environment (isolated venv at C:/Users/marko/.pio-tooling;
+  MinGW-W64 gcc 16 via winget for the native env — neither added to the repository):
+  - The first esp32cam compilation of the Phase-3C engine surfaced four integration defects that
+    string audits cannot catch: the opaque MachineOpKind forward declaration hid the enumerators
+    from the WS dispatch, cancelMachineOperation/toolChangeZZeroWindowOpen were referenced before
+    declaration, and an ambiguous admitMachineOperation overload (unknown WsCommandEntry at the
+    declaration point). All repaired; `pio run -e esp32cam` is SUCCESS.
+  - `pio test -e native`: 18/18 controller_comm/WS-protocol unit tests pass.
+  - Memory: RAM 29.6% (96,956/327,680 B), Flash 76.8% (1,509,809/1,966,080 B).
+- Exactly-once commandResult defect found and fixed: when the first UART write failed during
+  admission, completeMachineOperation published the terminal result and the WS dispatch tail
+  published it again. completeMachineOperation gained publishResult=false for the admission
+  failure path; the dispatch tail publishes the single result. Locked by a firmware audit.
+- The two remaining full-suite failures were STALE TESTS, not regressions: commit 860e65e added the
+  requestedFeedOverridePercent parameter to runJobStartPreamble without updating the
+  job-checkpoint and motion-settings audits. Both audits now target the parameterized
+  signatures; the behaviors they verify (checkpoint-before-preamble ordering; slow Z lift before XY
+  travel feed) were confirmed intact.
+- CRLF sensitivity: six audit test files used bounded `[\s\S]{0,N}` regexes that broke under
+  CRLF checkouts (core.autocrlf on Windows rewrites working files). All source loaders now
+  normalize to LF at read time, making the audits platform-independent; verified by converting
+  production+test files to CRLF and re-running (74/74 passed). No production files were changed
+  to satisfy the regexes.
+- Full JavaScript suite: 686/686 passing (previously 685 tests with 2 failures).
+- Hardware-validation items remain OPEN (see handoff).
