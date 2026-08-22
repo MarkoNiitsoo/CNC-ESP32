@@ -221,6 +221,10 @@ export async function createMockServer(options = {}) {
   // after config.machineOperationDelayMs (default 0 = next macrotask), and
   // cancellable by Stop before execution, mirroring the firmware engine.
   const pendingMachineOps = [];
+  // Cooperative WS job.start: admitted (validated + PREPARING) at ACK time,
+  // preparation completes after config.jobStartDelayMs (default 0), cancellable
+  // by Stop with ABORTED_BY_STOP, mirroring the firmware PREPARING lifecycle.
+  let pendingJobStart = null;
   const wsCommandQueueCapacity = 8;
   const clearWsCommandSession = () => {
     deferredWsCommands.splice(0);
@@ -1301,6 +1305,69 @@ export async function createMockServer(options = {}) {
     }
   }
 
+  function mapJobStartError(error) {
+    const message = String(error.message || error);
+    if (/another job is already active/i.test(message)) {
+      return { httpStatus: 409, code: 'JOB_STATE_CONFLICT', message };
+    }
+    if (/not found|no such/i.test(message)) {
+      return { httpStatus: 404, code: 'FILE_NOT_FOUND', message };
+    }
+    if (/communication|UART|P000|R000/i.test(message)) {
+      return { httpStatus: 503, code: 'COMM_ERROR', message };
+    }
+    return { httpStatus: 409, code: 'PRECONDITION_FAILED', message };
+  }
+
+  async function handleMockJobStart(queued) {
+    try {
+      const { snapshot, ctx } = await env.runner.startCooperative(queued.payload || {});
+      // The authoritative PREPARING transition ships as a normal sequenced
+      // job patch immediately after the unsequenced ACK.
+      triggerStateSliceChange('job', snapshot);
+      const delayMs = Math.max(0, Number(env.config.jobStartDelayMs || 0));
+      pendingJobStart = {
+        entry: queued,
+        ctx,
+        timer: setTimeout(() => {
+          const op = pendingJobStart;
+          pendingJobStart = null;
+          if (!op) return;
+          const finished = env.runner.finishStartPreparation(op.ctx);
+          rememberWsLedger(op.entry.commandId, {
+            epoch: op.entry.epoch, action: op.entry.action, payloadDigest: op.entry.payloadDigest,
+            completed: true, ok: true, code: 'OK', message: 'start preamble complete; job is RUNNING',
+          });
+          sendMockCommandResponse(op.entry.socket, 'commandResult', {
+            commandId: op.entry.commandId, ok: true, code: 'OK',
+            message: 'start preamble complete; job is RUNNING',
+          });
+          triggerStateSliceChange('job', finished);
+        }, delayMs),
+      };
+    } catch (error) {
+      const mapped = mapJobStartError(error);
+      completeMockWsCommandImmediateResult(queued, {
+        ok: false, accepted: true, httpStatus: mapped.httpStatus,
+        code: mapped.code, message: mapped.message, body: null,
+      });
+    }
+  }
+
+  function cancelPendingJobStart(code, message) {
+    const op = pendingJobStart;
+    pendingJobStart = null;
+    if (!op) return;
+    clearTimeout(op.timer);
+    rememberWsLedger(op.entry.commandId, {
+      epoch: op.entry.epoch, action: op.entry.action, payloadDigest: op.entry.payloadDigest,
+      completed: true, ok: false, code, message,
+    });
+    sendMockCommandResponse(op.entry.socket, 'commandResult', {
+      commandId: op.entry.commandId, ok: false, code, message,
+    });
+  }
+
   function cancelPendingMachineOps(code, message) {
     while (pendingMachineOps.length > 0) {
       const op = pendingMachineOps.shift();
@@ -1349,7 +1416,9 @@ export async function createMockServer(options = {}) {
     const runnerStateBefore = JSON.stringify(env.runner.status);
     const result = executeSharedJobOperation(entry.action, entry.payload || {});
     if (entry.action === 'safety.stop' || entry.action === 'job.stop') {
-      // Stop preempts admitted machine operations before any later phase runs.
+      // Stop preempts an in-flight job.start and admitted machine operations
+      // before any later phase runs, exactly like the firmware Stop path.
+      cancelPendingJobStart('ABORTED_BY_STOP', 'Job start cancelled by Stop during preparation');
       cancelPendingMachineOps('ABORTED_BY_STOP', 'Machine operation cancelled by Stop');
     }
     const runnerStateChanged = JSON.stringify(env.runner.status) !== runnerStateBefore;
@@ -1539,7 +1608,11 @@ export async function createMockServer(options = {}) {
                   payloadDigest, epoch: env.operator.controlSessionEpoch };
                 rememberWsLedger(cmdId, { epoch: env.operator.controlSessionEpoch, action, payloadDigest, completed: false, ok: false, code: '', message: '' });
                 sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: true, code: 'ACCEPTED', message: 'Command accepted' });
-                if (machineActionNames.includes(action)) {
+                if (action === 'job.start') {
+                  // ACK first, then cooperative admission: full validation plus the
+                  // PREPARING transition, followed by delayed preparation.
+                  handleMockJobStart(queued);
+                } else if (machineActionNames.includes(action)) {
                   // Admit synchronously (payload/state conflicts reject now), then
                   // execute after machineOperationDelayMs like the firmware engine.
                   const admission = executeSharedJobOperation(action, msg.payload || {}, { validateOnly: true });
@@ -1730,6 +1803,7 @@ export async function createMockServer(options = {}) {
     flushDeferredWsCommands,
     cancelPendingMachineOps,
     pendingMachineOps,
+    cancelPendingJobStart,
     triggerIdleSync,
     wsClients,
   };

@@ -323,6 +323,21 @@ bool machineOperationActive();
 void cancelMachineOperation(const char *code, const String &message);
 MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
                                              const WsCommandEntry *entry);
+// Cooperative Job Start (Phase 3D): the WS job.start command admits through the
+// same validation/setup/checkpoint core as the HTTP route, and its terminal
+// result is published when the PREPARING preamble reaches RUNNING, fails, or is
+// cancelled by Stop — never from the dispatch tail.
+struct JobStartCommandState {
+  bool active = false;
+  uint32_t epoch = 0;
+  char commandId[kWsCommandIdMaxLength + 1] = {};
+  uint8_t clientId = 0;
+  uint32_t connectionGeneration = 0;
+};
+JobStartCommandState jobStartCommand;
+bool jobStartCommandActive();
+void completeJobStartCommand(bool ok, const char *code, const String &message);
+MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *entry);
 
 bool isControllerCommunicationActive() {
   return controllerCommManager.telemetry.state == ControllerCommunicationState::Connected ||
@@ -3253,6 +3268,13 @@ void processWsCommandQueue() {
     result = payloadError
       ? MachineOperationResult{false, true, true, 400, "INVALID_PAYLOAD", "Malformed feed override payload"}
       : performJobFeedOverride(payload["percent"] | -1);
+  } else if (strcmp(entry.action, "job.start") == 0) {
+    // Shared admission core with the HTTP route (validation, checkpoint-before-
+    // motion, preamble enqueue). The terminal result is deferred: it is
+    // published by the cooperative preparation hooks when the preamble reaches
+    // RUNNING, fails, or is cancelled by Stop.
+    result = admitJobStart(String(entry.payloadJson), &entry);
+    completionDeferred = result.ok;
   } else if (strcmp(entry.action, "machine.home") == 0) {
     JsonDocument payload;
     const DeserializationError payloadError = deserializeJson(payload, entry.payloadJson);
@@ -4582,6 +4604,8 @@ void finishPrioritySequence() {
     jobRunning = true;
     jobStatus.state = JobRunnerState::Running;
     logJobEvent("start preamble complete: " + jobStatus.gcodePath);
+    // The WS job.start command completes when the job actually reaches RUNNING.
+    completeJobStartCommand(true, "OK", "start preamble complete; job is RUNNING");
   } else if (jobStatus.state == JobRunnerState::Pausing) {
     if (jobStatus.toolChangePending && jobStatus.toolChangeHandling == "park" &&
         !jobStatus.toolChangeReturnPositionCaptured) {
@@ -4671,6 +4695,7 @@ void processPriorityCommands() {
     addMarlinLog("rx", true, priorityResponseBuffer);
     jobStatus.lastPriorityResponse = priorityResponseBuffer;
     jobStatus.lastPriorityError = "Marlin reported Error for priority command";
+    const bool startPreparation = jobStatus.state == JobRunnerState::Preparing;
     noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer, jobStatus.lastPriorityError);
     clearPriorityCommands();
     if (jobStatus.state == JobRunnerState::Preparing || jobStatus.state == JobRunnerState::Pausing ||
@@ -4679,6 +4704,10 @@ void processPriorityCommands() {
       jobStatus.lastError = jobStatus.lastPriorityError;
       jobRunning = false;
       if (jobFile) jobFile.close();
+      if (startPreparation) {
+        completeJobStartCommand(false, "EXECUTION_FAILED",
+                                "start preamble failed: " + jobStatus.lastPriorityError);
+      }
     }
     touchJobStatus();
     logJobEvent("priority error: " + jobStatus.lastPriorityError);
@@ -5862,6 +5891,11 @@ void setJobError(const String &message, bool resetFeedOverride) {
   jobStatus.stopRequested = false;
   jobStatus.state = JobRunnerState::Error;
   jobStatus.lastError = message;
+  if (jobStartCommandActive()) {
+    completeJobStartCommand(false,
+                            jobStatus.errorCode.length() > 0 ? jobStatus.errorCode.c_str() : "EXECUTION_FAILED",
+                            message);
+  }
   touchJobStatus();
   logJobEvent("error: " + message);
 }
@@ -8425,30 +8459,45 @@ void handleJobFeedOverride() {
   server.send(200, "application/json", jobStatusJsonWithMessage(result.message));
 }
 
-void handleJobStart() {
+bool jobStartCommandActive() {
+  return jobStartCommand.active;
+}
+
+// Exactly-once terminal completion for the bound WS job.start command. Guarded
+// by the active flag so the success, priority-error, setJobError, and Stop
+// hooks can never double-publish.
+void completeJobStartCommand(bool ok, const char *code, const String &message) {
+  if (!jobStartCommand.active) return;
+  finishWsCommand(jobStartCommand.commandId, jobStartCommand.epoch, ok, code, message.c_str());
+  queueWsCommandResult(jobStartCommand.clientId, jobStartCommand.connectionGeneration,
+                       jobStartCommand.commandId, ok, code, message.c_str());
+  jobStartCommand = JobStartCommandState();
+}
+
+// Shared Job Start admission for the HTTP route and the authenticated WS
+// command: identical validation order, error semantics, jobStatus setup,
+// checkpoint-before-motion ordering, and preamble enqueue. The WS binding
+// completes later from the cooperative preparation hooks; the HTTP route
+// answers immediately as it always has.
+MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *entry) {
   String commError;
   if (!ensureControllerCommunicationActive(commError)) {
-    sendJsonError(503, commError);
-    return;
+    return {false, false, true, 503, "COMM_ERROR", commError};
   }
   if (!sdMounted) {
-    sendJsonError(503, "SD card is not mounted");
-    return;
+    return {false, false, true, 503, "PRECONDITION_FAILED", "SD card is not mounted"};
   }
   if (jobIsActive()) {
-    sendJsonError(409, "another job is already active");
-    return;
+    return {false, false, true, 409, "JOB_STATE_CONFLICT", "another job is already active"};
   }
   if (machineOperationActive()) {
-    sendJsonError(409, "a machine operation is in progress; start the job after it completes");
-    return;
+    return {false, false, true, 409, "MACHINE_STATE_CONFLICT",
+            "a machine operation is in progress; start the job after it completes"};
   }
-  if (!server.hasArg("plain")) {
-    sendJsonError(400, "missing JSON body");
-    return;
+  if (body.length() == 0) {
+    return {false, false, true, 400, "INVALID_PAYLOAD", "missing JSON body"};
   }
 
-  const String body = server.arg("plain");
   const String gcodePath = normalizeSdPath(extractJsonString(body, "gcodePath"));
   const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
   const String activeRunMode = extractJsonString(body, "activeRunMode");
@@ -8457,8 +8506,8 @@ void handleJobStart() {
   String startMode = extractJsonString(body, "startMode");
   if (startMode.length() == 0) startMode = "use_active_work_zero";
   if (startMode != "use_active_work_zero" && startMode != "use_manual_work_frame") {
-    sendJsonError(400, "startMode must use an active homed or manually confirmed work frame");
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD",
+            "startMode must use an active homed or manually confirmed work frame"};
   }
   const String requestedBootSessionId = extractJsonString(body, "bootSessionId");
   const int requestedHomingEpoch = extractJsonInt(body, "homingEpoch", -1);
@@ -8470,8 +8519,8 @@ void handleJobStart() {
   if (startMode == "use_manual_work_frame") {
     if (!machineFrame.manualWorkFrameValid || !machineFrame.workZeroValid ||
         requestedBootSessionId.length() == 0 || requestedBootSessionId != bootSessionId) {
-      sendJsonError(409, "manual work frame expired; confirm Continue without homing and work zero again");
-      return;
+      return {false, false, true, 409, "FRAME_STATE_CONFLICT",
+              "manual work frame expired; confirm Continue without homing and work zero again"};
     }
   } else {
     if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
@@ -8482,49 +8531,43 @@ void handleJobStart() {
         fabs(requestedZeroX - machineFrame.workZeroMachineX) > 0.05f ||
         fabs(requestedZeroY - machineFrame.workZeroMachineY) > 0.05f ||
         fabs(requestedZeroZ - machineFrame.workZeroMachineZ) > 0.05f) {
-      sendJsonError(409, "active work zero does not match this absolute Home All session; restore or set work zero again");
-      return;
+      return {false, false, true, 409, "FRAME_STATE_CONFLICT",
+              "active work zero does not match this absolute Home All session; restore or set work zero again"};
     }
   }
   const float safeStartZ = extractJsonFloat(body, "safeStartZ", NAN);
   String safeZError;
   if (!validateSafeWorkZ(safeStartZ, true, safeZError)) {
-    sendJsonError(400, safeZError);
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD", safeZError};
   }
   const float travelFeedMmMin = clampFloat(
       extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   const bool sourceRunPath = isPathUnderRoot(gcodePath, "/gcode");
   const bool generatedRunPath = isPathUnderRoot(gcodePath, "/jobs/generated");
   if (!sourceRunPath && !generatedRunPath) {
-    sendJsonError(400, "gcodePath must be under /gcode or explicit /jobs/generated");
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD",
+            "gcodePath must be under /gcode or explicit /jobs/generated"};
   }
   if (!isPathUnderRoot(jobPath, "/jobs")) {
-    sendJsonError(400, "jobPath must be under /jobs");
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD", "jobPath must be under /jobs"};
   }
   if (!SD_MMC.exists(gcodePath)) {
-    sendJsonError(404, "G-code file not found");
-    return;
+    return {false, false, true, 404, "FILE_NOT_FOUND", "G-code file not found"};
   }
   if (!SD_MMC.exists(jobPath)) {
-    sendJsonError(404, "job JSON not found");
-    return;
+    return {false, false, true, 404, "FILE_NOT_FOUND", "job JSON not found"};
   }
   JobExecutionAuthorization authorization;
   String authorizationError;
   if (!loadJobExecutionAuthorization(jobPath, authorization, authorizationError)) {
-    sendJsonError(400, authorizationError);
-    return;
+    return {false, false, true, 400, "INVALID_PAYLOAD", authorizationError};
   }
   float projectSafeZ = NAN;
   if (!loadProjectSafeZ(jobPath, projectSafeZ, authorizationError) ||
       fabsf(projectSafeZ - safeStartZ) > 0.001f) {
-    sendJsonError(409, authorizationError.length() > 0
-                           ? authorizationError
-                           : "job start Safe Z does not match project metadata");
-    return;
+    return {false, false, true, 409, "PRECONDITION_FAILED",
+            authorizationError.length() > 0 ? authorizationError
+                                            : String("job start Safe Z does not match project metadata")};
   }
   const uint32_t normalizedHomingEpoch = requestedHomingEpoch >= 0
                                              ? static_cast<uint32_t>(requestedHomingEpoch)
@@ -8535,9 +8578,9 @@ void handleJobStart() {
                                          static_cast<size_t>(requestedActiveRunSize),
                                          requestedWorkZeroId, normalizedHomingEpoch,
                                          requestedHomingSessionId, authorizationError)) {
-    sendJsonError(409, authorizationError.length() > 0 ? authorizationError
-                                                       : "active run authorization is invalid");
-    return;
+    return {false, false, true, 409, "PRECONDITION_FAILED",
+            authorizationError.length() > 0 ? authorizationError
+                                            : String("active run authorization is invalid")};
   }
 
   const int appliedFeedOverridePercent = jobStatus.feedOverridePercent;
@@ -8576,28 +8619,46 @@ void handleJobStart() {
       sizeFile.close();
     }
     setJobError("could not open G-code file");
-    sendJsonError(500, jobStatus.lastError);
-    return;
+    return {false, true, true, 500, "EXECUTION_FAILED", jobStatus.lastError};
   }
   jobStatus.fileSize = sizeFile.size();
   sizeFile.close();
 
   if (!openJobFileAtOffset()) {
-    sendJsonError(500, jobStatus.lastError);
-    return;
+    return {false, true, true, 500, "EXECUTION_FAILED", jobStatus.lastError};
   }
+  // Checkpoint-before-motion invariant: the persistent active-job checkpoint is
+  // established BEFORE the first Marlin preamble command is enqueued. On
+  // failure the job errors terminally and no preamble command is ever sent.
   if (!beginPersistentJobCheckpoint()) {
     setJobError("could not persist the active-job checkpoint");
-    sendJsonError(500, jobStatus.lastError);
-    return;
+    return {false, true, true, 500, "PERSISTENCE_ERROR", jobStatus.lastError};
   }
 
   logJobEvent("start: " + gcodePath);
   if (!runJobStartPreamble(requestedFeedOverridePercent)) {
-    sendJsonError(500, jobStatus.lastError);
-    return;
+    return {false, true, true, 500, "EXECUTION_FAILED", jobStatus.lastError};
+  }
+  if (entry != nullptr) {
+    // Bind the WS command: the terminal result is published by the cooperative
+    // preparation hooks (RUNNING / failure / Stop), never here.
+    jobStartCommand = JobStartCommandState();
+    jobStartCommand.active = true;
+    jobStartCommand.epoch = entry->epoch;
+    strncpy(jobStartCommand.commandId, entry->commandId, kWsCommandIdMaxLength);
+    jobStartCommand.clientId = entry->clientId;
+    jobStartCommand.connectionGeneration = entry->connectionGeneration;
   }
   touchJobStatus();
+  return {true, true, true, 200, "OK", "Job start admitted; preparation in progress"};
+}
+
+void handleJobStart() {
+  const MachineOperationResult result = admitJobStart(server.hasArg("plain") ? server.arg("plain") : "", nullptr);
+  if (!result.ok) {
+    sendJsonError(result.httpStatus, result.message);
+    return;
+  }
   server.send(200, "application/json", jobStatusJson());
 }
 
@@ -8835,6 +8896,12 @@ void handlePausedManualInterruption() {
 }
 
 MachineOperationResult performJobStop() {
+  if (jobStartCommandActive()) {
+    // Stop during PREPARING: cancel the in-flight job.start with one terminal
+    // ABORTED_BY_STOP result. The stop sequence below replaces the preamble
+    // queue, so no further start step runs and the job can never reach RUNNING.
+    completeJobStartCommand(false, "ABORTED_BY_STOP", "Job start cancelled by Stop during preparation");
+  }
   if (machineOperationActive()) {
     // Stop preempts a running Home/Zero transaction from ANY job state: no
     // later phase may run, the operation gets exactly one terminal

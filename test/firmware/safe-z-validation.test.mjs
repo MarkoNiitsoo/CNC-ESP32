@@ -36,10 +36,20 @@ describe('dynamic Safe Z validation', () => {
     expect(metadata).toContain('extraClearanceMm');
     expect(metadata).toContain('fabsf(storedEffective - expectedEffective) > 0.001f');
     expect(metadata).toContain('extraClearanceMm < 0.0f');
-    for (const handler of ['handleTestMotionStart', 'handleProductionResumeStart', 'handleJobStart', 'handleJogStart', 'handleGoToWorkZero']) {
-      const start = source.indexOf(`void ${handler}()`);
+    // Job Start admission lives in the shared admitJobStart core (Phase 3D).
+    // Job Start admission lives in the shared admitJobStart core (Phase 3D).
+    const handlerMarkers = [
+      'void handleTestMotionStart()',
+      'void handleProductionResumeStart()',
+      'MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *entry) {',
+      'void handleJogStart()',
+      'void handleGoToWorkZero()',
+    ];
+    for (const marker of handlerMarkers) {
+      const start = source.indexOf(marker);
+      expect(start, marker).toBeGreaterThan(-1);
       const end = source.indexOf('\nvoid ', start + 1);
-      expect(source.slice(start, end)).toContain('loadProjectSafeZ');
+      expect(source.slice(start, end), marker).toContain('loadProjectSafeZ');
     }
   });
 

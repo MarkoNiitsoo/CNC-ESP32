@@ -109,7 +109,11 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
   it('gates concurrent machine activity on the active operation', () => {
     const busy = blockBetween('bool machineFrameControlBusy()', 'bool runFrameCommand(');
     expect(busy).toContain('machineOperationActive()');
-    const jobStart = blockBetween('void handleJobStart()', 'MachineOperationResult performJobPause()');
+    // Job Start admission moved into the shared core (Phase 3D); the gate
+    // against active machine operations moved with it.
+    const jobStart = blockBetween(
+      'MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *entry) {',
+      'void handleJobStart() {');
     expect(jobStart).toContain('machineOperationActive()');
     const toolChange = blockBetween('void handleToolChangeComplete()', 'bool beginPausedManualInterruption()');
     expect(toolChange).toContain('machineOperationActive()');

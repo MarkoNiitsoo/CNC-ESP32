@@ -264,7 +264,7 @@ export class MockJobRunner {
     return this.snapshot();
   }
 
-  async start(request = {}) {
+  async validateStartRequest(request = {}) {
     this.assertControllerCommunication();
     if (this.isActive()) throw new Error('another job is already active');
     const job = JSON.parse(await this.sd.readText(request.jobPath));
@@ -313,19 +313,26 @@ export class MockJobRunner {
     }
     const safeStartZ = this.assertProjectSafeZ(job, request.safeStartZ);
     const feed = Math.max(10, Math.min(200, Math.round(Number(job.feedOverride?.startPercent || 100))));
+    return { request, job, active, text, bytes, startMode, safeStartZ, feed };
+  }
+
+  applyStartPreparing(ctx) {
     const appliedFeed = this.status.feedOverridePercent;
     this.status = {
-      ...this.emptyStatus(), state: 'PREPARING', gcodePath: active.path, jobPath: request.jobPath,
-      startMode, safeStartZ, allowedWorkspaceCommands: Boolean(job.allowedWorkspaceCommands),
-      fileSize: bytes, feedOverridePercent: appliedFeed,
+      ...this.emptyStatus(), state: 'PREPARING', gcodePath: ctx.active.path, jobPath: ctx.request.jobPath,
+      startMode: ctx.startMode, safeStartZ: ctx.safeStartZ,
+      allowedWorkspaceCommands: Boolean(ctx.job.allowedWorkspaceCommands),
+      fileSize: ctx.bytes, feedOverridePercent: appliedFeed,
     };
+  }
 
-    const preamble = ['M5', 'G21', 'G90', 'G54', `M220 S${feed}`, 'M400', 'M114'];
-    preamble.push(`G0 Z${safeStartZ.toFixed(3)} F400`, 'M400');
+  finishStartPreparation(ctx) {
+    const preamble = ['M5', 'G21', 'G90', 'G54', `M220 S${ctx.feed}`, 'M400', 'M114'];
+    preamble.push(`G0 Z${ctx.safeStartZ.toFixed(3)} F400`, 'M400');
     for (const command of preamble) {
-      if (command === `M220 S${feed}`) {
+      if (command === `M220 S${ctx.feed}`) {
         try {
-          this.setFeedOverride(feed, { allowDuringTransition: true });
+          this.setFeedOverride(ctx.feed, { allowDuringTransition: true });
         } catch (error) {
           return this.fail(error.message);
         }
@@ -337,8 +344,24 @@ export class MockJobRunner {
 
     this.status.state = 'RUNNING';
     const token = ++this.runToken;
-    this.stream(text, token, Boolean(job.feedOverride?.resetTo100AfterJob ?? true));
+    this.stream(ctx.text, token, Boolean(ctx.job.feedOverride?.resetTo100AfterJob ?? true));
     return this.snapshot();
+  }
+
+  async start(request = {}) {
+    const ctx = await this.validateStartRequest(request);
+    this.applyStartPreparing(ctx);
+    return this.finishStartPreparation(ctx);
+  }
+
+  // Cooperative admission for the WS job.start command: full validation plus
+  // the PREPARING state transition, without running the preamble. The server
+  // completes the preparation after its configured delay, mirroring the
+  // firmware engine's loop-tick progression.
+  async startCooperative(request = {}) {
+    const ctx = await this.validateStartRequest(request);
+    this.applyStartPreparing(ctx);
+    return { snapshot: this.snapshot(), ctx };
   }
 
   async startTestMotion(request = {}) {

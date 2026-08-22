@@ -32,7 +32,7 @@ describe('persistent active-job checkpoint', () => {
     );
     expect(begin).toMatch(/setPersistentActiveJobMarker\(true\)[\s\S]*writePersistentJobCheckpoint\(true, false/);
     expect(firmware.match(/if \(!beginPersistentJobCheckpoint\(\)\)/g)).toHaveLength(2);
-    expect(firmware).toMatch(/handleJobStart\(\)[\s\S]*beginPersistentJobCheckpoint\(\)[\s\S]*runJobStartPreamble\([^)]*\)/);
+    expect(firmware).toMatch(/MachineOperationResult admitJobStart\([^)]*\)[\s\S]*beginPersistentJobCheckpoint\(\)[\s\S]*runJobStartPreamble\([^)]*\)/);
     const testMotion = firmware.slice(
       firmware.indexOf('void handleTestMotionStart()'),
       firmware.indexOf('void handleProductionResumeStart()'),

@@ -1711,3 +1711,192 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(data.frame.workZeroValid).toBe(true);
   });
 });
+
+describe('WS job.start (Phase 3D)', () => {
+  async function claimWsController(base) {
+    const claim = await fetch(`${base}/api/operator/claim`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
+    }).then((r) => r.json());
+    const ws = await connectWs(base);
+    const send = (commandId, action, payload, authorization = {
+      controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken,
+    }) => ws.send({
+      protocolVersion: 1, type: 'command', commandId, action, payload,
+      authorization,
+    });
+    return { claim, ws, send };
+  }
+
+  const auth = (claim) => ({
+    controlSessionEpoch: claim.controlSessionEpoch, socketCommandToken: claim.socketCommandToken,
+  });
+
+  const preambleLiftCount = (env) => env.marlin.log.filter(
+    (entry) => entry.direction === 'tx' && /^G0 Z/i.test(String(entry.text || '').trim())).length;
+
+  it('ACKs before preparation completes, then sequences PREPARING and RUNNING job patches', async () => {
+    const { base, env } = await start({ jobStartDelayMs: 80 });
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-1');
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-1', 'job.start', job.request);
+    const ack = await ws.recv();
+    expect(ack.type).toBe('commandAck');
+    expect(ack.accepted).toBe(true);
+    expect(ack.seq).toBeUndefined();
+
+    // The authoritative PREPARING transition ships as a sequenced job patch.
+    const preparing = await ws.recv();
+    expect(preparing.type).toBe('patch');
+    expect(preparing.seq).toBe(2);
+    expect(preparing.patch?.job?.state).toBe('PREPARING');
+    // Admission completed, preparation has not: the lift move has not run.
+    expect(preambleLiftCount(env)).toBe(0);
+
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.commandId).toBe('cmd-ws-start-1');
+    expect(result.ok).toBe(true);
+    expect(result.code).toBe('OK');
+    expect(result.seq).toBeUndefined();
+
+    const running = await ws.recv();
+    expect(running.type).toBe('patch');
+    expect(running.seq).toBe(3);
+    expect(running.patch?.job?.state).toBe('RUNNING');
+    expect(preambleLiftCount(env)).toBe(1);
+    ws.close();
+  });
+
+  it('reports IN_PROGRESS for an exact retry while preparation is pending', async () => {
+    const { base, env } = await start({ jobStartDelayMs: 100 });
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-2');
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-2', 'job.start', job.request);
+    await ws.recv(); // commandAck
+    await ws.recv(); // PREPARING patch
+
+    send('cmd-ws-start-2', 'job.start', job.request);
+    const retryAck = await ws.recv();
+    expect(retryAck.type).toBe('commandAck');
+    expect(retryAck.accepted).toBe(true);
+    expect(retryAck.inProgress).toBe(true);
+    expect(retryAck.code).toBe('IN_PROGRESS');
+
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.commandId).toBe('cmd-ws-start-2');
+    expect(result.ok).toBe(true);
+
+    const running = await ws.recv();
+    expect(running.patch?.job?.state).toBe('RUNNING');
+    // Exactly one preamble lift for one logical start.
+    expect(preambleLiftCount(env)).toBe(1);
+
+    // A completed exact retry replays the same terminal result and does not
+    // execute a second start.
+    send('cmd-ws-start-2', 'job.start', job.request);
+    const replay = await ws.recv();
+    expect(replay.type).toBe('commandResult');
+    expect(replay.commandId).toBe('cmd-ws-start-2');
+    expect(replay.ok).toBe(true);
+    expect(preambleLiftCount(env)).toBe(1);
+    ws.close();
+  });
+
+  it('Stop during PREPARING cancels the start with ABORTED_BY_STOP and never reaches RUNNING', async () => {
+    const { base, env } = await start({ jobStartDelayMs: 140 });
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-3');
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-3', 'job.start', job.request);
+    await ws.recv(); // commandAck
+    const preparing = await ws.recv();
+    expect(preparing.patch?.job?.state).toBe('PREPARING');
+
+    send('cmd-ws-stop-3', 'safety.stop');
+    await ws.recv(); // stop commandAck
+    // Cancellation completes before the Stop sequence's own result, matching
+    // the firmware ordering (start command cancelled, then stop proceeds).
+    const cancelled = await ws.recv();
+    expect(cancelled.type).toBe('commandResult');
+    expect(cancelled.commandId).toBe('cmd-ws-start-3');
+    expect(cancelled.ok).toBe(false);
+    expect(cancelled.code).toBe('ABORTED_BY_STOP');
+
+    const stopResult = await ws.recv();
+    expect(stopResult.type).toBe('commandResult');
+    expect(stopResult.commandId).toBe('cmd-ws-stop-3');
+    expect(stopResult.ok).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(env.runner.status.state).not.toBe('RUNNING');
+    // The Safe-Z lift phase never executed after cancellation.
+    expect(preambleLiftCount(env)).toBe(0);
+    ws.close();
+  });
+
+  it('rejects an invalid start identity after ACK with PRECONDITION_FAILED', async () => {
+    const { base, env } = await start();
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-4');
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-4', 'job.start', { ...job.request, activeRunFingerprint: 'deadbeef' });
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('PRECONDITION_FAILED');
+    expect(env.runner.status.state).toBe('IDLE');
+    expect(preambleLiftCount(env)).toBe(0);
+    ws.close();
+  });
+
+  it('rejects a conflicting start while a job is active with JOB_STATE_CONFLICT', async () => {
+    const { base, env } = await start();
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-5');
+    env.runner.status.state = 'RUNNING';
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-5', 'job.start', job.request);
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('JOB_STATE_CONFLICT');
+    ws.close();
+  });
+
+  it('rejects a disappeared G-code file with FILE_NOT_FOUND', async () => {
+    const { base, env } = await start();
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-6');
+    await env.sd.delete(job.gcodePath);
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-6', 'job.start', job.request);
+    await ws.recv(); // commandAck
+    const result = await ws.recv();
+    expect(result.type).toBe('commandResult');
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('FILE_NOT_FOUND');
+    expect(env.runner.status.state).toBe('IDLE');
+    ws.close();
+  });
+
+  it('rejects a reused commandId with a changed payload via IDEMPOTENCY_CONFLICT', async () => {
+    const { base, env } = await start({ jobStartDelayMs: 30 });
+    const job = await prepareAuthorizedJob(base, env, 'ws-start-7');
+    const { ws, send } = await claimWsController(base);
+
+    send('cmd-ws-start-7', 'job.start', job.request);
+    await ws.recv(); // commandAck
+    send('cmd-ws-start-7', 'job.start', { ...job.request, safeStartZ: 99 });
+    const conflict = await ws.recv();
+    expect(conflict.type).toBe('commandAck');
+    expect(conflict.accepted).toBe(false);
+    expect(conflict.code).toBe('IDEMPOTENCY_CONFLICT');
+    ws.close();
+  });
+});
