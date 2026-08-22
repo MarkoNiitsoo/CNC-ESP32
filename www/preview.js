@@ -1878,6 +1878,52 @@ function requestInterruptedStartChoice() {
   });
 }
 
+// Two-phase WS-first dispatch for Job Start (Phase 3D). Admission is bounded
+// and is the ONLY gate for the HTTP fallback — after admission, preparation
+// runs cooperatively in the firmware and the canonical job slice is the sole
+// authority. The terminal commandResult means the PREPARING transaction
+// reached RUNNING or failed, not that the whole job finished.
+async function dispatchJobStart(payload) {
+  const telemetry = window.CncTelemetry;
+  const operatorController = window.LowRiderMachineBar?.operatorState?.()?.controller === true;
+  if (telemetry?.beginCommand && operatorController) {
+    const random = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '')
+      : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const handle = telemetry.beginCommand('job.start', payload, `job-start-${random}`, {
+      admissionTimeoutMs: 5000,
+      resultTimeoutMs: 600000,
+    });
+    let admitted = true;
+    try {
+      await handle.accepted;
+    } catch (admissionError) {
+      // Only a proven non-acceptance permits the single HTTP fallback; an
+      // admission timeout with the packet sent leaves Start possibly running,
+      // and a duplicate start could corrupt checkpoint, history, and motion.
+      if (admissionError?.definitelyNotAccepted === true) admitted = false;
+    }
+    if (admitted) {
+      try {
+        const result = await handle.result;
+        if (result && result.ok === false) {
+          throw new Error(result.message || 'Job start failed during preparation.');
+        }
+        return result;
+      } catch (resultError) {
+        if (resultError?.commandDisposition === 'completed') {
+          throw new Error(resultError.message || 'Job start failed during preparation.');
+        }
+        // Lost, revoked, or still-pending result: never re-dispatch. The
+        // canonical job-slice waiter below decides what the operator sees.
+        appendRunLog('Job start result pending; confirming from authoritative socket job state.');
+        return { accepted: true, outcome: 'result-pending' };
+      }
+    }
+  }
+  return postCriticalJobAction('/api/job/start', payload);
+}
+
 async function startJobRun() {
   const runPath = currentRunPath();
   const runMode = currentRunMode();
@@ -1938,7 +1984,7 @@ async function startJobRun() {
     await saveJobQuietly();
     renderHistoryPanels();
     const jobBaseline = socketSliceToken('job');
-    const data = await postCriticalJobAction('/api/job/start', {
+    const data = await dispatchJobStart({
       gcodePath: runPath,
       jobPath: jobPathFor(filePath),
       startMode: job.startMode,

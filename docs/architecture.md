@@ -145,6 +145,12 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
     quickstop from any job state; interrupted homing never publishes a trusted frame. The legacy
     HTTP routes run the same engine synchronously to preserve their documented envelopes — the
     only remaining long-blocking HTTP paths, isolated to the legacy transport.
+  - Job Start (Phase 3D) stays in the Job Runner rather than the machine-operation engine:
+    `admitJobStart` is the shared admission core for the WS action and the HTTP route, and the
+    start preamble remains the existing priority-command sequence advanced one step per loop()
+    tick through `PREPARING`. The WS command binds at admission and its terminal result is
+    published from the preparation lifecycle (RUNNING / failure / Stop preemption) with an
+    exactly-once guard; the checkpoint-before-motion invariant is preserved inside admission.
   - The browser sends `command`/`commandQuery` with control-session epoch, ephemeral token, command
     identity, and insertion-order serialized payload identity. Firmware uses an 8-entry execution
     queue and 32-entry session ledger; reconnect queries recover results within the same session.

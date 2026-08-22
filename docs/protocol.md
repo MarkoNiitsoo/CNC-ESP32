@@ -159,9 +159,20 @@ epoch/token and clears incompatible queued and ledger state.
   result after socket reconnect within the same control session, including across different sockets.
 - Accepted execution remains on the Arduino loop. `commandAck`/`commandResult` report disposition;
   the subsequent normal sequenced `job` patch is the authoritative machine state.
-- Migrated actions are `safety.stop`/`job.stop`, `job.pause`, `job.resume`, `job.setFeedOverride`, `machine.home`, `machine.setWorkZero`, and
-  `machine.setZZero`. Their existing operator-protected HTTP routes remain available. Job Start, Bounding Box, Jog, and other actions remain HTTP/unmigrated. Jog must
+- Migrated actions are `safety.stop`/`job.stop`, `job.pause`, `job.resume`, `job.setFeedOverride`, `job.start`, `machine.home`, `machine.setWorkZero`, and
+  `machine.setZZero`. Their existing operator-protected HTTP routes remain available. Bounding Box, Jog, and other actions remain HTTP/unmigrated. Jog must
   use a separate coalesced realtime design rather than the generic command queue.
+- `job.start` runs the full HTTP validation contract (controller communication, active-job and
+  machine-operation conflicts, start mode, boot-session/work-zero/homing identity, Safe-Z, path
+  roots, file existence, job authorization and fingerprint, project Safe-Z match) inside admission,
+  establishes the persistent active-job checkpoint BEFORE the first preamble command, and only then
+  enqueues the start preamble. The command ACKs at admission; the terminal `commandResult` is
+  published exactly once when the cooperative `PREPARING` preamble reaches `RUNNING`, fails, or is
+  cancelled by Stop (`ABORTED_BY_STOP`) — it never waits for the whole job to finish. The browser
+  confirms Start from the canonical sequenced `job` slice (`PREPARING`/`RUNNING` with the active run
+  path), never from the command result. HTTP fallback is permitted only on a definite admission
+  rejection; slow, lost, revoked, or IN_PROGRESS results are resolved by `commandQuery` recovery
+  with the same commandId.
 - Machine commands (`machine.home`, `machine.setWorkZero`, `machine.setZZero`) run as COOPERATIVE
   OPERATIONS: admission validates payload/state and binds the command before the `commandAck`;
   the Marlin transaction then advances one step per Arduino-loop tick in the machine-operation

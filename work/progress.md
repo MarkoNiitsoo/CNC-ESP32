@@ -3034,3 +3034,21 @@ The following legacy endpoints and assumptions are retained temporarily during P
   to satisfy the regexes.
 - Full JavaScript suite: 686/686 passing (previously 685 tests with 2 failures).
 - Hardware-validation items remain OPEN (see handoff).
+
+## 2026-08-22 - Phase 3D: Job Start over authenticated WebSocket with cooperative PREPARING
+
+- Commit A (ea27066): `job.start` WS action with a shared admission core (`admitJobStart`) for the
+  HTTP route and the WS command — full validation contract preserved, checkpoint written before the
+  first preamble command, terminal commandResult published exactly once from the preparation
+  lifecycle (RUNNING / preamble failure / job error / Stop preemption ABORTED_BY_STOP). The start
+  preamble remains the existing priority-command sequence advanced per loop() tick through
+  PREPARING, so loop() stays responsive during preparation. Mock parity: ACK, sequenced PREPARING
+  patch, delayed preparation (jobStartDelayMs), unsequenced result, sequenced RUNNING patch, and
+  Stop cancellation of a pending start.
+- Commit B: Preview `startJobRun()` dispatches WS-first through the two-phase `beginCommand` API
+  (`dispatchJobStart`): 5 s admission / 10 min result budgets, HTTP fallback only on definite
+  admission rejection, terminal result failures thrown into the existing error path, pending/lost
+  results resolved by the canonical job-slice waiter. Run history is created once per invocation
+  before dispatch, so retries and query recovery cannot duplicate entries.
+- Verification this phase: full suite 705/705 twice, pio native 18/18, esp32cam build
+  SUCCESS (RAM 29.6%, Flash 76.9%). Physical hardware was not flashed or exercised.

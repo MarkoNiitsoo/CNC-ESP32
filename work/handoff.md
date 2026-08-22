@@ -2822,3 +2822,21 @@ No firmware upload is required.
 - Not started (deliberately deferred): Job Start migration, realtime Jog transport, touch-plate
   migration, and fixes for the two historical baseline audits' underlying behaviors (the audits
   themselves are fixed and green).
+
+## 2026-08-22 Phase 3D handoff: cooperative WS Job Start
+
+- `job.start` is migrated: shared `admitJobStart` core (src/main.cpp), WS binding via
+  `jobStartCommand` + `completeJobStartCommand` (publish-then-clear exactly-once guard), completion
+  hooks in finishPrioritySequence (RUNNING), processPriorityCommands (preamble error), setJobError
+  (timeout/comm loss), performJobStop (ABORTED_BY_STOP before the quickstop).
+- Preview dispatch: `dispatchJobStart()` in www/preview.js — two-phase beginCommand, strict
+  admission-only fallback, canonical slice confirmation unchanged.
+- Mock: `jobStartDelayMs` config; `validateStartRequest`/`applyStartPreparing`/
+  `finishStartPreparation` split in mock-job-runner.mjs; HTTP /api/job/start behavior unchanged.
+- Deliberately NOT migrated: Jog, Bounding Box, Aircut, touch plate, saved-zero restore, goto
+  zero, recovery movement, Production Resume, toolless resume, tool-change movement.
+- Hardware validation still open (unchanged from the 2026-08-21 list): M410-during-G28 behavior,
+  on-device preparation timing under load, power-loss checkpoint round-trip. Job Start's
+  PREPARING preamble (M5/G21/G90/G54/M220/M400/M114/Safe-Z/M400/travel) executes through the same
+  priority-command path as before — no new Marlin sequence — so its hardware risk profile is
+  unchanged; only the admission/telemetry wiring moved.
