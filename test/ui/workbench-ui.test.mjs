@@ -304,15 +304,19 @@ describe('canvas workbench control policy', () => {
   });
 
   it('persists only known boolean layer preferences', () => {
-    const values = new Map([[LAYER_STORAGE_KEY, JSON.stringify({ travel: false, path: true, injected: false })]]);
+    const values = new Map([[LAYER_STORAGE_KEY, JSON.stringify({ travel: false, compareSource: true, injected: false })]]);
     const storage = {
       getItem: (key) => values.get(key) || null,
       setItem: (key, value) => values.set(key, value),
     };
     const defaults = createWorkbenchState(390).layers;
     const loaded = loadLayerPreferences(storage, defaults);
-    expect(loaded).toMatchObject({ travel: false, path: true });
+    expect(loaded).toMatchObject({ travel: false, compareSource: true });
     expect(loaded).not.toHaveProperty('injected');
+    // Old saved layer keys (path/source/generated) are dropped by the key filter.
+    expect(loaded).not.toHaveProperty('path');
+    expect(loaded).not.toHaveProperty('source');
+    expect(loaded).not.toHaveProperty('generated');
     saveLayerPreferences(storage, { ...loaded, zero: false });
     expect(JSON.parse(values.get(LAYER_STORAGE_KEY)).zero).toBe(false);
   });

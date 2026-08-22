@@ -116,12 +116,10 @@
           <button id="toggle-layers" type="button" data-icon="bounds">Layers</button>
         </div>
         <div id="canvas-layers" class="canvas-layer-toggles" hidden>
-          <label><input type="checkbox" data-canvas-layer="path" checked> Path</label>
           <label><input type="checkbox" data-canvas-layer="bounds" checked> Bounds</label>
           <label><input type="checkbox" data-canvas-layer="zero" checked> Zero</label>
           <label><input type="checkbox" data-canvas-layer="travel" checked> Travel</label>
-          <label><input type="checkbox" data-canvas-layer="source" checked> Source</label>
-          <label><input type="checkbox" data-canvas-layer="generated" checked> Generated</label>
+          <label id="compare-source-layer" hidden><input type="checkbox" data-canvas-layer="compareSource"> Compare original</label>
           <label><input type="checkbox" data-canvas-layer="table" checked> Table</label>
         </div>
       </section>

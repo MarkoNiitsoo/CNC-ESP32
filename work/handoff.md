@@ -2873,3 +2873,18 @@ No firmware upload is required.
   placement-affecting control should re-run updatePlacementPreview so the summary stays in sync.
 - Mock note: /api/upload answers 423 without a claimed operator lease, so regenerating run files
   in the dev browser requires claiming control first (PIN from dev/mock-config.json).
+
+## 2026-08-22 handoff: Active Run primary canvas
+
+- Canvas invariant: the bold toolpath is ALWAYS the active-run parse (parsed.segments);
+  there is no layer that can hide it. activeRunDrawPlan() (preview.js) is the pure
+  decision helper - extend it (not draw()) if more overlay logic is needed.
+- compareSource layer: diagnostic ghost of the original, only rendered when the active
+  mode is generated; the checkbox is hidden while mode is source.
+- Placement transform preview: subdued overlay while (mode!=='generated' or validation
+  !== 'valid'); suppressed once the generated run is current to avoid double-drawing.
+- Layer persistence auto-migrates (saved keys filtered through DEFAULT_LAYERS); the
+  storage key is unchanged (lowrider.workbench.layers.v1).
+- Out of scope (noticed, left): the workbench top-bar chip and the canvas label both
+  show the active-run path; the zero/table overlays could get the same 'always primary'
+  review treatment later.

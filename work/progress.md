@@ -3126,3 +3126,35 @@ The following legacy endpoints and assumptions are retained temporarily during P
   against counting stubs - stale shows transformed bounds and hint and drops the negatives info;
   valid and original modes keep parsed bounds; feeds/distances stay from the parse; placement
   recompute refreshes the summary. Full suite 716/716 twice.
+
+## 2026-08-22 - Active Run is the single primary preview toolpath
+
+- Removed the confusing three-path canvas layers (Path/Source/Generated). New invariant:
+  Preview's primary toolpath is always Active Run - the same logical run Job Start will
+  execute. Original Source is only an optional comparison overlay.
+- Layer model (workbench-ui.js DEFAULT_LAYERS): { path, bounds, zero, travel, source,
+  generated, table } -> { bounds, zero, travel, compareSource: false, table }. The
+  primary path has no toggle. Persisted preferences (lowrider.workbench.layers.v1) migrate
+  automatically: loadLayerPreferences filters saved keys through the new defaults, so stale
+  path/source/generated entries are dropped without a migration shim.
+- draw() now renders via a pure activeRunDrawPlan() decision: primary = parsed.segments
+  (the active-run parse applyActiveRunParse maintains - the existing decision, no new
+  heuristic; currentRunMode() + generatedValidation.status feed the plan). Compare-original
+  (source ghost overlay, alpha 0.34) draws only when the active mode is generated and the
+  operator enabled it. The uncommitted placement transform renders as a distinct subdued
+  overlay (alpha 0.5) until the generated run is valid-and-active, after which the run's
+  own parse is the primary and the preview stops duplicating it.
+- Layers UI (preview.html): Bounds/Zero/Travel/Table plus 'Compare original'
+  (default OFF, hidden while Active Run is source - comparison would duplicate the
+  primary). Canvas label: 'ACTIVE RUN' / 'ACTIVE RUN · GENERATED' with the active run
+  path (reuses buildWorkbenchStatus; no duplicated logic).
+- Verified in a real browser against dev mock: ex1.gc (generated, stale) shows the
+  ACTIVE RUN · GENERATED label and the new layer set; safe-rectangle.gc (source) shows
+  ACTIVE RUN with Compare hidden.
+- Tests: new test/ui/preview-active-run-canvas.test.mjs (12 tests: layer UI contents,
+  defaults, primary-selection plan across source/generated/stale/valid states, no
+  hideable primary, ghost-only comparison, no self-duplication, travel passthrough,
+  existing-decision reuse, placement-preview distinctness, label, Start untouched);
+  workbench-ui persistence test updated for the new keys + dropped legacy keys.
+  Full suite 728/728 twice; pio native 18/18; esp32cam SUCCESS (RAM 29.6%, Flash 76.9%,
+  unchanged - firmware files untouched).

@@ -2,12 +2,10 @@ import { getActiveRun, requiresGeneratedRun } from './job-active-run.js';
 import { buildJobReadiness } from './job-readiness.js';
 
 export const DEFAULT_LAYERS = Object.freeze({
-  path: true,
   bounds: true,
   zero: true,
   travel: true,
-  source: true,
-  generated: true,
+  compareSource: false,
   table: true,
 });
 

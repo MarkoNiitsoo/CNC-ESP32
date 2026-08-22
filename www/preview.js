@@ -368,8 +368,16 @@ function renderWorkbenchStatus() {
       : status.readiness.label);
     window.CncSkin?.applyIcons(workbenchReadinessEl);
   }
-  if (canvasJobNameEl) canvasJobNameEl.textContent = basename(filePath) || 'No job';
+  const activeMode = currentRunMode();
+  if (canvasJobNameEl) {
+    // Compact confirmation that the canvas shows the run Start will execute.
+    canvasJobNameEl.textContent = filePath
+      ? `ACTIVE RUN${activeMode === 'generated' ? ' · GENERATED' : ''}`
+      : 'No job';
+  }
   if (canvasActivePathEl) canvasActivePathEl.textContent = status.activeRunPath || 'Choose a G-code file';
+  const compareLayer = document.getElementById('compare-source-layer');
+  if (compareLayer) compareLayer.hidden = activeMode !== 'generated';
 }
 
 function routePreviewTab() {
@@ -5809,6 +5817,23 @@ function strokeBounds(ctx2d, bounds, project, color, dash = []) {
   ctx2d.restore();
 }
 
+// Toolpath layer plan for the canvas. The primary toolpath is ALWAYS the
+// Active Run (the same logical run Job Start executes — the `parsed` model
+// applyActiveRunParse maintains) and can never be toggled off. Everything
+// else is a subdued overlay: the original source is a diagnostic comparison
+// (only meaningful when the Active Run is generated), and the live placement
+// preview is the uncommitted transform shown until it becomes the active
+// run's own content.
+function activeRunDrawPlan({ mode, validationStatus, compareSource, hasSource, hasPlacementPreview } = {}) {
+  const generatedActive = mode === 'generated';
+  const generatedCurrent = generatedActive && validationStatus === 'valid';
+  return {
+    primaryIsGenerated: generatedActive,
+    drawCompareSource: compareSource === true && generatedActive && hasSource === true,
+    drawPlacementPreview: hasPlacementPreview === true && !generatedCurrent,
+  };
+}
+
 function drawSegments(segments, project, options = {}) {
   (segments || []).forEach((segment) => {
     const rapid = segment.rapid || segment.type === 'rapid' || segment.type === 'retract';
@@ -6004,7 +6029,7 @@ function draw() {
     zoom: 1, panX: 0, panY: 0, fitMode: 'active', projection: '2d',
   };
   const layers = workbenchController?.getLayers() || {
-    path: true, bounds: true, zero: true, travel: true, source: true, generated: true, table: true,
+    bounds: true, zero: true, travel: true, compareSource: false, table: true,
   };
   const viewBounds = workbenchViewBounds(workbenchView.fitMode) || parsed.bounds;
   const view = fitBounds(viewBounds);
@@ -6103,29 +6128,42 @@ function draw() {
       }
     }
   }
-  if (layers.source && sourceParsed?.segments?.length) {
+  const drawPlan = activeRunDrawPlan({
+    mode: currentRunMode(),
+    validationStatus: jobState?.generatedValidation?.status || 'unknown',
+    compareSource: layers.compareSource,
+    hasSource: Boolean(sourceParsed?.segments?.length),
+    hasPlacementPreview: Boolean(transformedPreview?.segments?.length),
+  });
+  // Primary: the Active Run parse — the exact run Job Start executes. There is
+  // deliberately no layer toggle for it; Preview's core purpose must stay visible.
+  drawSegments(parsed.segments, jobProject, {
+    showTravel: layers.travel,
+    cutColor: drawPlan.primaryIsGenerated ? colors.generated : colors.cut,
+    travelColor: colors.travel,
+  });
+  if (drawPlan.drawCompareSource) {
+    // Diagnostic comparison only: a ghosted original, never an equally
+    // authoritative path and never replacing the Active Run.
     drawSegments(sourceParsed.segments, jobProject, {
       showTravel: layers.travel,
       cutColor: colors.source,
       travelColor: colors.rawBounds,
-      alpha: currentRunMode() === 'source' ? 0.62 : 0.34,
+      alpha: 0.34,
       cutWidth: 1.2,
     });
   }
-  if (layers.path) {
-    drawSegments(parsed.segments, jobProject, {
-      showTravel: layers.travel,
-      cutColor: currentRunMode() === 'generated' ? colors.generated : colors.cut,
-      travelColor: colors.travel,
-    });
-  }
-  if (layers.generated && transformedPreview?.segments?.length) {
+  if (drawPlan.drawPlacementPreview) {
+    // Uncommitted placement transform (what Update Run File will produce),
+    // visually distinct from the Active Run until activation/validation makes
+    // it the active run's own content.
     drawSegments(transformedPreview.segments, jobProject, {
       showTravel: layers.travel,
       cutColor: colors.generated,
       travelColor: colors.travel,
-      alpha: 0.92,
-      cutWidth: 2,
+      alpha: 0.5,
+      cutWidth: 1.4,
+      travelWidth: 0.7,
     });
   }
   if (recoveryOverlayVisible && recoveryPlan?.visual) {
