@@ -11,6 +11,7 @@ import { collapseRepeatedStepdownPasses } from './lib/aircut-toolpath.js';
 import {
   calculateProjectSafeZ,
   effectiveProjectSafeZ,
+  markSafeZDependentsStale,
   migrateProjectSafeZ,
   updateProjectSafeZ,
   validateProjectSafeZForFrame,

@@ -3080,3 +3080,23 @@ The following legacy endpoints and assumptions are retained temporarily during P
   rewrites (1 write per node across 6 passes), unblock restores remembered local state exactly
   once, setter writes only on value change, and an audit requires every guard 'disabled' write to
   sit behind a same-value check. Full suite 709/709 twice.
+
+## 2026-08-22 - Fix: file preview flashed and bounced back to Files
+
+- Report: clicking a G-code file navigated to preview.html, flashed, and fell back to /#files.
+- Reproduced in a real browser with an iframe harness (the bounce stays inside the frame while
+  the parent records fetch logs, error events, and boot stages). Boot reached the job-metadata
+  download, then loadPreview rejected silently into its terminal
+  '.catch(() => redirectToFiles(filePath))' — the fallback erased the evidence.
+- Staged copy of preview.js captured the rejection: ReferenceError 'markSafeZDependentsStale is
+  not defined' at applyActiveRunParse -> loadActiveRunPreview -> loadPreview. Commit 06d8b9d
+  (Project Safe Z v2, 2026-07-28) added the CALL but the function — exported by
+  www/lib/job-safe-z.js:157 — was never added to preview.js's import list. It only fires when a
+  loaded job's program Z differs from the freshly parsed run, which is why it stayed latent.
+- Fix: one line — add markSafeZDependentsStale to the job-safe-z import in www/preview.js.
+- Regression audit (test/ui/preview-module-imports.test.mjs): scans every ./lib module that
+  preview.js imports and fails on any referenced export missing from the import list, plus pins
+  the program-Z staleness call. Full suite 711/711 twice.
+- Verified in the real browser: clicking safe-square.gc (existing job metadata, the crash case)
+  and ex1.gc (no metadata) both open a full rendered preview (bounds, feeds, segments, estimates,
+  ONLINE chip) and stay on preview.html.

@@ -2855,3 +2855,13 @@ No firmware upload is required.
 - Diagnosis artifacts (temporary www/__diag_t*.html pages, WS probe script) were removed; the
   dev mock instance the user left running on port 8097 was NOT touched.
 - dev:mock usage note: the server logs nothing while idle; an idle console is normal, not a hang.
+
+## 2026-08-22 handoff: preview bounce on file open
+
+- Root cause: markSafeZDependentsStale called in www/preview.js (applyActiveRunParse, program-Z
+  change path) since 06d8b9d but never imported from www/lib/job-safe-z.js. The loadPreview
+  chain swallowed the ReferenceError into redirectToFiles, so the UI symptom was a silent bounce
+  to /#files. Now imported; test/ui/preview-module-imports.test.mjs sweeps all lib imports for
+  the same class of bug.
+- Diagnosis pattern that worked: iframe harness + sessionStorage capture + fetch/error/stage
+  probes (temporary www/__diag_* artifacts, removed after use).
