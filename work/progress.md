@@ -3052,3 +3052,31 @@ The following legacy endpoints and assumptions are retained temporarily during P
   before dispatch, so retries and query recovery cannot duplicate entries.
 - Verification this phase: full suite 705/705 twice, pio native 18/18, esp32cam build
   SUCCESS (RAM 29.6%, Flash 76.9%). Physical hardware was not flashed or exercised.
+
+## 2026-08-22 - Fix: pendant UI froze at 'Connecting...' (MutationObserver guard loop)
+
+- Report: 'mock server hangs till crash'. The mock server was healthy throughout (HTTP endpoints,
+  assets, files API, and a fresh WS hello/snapshot all answered instantly; uptime unbroken). The
+  freeze was in the BROWSER: the page main thread spun forever, so the WebSocket open task never
+  ran, transportStatus stayed 'connecting', and the tab eventually died — matching the frozen
+  'Connecting... / Checking SD card...' screen.
+- Root cause (real browser + bisected diag pages): the Phase-2 ordinary-control guard
+  (installOrdinaryControlGuard, 3c00ff6) re-entered itself through its own MutationObserver.
+  While machine control is blocked (always true at boot before the socket synchronizes),
+  applyOrdinaryControlGuard rewrote 'node.disabled = true' on every guard-marked control, and
+  same-value attribute reflection still queues a MutationObserver record (verified: 1 set -> 1
+  record, repeated sets -> records grow). Observer record -> guard -> write -> record ... is an
+  endless microtask cascade that starves the event loop. The Phase-3 machine-bar template raised
+  the guard-marked population to ~56 nodes, making the boot freeze deterministic.
+- Fix (www/machine-bar.js): applyOrdinaryControlGuard and setMachineControlDisabled are now
+  strictly value-changing — they write 'disabled' only when the value actually differs. The
+  observer stays installed and still re-asserts the guard when anything else toggles a control,
+  but a settled guard state produces no further records, so the cascade ends after one pass.
+- Verified in a real browser against dev mock: index page loads complete (transport
+  'synchronized', 56 guard controls correctly disabled read-only, file list rendered) and
+  preview.html loads alive; pre-fix the same pages never reached DOMContentLoaded.
+- Regression tests (test/ui/control-guard-idempotency.test.mjs): behavioral harness executes the
+  extracted guard/setter functions with counting disabled-setters — blocked re-application never
+  rewrites (1 write per node across 6 passes), unblock restores remembered local state exactly
+  once, setter writes only on value change, and an audit requires every guard 'disabled' write to
+  sit behind a same-value check. Full suite 709/709 twice.

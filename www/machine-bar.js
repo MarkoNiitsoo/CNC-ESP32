@@ -168,12 +168,12 @@
   function setMachineControlDisabled(node, locallyDisabled, options = {}) {
     if (!node) return;
     if (options.safetyException === true || !node.matches?.('[data-requires-live-control]')) {
-      node.disabled = Boolean(locallyDisabled);
+      if (node.disabled !== Boolean(locallyDisabled)) node.disabled = Boolean(locallyDisabled);
       return;
     }
     ordinaryLocalDisabled.set(node, Boolean(locallyDisabled));
     const blocked = ordinaryMachineControlBlocked();
-    node.disabled = Boolean(locallyDisabled || blocked);
+    if (node.disabled !== Boolean(locallyDisabled || blocked)) node.disabled = Boolean(locallyDisabled || blocked);
     if (blocked) ordinaryGuardForced.add(node);
     else ordinaryGuardForced.delete(node);
   }
@@ -181,6 +181,10 @@
   function applyOrdinaryControlGuard() {
     markOrdinaryMachineControls();
     const blocked = ordinaryMachineControlBlocked();
+    // Every disabled write queues a MutationObserver record even when the value
+    // is unchanged, and the observer re-enters this guard; writes must therefore
+    // be strictly value-changing or the guard starves the event loop in
+    // microtasks while the socket is not yet synchronized.
     document.querySelectorAll('[data-requires-live-control]').forEach((node) => {
       if (blocked) {
         if (!ordinaryGuardForced.has(node)) {
@@ -189,10 +193,11 @@
           ordinaryLocalDisabled.set(node, false);
         }
         ordinaryGuardForced.add(node);
-        node.disabled = true;
+        if (node.disabled !== true) node.disabled = true;
       } else if (ordinaryGuardForced.has(node)) {
-        node.disabled = ordinaryLocalDisabled.get(node) === true;
+        const restoreDisabled = ordinaryLocalDisabled.get(node) === true;
         ordinaryGuardForced.delete(node);
+        if (node.disabled !== restoreDisabled) node.disabled = restoreDisabled;
       }
     });
   }

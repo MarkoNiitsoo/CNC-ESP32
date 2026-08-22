@@ -2840,3 +2840,18 @@ No firmware upload is required.
   PREPARING preamble (M5/G21/G90/G54/M220/M400/M114/Safe-Z/M400/travel) executes through the same
   priority-command path as before — no new Marlin sequence — so its hardware risk profile is
   unchanged; only the admission/telemetry wiring moved.
+
+## 2026-08-22 handoff: pendant UI boot freeze (guard MutationObserver loop)
+
+- Symptom: 'mock server hangs' report was a browser-side freeze. The dev mock server was healthy;
+  the page main thread spun in a MutationObserver->applyOrdinaryControlGuard->disabled-write
+  microtask cascade while the machine was 'blocked' (always before first WS synchronization), so
+  the socket open task never ran and the tab eventually crashed. Deterministic since the Phase-3
+  machine-bar template (~56 guard-marked controls render at install).
+- Fix: guard + setMachineControlDisabled write 'disabled' only on value change
+  (www/machine-bar.js). Same-value reflection still queues observer records in Chromium — any
+  future DOM-writing code that feeds this observer must stay idempotent; the regression suite
+  (test/ui/control-guard-idempotency.test.mjs) enforces it for these two functions.
+- Diagnosis artifacts (temporary www/__diag_t*.html pages, WS probe script) were removed; the
+  dev mock instance the user left running on port 8097 was NOT touched.
+- dev:mock usage note: the server logs nothing while idle; an idle console is normal, not a hang.
