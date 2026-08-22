@@ -2865,3 +2865,11 @@ No firmware upload is required.
   the same class of bug.
 - Diagnosis pattern that worked: iframe harness + sessionStorage capture + fetch/error/stage
   probes (temporary www/__diag_* artifacts, removed after use).
+
+## 2026-08-22 handoff: active-run bounds in Preview Summary
+
+- renderStats substitutes bounds from lastPlacementPreview (cached by updatePlacementPreview)
+  when currentRunMode()==='generated' && generatedValidation.status !== 'valid'. Any new
+  placement-affecting control should re-run updatePlacementPreview so the summary stays in sync.
+- Mock note: /api/upload answers 423 without a claimed operator lease, so regenerating run files
+  in the dev browser requires claiming control first (PIN from dev/mock-config.json).

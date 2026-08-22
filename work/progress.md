@@ -3100,3 +3100,29 @@ The following legacy endpoints and assumptions are retained temporarily during P
 - Verified in the real browser: clicking safe-square.gc (existing job metadata, the crash case)
   and ex1.gc (no metadata) both open a full rendered preview (bounds, feeds, segments, estimates,
   ONLINE chip) and stay on preview.html.
+
+## 2026-08-22 - Preview Summary now tracks the active run bounds
+
+- Report: with a generated (transformed) run as the active run, the Summary section showed the
+  SOURCE g-code bounds while cutting happens on the modified run.
+- Cause: loadActiveRunPreview's stale-generated fallback parses the source text and stamps it as
+  the active summary ('showing source preview'), so renderStats rendered source bounds until the
+  run file was regenerated. The valid-generated path already showed generated bounds; only the
+  stale fallback (and the pending window during regeneration) misled.
+- Fix (www/preview.js): renderStats substitutes the three bounds rows with the live placement
+  transform's bounds (generatedRunBounds for travel, selectedTransformedBounds for cut/placement)
+  whenever the active run mode is 'generated' and the run file is not currently valid. A hint
+  row states the bounds describe what Update Run File will produce. The source-parse
+  'Small negative coordinates' info is suppressed when the transformed placement has none.
+  Feeds/distances/estimates stay from the parse - a rigid transform preserves them.
+  updatePlacementPreview now caches its computed preview (lastPlacementPreview) and re-renders
+  the summary, so bounds live-update when the placement changes.
+- Verified in a real browser against dev mock: ex1.gc (normalize placement, stale) Summary shows
+  X 0..506 transformed bounds + hint; KAK.gc (rotated placement, stale) shows the rotated bounds;
+  safe-rectangle.gc (ORIGINAL mode) unchanged. Update Run File could not be exercised end-to-end
+  because the mock rejects uploads without a claimed operator lease (HTTP 423, intended) - the
+  valid path is untouched by the change (substitution is conditional on status !== 'valid').
+- Regression tests (test/ui/preview-active-bounds.test.mjs): execute the extracted renderStats
+  against counting stubs - stale shows transformed bounds and hint and drops the negatives info;
+  valid and original modes keep parsed bounds; feeds/distances stay from the parse; placement
+  recompute refreshes the summary. Full suite 716/716 twice.

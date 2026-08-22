@@ -202,6 +202,7 @@ let jobRunStatus = null;
 let jobRunPollTimer = null;
 let jobStatusHealthy = false;
 let transformedPreview = null;
+let lastPlacementPreview = null;
 let placementWarnings = [];
 let sourceParsed = null;
 let sourceToolpathModel = null;
@@ -6260,11 +6261,18 @@ function renderStats() {
   };
   const estimate = summary?.estimate || {};
   const effectiveEstimate = summary?.effectiveEstimateSeconds || estimate.effectiveSecondsWithOverride;
+  // When the active run is the generated one but its file is stale, the summary
+  // parse is the source fallback; cutting will happen on the transformed
+  // placement, so the bounds rows must describe that placement. Feeds and
+  // distances survive a rigid transform unchanged and stay from the parse.
+  const generatedActiveButStale = currentRunMode() === 'generated'
+    && (jobState?.generatedValidation?.status || 'unknown') !== 'valid';
+  const activeBounds = generatedActiveButStale ? lastPlacementPreview : null;
   statsEl.innerHTML = `
     <dl>
-      <dt>Raw travel bounds</dt><dd>${boundsText(summary?.rawTravelBounds || b)}</dd>
-      <dt>Cut bounds</dt><dd>${boundsText(summary?.cutBounds)}</dd>
-      <dt>Placement bounds</dt><dd>${boundsText(summary?.placementBounds)}</dd>
+      <dt>Raw travel bounds</dt><dd>${boundsText(activeBounds ? activeBounds.generatedRunBounds : (summary?.rawTravelBounds || b))}</dd>
+      <dt>Cut bounds</dt><dd>${boundsText(activeBounds ? activeBounds.selectedTransformedBounds : summary?.cutBounds)}</dd>
+      <dt>Placement bounds</dt><dd>${boundsText(activeBounds ? activeBounds.selectedTransformedBounds : summary?.placementBounds)}</dd>
       <dt>Feed commands</dt><dd>${feed.commandCount ?? feeds.feedCommandCount}</dd>
       <dt>G-code feed</dt><dd>${feed.commandCount ? `F${fmtMm(feed.min)} .. F${fmtMm(feed.max)}` : '-'}</dd>
       <dt>Effective feed</dt><dd>${effective ? `F${fmtMm(effective.min)} .. F${fmtMm(effective.max)} at ${effective.percent}%` : '-'}</dd>
@@ -6276,8 +6284,13 @@ function renderStats() {
       <dt>Segments</dt><dd>${parsed.segments.length}</dd>
     </dl>
     <p class="form-hint">Estimate is approximate. Feed override changes movement speed only. It does not change router RPM.</p>
+    ${activeBounds ? '<p class="form-hint">Active run is the generated file; bounds show the transformed placement that Update Run File will produce.</p>' : ''}
   `;
   (summary?.infos || []).forEach((message) => {
+    if (activeBounds && /^Small negative coordinates are present/.test(message)) {
+      const activeCut = activeBounds.selectedTransformedBounds;
+      if (!hasBounds(activeCut) || (activeCut.xMin >= 0 && activeCut.yMin >= 0)) return;
+    }
     const info = document.createElement('p');
     info.className = 'warning';
     info.textContent = message;
@@ -6333,11 +6346,13 @@ async function updatePlacementPreview(options = {}) {
     ? null
     : transform.transformToolpath(placementModel, placement);
   const preview = transformedPreview || transform.transformToolpath(placementModel, placement);
+  lastPlacementPreview = preview;
   placementWarnings = [
     ...preview.warnings,
     ...transform.transformSafety(placementModel).blockers,
   ];
   renderPlacementPanel();
+  if (parsed) renderStats();
   draw();
   if (options.userChange) {
     await markPlacementChangedAndScheduleUpdate();
