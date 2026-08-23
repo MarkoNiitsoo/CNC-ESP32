@@ -3188,3 +3188,13 @@ The following legacy endpoints and assumptions are retained temporarily during P
   workbench-ui persistence test updated for the new keys + dropped legacy keys.
   Full suite 728/728 twice; pio native 18/18; esp32cam SUCCESS (RAM 29.6%, Flash 76.9%,
   unchanged - firmware files untouched).
+- 2026-08-23 safety/HW hotfix (commits 392f507, 313244d): Stop availability now derives
+  from total machine-activity state instead of job.state alone. Firmware emits canonical
+  machine.operation {active,kind,axes,phase,stepIndex,stepCount}; machine-bar enables Stop
+  for an active machine operation or Jog; performJobStop() quickstops an active Jog; stopJob()
+  confirms via the jog slice when a Jog was active.
+- 2026-08-23 cooperative Home stall root cause: read-side UART ownership violation (the idle
+  Marlin autoreport reader had no machineOperationActive() guard and could eat the G28 "ok")
+  plus a missing drain-before-write in startMachineOperationStep that let stale bytes desync
+  step responses. Fixed both; added bounded machine-op + WS connect/disconnect SD diagnostics.
+  Full suite 756/756; pio native 18/18; esp32cam SUCCESS (RAM 29.6%, Flash 77.1%).

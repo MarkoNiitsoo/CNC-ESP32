@@ -2908,3 +2908,32 @@ No firmware upload is required.
 - Out of scope (noticed, left): the workbench top-bar chip and the canvas label both
   show the active-run path; the zero/table overlays could get the same 'always primary'
   review treatment later.
+
+## 2026-08-23 handoff: safety Stop + cooperative Home stall hotfix (Phase 3C)
+
+- Disabled-Stop root cause: machine-bar Stop availability was gated solely on
+  ACTIVE_STATES(job.state), and job.state stays IDLE while a Home/Zero machine operation is
+  physically running. No telemetry carried machine-operation activity. Stop was already
+  exempted from the data-requires-live-control guard (safetyException), so that guard was
+  not the culprit.
+- Stop fix (commit 392f507): firmware now emits machine.operation (active/kind/axes/phase/
+  stepIndex/stepCount) in the machine slice; machine-bar.safetyStopDisabled() enables Stop
+  when a machine operation or Jog is active; performJobStop() now quickstops an active Jog;
+  stopJob() confirms the Jog->IDLE transition via the jog slice.
+- Home-stall root cause (commit 313244d): read-side UART ownership violation — the idle
+  Marlin autoreport reader (processIdleMarlinAutoreport) lacked a machineOperationActive()
+  guard and could consume the G28 terminal "ok" before processMachineOperation read it. The
+  cooperative engine also never drained the FIFO before writing a step (the old synchronous
+  executor did), letting stale bytes desync step responses. Fixed the guard (and its write
+  twin) and added drainMarlinInput() before each step write.
+- Diagnostics added: machine-op <kind> step tx / rx-terminal / error / timeout in job.log,
+  plus complete/cancel with code; system.log gains "ws client connected", "ws handshake
+  synchronized", "ws client disconnected" (latched on the network task, logged from loop()
+  so SD writes stay off the pinned network task).
+- Next hardware test: on SKR Pro + Marlin V1CNC, Home All over WS. Confirm job.log shows
+  machine-op home step=1/6 tx="G28" -> rx-terminal, then step=2/6 tx="M400" ... and a final
+  complete ok=true; confirm Stop stays enabled during the homing phase and M410 aborts (one
+  ABORTED_BY_STOP, no trusted frame).
+- Left for later (not part of this hotfix): dev-mock long-running-Home phase simulation
+  (delayed ACK / fragmented / busy / no-terminal). The mock still executes machine ops
+  synchronously; Home regression coverage lives in firmware source-audit + UI DOM tests.
