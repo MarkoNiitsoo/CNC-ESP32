@@ -603,6 +603,11 @@ uint32_t nextMarlinLogId = 1;
 uint32_t telemetryLastLogId = 0;
 volatile bool telemetryLogSubscribed[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+// Connect/disconnect/handshake edges are latched here by the network task and
+// logged from loop() so the SD log is never written on the pinned network task.
+volatile bool wsConnectLogPending = false;
+volatile bool wsDisconnectLogPending = false;
+volatile bool wsHandshakeLogPending = false;
 
 // WebSocket command transport crosses from the pinned network task to Arduino loop().
 struct WsCommandEntry {
@@ -3042,6 +3047,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     cs.lastOutboundAtMs = millis();
     telemetryLogSubscribed[client] = false;
     telemetryClientConnected[client] = true;
+    wsConnectLogPending = true;
   } else if (type == WStype_DISCONNECTED) {
     cs.connected = false;
     cs.handshakeComplete = false;
@@ -3049,6 +3055,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     cs.resyncPending = false;
     telemetryLogSubscribed[client] = false;
     telemetryClientConnected[client] = false;
+    wsDisconnectLogPending = true;
   } else if (type == WStype_TEXT) {
     if (length > kWsCommandMessageMaxBytes) {
       sendWsCommandAck(client, "", false, false, "PAYLOAD_TOO_LARGE",
@@ -3133,6 +3140,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
         if (sentOK) {
           cs.handshakeComplete = true;
           cs.snapshotPending = false;
+          wsHandshakeLogPending = true;
         } else {
           cs.handshakeComplete = false;
           cs.snapshotPending = true;
@@ -3356,6 +3364,7 @@ void processNetworkTelemetry() {
           if (cs.snapshotPending) {
             cs.handshakeComplete = true;
             cs.snapshotPending = false;
+            wsHandshakeLogPending = true;
           }
           cs.resyncPending = false;
         }
@@ -5014,13 +5023,13 @@ void processMarlinAutoreportControl() {
   const uint8_t desired = desiredMarlinAutoreportInterval();
   if (desired == marlinAutoreportSeconds) return;
   if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0 || jogIsActive() ||
-      machineDiscoveryState != MachineDiscoveryState::Idle || otaActive) return;
+      machineDiscoveryState != MachineDiscoveryState::Idle || otaActive || machineOperationActive()) return;
   applyMarlinAutoreportInterval(desired);
 }
 
 void processIdleMarlinAutoreport() {
   if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0 || jogIsActive() ||
-      machineDiscoveryState != MachineDiscoveryState::Idle) return;
+      machineDiscoveryState != MachineDiscoveryState::Idle || machineOperationActive()) return;
   while (Serial.available() > 0) {
     const char c = static_cast<char>(Serial.read());
     if (c == '\n') {
@@ -9300,6 +9309,25 @@ String machineOperationStateJson() {
   return json;
 }
 
+String machineOpStepLogPrefix() {
+  return String("machine-op ") + machineOpKindName(machineOp.kind) +
+         " step=" + String(static_cast<unsigned>(machineOp.stepIndex) + 1) +
+         "/" + String(static_cast<unsigned>(machineOp.stepCount));
+}
+
+String boundedMachineOpResponse(const String &response) {
+  String cleaned = response;
+  cleaned.replace("\r", " ");
+  cleaned.replace("\n", " ");
+  cleaned.trim();
+  const size_t max = 96;
+  if (cleaned.length() > max) {
+    cleaned = cleaned.substring(0, max);
+    cleaned += "...";
+  }
+  return cleaned;
+}
+
 void appendMachineOpStep(const char *command, uint32_t timeoutMs, const char *failMessage,
                          MachineOpCapture capture = MachineOpCapture::None,
                          MachineOpInvalidation failInvalidation = MachineOpInvalidation::None) {
@@ -9313,6 +9341,11 @@ void appendMachineOpStep(const char *command, uint32_t timeoutMs, const char *fa
 
 void startMachineOperationStep() {
   const MachineOpStep &step = machineOp.steps[machineOp.stepIndex];
+  // Drain any stale FIFO bytes before the write so the next step's response
+  // buffer cannot consume a leftover "ok" or V1CNC line from a prior command.
+  // The old synchronous executor drained before every command; the cooperative
+  // engine must do the same to keep step responses correctly aligned.
+  drainMarlinInput();
   String writeErr;
   if (!writeControllerLine(step.command, ControllerCommandClass::OrdinarySync,
                            machineOp.commToken, false, writeErr)) {
@@ -9324,6 +9357,7 @@ void startMachineOperationStep() {
   machineOp.phase = MachineOpPhase::AwaitResponse;
   machineOp.responseBuffer = "";
   machineOp.stepStartedAtMs = millis();
+  logJobEvent(machineOpStepLogPrefix() + " tx=\"" + machineOp.steps[machineOp.stepIndex].command + "\"");
 }
 
 void completeMachineOperation(const MachineOperationResult &result, MachineOpCompletion completion,
@@ -9333,6 +9367,9 @@ void completeMachineOperation(const MachineOperationResult &result, MachineOpCom
   machineOpLastAxes = machineOp.axes;
   machineOpLastBefore = machineOp.before;
   machineOpLastAfter = machineOp.after;
+  logJobEvent(String("machine-op ") + machineOpKindName(machineOp.kind) + " " +
+              (completion == MachineOpCompletion::Cancelled ? "cancel" : "complete") +
+              " ok=" + (result.ok ? "true" : "false") + " code=" + result.code);
   switch (completion) {
     case MachineOpCompletion::Success:
     case MachineOpCompletion::ControllerError:
@@ -9500,6 +9537,8 @@ bool processMachineOperation() {
                        upper.indexOf("!!") >= 0;
   if (isError) {
     addMarlinLog("rx", false, machineOp.responseBuffer, "error");
+    logJobEvent(machineOpStepLogPrefix() + " error=\"" +
+                boundedMachineOpResponse(machineOp.responseBuffer) + "\"");
     const bool invalidateBaseline = step.failInvalidation == MachineOpInvalidation::BaselineFrame;
     completeMachineOperation(
         {false, true, true, 502, "EXECUTION_FAILED", String(step.failMessage) + machineOp.responseBuffer},
@@ -9513,6 +9552,8 @@ bool processMachineOperation() {
   }
   if (marlinResponseIsTerminal(machineOp.responseBuffer)) {
     addMarlinLog("rx", false, machineOp.responseBuffer);
+    logJobEvent(machineOpStepLogPrefix() + " rx-terminal=\"" +
+                boundedMachineOpResponse(machineOp.responseBuffer) + "\"");
     switch (step.capture) {
       case MachineOpCapture::Before: machineOp.before = machineOp.responseBuffer; break;
       case MachineOpCapture::After: machineOp.after = machineOp.responseBuffer; break;
@@ -9530,6 +9571,10 @@ bool processMachineOperation() {
   }
   if (millis() - machineOp.stepStartedAtMs >= step.timeoutMs) {
     addMarlinLog("rx", false, machineOp.responseBuffer.length() > 0 ? machineOp.responseBuffer : "timeout", "error");
+    logJobEvent(machineOpStepLogPrefix() + " timeout" +
+                (machineOp.responseBuffer.length() > 0
+                     ? " partial=\"" + boundedMachineOpResponse(machineOp.responseBuffer) + "\""
+                     : ""));
     const bool invalidateBaseline = step.failInvalidation == MachineOpInvalidation::BaselineFrame;
     completeMachineOperation(
         {false, true, true, 502, "EXECUTION_FAILED",
@@ -9653,9 +9698,9 @@ MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &a
     machineOp.clientId = entry->clientId;
     machineOp.connectionGeneration = entry->connectionGeneration;
   }
-  logJobEvent(String("machine operation start: kind=") +
-              (kind == MachineOpKind::Home ? "home" : kind == MachineOpKind::SetWorkZero ? "setWorkZero" : "setZZero") +
-              " axes=" + axes + (entry != nullptr ? " ws=" + String(machineOp.commandId) : " http"));
+  logJobEvent(String("machine operation start: kind=") + machineOpKindName(kind) +
+              " axes=" + axes + " steps=" + String(static_cast<unsigned>(machineOp.stepCount)) +
+              (entry != nullptr ? " ws=" + String(machineOp.commandId) : " http"));
   startMachineOperationStep();
   if (!machineOp.active) {
     // The first-step write failed and the engine completed without publishing;
@@ -10648,6 +10693,21 @@ void setup() {
   logSystemEvent("BOOT complete bluetooth=" + String(deviceIdentity.bluetoothStarted ? "started" : "stopped"));
 }
 
+void flushWsConnectionLog() {
+  if (wsConnectLogPending) {
+    wsConnectLogPending = false;
+    logSystemEvent("ws client connected");
+  }
+  if (wsHandshakeLogPending) {
+    wsHandshakeLogPending = false;
+    logSystemEvent("ws handshake synchronized");
+  }
+  if (wsDisconnectLogPending) {
+    wsDisconnectLogPending = false;
+    logSystemEvent("ws client disconnected");
+  }
+}
+
 void loop() {
   server.handleClient();
   processWsCommandQueue();
@@ -10659,6 +10719,7 @@ void loop() {
   processJogRunner();
   processMarlinAutoreportControl();
   processIdleMarlinAutoreport();
+  flushWsConnectionLog();
 
   if (rebootAtMs > 0 && millis() >= rebootAtMs) {
     logSystemEvent("Scheduled reboot executing");

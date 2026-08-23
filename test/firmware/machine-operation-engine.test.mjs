@@ -171,4 +171,62 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     expect(complete).toContain('controllerCommManager.onTimeout');
     expect(complete).toContain('controllerCommManager.onPreWriteFailure');
   });
+
+  it('excludes the machine operation from the idle autoreport reader so its terminal "ok" cannot be stolen', () => {
+    const read = blockBetween('void processIdleMarlinAutoreport()', 'bool captureJogOriginalZ()');
+    expect(read).toContain('machineOperationActive()) return;');
+    // The write twin must also yield to the operation (never send an M154 autoreport
+    // write while the operation owns the transaction).
+    const write = blockBetween('void processMarlinAutoreportControl()', 'void processIdleMarlinAutoreport()');
+    expect(write).toContain('machineOperationActive()) return;');
+  });
+
+  it('drains the UART FIFO before writing each step so stale bytes cannot desync step responses', () => {
+    const start = blockBetween('void startMachineOperationStep()', 'void completeMachineOperation(const MachineOperationResult');
+    expect(start.indexOf('drainMarlinInput();')).toBeGreaterThan(-1);
+    expect(start.indexOf('drainMarlinInput();')).toBeLessThan(start.indexOf('writeControllerLine(step.command'));
+  });
+
+  it('emits bounded machine-operation diagnostics for each phase transition', () => {
+    const start = blockBetween('void startMachineOperationStep()', 'void completeMachineOperation(const MachineOperationResult');
+    expect(start).toContain('machineOpStepLogPrefix() + " tx=\\"');
+    const pump = blockBetween('// One cooperative tick:', 'MachineOperationResult admitMachineOperation(');
+    expect(pump).toContain('rx-terminal=\\"');
+    expect(pump).toContain('error=\\"');
+    expect(pump).toContain('timeout"');
+    const complete = blockBetween(
+      'bool publishResult) {',
+      'void cancelMachineOperation(const char *code');
+    expect(complete).toContain('"cancel" : "complete"');
+    expect(complete).toContain('machineOpKindName(machineOp.kind)');
+    expect(firmware).toContain('String boundedMachineOpResponse(const String &response)');
+    expect(firmware).toContain('String machineOperationStateJson()');
+  });
+
+  it('publishes canonical machine-operation state including active, kind, and progress', () => {
+    const state = blockBetween('String machineOperationStateJson()', 'String machineOpStepLogPrefix()');
+    expect(state).toContain('\\"active\\":false');
+    expect(state).toContain('\\"active\\":true');
+    expect(state).toContain('\\"kind\\":');
+    expect(state).toContain('\\"phase\\":');
+    expect(state).toContain('\\"stepIndex\\":');
+    expect(state).toContain('\\"stepCount\\":');
+    // The machine slice must carry it.
+    const machine = blockBetween('String buildMachineSliceJson()', 'String buildControlSliceJson()');
+    expect(machine).toContain('machineOperationStateJson()');
+  });
+
+  it('latches WebSocket connect/disconnect edges for the main loop to log off the network task', () => {
+    expect(firmware).toContain('volatile bool wsConnectLogPending');
+    expect(firmware).toContain('volatile bool wsDisconnectLogPending');
+    expect(firmware).toContain('volatile bool wsHandshakeLogPending');
+    expect(firmware).toContain('void flushWsConnectionLog()');
+    expect(firmware).toContain('"ws client connected"');
+    expect(firmware).toContain('"ws handshake synchronized"');
+    expect(firmware).toContain('"ws client disconnected"');
+    const loop = blockBetween('void loop() {', '}').slice(0, 500);
+    expect(loop).toContain('flushWsConnectionLog();');
+    // The SD write stays in loop(); the network task only latches the flag.
+    expect(blockBetween('void handleTelemetrySocket(', 'void processNetworkTelemetry()')).toContain('wsConnectLogPending = true;');
+  });
 });

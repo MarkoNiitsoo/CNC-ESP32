@@ -304,6 +304,31 @@ describe('Marlin transport safety', () => {
     );
   });
 
+  it('recognizes realistic terminal forms and never treats busy/echo/position as completion', () => {
+    const startIdx = source.indexOf('bool marlinResponseIsTerminal(const String &response)');
+    const parser = source.slice(startIdx, source.indexOf('MarlinCommandResult readMarlinResponseFor(', startIdx));
+    // Splits on newlines and normalizes each line, so a fragmented "o" + "k\r\n"
+    // only completes once the newline arrives; a lone "o" is not terminal.
+    expect(parser).toContain('while (lineStart < response.length())');
+    expect(parser).toContain('lineStart = lineEnd + 1;');
+    expect(parser).toContain('line.trim();');
+    expect(parser).toContain('line.toUpperCase();');
+    // Standalone ack plus line-prefixed ack and error/alarm forms are terminal.
+    expect(parser).toContain('line == "OK"');
+    expect(parser).toContain('line.startsWith("OK ")');
+    expect(parser).toContain('line.startsWith("ERROR:")');
+    expect(parser).toContain('line.startsWith("ALARM:")');
+    expect(parser).toContain('line == "!!"');
+    // busy:, echo:, and position/status lines never complete a transaction.
+    expect(parser).not.toContain('busy:');
+    expect(parser).not.toContain('"BUSY"');
+  });
+
+  it('pins cooperative and synchronous completions to the same terminal matcher', () => {
+    expect(source).toContain('marlinResponseIsTerminal(machineOp.responseBuffer)');
+    expect(source.match(/marlinResponseIsTerminal\(/g).length).toBeGreaterThanOrEqual(2);
+  });
+
   it('owns validated Aircut and Toolless streams in firmware', () => {
     expect(source).toContain('operatorRoute("/api/test-motion/start", HTTP_POST, handleTestMotionStart)');
     expect(source).toContain('validateTestMotionFile(path, mode, safeZ');
