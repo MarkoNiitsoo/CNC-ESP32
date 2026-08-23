@@ -320,6 +320,7 @@ enum class MachineOpKind : uint8_t { Home, SetWorkZero, SetZZero };
 struct WsCommandEntry;
 bool toolChangeZZeroWindowOpen();
 bool machineOperationActive();
+String machineOperationStateJson(); // Canonical machine-operation slice fragment (defined near the engine).
 void cancelMachineOperation(const char *code, const String &message);
 MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
                                              const WsCommandEntry *entry);
@@ -1636,6 +1637,7 @@ struct CachedAuthoritativeSlices {
   bool homedY = false;
   bool homedZ = false;
   uint32_t homingEpoch = 0;
+  String machineOpJson;
 
   String systemBaseJson;
   String controllerJson;
@@ -2568,6 +2570,8 @@ String buildMachineSliceJson() {
   patchJson += machineFrame.homedZ ? "true" : "false";
   patchJson += "},\"homingEpoch\":";
   patchJson += String(machineFrame.homingEpoch);
+  patchJson += ",\"operation\":";
+  patchJson += machineOperationStateJson();
   patchJson += "}";
   return patchJson;
 }
@@ -2648,6 +2652,7 @@ void initializeStagedState() {
   cachedSlices.homedY = machineFrame.homedY;
   cachedSlices.homedZ = machineFrame.homedZ;
   cachedSlices.homingEpoch = machineFrame.homingEpoch;
+  cachedSlices.machineOpJson = machineOperationStateJson();
   cachedSlices.controllerJson = stagedState.controllerJson;
   cachedSlices.jobJson = stagedState.jobJson;
   cachedSlices.jogJson = stagedState.jogJson;
@@ -2710,7 +2715,9 @@ void stageTelemetryUpdates() {
     }
   }
 
-  if (fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
+  String machineOpStr = machineOperationStateJson();
+  if (machineOpStr != cachedSlices.machineOpJson ||
+      fabs(marlinPosition.x - cachedSlices.positionX) > 0.0005f ||
       fabs(marlinPosition.y - cachedSlices.positionY) > 0.0005f ||
       fabs(marlinPosition.z - cachedSlices.positionZ) > 0.0005f ||
       fabs(machineFrame.machineX - cachedSlices.machineX) > 0.0005f ||
@@ -2806,6 +2813,7 @@ void stageTelemetryUpdates() {
     cachedSlices.homedY = machineFrame.homedY;
     cachedSlices.homedZ = machineFrame.homedZ;
     cachedSlices.homingEpoch = machineFrame.homingEpoch;
+    cachedSlices.machineOpJson = machineOpStr;
   }
   if (diffController) {
     cachedSlices.controllerJson = controllerStr;
@@ -8936,6 +8944,18 @@ MachineOperationResult performJobStop() {
       "Stop now cancelled the running machine operation with M410 quickstop. Position and recovery must be verified after the quickstop."
     };
   }
+  if (jogIsActive()) {
+    // Stop also halts an active machine jog. The M410/M5 quickstop issued by
+    // stopJogInternal(true) matches the existing /api/jog/stop emergency path,
+    // so the software Stop covers jog motion instead of leaving an enabled
+    // button whose firmware action targets only job/operation motion.
+    stopJogInternal(true);
+    logJobEvent("stop cancelled an active jog with M410 quickstop");
+    return {
+      true, true, true, 200, "OK",
+      "Stop cancelled the active jog with M410 quickstop. Position is untrusted until Home All."
+    };
+  }
   if (jobStatus.state == JobRunnerState::Stopping) {
     return {true, true, true, 200, "OK",
             "Stop now already requested. M410 quickstop is in progress."};
@@ -9238,6 +9258,46 @@ bool runFrameCommand(const String &command, String &response, uint32_t timeoutMs
 
 bool machineOperationActive() {
   return machineOp.active;
+}
+
+const char *machineOpKindName(MachineOpKind kind) {
+  switch (kind) {
+    case MachineOpKind::Home: return "home";
+    case MachineOpKind::SetWorkZero: return "setWorkZero";
+    case MachineOpKind::SetZZero: return "setZZero";
+  }
+  return "unknown";
+}
+
+const char *machineOpPhaseName(MachineOpPhase phase) {
+  switch (phase) {
+    case MachineOpPhase::Idle: return "idle";
+    case MachineOpPhase::AwaitResponse: return "await-response";
+    case MachineOpPhase::Finalize: return "finalize";
+  }
+  return "unknown";
+}
+
+// Canonical, minimal machine-operation state for the telemetry "machine" slice.
+// The browser derives software-availability (notably the safety Stop control)
+// from this authoritative active/kind signal rather than from job.state, which
+// stays IDLE while a Home/Zero operation is physically in progress.
+String machineOperationStateJson() {
+  if (!machineOp.active) {
+    return String("{\"active\":false,\"kind\":null,\"axes\":null,\"phase\":\"idle\",\"stepIndex\":0,\"stepCount\":0}");
+  }
+  String json = "{\"active\":true,\"kind\":\"";
+  json += machineOpKindName(machineOp.kind);
+  json += "\",\"axes\":\"";
+  json += jsonEscape(machineOp.axes);
+  json += "\",\"phase\":\"";
+  json += machineOpPhaseName(machineOp.phase);
+  json += "\",\"stepIndex\":";
+  json += String(static_cast<unsigned>(machineOp.stepIndex));
+  json += ",\"stepCount\":";
+  json += String(static_cast<unsigned>(machineOp.stepCount));
+  json += "}";
+  return json;
 }
 
 void appendMachineOpStep(const char *command, uint32_t timeoutMs, const char *failMessage,

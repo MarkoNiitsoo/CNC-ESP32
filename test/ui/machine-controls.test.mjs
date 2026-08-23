@@ -432,7 +432,9 @@ describe('Phase 3B: WS command token lifecycle (source audit)', () => {
     expect(fn).toContain("criticalJobPost('/api/job/stop')");
     // WS path comes before HTTP path.
     expect(fn.indexOf("telemetry.command")).toBeLessThan(fn.indexOf("criticalJobPost"));
-    expect(fn).toContain('const stopConfirmation = waitForSocketSlice');
+    expect(fn).toContain('const jobConfirmation = waitForSocketSlice');
+    expect(fn).toContain('const stopConfirmation = jogActive');
+    expect(fn).toContain("waitForSocketSlice('jog'");
     expect(fn).toContain('void Promise.resolve(');
     expect(fn).not.toContain('M5 was not sent');
     // Both request promises have rejection handlers; canonical state is authoritative.

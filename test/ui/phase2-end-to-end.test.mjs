@@ -846,3 +846,106 @@ describe('Phase 3C machine command fallback policy', () => {
     }
   });
 });
+
+describe('machine-operation Stop availability', () => {
+  const machineSliceWith = (operation) => ({
+    frame: { revision: 1, positionValid: true, trusted: true },
+    position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 0, y: 0, z: 0 } },
+    homedAxes: { x: true, y: true, z: true },
+    homingEpoch: 1,
+    operation,
+  });
+
+  it('disables Stop for a synchronized idle machine with no operation', () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('machine', machineSliceWith(null));
+    env.api.render();
+    expect(env.api.safetyStopDisabled('IDLE')).toBe(true);
+    expect(env.elements.get('mb-stop').disabled).toBe(true);
+  });
+
+  it('enables Stop for IDLE job state while a Home operation is active', () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('machine', machineSliceWith({
+      active: true, kind: 'home', axes: 'all', phase: 'await-response', stepIndex: 0, stepCount: 6,
+    }));
+    env.api.render();
+    expect(env.api.safetyStopDisabled('IDLE')).toBe(false);
+    expect(env.elements.get('mb-stop').disabled).toBe(false);
+    expect(env.api.machineOperationActive()).toBe(true);
+  });
+
+  it.each([
+    ['setWorkZero', 'xyz'],
+    ['setZZero', ''],
+  ])('enables Stop for an active %s operation', (kind, axes) => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('machine', machineSliceWith({
+      active: true, kind, axes, phase: 'await-response', stepIndex: 0, stepCount: 4,
+    }));
+    env.api.render();
+    expect(env.api.safetyStopDisabled('IDLE')).toBe(false);
+    expect(env.elements.get('mb-stop').disabled).toBe(false);
+  });
+
+  it('enables Stop for an active Jog', () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('jog', { state: 'JOGGING' });
+    env.api.render();
+    expect(env.api.safetyStopDisabled('IDLE')).toBe(false);
+    expect(env.elements.get('mb-stop').disabled).toBe(false);
+  });
+
+  it('preserves the existing active-Job Stop behavior', () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'RUNNING' });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.api.render();
+    expect(env.api.safetyStopDisabled('RUNNING')).toBe(false);
+    expect(env.elements.get('mb-stop').disabled).toBe(false);
+  });
+
+  it('keeps Stop enabled after the ordinary-control guard runs during a Home operation', () => {
+    const env = createMachineBarEnv();
+    env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('controller', { state: 'connected' });
+    env.emitTelemetry('machine', machineSliceWith({
+      active: true, kind: 'home', axes: 'all', phase: 'await-response', stepIndex: 0, stepCount: 6,
+    }));
+    env.api.render();
+    env.api.applyOrdinaryControlGuard();
+    expect(env.elements.get('mb-stop').disabled).toBe(false);
+  });
+
+  it('clicking Stop during an active Home dispatches safety.stop', async () => {
+    const never = new Promise(() => {});
+    const telemetryCommand = vi.fn(() => never);
+    const fetch = vi.fn(() => never);
+    const env = createMachineBarEnv({ telemetryCommand, fetch });
+    env.api.applyLocalOperatorAuthorization({
+      controller: true, controlSessionEpoch: 11, socketCommandToken: 'd'.repeat(40),
+    });
+    env.emitTelemetry('job', { state: 'IDLE' });
+    env.emitTelemetry('machine', machineSliceWith({
+      active: true, kind: 'home', axes: 'all', phase: 'await-response', stepIndex: 0, stepCount: 6,
+    }));
+
+    const stopping = env.api.stopJob();
+    expect(telemetryCommand).toHaveBeenCalledWith(
+      'safety.stop', null, expect.stringMatching(/^stop-/), { timeoutMs: 5000 },
+    );
+    expect(fetch).toHaveBeenCalledWith('/api/job/stop', { method: 'POST' });
+    expect(env.api.safetyStopDisabled('IDLE')).toBe(false);
+
+    env.emitTelemetry('job', { state: 'STOPPING' });
+    await stopping;
+  });
+});

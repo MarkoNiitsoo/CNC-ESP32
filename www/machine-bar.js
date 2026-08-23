@@ -17,6 +17,7 @@
     operatorGlobal: { configured: false, active: false, owner: null, canClaim: true, leaseMs: 45000, leaseExpiresAtUptimeMs: 0, controlSessionEpoch: 0 },
     operatorPanelOpen: false,
     controller: { connected: true, state: 'connected', communication: { state: 'connected', lastError: '', lastFailedCommand: '' } },
+    machineOperation: null,
   };
   let jogTimer = null;
   let jogUpdatePending = false;
@@ -97,10 +98,20 @@
     return window.CncTelemetry?.transportStatus === 'synchronized';
   }
 
+  function machineOperationActive() {
+    return STATE.machineOperation?.active === true;
+  }
+
   function safetyStopDisabled(jobState = visibleJobState()) {
     const state = String(jobState || 'UNKNOWN').toUpperCase();
+    // A mailbox that is not synchronized cannot be trusted to know whether the
+    // machine is moving, so the software Stop stays available as the fail-safe.
     if (!socketLiveStateSynchronized()) return false;
     if (state === 'ERROR' && STATE.job?.errorCode === 'COMMUNICATION_LOST') return false;
+    // Machine operations (Home / Work Zero / Z Zero) leave job.state at IDLE
+    // while the machine is physically moving; active Jog is motion as well.
+    // Stop derives from total machine-activity state, not job state alone.
+    if (machineOperationActive() || jogIsUiActive()) return false;
     return !ACTIVE_STATES.has(state) || state === 'STOPPING';
   }
 
@@ -333,12 +344,14 @@
       position: { ...(STATE.position || {}) },
       frame: { ...(STATE.frame || {}) },
       controller: { ...(STATE.controller || {}) },
+      machineOperation: STATE.machineOperation ? { ...STATE.machineOperation } : null,
     }),
     machineFrame: () => ({ ...STATE.frame }),
     applyMachineSlice,
     socketSliceToken,
     waitForSocketSlice,
     safetyStopDisabled,
+    machineOperationActive,
     stopJob,
     pauseJob,
     recoverControllerConnection,
@@ -493,6 +506,7 @@
   function applyMachineSlice(data) {
     if (!data || typeof data !== 'object') return false;
     STATE.machine = data;
+    STATE.machineOperation = data?.operation && typeof data.operation === 'object' ? data.operation : null;
     const frame = machineFrameFromSlice(data);
     return applyFrame(frame, 'MARLIN');
   }
@@ -821,19 +835,24 @@
 
   async function stopJob() {
     const state = visibleJobState();
-    if (state === 'STOPPING') {
+    const jogActive = jogIsUiActive();
+    if (state === 'STOPPING' && !jogActive) {
       setMessage('Stop Now already requested');
       return;
     }
     dispatchEvent(new CustomEvent('cnc-critical-control', { detail: { type: 'stop' } }));
-    const baseline = socketSliceToken('job');
-    const stopConfirmation = waitForSocketSlice('job',
+    const jobConfirmation = waitForSocketSlice('job',
       (job) => {
         const confirmedState = String(job?.state || '');
         return ['STOPPING', 'STOPPED', 'RECOVERY_REQUIRED'].includes(confirmedState) ||
           (confirmedState === 'ERROR' && job?.errorCode === 'COMMUNICATION_LOST');
       },
-      { afterSequence: baseline, description: 'Stop transition' });
+      { afterSequence: socketSliceToken('job'), description: 'Stop transition' });
+    const stopConfirmation = jogActive
+      ? waitForSocketSlice('jog',
+        (jog) => ['IDLE', 'ERROR'].includes(String(jog?.state || '').toUpperCase()),
+        { afterSequence: socketSliceToken('jog'), description: 'Jog stop transition' })
+      : jobConfirmation;
     // Dispatch both authenticated paths immediately. Canonical job state is the success authority.
     const telemetry = window.CncTelemetry;
     if (telemetry?.command && STATE.operator?.controller) {
