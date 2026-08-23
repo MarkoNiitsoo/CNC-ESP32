@@ -311,9 +311,10 @@ describe('canvas workbench control policy', () => {
     };
     const defaults = createWorkbenchState(390).layers;
     const loaded = loadLayerPreferences(storage, defaults);
-    expect(loaded).toMatchObject({ travel: false, compareSource: true });
+    expect(loaded).toMatchObject({ travel: false });
     expect(loaded).not.toHaveProperty('injected');
-    // Old saved layer keys (path/source/generated) are dropped by the key filter.
+    // Old saved layer keys (compareSource/path/source/generated) are dropped by the key filter.
+    expect(loaded).not.toHaveProperty('compareSource');
     expect(loaded).not.toHaveProperty('path');
     expect(loaded).not.toHaveProperty('source');
     expect(loaded).not.toHaveProperty('generated');

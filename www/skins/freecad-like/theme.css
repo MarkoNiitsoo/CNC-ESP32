@@ -2,7 +2,7 @@
   --cnc-bg: #111318; --cnc-panel: rgba(20, 24, 28, 0.82); --cnc-panel-strong: rgba(20, 24, 28, 0.94);
   --cnc-text: #f0f3f6; --cnc-muted: #aab2bd; --cnc-accent: #2f80ed; --cnc-ok: #2ea043;
   --cnc-warning: #d99000; --cnc-danger: #d94343; --cnc-blocked: #b95000;
-  --cnc-path-source: #8b949e; --cnc-path-generated: #2f80ed; --cnc-path-travel: #2ea043;
+  --cnc-path-generated: #2f80ed; --cnc-path-travel: #2ea043;
   --cnc-path-cut: #2f80ed; --cnc-bounds-raw: #d99000; --cnc-bounds-cut: #f2cc60;
   --cnc-bounds-placement: #bf5af2; --cnc-zero: #2ea043; --cnc-current-position: #ffcc00;
   --cnc-button-size: 44px; --cnc-large-button-size: 56px; --cnc-icon-stroke: 2;

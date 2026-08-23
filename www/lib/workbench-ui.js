@@ -1,11 +1,12 @@
 import { getActiveRun, requiresGeneratedRun } from './job-active-run.js';
 import { buildJobReadiness } from './job-readiness.js';
 
+// The canvas displays exactly one toolpath at a time; these are the only
+// overlay layers that can be toggled.
 export const DEFAULT_LAYERS = Object.freeze({
   bounds: true,
   zero: true,
   travel: true,
-  compareSource: false,
   table: true,
 });
 

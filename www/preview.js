@@ -368,16 +368,10 @@ function renderWorkbenchStatus() {
       : status.readiness.label);
     window.CncSkin?.applyIcons(workbenchReadinessEl);
   }
-  const activeMode = currentRunMode();
-  if (canvasJobNameEl) {
-    // Compact confirmation that the canvas shows the run Start will execute.
-    canvasJobNameEl.textContent = filePath
-      ? `ACTIVE RUN${activeMode === 'generated' ? ' · GENERATED' : ''}`
-      : 'No job';
-  }
-  if (canvasActivePathEl) canvasActivePathEl.textContent = status.activeRunPath || 'Choose a G-code file';
-  const compareLayer = document.getElementById('compare-source-layer');
-  if (compareLayer) compareLayer.hidden = activeMode !== 'generated';
+  const plan = currentDisplayPlan();
+  const identity = canvasIdentity({ displayMode: plan.mode, runMode: currentRunMode(), hasFile: Boolean(filePath) });
+  if (canvasJobNameEl) canvasJobNameEl.textContent = identity.name;
+  if (canvasActivePathEl) canvasActivePathEl.textContent = identity.note || status.activeRunPath || 'Choose a G-code file';
 }
 
 function routePreviewTab() {
@@ -2200,6 +2194,16 @@ function currentRunMode() {
   return jobActiveRunModule?.getActiveRun
     ? jobActiveRunModule.getActiveRun(jobState || { gcodePath: filePath, sourceGcodePath: filePath, activeRun: { path: activeRunPath, mode: activeRunMode } }).mode
     : (jobState?.activeRun?.mode || activeRunMode || 'source');
+}
+
+// The single displayed-toolpath decision shared by draw() and the canvas
+// identity label, so the label always matches the rendered geometry.
+function currentDisplayPlan() {
+  return activeRunDrawPlan({
+    mode: currentRunMode(),
+    validationStatus: jobState?.generatedValidation?.status || 'unknown',
+    hasPlacementPreview: Boolean(transformedPreview?.segments?.length),
+  });
 }
 
 function currentRunLabel() {
@@ -5817,21 +5821,32 @@ function strokeBounds(ctx2d, bounds, project, color, dash = []) {
   ctx2d.restore();
 }
 
-// Toolpath layer plan for the canvas. The primary toolpath is ALWAYS the
+// The canvas displays exactly ONE toolpath at a time. Normally that is the
 // Active Run (the same logical run Job Start executes — the `parsed` model
-// applyActiveRunParse maintains) and can never be toggled off. Everything
-// else is a subdued overlay: the original source is a diagnostic comparison
-// (only meaningful when the Active Run is generated), and the live placement
-// preview is the uncommitted transform shown until it becomes the active
-// run's own content.
-function activeRunDrawPlan({ mode, validationStatus, compareSource, hasSource, hasPlacementPreview } = {}) {
+// applyActiveRunParse maintains). While placement is dirty and the generated
+// run is not yet current, the live placement preview temporarily REPLACES the
+// displayed path and is labelled as pending.
+function activeRunDrawPlan({ mode, validationStatus, hasPlacementPreview } = {}) {
   const generatedActive = mode === 'generated';
   const generatedCurrent = generatedActive && validationStatus === 'valid';
+  const placementPreview = hasPlacementPreview === true && !generatedCurrent;
   return {
-    primaryIsGenerated: generatedActive,
-    drawCompareSource: compareSource === true && generatedActive && hasSource === true,
-    drawPlacementPreview: hasPlacementPreview === true && !generatedCurrent,
+    mode: placementPreview ? 'placement-preview' : 'active-run',
+    generated: generatedActive,
+    executable: !placementPreview,
   };
+}
+
+// Label identity for the single displayed toolpath; always matches what
+// draw() renders.
+function canvasIdentity({ displayMode, runMode, hasFile } = {}) {
+  if (displayMode === 'placement-preview') {
+    return { name: 'PLACEMENT PREVIEW', note: 'Not yet generated' };
+  }
+  if (!hasFile) {
+    return { name: 'No job', note: '' };
+  }
+  return { name: runMode === 'generated' ? 'ACTIVE RUN · GENERATED' : 'ACTIVE RUN', note: '' };
 }
 
 function drawSegments(segments, project, options = {}) {
@@ -6029,7 +6044,7 @@ function draw() {
     zoom: 1, panX: 0, panY: 0, fitMode: 'active', projection: '2d',
   };
   const layers = workbenchController?.getLayers() || {
-    bounds: true, zero: true, travel: true, compareSource: false, table: true,
+    bounds: true, zero: true, travel: true, table: true,
   };
   const viewBounds = workbenchViewBounds(workbenchView.fitMode) || parsed.bounds;
   const view = fitBounds(viewBounds);
@@ -6071,7 +6086,6 @@ function draw() {
 
   const colors = {
     accent: themeColor('--cnc-accent', '#2d80c7'),
-    source: themeColor('--cnc-path-source', '#4c8f69'),
     generated: themeColor('--cnc-path-generated', '#ffd166'),
     travel: themeColor('--cnc-path-travel', '#2f86d1'),
     cut: themeColor('--cnc-path-cut', '#65d28e'),
@@ -6108,62 +6122,44 @@ function draw() {
     }
     strokeBounds(ctx, { ...MACHINE, zMin: 0, zMax: 0 }, project, colors.accent);
   }
+  const drawPlan = currentDisplayPlan();
   if (layers.bounds) {
-    strokeBounds(ctx, sourceToolpathModel?.bounds?.rawTravelBounds, jobProject, colors.rawBounds, [7, 5]);
-    strokeBounds(ctx, sourceToolpathModel?.bounds?.cutBounds, jobProject, colors.cutBounds, [3, 3]);
-    strokeBounds(ctx, transformedPreview?.generatedRunBounds, jobProject, colors.placementBounds, [8, 4]);
-    const verification = jobState?.verificationDecision || {};
-    if (verification.result === 'complete' && ['bounds', 'aircut'].includes(verification.type)) {
-      const margin = Number(verification.margin || 0);
-      const active = parsed?.bounds;
-      if (hasBounds(active)) {
-        strokeBounds(ctx, {
-          xMin: active.xMin - margin,
-          xMax: active.xMax + margin,
-          yMin: active.yMin - margin,
-          yMax: active.yMax + margin,
-          zMin: active.zMin,
-          zMax: active.zMax,
-        }, jobProject, colors.placementBounds, [10, 4]);
+    // Bounds follow the ONE displayed geometry.
+    const boundsModel = drawPlan.mode === 'placement-preview' ? transformedPreview : parsed;
+    if (boundsModel?.bounds) {
+      strokeBounds(ctx, boundsModel.bounds.rawTravelBounds, jobProject, colors.rawBounds, [7, 5]);
+      strokeBounds(ctx, boundsModel.bounds.cutBounds, jobProject, colors.cutBounds, [3, 3]);
+    }
+    if (drawPlan.mode === 'active-run') {
+      const verification = jobState?.verificationDecision || {};
+      if (verification.result === 'complete' && ['bounds', 'aircut'].includes(verification.type)) {
+        const margin = Number(verification.margin || 0);
+        const active = parsed?.bounds;
+        if (hasBounds(active)) {
+          strokeBounds(ctx, {
+            xMin: active.xMin - margin,
+            xMax: active.xMax + margin,
+            yMin: active.yMin - margin,
+            yMax: active.yMax + margin,
+            zMin: active.zMin,
+            zMax: active.zMax,
+          }, jobProject, colors.placementBounds, [10, 4]);
+        }
       }
     }
   }
-  const drawPlan = activeRunDrawPlan({
-    mode: currentRunMode(),
-    validationStatus: jobState?.generatedValidation?.status || 'unknown',
-    compareSource: layers.compareSource,
-    hasSource: Boolean(sourceParsed?.segments?.length),
-    hasPlacementPreview: Boolean(transformedPreview?.segments?.length),
-  });
-  // Primary: the Active Run parse — the exact run Job Start executes. There is
-  // deliberately no layer toggle for it; Preview's core purpose must stay visible.
-  drawSegments(parsed.segments, jobProject, {
-    showTravel: layers.travel,
-    cutColor: drawPlan.primaryIsGenerated ? colors.generated : colors.cut,
-    travelColor: colors.travel,
-  });
-  if (drawPlan.drawCompareSource) {
-    // Diagnostic comparison only: a ghosted original, never an equally
-    // authoritative path and never replacing the Active Run.
-    drawSegments(sourceParsed.segments, jobProject, {
+  // Exactly ONE job-geometry path: the Active Run parse, or the pending
+  // placement preview temporarily replacing it while placement is dirty.
+  const displayedSegments = drawPlan.mode === 'placement-preview'
+    ? transformedPreview?.segments
+    : parsed?.segments;
+  if (displayedSegments?.length) {
+    drawSegments(displayedSegments, jobProject, {
       showTravel: layers.travel,
-      cutColor: colors.source,
-      travelColor: colors.rawBounds,
-      alpha: 0.34,
-      cutWidth: 1.2,
-    });
-  }
-  if (drawPlan.drawPlacementPreview) {
-    // Uncommitted placement transform (what Update Run File will produce),
-    // visually distinct from the Active Run until activation/validation makes
-    // it the active run's own content.
-    drawSegments(transformedPreview.segments, jobProject, {
-      showTravel: layers.travel,
-      cutColor: colors.generated,
+      cutColor: drawPlan.mode === 'placement-preview'
+        ? colors.generated
+        : (drawPlan.generated ? colors.generated : colors.cut),
       travelColor: colors.travel,
-      alpha: 0.5,
-      cutWidth: 1.4,
-      travelWidth: 0.7,
     });
   }
   if (recoveryOverlayVisible && recoveryPlan?.visual) {
