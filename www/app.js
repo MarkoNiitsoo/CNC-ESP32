@@ -57,6 +57,12 @@ let machineSettingsLoaded = false;
 let deviceInfo = null;
 let deviceRestartRequired = false;
 let filesLoadedPath = '';
+// Latest-load ownership: each Files load takes a generation token and a load
+// is "current" only while its token still matches. This mirrors the
+// uploadAnalysisToken guard used for upload previews below - a stale load must
+// never clear or clobber a newer render.
+let filesLoadGeneration = 0;
+let filesInFlight = null; // { path, generation, promise } of the active load
 let jobMetaLoadedForPath = '';
 let logsLoadedOnce = false;
 let bootingInitialRoute = false;
@@ -910,16 +916,30 @@ async function fileMetadataFor(item) {
   return thumbnailRes?.ok ? { sourceGcodePath: item.path, thumbnailPath } : null;
 }
 
-async function renderFiles(items) {
-  launcherList.textContent = '';
-  const gcodeItems = items.filter((item) => item.type === 'dir' || isGcodeFile(item));
+async function renderFiles(items, generation) {
+  const isCurrent = () => generation === filesLoadGeneration;
+  // Defensively de-duplicate by path before rendering so a buggy backend or an
+  // overlapping render can never surface the same file twice.
+  const seenPaths = new Set();
+  const uniqueItems = (items || []).filter((item) => {
+    if (!item?.path || seenPaths.has(item.path)) return false;
+    seenPaths.add(item.path);
+    return true;
+  });
+  const gcodeItems = uniqueItems.filter((item) => item.type === 'dir' || isGcodeFile(item));
   if (!gcodeItems.length) {
-    launcherList.textContent = 'No G-code files found in /gcode.';
+    if (isCurrent()) launcherList.textContent = 'No G-code files found in /gcode.';
     return;
   }
 
-  for (const item of gcodeItems) {
-    const meta = await fileMetadataFor(item);
+  const metas = await Promise.all(gcodeItems.map((item) => fileMetadataFor(item)));
+  if (generation !== filesLoadGeneration) return;
+
+  // Build the whole list off-DOM and commit once, so the previous list stays
+  // visible (and atomic) until the new render fully replaces it.
+  const fragment = document.createDocumentFragment();
+  gcodeItems.forEach((item, index) => {
+    const meta = metas[index];
     const row = document.createElement('article');
     row.className = 'file-row file-card compact-row';
     row.dataset.path = item.path;
@@ -956,24 +976,48 @@ async function renderFiles(items) {
     });
     actions.querySelector('[data-delete]')?.addEventListener('click', () => deleteFile(item.path));
     actions.querySelectorAll('a, button').forEach((control) => control.addEventListener('click', (event) => event.stopPropagation()));
-    launcherList.append(row);
-  }
+    fragment.append(row);
+  });
+  launcherList.replaceChildren(fragment);
 }
 
 async function loadFiles(path = '/gcode') {
-  const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
-  const data = await readJson(res);
-  if (!res.ok) {
-    launcherList.textContent = data.error || 'Could not list files.';
-    filesLoadedPath = '';
-    return;
+  if (filesInFlight?.path === path && filesInFlight.generation === filesLoadGeneration) {
+    return filesInFlight.promise;
   }
-  const status = await fetch('/api/sd/status').then(readJson).catch(() => null);
-  if (sdStatusEl && status?.mounted) {
-    sdStatusEl.textContent = `${status.cardType} | ${formatBytes(status.freeBytes)} free`;
+  const generation = ++filesLoadGeneration;
+  const promise = filesLoadRequest(path, generation);
+  filesInFlight = { path, generation, promise };
+  try {
+    return await promise;
+  } finally {
+    if (filesInFlight?.promise === promise) filesInFlight = null;
   }
-  await renderFiles(data.items || []);
-  filesLoadedPath = path;
+}
+
+async function filesLoadRequest(path, generation) {
+  const isCurrent = () => generation === filesLoadGeneration;
+  try {
+    const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+    const data = await readJson(res);
+    if (!isCurrent()) return;                       // stale: do nothing at all
+    if (!res.ok) {
+      launcherList.textContent = data.error || 'Could not list files.';
+      filesLoadedPath = '';
+      return;
+    }
+    const status = await fetch('/api/sd/status').then(readJson).catch(() => null);
+    if (!isCurrent()) return;
+    if (sdStatusEl && status?.mounted) {
+      sdStatusEl.textContent = `${status.cardType} | ${formatBytes(status.freeBytes)} free`;
+    }
+    await renderFiles(data.items || [], generation);
+    if (!isCurrent()) return;
+    filesLoadedPath = path;
+  } catch (err) {
+    if (!isCurrent()) return;                       // stale failure must not clobber the newer view
+    throw err;
+  }
 }
 
 async function ensureFilesViewData(path = activeFilePath || '/gcode') {
@@ -1308,7 +1352,18 @@ document.addEventListener('click', (event) => {
   const target = event.target.closest('[data-nav-target], [data-action-view]');
   if (!target) return;
   const view = target.dataset.navTarget || target.dataset.actionView;
-  if (view) showView(view);
+  if (!view) return;
+  const href = target.getAttribute('href');
+  if (href === `#${view}`) {
+    // Hash links let the router own the transition: the browser updates the
+    // hash and hashchange routes the view. When the hash already matches, no
+    // hashchange fires, so refresh the view directly (so an error state can be
+    // retried).
+    if ((window.location.hash || '') === href) showView(view);
+    return;
+  }
+  event.preventDefault();
+  showView(view);
 });
 window.addEventListener('hashchange', routeFromHash);
 

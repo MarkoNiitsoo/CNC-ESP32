@@ -1,5 +1,35 @@
 # Progress
 
+## 2026-08-23 - Race-safe Files grid rendering (no more duplicate cards)
+
+- Root cause of the intermittent "every G-code file appears TWICE" bug: `renderFiles` cleared
+  `#launcher-list` up front, then awaited `fileMetadataFor` per item (up to 2 fetches each) and
+  appended rows incrementally. Multiple entry points could start overlapping `loadFiles`/`renderFiles`
+  runs with no cancellation (nav anchor click fired `showView` directly AND let the browser fire
+  `hashchange`; `ensureFilesViewData` had no in-flight guard; refresh/folder/delete/rename/upload
+  called `loadFiles` directly). Interleaved renders A and B produced exactly the observed paired
+  duplicates.
+- Made Files rendering race-safe in `www/app.js`:
+  - Latest-load ownership: `filesLoadGeneration` + `filesInFlight` tokens; `loadFiles` is now a
+    public deduplicating wrapper over `filesLoadRequest(path, generation)`, which gates every
+    DOM/state write on `isCurrent()` so a stale load never clears or clobbers a newer render.
+  - `renderFiles(items, generation)` no longer clears up front; it de-duplicates items by `item.path`,
+    resolves ALL metadata up front via `Promise.all`, builds every row into a DocumentFragment, and
+    atomically commits once with `launcherList.replaceChildren(fragment)`.
+  - Navigation: hash-navigation anchors are now routed by the hash/router ONLY; the document click
+    handler only calls `showView` directly for non-hash (action) anchors, so click + hashchange no
+    longer start two independent renders. `showView` is intentionally NOT made idempotent (that would
+    break boot data loading).
+- Row markup, badges, thumbnails, action bindings, and `uploadAnalysisToken` idiom are unchanged.
+- Tests: new `test/ui/files-race.test.mjs` (9 tests) evaluates the REAL `www/app.js` inside a stub
+  DOM/Fetch harness with deterministic deferred fetch control. Red phase (unfixed code): 7/9 failed,
+  including paired duplicate counts (tests 1 & 4: 2 and 3 cards for a single file), a double fetch on
+  nav click+hashchange (test 7), and a stale load clobbering the newer sub-folder view (tests 2 & 9).
+  Green phase: 9/9 pass. Full suite 62 files / 741 tests pass; pio native 18/18; esp32cam SUCCESS
+  (RAM 29.6%, Flash 76.9%). `node --check www/app.js` and `git diff --check` clean. Firmware
+  `.pio-build/esp32cam/firmware.bin` sha256 unchanged at
+  `7431fc9956256efda311e9fb6d2921ee4fa3874fddb74782d036a90823bd27fa` (www/ is SPIFFS-served, not compiled).
+
 ## 2026-08-02 - Phase 3 command-transport documentation sync
 
 - Updated protocol and architecture current-state sections for authenticated `command`/

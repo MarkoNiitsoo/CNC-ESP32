@@ -1,5 +1,25 @@
 # Handoff
 
+## 2026-08-23 - Race-safe Files grid rendering
+
+- The "every G-code file appears TWICE" bug is fixed in `www/app.js` Files rendering. Root cause:
+  `renderFiles` cleared the list up front and appended rows incrementally across awaited per-file
+  metadata fetches, so overlapping loads (nav click + hashchange, missing in-flight guard in
+  `ensureFilesViewData`, direct refresh/folder/delete/rename/upload calls) interleaved into paired
+  duplicates.
+- New invariants to preserve:
+  - Latest-load ownership: `filesLoadGeneration`/`filesInFlight`; `loadFiles` dedupes concurrent same-
+    path loads; `filesLoadRequest(path, generation)` ignores any response whose generation is stale.
+  - `renderFiles(items, generation)` is atomic: de-dupe by path, resolve all metadata up front, build a
+    DocumentFragment, commit once with `replaceChildren`. It no longer clears up front.
+  - Hash-navigation anchors are router-owned; the document click handler only calls `showView` directly
+    for non-matching-href (action) anchors. Do NOT make `showView` idempotent.
+- `ensureFilesViewData` is unchanged. Row markup/badges/thumbnails/action bindings unchanged. `www/` is
+  SPIFFS-served; firmware is untouched (bin sha256 identical before/after).
+- Tests: `test/ui/files-race.test.mjs` (9 tests) evaluates the REAL app.js in a stub DOM/Fetch harness
+  with manually-resolved deferred fetches. To add a test, resolve the per-URL deferreds exactly as the
+  existing tests do. Full suite 741/741; pio native 18/18; esp32cam SUCCESS.
+
 ## 2026-08-02 - Phase 3 command-transport documentation sync
 
 - `docs/protocol.md` now defines the implemented authenticated command/query channel, ordered payload
