@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-09-04 - Controller health transitions persisted to SD system log
+
+- Why: the offline-machine field diagnosis from SD logs hit a wall because controller timeouts were
+  telemetry-only (`markControllerUnresponsive` never touched system.log). Now
+  `ControllerCommManager.onStateChange` fires on real state changes only and main.cpp logs
+  `Controller state connected -> unresponsive: timeout: <cmd>: <error>` style lines to the SD
+  system log. Deliberately NOT logged: the per-command `waiting` window (would spam during jobs).
+- Diagnosis context for the next session: SD-update soft reboots correlate with the Marlin link
+  being dead at boot (probe false on boots E594156E and 5A32E41C right after updates; true on hard
+  boots). Recommended field action remains a full power cycle of ESP + SKR Pro; if it recurs after
+  the next update, the new log lines will show the exact outage timeline.
+- Verified: pio native 21/21 (3 new observer tests), vitest 772/772, esp32cam build SUCCESS.
+
 ## 2026-09-04 - Optional operator claim (`claimRequired`, default OFF)
 
 - Machine control no longer REQUIRES claiming by default. The persisted setting `claimRequired`

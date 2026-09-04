@@ -58,6 +58,16 @@ public:
   void onRecovering();
   void onRecoveryComplete(uint32_t nowMs);
   void reset(ControllerCommunicationState initialState = ControllerCommunicationState::Connected);
+
+  // Optional observer fired only when telemetry.state actually CHANGES (not
+  // for routine Waiting round-trips of a single sync command). The firmware
+  // wires it to the SD system log so controller outages and recoveries leave
+  // a persistent trace; native tests use it to assert transition reporting.
+  void (*onStateChange)(ControllerCommunicationState from, ControllerCommunicationState to,
+                        const std::string &reason) = nullptr;
+
+private:
+  void transition(ControllerCommunicationState to, const std::string &reason);
 };
 
 #endif // CONTROLLER_COMM_H

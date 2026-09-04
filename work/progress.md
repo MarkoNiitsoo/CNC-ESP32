@@ -1,5 +1,23 @@
 # Progress
 
+## 2026-09-04 - Controller health transitions persisted to SD system log
+
+- Field diagnosis (SD logs, boot `5A32E41C`): the SD firmware update succeeded, but Marlin did not
+  answer the boot M115 probe (`EMERGENCY_PARSER detected=false`), so the pendant showed the machine
+  offline and no home/jog was even admitted. The same probe-false pattern occurred after the
+  previous SD update too (boot `E594156E`, `reset=SOFTWARE`) - after a soft restart the ESP<->Marlin
+  link hangs until a real power cycle. Homing failures and two OTHER_WATCHDOG resets predate the
+  update, so the update was not the cause. `markControllerUnresponsive` was telemetry-only, so none
+  of this left a trace in system.log.
+- Change: `ControllerCommManager` gained an `onStateChange` observer fired only when
+  `telemetry.state` actually changes; `main.cpp` wires it in `setup()` to
+  `logSystemEvent("Controller state X -> Y: reason")`. Logged transitions: timeout ->
+  unresponsive (with failing command + error), recovery started, communication restored. The
+  routine `waiting` window of one synchronous command is deliberately silent to avoid log spam.
+- Tests: 3 new native cases (timeout logs once, recovery arc logs each step, healthy sync
+  round-trip logs nothing) - 21/21; system-log contract test pins the wiring and transition
+  strings in both main.cpp and controller_comm.cpp. vitest 772/772; esp32cam build SUCCESS.
+
 ## 2026-09-04 - Optional operator claim (`claimRequired`, default OFF)
 
 - Made "Claim machine control" a persisted, optional setting so the pendant is fully usable

@@ -10686,6 +10686,13 @@ void startHttpServer() {
 
 void setup() {
   Serial.begin(kMarlinBaudrate, SERIAL_8N1, kMarlinRxPin, kMarlinTxPin);
+  // Persist controller health transitions (unresponsive / recovering /
+  // restored) to the SD system log; routine Waiting round-trips stay silent.
+  controllerCommManager.onStateChange =
+      [](ControllerCommunicationState from, ControllerCommunicationState to, const std::string &reason) {
+        logSystemEvent(String("Controller state ") + controllerCommunicationStateToString(from) + " -> " +
+                       controllerCommunicationStateToString(to) + ": " + reason.c_str());
+      };
   char bootSession[24];
   snprintf(bootSession, sizeof(bootSession), "%08lX-%08lX",
            static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));

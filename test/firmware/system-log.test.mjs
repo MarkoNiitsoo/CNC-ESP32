@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const firmware = await readFile(new URL('../../src/main.cpp', import.meta.url), 'utf8');
+const controllerComm = await readFile(new URL('../../src/controller_comm.cpp', import.meta.url), 'utf8');
 
 describe('SD system diagnostics log', () => {
   it('writes bounded boot and network milestones without using the Marlin UART', () => {
@@ -32,5 +33,18 @@ describe('SD system diagnostics log', () => {
   it('documents the unavoidable no-card logging boundary', () => {
     expect(firmware).toMatch(/void logSystemEvent[\s\S]*if \(!sdMounted\) return;/);
     expect(firmware).toContain('SD mounted type=');
+  });
+
+  it('persists controller health transitions to the system log', () => {
+    // The SD logs must be able to answer "why did the machine go offline":
+    // unresponsive / recovering / restored transitions are logged on change.
+    expect(firmware).toContain('controllerCommManager.onStateChange =');
+    expect(firmware).toContain('Controller state ');
+    expect(controllerComm).toMatch(
+      /transition\(ControllerCommunicationState::Unresponsive, "timeout: " \+ cmd \+ ": " \+ errorMsg\)/);
+    expect(controllerComm).toMatch(
+      /transition\(ControllerCommunicationState::Recovering, "controller recovery started"\)/);
+    expect(controllerComm).toMatch(
+      /transition\(ControllerCommunicationState::Connected, "controller communication restored"\)/);
   });
 });

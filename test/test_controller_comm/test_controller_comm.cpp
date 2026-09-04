@@ -284,6 +284,68 @@ void test_18_ws_command_result_has_complete_protocol_fields(void) {
   TEST_ASSERT_TRUE(doc["stateRevision"].isNull());
 }
 
+// ── State-change observer (SD system-log wiring) ────────────────────────────
+
+static int g_stateChangeCalls = 0;
+static ControllerCommunicationState g_stateChangeFrom;
+static ControllerCommunicationState g_stateChangeTo;
+static std::string g_stateChangeReason;
+
+static void recordStateChange(ControllerCommunicationState from, ControllerCommunicationState to,
+                              const std::string &reason) {
+  ++g_stateChangeCalls;
+  g_stateChangeFrom = from;
+  g_stateChangeTo = to;
+  g_stateChangeReason = reason;
+}
+
+void test_19_timeout_reports_state_change_once(void) {
+  ControllerCommManager mgr;
+  g_stateChangeCalls = 0;
+  mgr.onStateChange = recordStateChange;
+
+  mgr.onTimeout(0, "G28", "Marlin did not answer", 1000);
+  TEST_ASSERT_EQUAL_INT(1, g_stateChangeCalls);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)g_stateChangeFrom);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Unresponsive, (int)g_stateChangeTo);
+  TEST_ASSERT_TRUE(g_stateChangeReason.find("timeout: G28") != std::string::npos);
+
+  // A repeated timeout while already Unresponsive must not log again.
+  mgr.onTimeout(0, "M114", "Marlin did not answer", 2000);
+  TEST_ASSERT_EQUAL_INT(1, g_stateChangeCalls);
+}
+
+void test_20_recovery_arc_reports_each_transition(void) {
+  ControllerCommManager mgr;
+  g_stateChangeCalls = 0;
+  mgr.onStateChange = recordStateChange;
+
+  mgr.onRecovering();
+  TEST_ASSERT_EQUAL_INT(1, g_stateChangeCalls);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)g_stateChangeFrom);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Recovering, (int)g_stateChangeTo);
+
+  mgr.onRecoveryComplete(5000);
+  TEST_ASSERT_EQUAL_INT(2, g_stateChangeCalls);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Recovering, (int)g_stateChangeFrom);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)g_stateChangeTo);
+  TEST_ASSERT_TRUE(g_stateChangeReason.find("restored") != std::string::npos);
+}
+
+void test_21_healthy_sync_round_trip_logs_nothing(void) {
+  ControllerCommManager mgr;
+  g_stateChangeCalls = 0;
+  mgr.onStateChange = recordStateChange;
+
+  uint32_t token = 0;
+  std::string err;
+  mgr.reserveTransaction(ControllerCommandClass::OrdinarySync, "M114", true, token, err);
+  mgr.onTerminalResponse(token, false, 1000);
+  TEST_ASSERT_EQUAL_INT((int)ControllerCommunicationState::Connected, (int)mgr.telemetry.state);
+  // Routine Waiting round-trips are healthy chatter and stay silent.
+  TEST_ASSERT_EQUAL_INT(0, g_stateChangeCalls);
+}
+
 int main(int argc, char **argv) {
   UNITY_BEGIN();
   RUN_TEST(test_1_connected_reserve_ordinary_sync_transitions_to_waiting);
@@ -304,5 +366,8 @@ int main(int argc, char **argv) {
   RUN_TEST(test_16_ws_command_ack_has_complete_unsequenced_shape);
   RUN_TEST(test_17_ws_command_result_escapes_dynamic_json_values);
   RUN_TEST(test_18_ws_command_result_has_complete_protocol_fields);
+  RUN_TEST(test_19_timeout_reports_state_change_once);
+  RUN_TEST(test_20_recovery_arc_reports_each_transition);
+  RUN_TEST(test_21_healthy_sync_round_trip_logs_nothing);
   return UNITY_END();
 }

@@ -4,8 +4,15 @@ ControllerCommManager::ControllerCommManager() {
   reset(ControllerCommunicationState::Connected);
 }
 
+void ControllerCommManager::transition(ControllerCommunicationState to, const std::string &reason) {
+  if (telemetry.state == to) return;
+  const ControllerCommunicationState from = telemetry.state;
+  telemetry.state = to;
+  if (onStateChange != nullptr) onStateChange(from, to, reason);
+}
+
 void ControllerCommManager::reset(ControllerCommunicationState initialState) {
-  telemetry.state = initialState;
+  transition(initialState, "controller communication state reset");
   telemetry.lastSuccessfulResponseMs = 0;
   telemetry.lastTimeoutMs = 0;
   telemetry.lastFailedCommand = "";
@@ -170,7 +177,7 @@ void ControllerCommManager::onTimeout(uint32_t transactionToken, const std::stri
   if (transactionToken > 0 && transactionToken == activeTransaction.token) {
     activeTransaction = SyncTransaction();
   }
-  telemetry.state = ControllerCommunicationState::Unresponsive;
+  transition(ControllerCommunicationState::Unresponsive, "timeout: " + cmd + ": " + errorMsg);
   telemetry.lastTimeoutMs = nowMs;
   telemetry.lastFailedCommand = cmd;
   telemetry.lastError = errorMsg;
@@ -178,11 +185,11 @@ void ControllerCommManager::onTimeout(uint32_t transactionToken, const std::stri
 
 void ControllerCommManager::onRecovering() {
   activeTransaction = SyncTransaction();
-  telemetry.state = ControllerCommunicationState::Recovering;
+  transition(ControllerCommunicationState::Recovering, "controller recovery started");
 }
 
 void ControllerCommManager::onRecoveryComplete(uint32_t nowMs) {
   activeTransaction = SyncTransaction();
-  telemetry.state = ControllerCommunicationState::Connected;
+  transition(ControllerCommunicationState::Connected, "controller communication restored");
   telemetry.lastSuccessfulResponseMs = nowMs;
 }

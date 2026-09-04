@@ -206,6 +206,9 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Safety-critical `EMERGENCY_PARSER` and realtime-hold flags are evidence from M115 in the current
     controller communication session only. They are never trusted from NVS and are invalidated on
     communication loss or recovery until a fresh M115 probe succeeds.
+  - Controller health transitions (`connected` / `unresponsive` / `recovering` / restored) are
+    written to `/logs/system.log` when the state changes, with the failing command and error; the
+    routine `waiting` window of a single synchronous command is not logged.
   - Uses `area.full` for Preview and guarded restore/resume bounds; falls back to compiled defaults.
   - Settings reads `M503` and `M211` on demand. Editable M92/M203/M201/M204 changes apply to
   Marlin RAM only; `M500` persistence is always a separate explicit action.
