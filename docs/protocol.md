@@ -121,7 +121,7 @@ Candidate system base JSON is updated on a low-rate 10-second scheduler outside 
   },
   "job": { ... },
   "jog": { ... },
-  "control": { "owner": null }
+  "control": { "configured": false, "claimRequired": false, "owner": null }
 }
 ```
 
@@ -137,6 +137,34 @@ A browser holding operator control receives an ephemeral `socketCommandToken` on
 HTTP Claim or Reconnect response. A command supplies that token with the active
 `controlSessionEpoch`; Release, a new Claim, or a new inactive-session Reconnect revokes the old
 epoch/token and clears incompatible queued and ledger state.
+
+### Operator claim setting (`claimRequired`)
+
+The persisted operator setting `claimRequired` (NVS key `claimReq` in the `operator` namespace,
+default `false`) makes claiming OPTIONAL. It is reported as `"claimRequired":true|false` in the
+`control` telemetry slice, in `GET /api/operator/status`, and in `POST /api/operator/claim`,
+`reconnect`, `heartbeat`, `release`, and `settings` response bodies. With `claimRequired:true` the
+behavior is exactly the historical claim-gated contract. Note for upgrades: a deployment that
+relied on the claim requirement silently becomes open after flashing, because the NVS key does not
+exist yet; re-enable it in the operator panel or with `PUT /api/operator/settings`.
+
+Open mode (`claimRequired:false`):
+
+- WS `command` and `commandQuery` packets are accepted without a claimed session; the browser may
+  send `authorization: { "controlSessionEpoch": 0, "socketCommandToken": null }`. Queued commands
+  never fail `STALE_CONTROL_SESSION` for a missing claim.
+- The mutating operator HTTP routes (every `operatorRoute` endpoint, including SD upload/delete and
+  job/jog/work-zero controls) are accepted without a claim.
+- OTA update upload/completion and OTA unlock (`POST /api/operator/ota-unlock`) still require a
+  claimed controller plus the device PIN, as do Release and the PIN update. Claiming therefore
+  stays fully functional in open mode; it is only optional.
+
+The setting is changed with `PUT /api/operator/settings` with body `{"claimRequired":true|false}`
+(a JSON boolean is required; anything else is a 400). The route is itself claim-gated: with
+`claimRequired:true` only the claimed controller may change it, and with `claimRequired:false` it
+is open, so enabling the requirement never requires existing security. Toggling never disturbs an
+active operator session (no epoch bump, no token clearing); the response is the full operator
+status JSON.
 
 ```json
 {

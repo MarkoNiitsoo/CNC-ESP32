@@ -1,5 +1,48 @@
 # Handoff
 
+## 2026-09-04 - Optional operator claim (`claimRequired`, default OFF)
+
+- Machine control no longer REQUIRES claiming by default. The persisted setting `claimRequired`
+  (NVS `operator`/`claimReq`, default false) selects between open control (OFF: mutating operator
+  HTTP routes and WS commands accepted without a session; WS packets may carry epoch 0 / null
+  token) and the previous claim-gated behavior (ON: byte-for-byte the old contract). Claiming,
+  PIN, lease, Release, and OTA unlock/upload keep working in BOTH modes - claiming is optional,
+  never impossible.
+- Gate placement matters (do not "simplify" later): the HTTP bypass intentionally lives in the
+  `operatorRoute()` wrapper + the two inline upload/update lambdas, NOT inside
+  `requireOperatorControl()`. Four handlers registered via plain `httpRoute`
+  (`handleOperatorHeartbeat/Release/PinUpdate/OtaUnlock`) call `requireOperatorControl()` directly;
+  a blanket bypass there would let anyone Release a claimed session and would drop the claim half
+  of OTA unlock. The WS bypass DOES live inside `wsCommandAuthorizationMatchesLocked()`, which
+  covers registration, commandQuery, and queued-command re-checks with one statement.
+- Toggle endpoint: `PUT /api/operator/settings` with `{"claimRequired":bool}` (strict boolean, 400
+  otherwise). Claim-gated ON, open OFF (enabling security never requires security). No epoch bump
+  or token clearing on toggle. The control slice and operator status now carry `claimRequired`;
+  `readOnly` is `!controller && claimRequired`.
+- UI flow: telemetry.js holds the mode (`setClaimRequired`, token demanded only when required);
+  machine-bar merges the flag from every operator/control payload, forwards it to telemetry, skips
+  revocation and the read-only class in open mode, shows '○ open' + the panel checkbox
+  (`mb-operator-claim-required` -> PUT settings, revert+error on failure incl. 423 for viewers).
+- Verified: `node --check` clean on machine-bar/telemetry/app/mock-server; vitest 770/770; pio
+  native 18/18; esp32cam SUCCESS (RAM 29.6%, Flash 77.1%). Two exact-source contract tests updated
+  intentionally (system-log upload lambda, operator-lock controller title); the six locked-contract
+  mock tests now pass `operatorClaimRequired: true` and a new mock test covers the open default +
+  settings toggle. Not committed - left for review.
+- Primary review additions after the implementation pass: the SD upload chunk lambda opens in OFF
+  mode too (otherwise default-mode uploads died with "no file provided"); the seven WS-first
+  command sites in machine-bar.js use the WS path in open mode as well
+  (`controller || machineControlOpen()`); the 5 ms-lease reconnect mock test was deflaked
+  (6/6 green full-suite runs after the fix).
+- Review round (independent): the firmware WS parse layer was still rejecting token-less packets
+  before the open-mode bypass - the two `strlen(token) != 40` gates are now conditional on
+  `operatorClaimRequiredSetting`, and the mock's deferred-execution revalidation gained the same
+  open-mode bypass for parity. Settings PUT parses via ArduinoJson (real boolean only). New mock
+  test pins token-less WS acceptance + claim-flow routes staying 423 in open mode. Final state:
+  vitest 771/771 (3 consecutive runs), pio native 18/18, esp32cam build SUCCESS. Not committed.
+- Hardware test idea: with no PIN set (fresh NVS), jog/home over WS without claiming; then tick
+  "Require control claim (PIN)" in the panel, confirm viewer requests start failing with 423 and
+  the checkbox revert path shows the error.
+
 ## 2026-08-23 - Race-safe Files grid rendering
 
 - The "every G-code file appears TWICE" bug is fixed in `www/app.js` Files rendering. Root cause:

@@ -608,6 +608,13 @@ button.machine-danger-dark {
   margin: 10px 0;
 }
 
+.machine-operator-panel label.machine-operator-setting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+
 .machine-operator-actions {
   display: flex;
   gap: 8px;

@@ -46,6 +46,10 @@
   // It is never persisted and is cleared on page unload or explicit release.
   let socketCommandToken = null;
   let controlSessionEpoch = 0;
+  // claimRequired mirrors the firmware's persisted operator-claim setting.
+  // Conservative default: assume a claim is required until the server says
+  // otherwise (control slice / operator status carry "claimRequired").
+  let claimRequired = true;
   const MAX_PENDING_COMMANDS = 32;
   const MAX_COMMAND_LEDGER = 64;
 
@@ -174,13 +178,20 @@
     revokeCommandAuthorization();
   }
 
+  // Open control mode toggle (mirrors the firmware's claimRequired setting).
+  // When false, commands are sent without a token; the server accepts them
+  // because its own claim gate is bypassed.
+  function setClaimRequired(value) {
+    claimRequired = value === true;
+  }
+
   // ── command() API ─────────────────────────────────────────────────────────
   // Sends a WS command and returns a Promise that resolves/rejects with the result.
   // commandId must be a unique string (uuid or similar) provided by the caller for idempotency.
   function command(action, payload, commandId, options = {}) {
     const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 15000;
 
-    if (!socketCommandToken) {
+    if (!socketCommandToken && claimRequired) {
       return Promise.reject(commandError('No active control session; obtain operator control first.', 'UNAUTHORIZED', commandId, 'not-sent'));
     }
     if (!socketConnected || socket?.readyState !== WebSocket.OPEN) {
@@ -248,7 +259,7 @@
     const resultTimeoutMs = typeof options.resultTimeoutMs === 'number' && options.resultTimeoutMs > 0
       ? options.resultTimeoutMs : 600000;
 
-    if (!socketCommandToken) {
+    if (!socketCommandToken && claimRequired) {
       return rejectedHandle(commandError('No active control session; obtain operator control first.', 'UNAUTHORIZED', commandId, 'not-sent'));
     }
     if (!socketConnected || socket?.readyState !== WebSocket.OPEN) {
@@ -401,7 +412,7 @@
     if (typeof commandId !== 'string' || !/^[A-Za-z0-9._:-]{1,96}$/.test(commandId)) {
       return Promise.reject(commandError('Valid commandId is required.', 'INVALID_COMMAND', commandId, 'not-sent'));
     }
-    if (!socketCommandToken || !controlSessionEpoch) {
+    if ((!socketCommandToken || !controlSessionEpoch) && claimRequired) {
       return Promise.reject(commandError('No active control session.', 'UNAUTHORIZED', commandId, 'not-sent'));
     }
     if (!socketConnected || socket?.readyState !== WebSocket.OPEN) {
@@ -437,7 +448,7 @@
   }
 
   function recoverPendingCommands() {
-    if (!socketCommandToken || !controlSessionEpoch || !socketConnected) return;
+    if ((claimRequired && (!socketCommandToken || !controlSessionEpoch)) || !socketConnected) return;
     for (const pending of pendingCommands.values()) {
       if (!pending.completed && pending.sent && pending.epoch === controlSessionEpoch) {
         sendSocketPacket({
@@ -1055,6 +1066,7 @@
     command,
     beginCommand,
     commandQuery,
+    setClaimRequired,
     setSocketCommandToken,
     clearSocketCommandToken,
     revokeCommandAuthorization,
@@ -1082,6 +1094,7 @@
       getSocket: () => socket,
       getSocketCommandToken: () => socketCommandToken,
       getControlSessionEpoch: () => controlSessionEpoch,
+      getClaimRequired: () => claimRequired,
       getPendingCommands: () => pendingCommands,
       getCommandLedger: () => commandLedger,
       connectSocket,

@@ -68,7 +68,8 @@ describe('single operator control lease', () => {
   it('shows the controller owner and blocks motion controls in read-only browsers', () => {
     expect(machineBar).toContain('id="mb-operator-strip"');
     expect(machineBar).toContain("controller ? `● ${owner}`");
-    expect(machineBar).toContain("button.title = controller ? `Controller: ${owner}`");
+    expect(machineBar).toContain("button.title = controller");
+    expect(machineBar).toContain("? `Controller: ${owner}`");
     expect(machineBar).toContain("fetch('/api/operator/heartbeat'");
     expect(machineBar).toContain("fetch('/api/operator/pin'");
     expect(machineBar).toContain('panel.hidden = !STATE.operatorPanelOpen');

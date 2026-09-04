@@ -98,8 +98,97 @@ describe('mock HTTP API', () => {
     })).ok).toBe(true);
   });
 
-  it('allows one PIN-authenticated controller while other clients stay read-only', async () => {
+  it('defaults to open control and toggles the claim requirement via /api/operator/settings', async () => {
     const { base } = await start({ operatorLockEnabled: true });
+    expect(await fetch(`${base}/api/operator/status`).then((res) => res.json()))
+      .toMatchObject({ claimRequired: false, readOnly: false });
+    // Open mode: a mutating request without any claim is accepted.
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'M5' }),
+    })).ok).toBe(true);
+
+    // Non-boolean payloads are rejected.
+    expect((await fetch(`${base}/api/operator/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claimRequired: 'yes' }),
+    })).status).toBe(400);
+
+    // Enabling the requirement is itself open (turning security on must not
+    // require security), and the response carries the new mode.
+    const enable = await fetch(`${base}/api/operator/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claimRequired: true }),
+    });
+    expect(enable.ok).toBe(true);
+    expect(await enable.json()).toMatchObject({ claimRequired: true, readOnly: true });
+
+    // Afterwards the setting is claim-gated and mutations need a claim again.
+    expect((await fetch(`${base}/api/operator/settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claimRequired: false }),
+    })).status).toBe(423);
+    expect((await fetch(`${base}/api/cmd`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'M5' }),
+    })).status).toBe(423);
+  });
+
+  it('accepts token-less WS commands in open mode but keeps the claim-flow routes locked', async () => {
+    const { base, env } = await start({ operatorLockEnabled: true });
+    env.runner.status.state = 'IDLE';
+    // The mock interleaves unsolicited sync/patch messages; drain until the
+    // next message of the wanted type for the given commandId.
+    const recvFor = async (ws, type, commandId) => {
+      for (let i = 0; i < 20; ++i) {
+        const message = await ws.recv();
+        if (message.type === type && (commandId === undefined || message.commandId === commandId)) return message;
+      }
+      return null;
+    };
+    const ws = await connectWs(base);
+    try {
+      // A browser that never claimed sends epoch 0 / null token; admission
+      // must not fail with UNAUTHORIZED. safety.stop on an idle job is
+      // admitted and answered with a state conflict instead.
+      ws.send({
+        protocolVersion: 1, type: 'command',
+        commandId: 'cmd-open-no-token', action: 'safety.stop',
+        authorization: { controlSessionEpoch: 0, socketCommandToken: null },
+      });
+      const ack = await recvFor(ws, 'commandAck', 'cmd-open-no-token');
+      expect(ack.type).toBe('commandAck');
+      expect(ack.accepted).toBe(true);
+      const result = await recvFor(ws, 'commandResult', 'cmd-open-no-token');
+      expect(result.type).toBe('commandResult');
+      expect(result.code).toBe('JOB_STATE_CONFLICT');
+
+      // A token-less commandQuery passes authorization and reports the unknown
+      // commandId instead of being rejected.
+      ws.send({
+        protocolVersion: 1, type: 'commandQuery',
+        commandId: 'cmd-open-unknown',
+        authorization: { controlSessionEpoch: 0, socketCommandToken: null },
+      });
+      const queryAck = await recvFor(ws, 'commandAck', 'cmd-open-unknown');
+      expect(queryAck.accepted).toBe(false);
+      expect(queryAck.code).toBe('INVALID_COMMAND');
+    } finally {
+      ws.close();
+    }
+
+    // The claim-flow routes stay locked without a session, even in open mode.
+    expect((await fetch(`${base}/api/operator/release`, { method: 'POST' })).status).toBe(423);
+    expect((await fetch(`${base}/api/operator/pin`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPin: '111222', newPin: '222333' }),
+    })).status).toBe(423);
+    expect((await fetch(`${base}/api/operator/ota-unlock`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: '111222' }),
+    })).status).toBe(423);
+  });
+
+  it('allows one PIN-authenticated controller while other clients stay read-only', async () => {
+    const { base } = await start({ operatorLockEnabled: true, operatorClaimRequired: true });
     const locked = await fetch(`${base}/api/cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'M5' }),
     });
@@ -132,7 +221,7 @@ describe('mock HTTP API', () => {
   });
 
   it('lets the remembered controller revive an expired lease without another PIN', async () => {
-    const { base, env } = await start({ operatorLockEnabled: true });
+    const { base, env } = await start({ operatorLockEnabled: true, operatorClaimRequired: true });
     env.operator.leaseMs = 5;
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -159,6 +248,10 @@ describe('mock HTTP API', () => {
     expect(reconnected).toMatchObject({ active: true, controller: true, owner: 'Marko phone' });
     expect(reconnected.controlSessionEpoch).toBeGreaterThan(claimed.controlSessionEpoch);
     const reconnectedCookie = reconnect.headers.get('set-cookie').split(';')[0];
+    // The 5 ms lease makes every later real-network roundtrip racy; the
+    // revived-session contract is already asserted above, so widen the lease
+    // before proving the revived session authorizes mutations.
+    env.operator.leaseMs = 5000;
     expect((await fetch(`${base}/api/cmd`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: reconnectedCookie },
       body: JSON.stringify({ cmd: 'M5' }),
@@ -854,7 +947,7 @@ describe('WS command protocol (Phase 3A)', () => {
   });
 
   it('rejects a WS command with wrong token', async () => {
-    const { base } = await start();
+    const { base } = await start({ operatorClaimRequired: true });
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
@@ -874,7 +967,7 @@ describe('WS command protocol (Phase 3A)', () => {
   });
 
   it('rejects a WS command with wrong epoch', async () => {
-    const { base } = await start();
+    const { base } = await start({ operatorClaimRequired: true });
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
@@ -1147,7 +1240,10 @@ describe('WS command protocol (Phase 3A)', () => {
   });
 
   it('revalidates an active session immediately before deferred execution', async () => {
-    const { base, env, flushDeferredWsCommands } = await start({ deferWsCommandExecution: true });
+    // Pins the claim-gated contract specifically: deferred execution must
+    // revalidate the claimed session even though open mode skips the check.
+    const { base, env, flushDeferredWsCommands } =
+      await start({ deferWsCommandExecution: true, operatorClaimRequired: true });
     const claim = await fetch(`${base}/api/operator/claim`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ owner: 'Alice', pin: '111222', browserId: markoBrowserId }),
@@ -1466,7 +1562,7 @@ describe('WS machine commands (Phase 3C)', () => {
   });
 
   it('expires the operator session when no authenticated activity refreshes it', async () => {
-    const { base } = await start({ operatorLeaseMs: 120 });
+    const { base } = await start({ operatorLeaseMs: 120, operatorClaimRequired: true });
     const claim = await claimController(base);
 
     const ws = await connectWs(base);
@@ -1482,7 +1578,7 @@ describe('WS machine commands (Phase 3C)', () => {
   });
 
   it('scopes command recovery to the originating control-session epoch', async () => {
-    const { base } = await start({ machineOperationDelayMs: 30 });
+    const { base } = await start({ machineOperationDelayMs: 30, operatorClaimRequired: true });
     const claimWithCookie = async () => {
       const res = await fetch(`${base}/api/operator/claim`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },

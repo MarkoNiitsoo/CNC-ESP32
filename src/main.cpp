@@ -48,6 +48,7 @@ constexpr const char *kOperatorPrefsNamespace = "operator";
 constexpr const char *kOperatorPrefsPinHashKey = "pinHash";
 constexpr const char *kOperatorPrefsBrowserHashKey = "browserHash";
 constexpr const char *kOperatorPrefsOwnerKey = "lastOwner";
+constexpr const char *kOperatorPrefsClaimRequiredKey = "claimReq";
 constexpr uint32_t kOperatorLeaseMs = 45000;
 constexpr uint32_t kOperatorCookieMaxAgeSeconds = 31536000;
 constexpr uint32_t kOperatorOtaUnlockMs = 120000;
@@ -551,6 +552,9 @@ String otaError;
 String operatorPinHash;
 String operatorRememberedBrowserHash;
 String operatorRememberedOwner;
+// Optional claim gate (persisted). false = machine control is open: mutating
+// HTTP routes and WS commands are accepted without a claimed operator session.
+bool operatorClaimRequiredSetting = false;
 String operatorSessionToken;
 String operatorSessionOwner;
 String operatorSessionBrowserHash;
@@ -2585,6 +2589,8 @@ String buildControlSliceJson() {
   const bool active = operatorSessionActive();
   String patchJson = "{\"configured\":";
   patchJson += operatorPinHash.length() > 0 ? "true" : "false";
+  patchJson += ",\"claimRequired\":";
+  patchJson += operatorClaimRequiredSetting ? "true" : "false";
   patchJson += ",\"active\":";
   patchJson += active ? "true" : "false";
   patchJson += ",\"owner\":";
@@ -2860,6 +2866,9 @@ bool sendWsCommandResult(uint8_t client, const char *commandId, bool ok,
 }
 
 bool wsCommandAuthorizationMatchesLocked(uint32_t epoch, const char *token) {
+  // Open control mode (claimRequired=false): commands are accepted without a
+  // claimed operator session, so packets may carry epoch 0 and no token.
+  if (!operatorClaimRequiredSetting) return true;
   const bool matches = token != nullptr && operatorSocketCommandToken.length() == 40 &&
                        epoch == operatorControlSessionEpoch &&
                        strcmp(token, operatorSocketCommandToken.c_str()) == 0 &&
@@ -3180,7 +3189,9 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
       entry.commandClientSeq = seqVal;
       entry.epoch = doc["authorization"]["controlSessionEpoch"] | 0;
       const char *token = doc["authorization"]["socketCommandToken"] | "";
-      if (strlen(token) != 40) {
+      // Open control mode (claimRequired=false) admits token-less packets;
+      // wsCommandAuthorizationMatchesLocked() is the single gate in that case.
+      if (strlen(token) != 40 && operatorClaimRequiredSetting) {
         sendWsCommandAck(client, cmdId, false, false, "UNAUTHORIZED",
                          "Command authorization invalid or expired");
         return;
@@ -3230,7 +3241,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
         sendWsCommandAck(client, queryId, false, false, "INVALID_COMMAND", "Valid commandId is required");
         return;
       }
-      if (strlen(queryToken) != 40) {
+      if (strlen(queryToken) != 40 && operatorClaimRequiredSetting) {
         sendWsCommandAck(client, queryId, false, false, "UNAUTHORIZED",
                          "Command query authorization invalid or expired");
         return;
@@ -6883,9 +6894,10 @@ String operatorStatusJson(bool assumeController = false) {
   const uint32_t remaining = active ? kOperatorLeaseMs - (millis() - operatorSessionLastSeenMs) : 0;
   String json = "{\"ok\":true,\"configured\":";
   json += operatorPinHash.length() > 0 ? "true" : "false";
+  json += ",\"claimRequired\":" + String(operatorClaimRequiredSetting ? "true" : "false");
   json += ",\"active\":" + String(active ? "true" : "false");
   json += ",\"controller\":" + String(controller ? "true" : "false");
-  json += ",\"readOnly\":" + String(controller ? "false" : "true");
+  json += ",\"readOnly\":" + String((!controller && operatorClaimRequiredSetting) ? "true" : "false");
   json += ",\"canClaim\":" + String(active ? "false" : "true");
   json += ",\"owner\":";
   json += active || controller ? "\"" + jsonEscape(operatorSessionOwner) + "\"" : "null";
@@ -6979,6 +6991,13 @@ void saveOperatorPin(const String &pin) {
   operatorPrefs.end();
 }
 
+void saveOperatorClaimRequired(bool required) {
+  operatorClaimRequiredSetting = required;
+  operatorPrefs.begin(kOperatorPrefsNamespace, false);
+  operatorPrefs.putBool(kOperatorPrefsClaimRequiredKey, required);
+  operatorPrefs.end();
+}
+
 void rememberOperatorBrowser(const String &browserId, const String &owner) {
   operatorRememberedBrowserHash = operatorBrowserDigest(browserId);
   operatorRememberedOwner = owner;
@@ -7002,10 +7021,29 @@ void loadOperatorSettings() {
   operatorPinHash = operatorPrefs.getString(kOperatorPrefsPinHashKey, "");
   operatorRememberedBrowserHash = operatorPrefs.getString(kOperatorPrefsBrowserHashKey, "");
   operatorRememberedOwner = operatorPrefs.getString(kOperatorPrefsOwnerKey, "");
+  operatorClaimRequiredSetting = operatorPrefs.getBool(kOperatorPrefsClaimRequiredKey, false);
   operatorPrefs.end();
 }
 
 void handleOperatorStatus() {
+  server.send(200, "application/json", operatorStatusJson());
+}
+
+// Toggles the optional operator-claim requirement. The route is registered via
+// operatorRoute(), so with claimRequired=true only the claimed controller can
+// change it, and with claimRequired=false it is open (enabling security must
+// never require existing security). Toggling leaves any active operator
+// session untouched: no epoch bump and no token clearing.
+void handleOperatorSettingsUpdate() {
+  const String body = server.hasArg("plain") ? server.arg("plain") : "";
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, body);
+  // Strict parse: the top-level field must be a real JSON boolean.
+  if (err || !doc["claimRequired"].is<bool>()) {
+    sendJsonError(400, "claimRequired must be a JSON boolean");
+    return;
+  }
+  saveOperatorClaimRequired(doc["claimRequired"].as<bool>());
   server.send(200, "application/json", operatorStatusJson());
 }
 
@@ -7149,7 +7187,11 @@ void handleOperatorOtaUnlock() {
 
 void operatorRoute(const char *uri, HTTPMethod method, void (*handler)()) {
   httpRoute(uri, method, [handler]() {
-    if (requireOperatorControl()) handler();
+    // Open control mode (claimRequired=false): mutating operator routes are
+    // ungated. The claim-flow handlers that call requireOperatorControl()
+    // directly (heartbeat, release, PIN update, OTA unlock) stay gated so a
+    // claimed session and OTA unlock still require the claim + PIN.
+    if (!operatorClaimRequiredSetting || requireOperatorControl()) handler();
   });
 }
 
@@ -10526,6 +10568,7 @@ void startHttpServer() {
   httpRoute("/api/operator/heartbeat", HTTP_POST, handleOperatorHeartbeat);
   httpRoute("/api/operator/release", HTTP_POST, handleOperatorRelease);
   httpRoute("/api/operator/pin", HTTP_PUT, handleOperatorPinUpdate);
+  operatorRoute("/api/operator/settings", HTTP_PUT, handleOperatorSettingsUpdate);
   httpRoute("/api/operator/ota-unlock", HTTP_POST, handleOperatorOtaUnlock);
   httpRoute("/api/health", HTTP_GET, handleHealth);
   httpRoute("/api/tool-change/settings", HTTP_GET, handleToolChangeSettingsGet);
@@ -10547,8 +10590,8 @@ void startHttpServer() {
   httpRoute("/api/files", HTTP_GET, handleFilesList);
   httpRoute("/api/download", HTTP_GET, handleDownload);
   server.on("/api/upload", HTTP_POST,
-            []() { logHttpRequest(); if (requireOperatorControl()) handleUploadComplete(); },
-            []() { if (operatorRequestAuthorized()) handleUploadData(); });
+            []() { logHttpRequest(); if (!operatorClaimRequiredSetting || requireOperatorControl()) handleUploadComplete(); },
+            []() { if (!operatorClaimRequiredSetting || operatorRequestAuthorized()) handleUploadData(); });
   operatorRoute("/api/delete", HTTP_POST, handleDelete);
   operatorRoute("/api/mkdir", HTTP_POST, handleMkdir);
   operatorRoute("/api/rename", HTTP_POST, handleRename);
@@ -10576,7 +10619,9 @@ void startHttpServer() {
   operatorRoute("/api/work-zero/restore", HTTP_POST, handleRestoreWorkZero);
   httpRoute("/update", HTTP_GET, handleUpdatePage);
   server.on("/api/update", HTTP_POST,
-            []() { logHttpRequest(); if (requireOperatorControl()) handleUpdateComplete(); },
+            []() { logHttpRequest(); if (!operatorClaimRequiredSetting || requireOperatorControl()) handleUpdateComplete(); },
+            // Deliberately NOT opened in open mode: handleUpdateUpload enforces
+            // operatorOtaUnlocked() (claim + PIN) internally, in both modes.
             []() { if (operatorRequestAuthorized()) handleUpdateUpload(); });
   httpRoute("/wifi", HTTP_GET, handleWifiPage);
   operatorRoute("/api/wifi/save", HTTP_POST, handleWifiSave);

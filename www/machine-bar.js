@@ -13,8 +13,8 @@
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
     toolChangeSettings: null,
     projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
-    operator: { configured: false, active: false, controller: false, readOnly: true, owner: null, canClaim: true, controlSessionEpoch: 0 },
-    operatorGlobal: { configured: false, active: false, owner: null, canClaim: true, leaseMs: 45000, leaseExpiresAtUptimeMs: 0, controlSessionEpoch: 0 },
+    operator: { configured: false, active: false, controller: false, readOnly: true, claimRequired: true, owner: null, canClaim: true, controlSessionEpoch: 0 },
+    operatorGlobal: { configured: false, active: false, claimRequired: true, owner: null, canClaim: true, leaseMs: 45000, leaseExpiresAtUptimeMs: 0, controlSessionEpoch: 0 },
     operatorPanelOpen: false,
     controller: { connected: true, state: 'connected', communication: { state: 'connected', lastError: '', lastFailedCommand: '' } },
     machineOperation: null,
@@ -708,7 +708,7 @@
     if (value > 150 && !confirm('Feed override above 150% can move the CNC much faster. Continue?')) return;
     const baseline = socketSliceToken('job');
     const telemetry = window.CncTelemetry;
-    if (telemetry?.command && STATE.operator?.controller) {
+    if (telemetry?.command && (STATE.operator?.controller || machineControlOpen())) {
       const commandId = genCommandId('feed');
       let acceptedOrUnknown = false;
       try {
@@ -754,7 +754,7 @@
   async function pauseJob() {
     const baseline = socketSliceToken('job');
     const telemetry = window.CncTelemetry;
-    if (telemetry?.command && STATE.operator?.controller) {
+    if (telemetry?.command && (STATE.operator?.controller || machineControlOpen())) {
       const commandId = genCommandId('pause');
       let acceptedOrUnknown = false;
       try {
@@ -789,7 +789,7 @@
   async function resumeJob() {
     const baseline = socketSliceToken('job');
     const telemetry = window.CncTelemetry;
-    if (telemetry?.command && STATE.operator?.controller) {
+    if (telemetry?.command && (STATE.operator?.controller || machineControlOpen())) {
       const commandId = genCommandId('resume');
       let acceptedOrUnknown = false;
       try {
@@ -855,7 +855,7 @@
       : jobConfirmation;
     // Dispatch both authenticated paths immediately. Canonical job state is the success authority.
     const telemetry = window.CncTelemetry;
-    if (telemetry?.command && STATE.operator?.controller) {
+    if (telemetry?.command && (STATE.operator?.controller || machineControlOpen())) {
       try {
         void Promise.resolve(
           telemetry.command('safety.stop', null, genCommandId('stop'), { timeoutMs: 5000 })
@@ -949,6 +949,12 @@
     return data;
   }
 
+  // Open control mode: the server reports claimRequired=false, so machine
+  // control is available without claiming an operator session.
+  function machineControlOpen() {
+    return STATE.operator?.claimRequired === false;
+  }
+
   function storedOperatorBrowserId(create = false) {
     let browserId = localStorage.getItem(OPERATOR_BROWSER_ID_KEY) || '';
     if (/^[a-f0-9]{64}$/.test(browserId)) return browserId;
@@ -990,19 +996,25 @@
   function applyLocalOperatorAuthorization(data) {
     const controlSessionEpoch = Number(data?.controlSessionEpoch) || 0;
     const controller = data?.controller === true && controlSessionEpoch > 0;
+    const claimRequired = data?.claimRequired ?? STATE.operator?.claimRequired ?? true;
     STATE.operator = {
       ...STATE.operator,
       ...data,
+      claimRequired,
       controlSessionEpoch,
       controller,
-      readOnly: !controller,
+      readOnly: !controller && claimRequired !== false,
     };
+    // Forward the open/claimed mode to the telemetry command gate.
+    window.CncTelemetry?.setClaimRequired?.(claimRequired !== false);
     // Forward the WS command token to the telemetry module.
     // The token appears ONLY in Claim/Reconnect response bodies; heartbeat/status never carry it.
     const token = typeof data?.socketCommandToken === 'string' ? data.socketCommandToken : null;
     if (controller && token) {
       window.CncTelemetry?.setSocketCommandToken(token, controlSessionEpoch);
-    } else if (!controller) {
+    } else if (!controller && claimRequired !== false) {
+      // In open control mode a missing session is normal: no revocation, no
+      // read-only, and commands simply go out without a token.
       revokeLocalOperatorControl(data?.error || 'Operator control is no longer active.', data);
     }
     syncOperatorHeartbeat();
@@ -1021,19 +1033,25 @@
       && globalSessionEpoch > 0
       && localSessionEpoch === globalSessionEpoch
       && (!local.owner || !data.owner || local.owner === data.owner);
+    const claimRequired = data.claimRequired ?? local.claimRequired ?? true;
     STATE.operator = {
       ...local,
       configured: data.configured ?? local.configured ?? false,
       active: data.active ?? local.active ?? false,
+      claimRequired,
       owner: data.owner ?? null,
       canClaim: data.canClaim ?? local.canClaim ?? true,
       leaseMs: data.leaseMs ?? local.leaseMs,
       leaseExpiresAtUptimeMs: data.leaseExpiresAtUptimeMs ?? local.leaseExpiresAtUptimeMs,
       controlSessionEpoch: localSessionEpoch,
       controller,
-      readOnly: !controller,
+      readOnly: !controller && claimRequired !== false,
     };
-    if (local.controller === true && !controller) {
+    // Forward the open/claimed mode to the telemetry command gate.
+    window.CncTelemetry?.setClaimRequired?.(claimRequired !== false);
+    if (local.controller === true && !controller && claimRequired !== false) {
+      // In open control mode a controller change does not revoke anything:
+      // commands keep working without a token.
       revokeLocalOperatorControl('Authoritative control state revoked this browser session.', STATE.operator);
     }
     syncOperatorHeartbeat();
@@ -1122,6 +1140,33 @@
     }
   }
 
+  // Toggles the firmware's persisted claimRequired setting. Open mode: anyone
+  // may enable it; claimed mode: only the controller may change it (viewers
+  // receive 423 and see the error). A failure reverts the checkbox.
+  async function updateOperatorClaimRequired() {
+    const box = el('mb-operator-claim-required');
+    const status = el('mb-operator-result');
+    if (!box) return;
+    try {
+      const data = await readOperatorResponse(await fetch('/api/operator/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claimRequired: box.checked === true }),
+      }));
+      applyLocalOperatorAuthorization(data);
+      renderOperatorLock();
+      if (status) {
+        status.textContent = data.claimRequired === false
+          ? 'Machine control is now open; claiming is optional.'
+          : 'Machine control now requires a claim (PIN).';
+      }
+    } catch (err) {
+      box.checked = !box.checked;
+      if (err.data) STATE.operator = { ...STATE.operator, ...err.data };
+      if (status) status.textContent = err.message;
+      renderOperatorLock();
+    }
+  }
+
   async function operatorHeartbeat() {
     if (!STATE.operator?.controller || document.hidden ||
         window.CncTelemetry?.transportStatus === 'failed' || operatorHeartbeatInFlight) {
@@ -1173,7 +1218,8 @@
   function renderOperatorLock() {
     const operator = STATE.operator || {};
     const controller = operator.controller === true;
-    document.body.classList.toggle('operator-read-only', !controller);
+    const open = machineControlOpen();
+    document.body.classList.toggle('operator-read-only', !controller && !open);
     const strip = el('mb-operator-strip');
     const button = el('mb-operator-toggle');
     const panel = el('mb-operator-panel');
@@ -1183,8 +1229,12 @@
     const owner = operator.owner || '';
     if (strip) strip.dataset.controller = String(controller);
     if (button) {
-      button.textContent = controller ? `● ${owner}` : owner ? `○ ${owner}` : '○ viewer';
-      button.title = controller ? `Controller: ${owner}` : owner ? `Read only: ${owner} controls` : 'Read only: claim control';
+      button.textContent = controller ? `● ${owner}` : open ? '○ open' : owner ? `○ ${owner}` : '○ viewer';
+      button.title = controller
+        ? `Controller: ${owner}`
+        : open
+          ? 'Control is open; claiming is optional'
+          : owner ? `Read only: ${owner} controls` : 'Read only: claim control';
       button.setAttribute('aria-label', button.title);
       button.setAttribute('aria-expanded', String(STATE.operatorPanelOpen));
     }
@@ -1192,21 +1242,28 @@
     if (el('mb-operator-title')) {
       el('mb-operator-title').textContent = controller
         ? `Controller: ${owner}`
-        : operator.configured ? 'Claim machine control' : 'Set the device operator PIN';
+        : open ? 'Machine control is open'
+          : operator.configured ? 'Claim machine control' : 'Set the device operator PIN';
     }
     if (el('mb-operator-hint')) {
       el('mb-operator-hint').textContent = controller
         ? 'This browser is remembered as the controller and reconnects automatically unless another device takes control.'
-        : owner
-          ? `${owner} currently controls the machine. This browser is read-only until that 45-second lease expires or is released.`
-          : operator.configured
-            ? 'Enter the device PIN. Only one browser can control the machine at a time.'
-            : 'First setup: connect through the device Setup AP, then choose a unique 6-12 digit PIN. It is stored as a hash and will be required on every controller.';
+        : open
+          ? owner
+            ? `${owner} holds the PIN-protected session, but commands work without claiming. Claiming is optional and only enables that exclusive session and OTA unlock.`
+            : 'Commands work without claiming. Claiming is optional; it only enables the PIN-protected exclusive session and OTA unlock.'
+          : owner
+            ? `${owner} currently controls the machine. This browser is read-only until that 45-second lease expires or is released.`
+            : operator.configured
+              ? 'Enter the device PIN. Only one browser can control the machine at a time.'
+              : 'First setup: connect through the device Setup AP, then choose a unique 6-12 digit PIN. It is stored as a hash and will be required on every controller.';
     }
     if (claim) claim.hidden = controller;
     if (claim) claim.disabled = operator.active === true && !controller;
     if (release) release.hidden = !controller;
     if (change) change.hidden = !controller;
+    const claimRequiredBox = el('mb-operator-claim-required');
+    if (claimRequiredBox) claimRequiredBox.checked = operator.claimRequired !== false;
     document.querySelectorAll('[data-operator-claim-field]').forEach((item) => { item.hidden = controller; });
     document.querySelectorAll('[data-operator-pin-field]').forEach((item) => { item.hidden = !controller; });
   }
@@ -1538,7 +1595,7 @@
       dispatchConfirmedMachineEvent('cnc-work-zero-set', data, machine, { axes: 'xyz' });
       setMessage('Work zero set and confirmed by live machine state');
     };
-    if (telemetry?.beginCommand && STATE.operator?.controller) {
+    if (telemetry?.beginCommand && (STATE.operator?.controller || machineControlOpen())) {
       // Two-phase command: admission is bounded and decides the HTTP fallback;
       // the result phase may legitimately take minutes (the firmware engine
       // runs G28/M400 with 120 s Marlin budgets per step) and must never be
@@ -1577,7 +1634,7 @@
       dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z' });
       setMessage('Z zero set and confirmed by live machine state');
     };
-    if (telemetry?.beginCommand && STATE.operator?.controller) {
+    if (telemetry?.beginCommand && (STATE.operator?.controller || machineControlOpen())) {
       const handle = telemetry.beginCommand('machine.setZZero', null,
         genCommandId('machine-setzzero'), { admissionTimeoutMs: 5000, resultTimeoutMs: 600000 });
       let admitted = true;
@@ -1658,7 +1715,7 @@
         axes,
       });
     };
-    if (telemetry?.beginCommand && STATE.operator?.controller) {
+    if (telemetry?.beginCommand && (STATE.operator?.controller || machineControlOpen())) {
       const handle = telemetry.beginCommand('machine.home', { axes },
         genCommandId('machine-home'), { admissionTimeoutMs: 5000, resultTimeoutMs: 600000 });
       let admitted = true;
@@ -2034,6 +2091,10 @@
       <section id="mb-operator-panel" class="machine-operator-panel" aria-live="polite" hidden>
         <h2 id="mb-operator-title">Claim machine control</h2>
         <p id="mb-operator-hint">Enter the device PIN. Only one browser can control the machine at a time.</p>
+        <label class="machine-operator-setting" for="mb-operator-claim-required">
+          <input id="mb-operator-claim-required" type="checkbox">
+          <span>Require control claim (PIN)</span>
+        </label>
         <label data-operator-claim-field>Controller name<input id="mb-operator-owner" type="text" maxlength="32" autocomplete="nickname" placeholder="Marko phone"></label>
         <label data-operator-claim-field>Device PIN<input id="mb-operator-pin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="current-password"></label>
         <div class="machine-operator-actions">
@@ -2217,13 +2278,15 @@
       renderOperatorLock();
     });
     button('mb-operator-pin-save', updateOperatorPin);
+    el('mb-operator-claim-required')?.addEventListener('change', updateOperatorClaimRequired);
     document.addEventListener('click', (event) => {
       const control = event.target?.closest?.('button, input[type="submit"], input[type="button"], [role="button"]');
       if (!control || control.closest('#mb-operator-panel') || control.id === 'mb-operator-toggle') return;
       operatorIntentUntil = Date.now() + 5000;
     }, true);
     const interceptReadOnlyMachineControl = (event) => {
-      if (STATE.operator?.controller || !event.target?.closest?.('.machine-actions, .machine-jog-dock')) return;
+      if (STATE.operator?.controller || machineControlOpen() ||
+          !event.target?.closest?.('.machine-actions, .machine-jog-dock')) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       requestOperatorControl('Claim control before operating the machine.');

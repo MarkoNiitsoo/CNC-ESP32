@@ -1,5 +1,85 @@
 # Progress
 
+## 2026-09-04 - Optional operator claim (`claimRequired`, default OFF)
+
+- Made "Claim machine control" a persisted, optional setting so the pendant is fully usable
+  without setting a PIN. Default is OFF (control open); turning it ON restores the exact previous
+  claim-gated behavior.
+- Firmware (`src/main.cpp`):
+  - New NVS key `kOperatorPrefsClaimRequiredKey = "claimReq"` (operator namespace), global
+    `operatorClaimRequiredSetting = false`, loaded in `loadOperatorSettings()` and saved by the new
+    `saveOperatorClaimRequired()` (same pattern as `saveOperatorPin`).
+  - WS gate: `wsCommandAuthorizationMatchesLocked()` returns true immediately when the setting is
+    false, which opens command registration, `commandQuery`, and
+    `wsQueuedCommandStillAuthorized()` at once (packets may carry epoch 0 / no token).
+  - HTTP gate: the bypass lives in the `operatorRoute()` wrapper and the two inline upload/update
+    lambdas (`!operatorClaimRequiredSetting || requireOperatorControl()`). `requireOperatorControl()`
+    itself stays strict because `handleOperatorHeartbeat/Release/PinUpdate/OtaUnlock` (registered via
+    plain `httpRoute`) call it directly - a blanket bypass would have made Release unauthenticated
+    and removed the claim half of the OTA unlock/upload requirement.
+  - `operatorStatusJson()` gained `"claimRequired"` next to `"configured"`, and `"readOnly"` is now
+    `!controller && operatorClaimRequiredSetting`. `buildControlSliceJson()` also broadcasts
+    `"claimRequired"`.
+  - New `PUT /api/operator/settings` (`handleOperatorSettingsUpdate`): strict boolean parse of
+    `claimRequired` (400 otherwise), saves, responds with `operatorStatusJson()`; toggling never
+    bumps the epoch or clears tokens.
+- Web UI:
+  - `www/telemetry.js`: `claimRequired` module state (conservative default true), exported
+    `setClaimRequired()`; `command()`, `beginCommand()`, `commandQuery()` only demand a token when
+    `claimRequired`; `recoverPendingCommands()` runs in open mode without a session.
+  - `www/machine-bar.js`: `machineControlOpen()` helper; both operator-state mergers keep
+    `readOnly` false and skip revocation in open mode; forward the mode via
+    `CncTelemetry.setClaimRequired()`. `renderOperatorLock()` shows '○ open' / 'Machine control is
+    open' texts and reflects the new `mb-operator-claim-required` checkbox; `updateOperatorClaimRequired()`
+    PUTs `/api/operator/settings`, reverts the checkbox and shows the server error on failure
+    (viewer + ON mode gets 423). `interceptReadOnlyMachineControl()` ignores clicks in open mode.
+  - `www/style.css`: one flex row style (`.machine-operator-setting`) for the checkbox.
+- Dev mock (`dev/mock-server.mjs`): mirrors the new contract - `claimRequired:false` default in the
+  operator state, `claimRequired` in operator status + control slice, `readOnly` formula, the
+  central mutating-route gate and WS command/commandQuery authorization now bypass when OFF, and a
+  new `PUT /api/operator/settings` (controller-only while ON, open while OFF, strict boolean).
+- Tests: new `test/ui/claim-required-setting.test.mjs` (13 tests) loads the REAL telemetry.js and
+  machine-bar.js in browser-like sandboxes (phase2 harness pattern): default-locked UNAUTHORIZED vs
+  open-mode TRANSPORT_UNAVAILABLE, no click interception / no revocation / readOnly:false in open
+  mode, settings PUT happy path + 423 revert, and the firmware source contract. Updated two
+  exact-source contract tests that this change intentionally broke
+  (`test/firmware/system-log.test.mjs` upload lambda string, `test/firmware/operator-lock.test.mjs`
+  controller title string). `test/mock/mock-server.test.mjs`: the six locked-contract tests now opt
+  in via `operatorClaimRequired: true` config, plus a new test for the open default and the
+  settings toggle (toggle open -> 423-gated -> 400 on non-boolean).
+- Docs: `docs/protocol.md` gained an "Operator claim setting (`claimRequired`)" section (open-mode
+  semantics, settings endpoint, OTA/Release/PIN still claim-gated) and the `control` slice example
+  now shows `claimRequired`.
+- Primary review additions:
+  - `src/main.cpp`: the `/api/upload` chunk lambda also opens in OFF mode
+    (`!operatorClaimRequiredSetting || operatorRequestAuthorized()` for `handleUploadData()`);
+    leaving it claim-gated made every SD upload in default mode fail with a misleading
+    "no file provided" (the chunk handler was never invoked, so `uploadSeen` stayed false).
+    OTA upload stays claim-gated (documented invariant).
+  - `www/machine-bar.js`: the seven WS-first command sites (`job.*`, `safety.stop`,
+    `machine.home/setWorkZero/setZZero`) now take the WS path when
+    `STATE.operator?.controller || machineControlOpen()`, so open mode keeps the primary WS
+    transport instead of always falling back to HTTP.
+  - `test/mock/mock-server.test.mjs`: deflaked "lets the remembered controller revive an expired
+    lease without another PIN" - the 5 ms lease made the post-reconnect M5 roundtrip inherently
+    racy on Windows; the revived-session contract is asserted first, then the lease is widened
+    before the mutation check. Full suite now passes 6/6 consecutive runs.
+- Independent review round (GLM-Reviewer) fixes:
+  - P0, `src/main.cpp`: the WS parse layer rejected token-less packets with UNAUTHORIZED before
+    the open-mode bypass could run - both `strlen(token) != 40` gates are now
+    `&& operatorClaimRequiredSetting`, so the documented `epoch 0 / null token` contract actually
+    holds on firmware (the dev mock hid this because it never had the parse-level check).
+  - Mock parity: `completeMockWsCommand`'s deferred-execution revalidation now skips the claimed
+    session gate in open mode (mirrors the firmware's bypassed `wsQueuedCommandStillAuthorized()`).
+  - `handleOperatorSettingsUpdate` now parses the body with ArduinoJson and requires a real
+    top-level JSON boolean (nested/duplicate/string-embedded keys no longer apply).
+  - New mock test pins open-mode token-less `command` + `commandQuery` acceptance AND that
+    Release / PIN update / OTA unlock stay 423 without a session; "revalidates an active session
+    immediately before deferred execution" now opts into `operatorClaimRequired: true` (it pins
+    the gated contract). Firmware string contract extended for the parse gates and strict parse.
+  - `docs/protocol.md`: added an upgrade note (flipping to this firmware silently opens a
+    previously enforced claim requirement; re-enable via panel or settings PUT).
+
 ## 2026-08-23 - Race-safe Files grid rendering (no more duplicate cards)
 
 - Root cause of the intermittent "every G-code file appears TWICE" bug: `renderFiles` cleared

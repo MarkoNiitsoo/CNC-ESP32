@@ -163,6 +163,8 @@ export async function createMockEnvironment(options = {}) {
     configured: false, pin: '', token: '', owner: '', lastSeenAt: 0,
     browserId: '', rememberedBrowserId: '', rememberedOwner: '',
     leaseMs: Number(config.operatorLeaseMs ?? 45000), otaUnlockedUntil: 0, controlSessionEpoch: 0,
+    // Optional claim gate; mirrors the firmware default (OFF = control is open).
+    claimRequired: false,
     // WS command-authorization secret — never sent in state slices, only in Claim/Reconnect body.
     socketCommandToken: '',
   };
@@ -175,6 +177,9 @@ export async function createMockEnvironment(options = {}) {
 export async function createMockServer(options = {}) {
   const env = await createMockEnvironment(options);
   const operatorLockEnabled = env.config.operatorLockEnabled !== false;
+  // Optional claim gate; the dev default mirrors the firmware default (OFF =
+  // control is open). Tests of the locked contract opt in via config.
+  env.operator.claimRequired = env.config.operatorClaimRequired === true;
   const requestToken = (req) => String(req.headers.cookie || '').split(';')
     .map((part) => part.trim()).find((part) => part.startsWith('cnc_operator='))?.slice(13) || '';
   const operatorActive = () => {
@@ -193,7 +198,8 @@ export async function createMockServer(options = {}) {
     const active = operatorActive();
     const controller = active && Boolean(env.operator.token) && requestToken(req) === env.operator.token;
     return {
-      ok: true, configured: env.operator.configured, active, controller, readOnly: !controller,
+      ok: true, configured: env.operator.configured, claimRequired: env.operator.claimRequired,
+      active, controller, readOnly: !controller && env.operator.claimRequired,
       canClaim: !active, owner: active || controller ? env.operator.owner : null,
       leaseRemainingMs: active ? Math.max(0, env.operator.leaseMs - (Date.now() - env.operator.lastSeenAt)) : 0,
       leaseMs: env.operator.leaseMs,
@@ -205,6 +211,7 @@ export async function createMockServer(options = {}) {
     const active = operatorActive();
     return {
       configured: env.operator.configured,
+      claimRequired: env.operator.claimRequired,
       active,
       owner: active ? env.operator.owner : null,
       leaseMs: env.operator.leaseMs,
@@ -501,6 +508,20 @@ export async function createMockServer(options = {}) {
         env.operator.otaUnlockedUntil = 0;
         return json(res, 200, { ok: true, message: 'Operator PIN updated.' });
       }
+      if (req.method === 'PUT' && pathname === '/api/operator/settings') {
+        // Mirrors firmware operatorRoute gating: controller-only while the
+        // claim requirement holds, open while it does not. Toggling never
+        // disturbs an active session (no epoch bump, no token clearing).
+        if (env.operator.claimRequired && !operatorAuthorized(req)) {
+          return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
+        }
+        const body = await readJson(req);
+        if (typeof body.claimRequired !== 'boolean') {
+          return json(res, 400, { ok: false, error: 'claimRequired must be a JSON boolean' });
+        }
+        env.operator.claimRequired = body.claimRequired;
+        return json(res, 200, operatorStatus(req));
+      }
       if (req.method === 'POST' && pathname === '/api/operator/ota-unlock') {
         if (!operatorAuthorized(req)) return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked.' });
         if (env.runner.isActive()) return json(res, 409, { ok: false, error: 'OTA unlock is allowed only while the machine is idle' });
@@ -508,7 +529,9 @@ export async function createMockServer(options = {}) {
         env.operator.otaUnlockedUntil = Date.now() + 120000;
         return json(res, 200, { ok: true, message: 'OTA unlocked for 2 minutes.' });
       }
-      if (operatorLockEnabled && req.method !== 'GET' && !operatorAuthorized(req)) {
+      // Open control mode (claimRequired=false): mutating routes are ungated.
+      // The /api/operator/* claim-flow routes above keep their own strict gate.
+      if (operatorLockEnabled && env.operator.claimRequired && req.method !== 'GET' && !operatorAuthorized(req)) {
         return json(res, 423, { ...operatorStatus(req), ok: false, error: 'Operator control is locked. Claim the controller session with the device PIN.' });
       }
 
@@ -1410,8 +1433,12 @@ export async function createMockServer(options = {}) {
       pendingMachineOps.splice(opIndex, 1);
     }
     const pending = wsCommandLedger.get(entry.commandId);
-    if (!operatorActive() || entry.epoch !== env.operator.controlSessionEpoch ||
-        !pending || pending.completed || pending.epoch !== entry.epoch ||
+    // Open control mode (claimRequired=false) mirrors the firmware's bypassed
+    // wsQueuedCommandStillAuthorized(): a token-less epoch-0 entry completes
+    // without an active claimed session.
+    const claimGateBlocks = env.operator.claimRequired &&
+        (!operatorActive() || entry.epoch !== env.operator.controlSessionEpoch);
+    if (claimGateBlocks || !pending || pending.completed || pending.epoch !== entry.epoch ||
         pending.action !== entry.action || pending.payloadDigest !== entry.payloadDigest) return;
     const runnerStateBefore = JSON.stringify(env.runner.status);
     const result = executeSharedJobOperation(entry.action, entry.payload || {});
@@ -1580,9 +1607,10 @@ export async function createMockServer(options = {}) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'INVALID_COMMAND', message: 'commandId or action contains invalid characters or length' });
             } else if (Buffer.byteLength(payloadJson, 'utf8') > 4096) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'PAYLOAD_TOO_LARGE', message: 'Command payload exceeds 4096 bytes' });
-            } else if (!operatorActive() || !env.operator.socketCommandToken ||
+            } else if (env.operator.claimRequired &&
+                (!operatorActive() || !env.operator.socketCommandToken ||
                 Number(auth.controlSessionEpoch) !== env.operator.controlSessionEpoch ||
-                String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
+                String(auth.socketCommandToken) !== env.operator.socketCommandToken)) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: cmdId, accepted: false, code: 'UNAUTHORIZED', message: 'Command authorization invalid or expired' });
             } else {
               // Authenticated WS activity refreshes the lease like the firmware's
@@ -1627,9 +1655,10 @@ export async function createMockServer(options = {}) {
             const auth = msg.authorization || {};
             if (!/^[A-Za-z0-9._:-]{1,96}$/.test(queryId)) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'INVALID_COMMAND', message: 'Valid commandId is required' });
-            } else if (!operatorActive() || !env.operator.socketCommandToken ||
+            } else if (env.operator.claimRequired &&
+                (!operatorActive() || !env.operator.socketCommandToken ||
                 Number(auth.controlSessionEpoch) !== env.operator.controlSessionEpoch ||
-                String(auth.socketCommandToken) !== env.operator.socketCommandToken) {
+                String(auth.socketCommandToken) !== env.operator.socketCommandToken)) {
               sendMockCommandResponse(socket, 'commandAck', { commandId: queryId, accepted: false, code: 'UNAUTHORIZED', message: 'Command query authorization invalid or expired' });
             } else {
               env.operator.lastSeenAt = Date.now();

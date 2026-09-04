@@ -24,7 +24,7 @@ describe('SD system diagnostics log', () => {
     expect(firmware).toContain('server.client().remoteIP().toString()');
     expect(firmware).toContain('void httpRoute(');
     expect(firmware).toContain('httpRoute("/api/health", HTTP_GET, handleHealth)');
-    expect(firmware).toContain('logHttpRequest(); if (requireOperatorControl()) handleUploadComplete();');
+    expect(firmware).toContain('logHttpRequest(); if (!operatorClaimRequiredSetting || requireOperatorControl()) handleUploadComplete();');
     expect(firmware).toMatch(/void handleNotFound\(\) \{\s+logHttpRequest\(\)/);
     expect(firmware).not.toMatch(/logSystemEvent\([^\n]*(Cookie|pin|password)/i);
   });
