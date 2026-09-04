@@ -1725,6 +1725,36 @@ function updateJobRunPolling() {
   }
 }
 
+// HTTP fallback: when the WS transport is not synchronized no job slices arrive,
+// so poll the plain HTTP status through the same applyJobRunStatus path to keep
+// the workbench ONLINE and controllable. WS stays the single source whenever it
+// is healthy: the poller skips entirely while transportStatus === 'synchronized'.
+const JOB_STATUS_HTTP_POLL_MS = 2000;
+const JOB_STATUS_HTTP_POLL_WARN_MS = 30000;
+let jobStatusHttpPollTimer = null;
+let jobStatusHttpPollInFlight = false;
+let jobStatusHttpPollLastWarnMs = 0;
+
+async function pollJobStatusHttp() {
+  if (window.CncTelemetry?.transportStatus === 'synchronized') return;
+  if (jobStatusHttpPollInFlight) return;
+  jobStatusHttpPollInFlight = true;
+  try {
+    const res = await fetch('/api/job/status');
+    if (!res.ok) throw new Error(`${res.url || '/api/job/status'} failed (${res.status})`);
+    const data = await readJsonOrThrow(res);
+    await applyJobRunStatus(data);
+  } catch (err) {
+    const now = Date.now();
+    if (now - jobStatusHttpPollLastWarnMs >= JOB_STATUS_HTTP_POLL_WARN_MS) {
+      jobStatusHttpPollLastWarnMs = now;
+      console.warn(`Job status HTTP poll failed: ${err.message}`);
+    }
+  } finally {
+    jobStatusHttpPollInFlight = false;
+  }
+}
+
 async function applyJobRunStatus(data) {
   jobStatusReceivedAtMs = performance.now();
   jobStatusFirmwareUptimeMs = Number(data?.uptimeMs) || 0;
@@ -7067,3 +7097,12 @@ window.CncTelemetry?.subscribe('system', (data) => {
 window.CncTelemetry?.setDemand('job', 'preview-page', true);
 window.CncTelemetry?.setDemand('health', 'preview-page', true);
 window.CncTelemetry?.start();
+// Re-render the ONLINE/OFFLINE chip and run gating whenever the WS transport
+// changes state; telemetry.js dispatches this on every transportStatus change.
+addEventListener('cnc-telemetry-transport', () => {
+  renderWorkbenchStatus();
+  renderRunPanel();
+});
+jobStatusHttpPollTimer = setInterval(() => {
+  void pollJobStatusHttp();
+}, JOB_STATUS_HTTP_POLL_MS);

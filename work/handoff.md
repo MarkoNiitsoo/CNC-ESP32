@@ -1,5 +1,23 @@
 # Handoff
 
+## 2026-09-04 - Offline round 3: boot-spew poisoning fixed + workbench HTTP fallback
+
+- ROOT CAUSE (Marlin side), caught by the raw-response capture in boot `36E5605E`: after an ESP
+  soft restart the first M115 answer is `echo:Unknown command: "..........."|ok|` - the ESP boot
+  spew at the wrong baud poisons Marlin's RX line buffer and the probe gets glued into the garbage
+  line. The one-shot probe then left `machineProfile.available=false` for the whole session after
+  every OTA/SD update (their reboots are always reset=SOFTWARE; hard power boots never showed this).
+- FIXES shipped: (1) firmware sends one bare newline + drains before the first probe and retries
+  unparseable M115 responses up to 3x (timeout path unchanged - silent Marlin keeps the explicit
+  recovery flow); (2) WS client IP captured at connect (disconnect previously logged 0.0.0.0);
+  (3) preview.js polls /api/job/status over HTTP every 2 s while the WS transport is not
+  `synchronized`, so the workbench stays ONLINE via the existing HTTP command fallbacks instead of
+  gating on a dead WS. The bouncing WS transport itself is still unexplained (heap ruled out at
+  ~60 KB stable) - next log pull with connect-time `ip=` will show whether the client rides the AP
+  (192.168.4.x) or home STA path; meanwhile the pendant is fully usable either way.
+- Verified: vitest 782/782 (64 files), pio native 21/21, esp32cam SUCCESS. marlin-transport UART
+  audit now expects 3 Serial.print sites. Fresh firmware (hash 36676692...) + www synced to SD root.
+
 ## 2026-09-04 - Second offline round: deep log analysis + targeted instrumentation
 
 - Log facts from boot `B2A20F11` (logging build, installed OK): Marlin ANSWERED the boot M115

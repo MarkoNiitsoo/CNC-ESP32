@@ -24,6 +24,11 @@ Historical Phase 1 migrated only state and synchronization; all machine commands
 in that phase. Current Phase 3 additionally carries Stop, Pause, Resume, feed override, Home, Work Zero, and Z Zero over the
 authenticated command channel while retaining their operator-protected HTTP routes.
 
+Degraded-transport behavior: while the WebSocket transport is not `synchronized`, the workbench
+polls `GET /api/job/status` over HTTP (2 s interval) through the same status path the `job` slice
+feeds, so the ONLINE/OFFLINE chip and run gating stay live; the poller skips entirely while the
+transport is healthy so the WS slice remains the single source.
+
 ### Packet Envelope & Sequencing
 
 Every application packet uses readable JSON keys and the common envelope:

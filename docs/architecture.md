@@ -202,13 +202,17 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
 - Machine profile discovery:
   - Loads the last valid profile from Preferences namespace `machine` during boot.
   - Schedules one idle-only, non-blocking `M115` read after Marlin startup.
+  - After an ESP soft restart, one bare newline is sent and drained before the first probe so
+    wrong-baud boot spew left in Marlin's RX line buffer cannot swallow the command; an unparseable
+    response is retried up to 3 times and its sanitized raw text is written to `/logs/system.log`.
   - Parses 515DL `area.full` / `area.work`, identity, and selected capabilities.
   - Safety-critical `EMERGENCY_PARSER` and realtime-hold flags are evidence from M115 in the current
     controller communication session only. They are never trusted from NVS and are invalidated on
     communication loss or recovery until a fresh M115 probe succeeds.
   - Controller health transitions (`connected` / `unresponsive` / `recovering` / restored) are
     written to `/logs/system.log` when the state changes, with the failing command and error; the
-    routine `waiting` window of a single synchronous command is not logged.
+    routine `waiting` window of a single synchronous command is not logged. WebSocket disconnects
+    are logged with client IP, connection lifetime, and free heap.
   - Uses `area.full` for Preview and guarded restore/resume bounds; falls back to compiled defaults.
   - Settings reads `M503` and `M211` on demand. Editable M92/M203/M201/M204 changes apply to
   Marlin RAM only; `M500` persistence is always a separate explicit action.

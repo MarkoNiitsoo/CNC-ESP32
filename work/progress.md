@@ -1,5 +1,25 @@
 # Progress
 
+## 2026-09-04 - Offline round 3: root causes confirmed and fixed (boot-spew poisoning + UI single point of failure)
+
+- The M115 raw-response capture caught the Marlin-side fault red-handed in boot `36E5605E`:
+  `echo:Unknown command: "..........."|ok|` - the ESP boot spew at the wrong baud leaves garbage in
+  Marlin's RX line buffer and the M115 gets glued into that line. The probe was one-shot per boot,
+  so the machine profile was lost for the whole session after every OTA/SD update (all update
+  reboots are reset=SOFTWARE). WS disconnect diagnostics showed stable ~60 KB heap (memory ruled
+  out) and `ip=0.0.0.0` (IP must be captured at connect - fixed).
+- Firmware fixes: one bare newline + drain before the first probe (terminates the poisoned line);
+  unparseable M115 responses now retry up to 3 attempts (timeout path unchanged - silent Marlin
+  still requires explicit recovery); WS client IP captured at connect so disconnect lines identify
+  the client path.
+- UI resilience (GLM-Flash-Worker): preview.js polls `GET /api/job/status` every 2 s whenever the
+  WS transport is not `synchronized`, feeding the same `applyJobRunStatus` path - the workbench
+  stays ONLINE and controllable over HTTP fallbacks (jog was always HTTP; home/pause/resume/stop
+  have HTTP fallbacks) instead of gating everything on a dead WS transport. Poller skips while WS
+  is healthy; transport change re-renders chip + gating. 10 new vitest cases.
+- Verified: vitest 782/782 (64 files), pio native 21/21, esp32cam SUCCESS; marlin-transport UART
+  audit updated to 3 Serial.print sites (command, newline, boot-flush). Fresh firmware + www on SD.
+
 ## 2026-09-04 - Offline round 2: M115 answered but unparseable; WS transport bouncing; targeted log instrumentation
 
 - Boot `B2A20F11` (logging build) facts: SD update fine; boot M115 got a terminal response in

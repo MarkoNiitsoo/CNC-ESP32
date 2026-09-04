@@ -2364,6 +2364,9 @@ struct TelemetryClientState {
   bool resyncPending = false;
   uint32_t connectionGeneration = 0;
   uint32_t connectedAtMs = 0;
+  // Captured at connect: by the DISCONNECTED event the client record is gone
+  // and remoteIP() would only answer 0.0.0.0.
+  char remoteIp[20] = {0};
   uint32_t nextServerSeq = 1;
   uint32_t highestServerSeqSuccessfullySent = 0;
   uint32_t lastContiguousClientSeq = 0;
@@ -3054,6 +3057,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     cs.snapshotPending = false;
     cs.resyncPending = false;
     cs.connectedAtMs = millis();
+    strlcpy(cs.remoteIp, telemetrySocket.remoteIP(client).toString().c_str(), sizeof(cs.remoteIp));
     cs.nextServerSeq = 1;
     cs.highestServerSeqSuccessfullySent = 0;
     cs.lastContiguousClientSeq = 0;
@@ -3071,8 +3075,8 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     char detail[112];
     const uint32_t lifetimeMs = cs.connectedAtMs != 0 ? millis() - cs.connectedAtMs : 0;
     snprintf(detail, sizeof(detail), "ws client disconnected ip=%s lifetimeMs=%lu heap=%lu",
-             telemetrySocket.remoteIP(client).toString().c_str(),
-             static_cast<unsigned long>(lifetimeMs), static_cast<unsigned long>(ESP.getFreeHeap()));
+             cs.remoteIp, static_cast<unsigned long>(lifetimeMs),
+             static_cast<unsigned long>(ESP.getFreeHeap()));
     strlcpy(wsDisconnectDetail, detail, sizeof(wsDisconnectDetail));
     cs.connected = false;
     cs.handshakeComplete = false;
@@ -4156,6 +4160,12 @@ bool toolChangeParkIsWithinMachine(String &error) {
 }
 
 uint32_t machineDiscoveryToken = 0;
+// Boot-spew poisoning recovery: one newline flush per boot, up to 3 probe
+// attempts (only parse failures retry; a silent Marlin stays Unresponsive and
+// keeps the explicit /api/controller/recover path).
+uint32_t machineDiscoveryNextAttemptAtMs = 5000;
+uint8_t machineDiscoveryAttempts = 0;
+bool machineDiscoveryLineFlushed = false;
 
 // One-line, printable-ASCII snippet of a Marlin response for the SD log: CR/LF
 // become '|', anything non-printable becomes '.', capped to 200 characters.
@@ -4176,7 +4186,22 @@ String sanitizeMarlinLogSnippet(const String &response) {
 
 void processMachineDiscovery() {
   if (machineDiscoveryState == MachineDiscoveryState::Idle) {
-    if (!machineDiscoveryPending || millis() < 5000 || machineDiscoveryTransportBusy()) return;
+    if (!machineDiscoveryPending || millis() < machineDiscoveryNextAttemptAtMs ||
+        machineDiscoveryTransportBusy()) {
+      return;
+    }
+
+    // After a soft restart the ESP boot spew leaves Marlin's RX line buffer
+    // full of wrong-baud garbage; the first real command gets glued to it and
+    // Marlin answers "Unknown command". Terminate that partial line with a
+    // bare newline and drain the error reply once per boot. 50 ms once is
+    // acceptable inside loop().
+    if (!machineDiscoveryLineFlushed) {
+      machineDiscoveryLineFlushed = true;
+      Serial.print(F("\r\n"));
+      delay(50);
+      drainMarlinInput();
+    }
 
     std::string err;
     uint32_t token = 0;
@@ -4189,6 +4214,7 @@ void processMachineDiscovery() {
     machineDiscoveryPending = false;
     machineDiscoveryResponse = "";
     machineDiscoveryStartedAtMs = millis();
+    machineDiscoveryNextAttemptAtMs = millis() + 3000;
     machineProfile.refreshing = true;
     machineProfile.lastError = "";
     drainMarlinInput();
@@ -4213,9 +4239,13 @@ void processMachineDiscovery() {
     machineProfile.refreshing = false;
     // The M115 answer lives only in the RAM log ring otherwise; persist what
     // Marlin actually said so an unparseable profile is diagnosable from SD.
+    // A poisoned first line ("Unknown command") is retried: after the newline
+    // flush the retry parses cleanly, so the profile survives soft restarts.
     if (!machineProfile.available) {
-      logSystemEvent("M115 profile unavailable; raw response: " +
-                     sanitizeMarlinLogSnippet(machineDiscoveryResponse));
+      machineDiscoveryAttempts++;
+      if (machineDiscoveryAttempts < 3) machineDiscoveryPending = true;
+      logSystemEvent("M115 profile unavailable (attempt " + String(machineDiscoveryAttempts) +
+                     "/3); raw response: " + sanitizeMarlinLogSnippet(machineDiscoveryResponse));
     }
     machineDiscoveryState = MachineDiscoveryState::Idle;
     String upper = machineDiscoveryResponse;

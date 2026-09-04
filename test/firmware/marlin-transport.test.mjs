@@ -53,7 +53,11 @@ describe('Marlin transport safety', () => {
 
   it('centralizes all production UART writes into writeControllerLine and removes legacy overloads', () => {
     const printMatches = source.match(/Serial\.print\s*\(/g) || [];
-    expect(printMatches).toHaveLength(2); // Serial.print(command) and Serial.print('\n') inside writeControllerLine
+    // Serial.print(command) and Serial.print('\n') inside writeControllerLine,
+    // plus the boot-time bare newline in processMachineDiscovery that
+    // terminates wrong-baud garbage left in Marlin's RX line buffer after a
+    // soft restart - deliberately not a transaction.
+    expect(printMatches).toHaveLength(3);
     expect(source).not.toContain('readMarlinResponseFor(uint32_t timeoutMs, bool priority)');
     expect(source + commHeader).toContain('enum class ControllerCommandClass');
     expect(source).toContain('OrdinarySync');
