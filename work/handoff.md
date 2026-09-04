@@ -1,5 +1,26 @@
 # Handoff
 
+## 2026-09-04 - Second offline round: deep log analysis + targeted instrumentation
+
+- Log facts from boot `B2A20F11` (logging build, installed OK): Marlin ANSWERED the boot M115
+  within ~26 ms (`parseMachineProfile` only runs on a terminal response) but the response did not
+  parse into a profile (`EMERGENCY_PARSER detected=false`). The raw answer was RAM-only, hence
+  invisible on SD. Controller comm state never left `Connected` - so the "Controller state" lines
+  correctly never fired; the UI "offline" experience is the WS telemetry transport bouncing
+  (66 connect/sync/disconnect cycles; first connection lived 1.2 s, all later ones die ~40 ms after
+  the snapshot), not the Marlin link. No home/jog was attempted; the UI gates everything when the
+  transport is dead. This boot was AGAIN reset=SOFTWARE - no real power cycle has happened since
+  the update; the only healthy boots (M115 parsed true) followed real power events.
+- New instrumentation: (1) when the M115 profile parse fails, the sanitized raw response
+  (200 chars, CR/LF -> '|') goes to system.log; (2) every WS disconnect logs
+  `ws client disconnected ip=<addr> lifetimeMs=<n> heap=<n>` (client ip tells AP vs STA path; heap
+  rules memory in/out). Both ride existing patterns: M115 line from loop(), disconnect detail
+  through the pending-flag hand-off (buffer `wsDisconnectDetail` written by the telemetry task).
+- Open questions for the next log pull: what Marlin actually says to M115 after a soft restart
+  (suspect: ESP boot spew at wrong baud on SKR RX6 leaves Marlin answering errors), and whether
+  the bouncing WS client sits on the AP (192.168.4.x) or STA path and if heap collapses.
+- Verified: vitest 772/772, pio native 21/21, esp32cam SUCCESS. Fresh firmware copied to SD root.
+
 ## 2026-09-04 - Controller health transitions persisted to SD system log
 
 - Why: the offline-machine field diagnosis from SD logs hit a wall because controller timeouts were

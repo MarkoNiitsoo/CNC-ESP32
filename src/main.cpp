@@ -612,6 +612,9 @@ volatile bool telemetryClientConnected[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
 volatile bool wsConnectLogPending = false;
 volatile bool wsDisconnectLogPending = false;
 volatile bool wsHandshakeLogPending = false;
+// Detail line for the latest disconnect (ip/lifetime/heap), written by the
+// network task before wsDisconnectLogPending is latched and read by loop().
+char wsDisconnectDetail[112] = {0};
 
 // WebSocket command transport crosses from the pinned network task to Arduino loop().
 struct WsCommandEntry {
@@ -2360,6 +2363,7 @@ struct TelemetryClientState {
   bool snapshotPending = false;
   bool resyncPending = false;
   uint32_t connectionGeneration = 0;
+  uint32_t connectedAtMs = 0;
   uint32_t nextServerSeq = 1;
   uint32_t highestServerSeqSuccessfullySent = 0;
   uint32_t lastContiguousClientSeq = 0;
@@ -3049,6 +3053,7 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     cs.handshakeComplete = false;
     cs.snapshotPending = false;
     cs.resyncPending = false;
+    cs.connectedAtMs = millis();
     cs.nextServerSeq = 1;
     cs.highestServerSeqSuccessfullySent = 0;
     cs.lastContiguousClientSeq = 0;
@@ -3058,10 +3063,22 @@ void handleTelemetrySocket(uint8_t client, WStype_t type, uint8_t *payload, size
     telemetryClientConnected[client] = true;
     wsConnectLogPending = true;
   } else if (type == WStype_DISCONNECTED) {
+    // Disconnect diagnostics ride through a plain buffer under the same
+    // pending-flag hand-off as the other WS log lines: the telemetry task is
+    // the only writer, loop() the only reader, and SD writes stay off the
+    // socket task. Details answer whether the bouncing client sits on the AP
+    // or the STA path and whether heap is collapsing.
+    char detail[112];
+    const uint32_t lifetimeMs = cs.connectedAtMs != 0 ? millis() - cs.connectedAtMs : 0;
+    snprintf(detail, sizeof(detail), "ws client disconnected ip=%s lifetimeMs=%lu heap=%lu",
+             telemetrySocket.remoteIP(client).toString().c_str(),
+             static_cast<unsigned long>(lifetimeMs), static_cast<unsigned long>(ESP.getFreeHeap()));
+    strlcpy(wsDisconnectDetail, detail, sizeof(wsDisconnectDetail));
     cs.connected = false;
     cs.handshakeComplete = false;
     cs.snapshotPending = false;
     cs.resyncPending = false;
+    cs.connectedAtMs = 0;
     telemetryLogSubscribed[client] = false;
     telemetryClientConnected[client] = false;
     wsDisconnectLogPending = true;
@@ -4140,6 +4157,23 @@ bool toolChangeParkIsWithinMachine(String &error) {
 
 uint32_t machineDiscoveryToken = 0;
 
+// One-line, printable-ASCII snippet of a Marlin response for the SD log: CR/LF
+// become '|', anything non-printable becomes '.', capped to 200 characters.
+String sanitizeMarlinLogSnippet(const String &response) {
+  String snippet;
+  const unsigned int cap = response.length() < 200 ? response.length() : 200;
+  snippet.reserve(cap + 1);
+  for (unsigned int i = 0; i < cap; ++i) {
+    const char c = response[i];
+    if (c == '\r' || c == '\n') {
+      snippet += '|';
+    } else {
+      snippet += (c >= 32 && c <= 126) ? c : '.';
+    }
+  }
+  return snippet;
+}
+
 void processMachineDiscovery() {
   if (machineDiscoveryState == MachineDiscoveryState::Idle) {
     if (!machineDiscoveryPending || millis() < 5000 || machineDiscoveryTransportBusy()) return;
@@ -4177,6 +4211,12 @@ void processMachineDiscovery() {
     addMarlinLog("rx", false, machineDiscoveryResponse);
     parseMachineProfile(machineDiscoveryResponse);
     machineProfile.refreshing = false;
+    // The M115 answer lives only in the RAM log ring otherwise; persist what
+    // Marlin actually said so an unparseable profile is diagnosable from SD.
+    if (!machineProfile.available) {
+      logSystemEvent("M115 profile unavailable; raw response: " +
+                     sanitizeMarlinLogSnippet(machineDiscoveryResponse));
+    }
     machineDiscoveryState = MachineDiscoveryState::Idle;
     String upper = machineDiscoveryResponse;
     upper.toUpperCase();
@@ -10756,7 +10796,7 @@ void flushWsConnectionLog() {
   }
   if (wsDisconnectLogPending) {
     wsDisconnectLogPending = false;
-    logSystemEvent("ws client disconnected");
+    logSystemEvent(wsDisconnectDetail);
   }
 }
 

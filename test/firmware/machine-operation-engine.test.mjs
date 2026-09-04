@@ -223,7 +223,9 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     expect(firmware).toContain('void flushWsConnectionLog()');
     expect(firmware).toContain('"ws client connected"');
     expect(firmware).toContain('"ws handshake synchronized"');
-    expect(firmware).toContain('"ws client disconnected"');
+    // Disconnects carry client ip + connection lifetime + free heap so a
+    // bouncing telemetry transport is diagnosable from the SD log.
+    expect(firmware).toContain('"ws client disconnected ip=%s lifetimeMs=%lu heap=%lu"');
     const loop = blockBetween('void loop() {', '}').slice(0, 500);
     expect(loop).toContain('flushWsConnectionLog();');
     // The SD write stays in loop(); the network task only latches the flag.

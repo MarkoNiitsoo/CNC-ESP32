@@ -1,5 +1,18 @@
 # Progress
 
+## 2026-09-04 - Offline round 2: M115 answered but unparseable; WS transport bouncing; targeted log instrumentation
+
+- Boot `B2A20F11` (logging build) facts: SD update fine; boot M115 got a terminal response in
+  ~26 ms but no parseable profile; controller comm state stayed `Connected` throughout (so the new
+  Controller state lines were correctly silent); WS telemetry bounced 66x (first connection 1.2 s,
+  later ones die ~40 ms after the snapshot; UI gates everything once its transport dies). Boot was
+  reset=SOFTWARE again - still no real power cycle since the update; the only boots where M115 ever
+  parsed true followed real power events.
+- Instrumentation added: sanitized raw M115 response (200 chars) to system.log when the profile
+  parse fails; WS disconnect lines now carry `ip= lifetimeMs= heap=` through the existing
+  pending-flag hand-off (buffer written by the telemetry task, logged from loop()).
+- Verified: vitest 772/772, pio native 21/21, esp32cam SUCCESS; fresh firmware on SD root.
+
 ## 2026-09-04 - Controller health transitions persisted to SD system log
 
 - Field diagnosis (SD logs, boot `5A32E41C`): the SD firmware update succeeded, but Marlin did not
