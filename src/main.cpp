@@ -5381,7 +5381,18 @@ void processJogRunner() {
   }
   if (jogStatus.lastUpdateMs == 0 || now - jogStatus.lastUpdateMs > kJogDeadmanMs) {
     jogStatus.lastError = "jog heartbeat timeout; stopped jogging";
-    logJobEvent("jog stop: heartbeat timeout");
+    // The update age discriminates the failing side: an age near the deadman
+    // window means updates stopped arriving right after jog/start (client or
+    // network stall); a large age means they stopped mid-session.
+    String heartbeatDetail = "jog stop: heartbeat timeout; lastUpdateAgeMs=";
+    heartbeatDetail += jogStatus.lastUpdateMs == 0
+        ? String("never")
+        : String(now - jogStatus.lastUpdateMs);
+    heartbeatDetail += "; sinceStartMs=";
+    heartbeatDetail += jogStatus.startedAtMs == 0
+        ? String("never")
+        : String(now - jogStatus.startedAtMs);
+    logJobEvent(heartbeatDetail);
     stopJogInternal(true);
     return;
   }
@@ -10557,10 +10568,14 @@ void startMdns() {
   logSystemEvent("mDNS started hostname=" + deviceIdentity.hostname + ".local");
 }
 
-void handleControllerRecover() {
+// Shared by the manual /api/controller/recover route and the auto-recovery
+// scheduler. Returns true when Marlin answered the identity and position
+// probes and the controller session is restored; on failure the controller is
+// left Unresponsive with lastError describing the failed probe. Worst-case
+// duration is bounded by the two probe timeouts.
+bool attemptControllerRecoverySequence() {
   if (jobIsActive() || jogIsActive()) {
-    sendJsonError(409, "Controller recovery cannot be started while a job or jog is active.");
-    return;
+    return false;
   }
 
   invalidateControllerSessionSafetyCapabilities();
@@ -10576,8 +10591,7 @@ void handleControllerRecover() {
 
   if (!m115Res.terminalReceived || !m115Res.success || (m115Upper.indexOf("FIRMWARE_NAME") < 0 && m115Upper.indexOf("MARLIN") < 0)) {
     markControllerUnresponsive("M115", "M115 recovery probe failed to return Marlin identity content");
-    sendJsonError(503, controllerCommStatus.lastError.c_str());
-    return;
+    return false;
   }
 
   parseMachineProfile(m115Res.response);
@@ -10612,13 +10626,55 @@ void handleControllerRecover() {
   if (!m114Res.terminalReceived || !m114Res.success || !parseAxisFromM114(m114Res.response, 'X', x) ||
       !parseAxisFromM114(m114Res.response, 'Y', y) || !parseAxisFromM114(m114Res.response, 'Z', z)) {
     markControllerUnresponsive("M114", "M114 position probe failed during recovery");
-    sendJsonError(503, controllerCommStatus.lastError.c_str());
-    return;
+    return false;
   }
 
   markControllerResponseSuccess();
   controllerCommStatus.lastError = "";
-  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Controller communication restored.\",\"controllerState\":\"connected\"}");
+  return true;
+}
+
+void handleControllerRecover() {
+  if (jobIsActive() || jogIsActive()) {
+    sendJsonError(409, "Controller recovery cannot be started while a job or jog is active.");
+    return;
+  }
+  if (attemptControllerRecoverySequence()) {
+    server.send(200, "application/json", "{\"ok\":true,\"message\":\"Controller communication restored.\",\"controllerState\":\"connected\"}");
+  } else {
+    sendJsonError(503, controllerCommStatus.lastError.c_str());
+  }
+}
+
+// Self-healing: while the controller is Unresponsive, periodically re-run the
+// recovery probe sequence so a Marlin that starts answering again is picked up
+// without a manual Retry press or a reboot. A failed probe leaves the
+// controller Unresponsive (the state observer logs each transition); probe
+// work blocks loop() for up to ~8 s, so it is skipped whenever a
+// safety-relevant flow (stop, job, jog, machine operation) owns the transport.
+constexpr uint32_t kControllerAutoRecoveryFirstProbeDelayMs = 3000;
+constexpr uint32_t kControllerAutoRecoveryProbeIntervalMs = 5000;
+uint32_t controllerAutoRecoveryNextAttemptMs = 0;
+
+void processControllerAutoRecovery() {
+  if (controllerCommStatus.state != ControllerCommunicationState::Unresponsive) {
+    controllerAutoRecoveryNextAttemptMs = 0;
+    return;
+  }
+  const uint32_t now = millis();
+  if (controllerAutoRecoveryNextAttemptMs == 0) {
+    controllerAutoRecoveryNextAttemptMs = now + kControllerAutoRecoveryFirstProbeDelayMs;
+    return;
+  }
+  if (now < controllerAutoRecoveryNextAttemptMs) return;
+  if (jobIsActive() || jogIsActive() || machineOperationActive() ||
+      priorityCommandCount > 0 || jobWaitingForOk) {
+    // A stop or safety flow is in flight; probing would delay it. Retry soon.
+    controllerAutoRecoveryNextAttemptMs = now + 1000;
+    return;
+  }
+  attemptControllerRecoverySequence();
+  controllerAutoRecoveryNextAttemptMs = millis() + kControllerAutoRecoveryProbeIntervalMs;
 }
 
 void startHttpServer() {
@@ -10836,6 +10892,7 @@ void loop() {
   processMachineOperation();
   stageTelemetryUpdates();
   processMachineDiscovery();
+  processControllerAutoRecovery();
   processJobRunner();
   processPersistentJobCheckpoint();
   processJogRunner();

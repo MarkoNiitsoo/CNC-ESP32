@@ -231,4 +231,28 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     // The SD write stays in loop(); the network task only latches the flag.
     expect(blockBetween('void handleTelemetrySocket(', 'void processNetworkTelemetry()')).toContain('wsConnectLogPending = true;');
   });
+
+  it('self-heals an unresponsive controller with scheduled recovery probes', () => {
+    // The M410 deadman in boot 48CCDF85 left the session blocked until reboot;
+    // the scheduler re-probes Marlin so recovery no longer needs a Retry press.
+    const scheduler = blockBetween('void processControllerAutoRecovery()', 'void startHttpServer()');
+    expect(scheduler).toContain('controllerCommStatus.state != ControllerCommunicationState::Unresponsive');
+    expect(scheduler).toContain('attemptControllerRecoverySequence();');
+    // Safety-relevant flows (stop, job, jog, machine operation) delay probing.
+    expect(scheduler).toContain('jobIsActive() || jogIsActive() || machineOperationActive()');
+    expect(scheduler).toContain('priorityCommandCount > 0');
+    const loop = blockBetween('void loop() {', '}').slice(0, 500);
+    expect(loop).toContain('processControllerAutoRecovery();');
+    // The manual route and the scheduler share one probe sequence.
+    const handler = blockBetween('void handleControllerRecover()', 'constexpr uint32_t kControllerAutoRecoveryFirstProbeDelayMs');
+    expect(handler).toContain('attemptControllerRecoverySequence()');
+    expect(firmware).toContain('bool attemptControllerRecoverySequence() {');
+  });
+
+  it('records how stale the jog heartbeat was at the deadman stop', () => {
+    const deadman = blockBetween('jog stop: heartbeat timeout', 'stopJogInternal(true);');
+    expect(deadman).toContain('lastUpdateAgeMs=');
+    expect(deadman).toContain('sinceStartMs=');
+    expect(deadman).toContain('"never"');
+  });
 });

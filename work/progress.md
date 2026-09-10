@@ -1,5 +1,27 @@
 # Progress
 
+## 2026-09-04 - Field round 5: M410 deadman caught on tape; controller auto-recovery shipped
+
+- The Controller state observer caught the field incident exactly: boot `48CCDF85` — second jog
+  start at 187.3 s got NO /api/jog/update within the 500 ms deadman → `jog stop: heartbeat
+  timeout` → safety `M410` → Marlin did not answer at all → `Controller state waiting ->
+  unresponsive: timeout: M410`. Everything the user reported (bounds check and aircut "not doing
+  anything", dead joystick, all buttons grey) is the unresponsive-state safety gate; the attempts
+  never reached the firmware. Marlin had answered M400/M114 fine 24 s earlier, and 0 recovery
+  attempts were made (the Retry button was unknown to the user).
+- Firmware changes:
+  - `attemptControllerRecoverySequence()` extracted from the manual route (same M115 identity +
+    frame-reset detection + M114 position probe), `handleControllerRecover` now delegates to it.
+  - NEW auto-recovery scheduler `processControllerAutoRecovery()` in loop(): while the controller
+    is Unresponsive, first probe 3 s after the failure, then every 5 s; skipped (1 s retry) while
+    a stop/job/jog/machine operation owns the transport. Restores the session automatically the
+    moment Marlin answers again; every transition lands in system.log via the state observer.
+  - Jog deadman stop now logs `lastUpdateAgeMs` (or `never`) and `sinceStartMs` — next incident
+    shows whether updates stopped arriving at jog/start (client/network) or mid-session.
+- Verification: vitest 789/789 (65 files; recovery-ordering contracts re-pointed at the extracted
+  sequence, jog deadman contract updated), pio native 21/21, esp32cam SUCCESS; fresh firmware on
+  SD root.
+
 ## 2026-09-04 - Field round 4: WS recovered, homing works; workbench frame gate fixed
 
 - Log verdict for boot `1EC76A66` (diagnostic build): both Homes completed ok=true over WS

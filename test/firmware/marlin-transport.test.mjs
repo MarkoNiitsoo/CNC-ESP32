@@ -279,7 +279,7 @@ describe('Marlin transport safety', () => {
     const readStart = source.indexOf('MarlinCommandResult readMarlinResponseFor(', source.indexOf('bool marlinResponseIsTerminal('));
     const readResponse = source.slice(readStart, source.indexOf('MarlinCommandResult executeSynchronousCommand(', readStart));
     const communicationLost = source.slice(source.indexOf('void setJobCommunicationLost('), source.indexOf('bool openJobFileAtOffset()'));
-    const recovery = source.slice(source.indexOf('void handleControllerRecover()'), source.indexOf('void startHttpServer()'));
+    const recovery = source.slice(source.indexOf('bool attemptControllerRecoverySequence() {'), source.indexOf('void startHttpServer()'));
     expect(invalidator).toContain('machineProfile.capEmergencyParser = false;');
     expect(invalidator).toContain('machineProfile.capRealtimeReporting = false;');
     expect(readResponse).toMatch(/else \{[\s\S]*invalidateControllerSessionSafetyCapabilities\(\);[\s\S]*controllerCommManager\.onTimeout/);
@@ -291,7 +291,7 @@ describe('Marlin transport safety', () => {
   });
 
   it('reparses the successful recovery M115 before M114 and keeps failed recovery conservative', () => {
-    const recovery = source.slice(source.indexOf('void handleControllerRecover()'), source.indexOf('void startHttpServer()'));
+    const recovery = source.slice(source.indexOf('bool attemptControllerRecoverySequence() {'), source.indexOf('void startHttpServer()'));
     const parser = source.slice(source.indexOf('bool parseMachineProfile('), source.indexOf('String machineProfileJson()'));
     const parsePosition = recovery.indexOf('parseMachineProfile(m115Res.response);');
     expect(parsePosition).toBeGreaterThan(recovery.indexOf('if (!m115Res.terminalReceived'));

@@ -1,5 +1,23 @@
 # Handoff
 
+## 2026-09-04 - Field round 5: auto-recovery shipped; incident timeline fully explained
+
+- Incident (boot `48CCDF85`, user report "bounds/aircut/joystick/buttons dead"): second jog start
+  at 187.3 s received no /api/jog/update within the 500 ms deadman → safety M410 → Marlin silent →
+  controller Unresponsive at 189 s → bounds/aircut attempts rejected client+server side, joystick
+  and all live controls greyed by the ordinary-control guard. All by design; the missing piece was
+  self-healing. 0 manual recovery attempts (Retry button unused/unknown).
+- Shipped: (1) auto-recovery scheduler in loop() — while Unresponsive, probe M115+M114 every 5 s
+  (first probe after 3 s), skipped while stop/job/jog/machine-op owns the transport, restores the
+  session automatically the moment Marlin answers; (2) recovery sequence extracted to
+  `attemptControllerRecoverySequence()` shared by the manual route and the scheduler; (3) jog
+  deadman stop logs `lastUpdateAgeMs`/`sinceStartMs` to separate client-stall from mid-session
+  stall.
+- Still open: why Marlin went silent mid-session for M410 (link/EMI/Marlin hang — the boot also
+  started with OTHER_WATCHDOG), and why the phone's jog updates stalled (phone/AP+STA network).
+  The new jog-stop detail line will discriminate on the next incident.
+- Verified: vitest 789/789, pio native 21/21, esp32cam SUCCESS. Firmware hash aa53e650 on SD root.
+
 ## 2026-09-04 - Field round 4: everything works; workbench homing gate now follows live frames
 
 - Field results (boot `1EC76A66`): 2x Home ok over WS, work zero/Z zero ok over HTTP fallback,

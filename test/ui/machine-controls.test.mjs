@@ -352,7 +352,10 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(runner).toContain('Marlin jog acknowledgement timed out');
     expect(runner).toContain('sendJogCommand("M410")');
     expect(runner).toContain('sendJogCommand("G90")');
-    expect(firmware).toContain('logJobEvent("jog stop: heartbeat timeout")');
+    // The deadman stop logs the update age and time since start so the next
+    // incident shows whether updates stopped arriving at jog/start or later.
+    expect(firmware).toContain('jog stop: heartbeat timeout; lastUpdateAgeMs=');
+    expect(firmware).toContain('sinceStartMs=');
   });
 
   it('offers an explicit labelled Restore Z action instead of timed automatic motion', () => {
