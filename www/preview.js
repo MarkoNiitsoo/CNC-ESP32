@@ -7094,6 +7094,26 @@ window.CncTelemetry?.subscribe('motion', handleMotionTelemetry);
 window.CncTelemetry?.subscribe('system', (data) => {
   if (data) handleRecoveryHealth(data.health || data);
 });
+// The workbench homing gate (machineNeedsHome / workflow 'frame' gate) reads
+// currentMachineFrame. Feed it from the live machine slice so a Home done via
+// the machine bar (or any other surface, incl. HTTP fallback) is reflected
+// here without first running a workbench action. Re-render only when the
+// trust-relevant fields change - position-only frame updates stay silent.
+let lastAppliedFrameGateKey = '';
+function applyMachineFrameSlice(data) {
+  if (!data) return;
+  const frame = machineFrameFromSlice(data);
+  if (!frame || typeof frame !== 'object') return;
+  currentMachineFrame = frame;
+  const gateKey = `${frame.trusted === true ? '1' : '0'}${frame.absoluteFromHome === true ? '1' : '0'}` +
+    `${frame.workZeroValid === true ? '1' : '0'}${Number(frame.homingEpoch) || 0}`;
+  if (gateKey !== lastAppliedFrameGateKey) {
+    lastAppliedFrameGateKey = gateKey;
+    renderWorkbenchStatus();
+    renderRunPanel();
+  }
+}
+window.CncTelemetry?.subscribe('machine', applyMachineFrameSlice);
 window.CncTelemetry?.setDemand('job', 'preview-page', true);
 window.CncTelemetry?.setDemand('health', 'preview-page', true);
 window.CncTelemetry?.start();

@@ -1,5 +1,24 @@
 # Progress
 
+## 2026-09-04 - Field round 4: WS recovered, homing works; workbench frame gate fixed
+
+- Log verdict for boot `1EC76A66` (diagnostic build): both Homes completed ok=true over WS
+  (step-level logging visible in job.log), work zero + Z zero re-established over the HTTP
+  fallback, M115 parsed TRUE on the first attempt even though the boot was again reset=SOFTWARE -
+  the newline flush defeated the boot-spew poisoning. WS transport calmed down dramatically:
+  4 connects / 3 drops, lifetimes 15.5 s / 92.6 s / 5.4 s / 194+ s (client 192.168.4.2, AP path);
+  heap stable ~43-62 KB. The remaining occasional drops are still unexplained but harmless now.
+- Field-reported bug "UI claims homing not done" root-caused: preview.js never subscribed to the
+  `machine` slice, so the workbench gate (`machineNeedsHome` -> trusted && absoluteFromHome) ran on
+  a `currentMachineFrame` that was only set by workbench-initiated actions - a Home pressed in the
+  machine bar (or after a page reload, where it is null) never reached the gate.
+- Fix: preview.js `applyMachineFrameSlice(data)` subscribes to the machine slice (telemetry
+  replays the current slice on subscribe), keeps `currentMachineFrame` fresh (position updates
+  flow through), and re-renders the workbench/run panel only when the trust-relevant tuple
+  (trusted | absoluteFromHome | workZeroValid | homingEpoch) changes so jog streaming cannot
+  thrash rendering. 5 new vitest cases (extraction harness).
+- Verified: vitest 787/787 (65 files); www synced to SD.
+
 ## 2026-09-04 - Offline round 3: root causes confirmed and fixed (boot-spew poisoning + UI single point of failure)
 
 - The M115 raw-response capture caught the Marlin-side fault red-handed in boot `36E5605E`:

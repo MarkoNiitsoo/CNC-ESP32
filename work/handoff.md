@@ -1,5 +1,21 @@
 # Handoff
 
+## 2026-09-04 - Field round 4: everything works; workbench homing gate now follows live frames
+
+- Field results (boot `1EC76A66`): 2x Home ok over WS, work zero/Z zero ok over HTTP fallback,
+  M115 true on first attempt after an update reboot (flush fix confirmed in the field), WS calm
+  (4 connects, lifetimes 15.5/92.6/5.4/194+ s, client 192.168.4.2, heap stable). The earlier
+  40-180 ms bounce storm has not recurred; if it does, the `ip=` lines now identify the client.
+- Fixed the "UI says homing not done" report: preview.js never consumed the machine slice, so its
+  workbench gate (`currentMachineFrame.trusted && absoluteFromHome`) missed homes done via the
+  machine bar and started null after every page load. Now `applyMachineFrameSlice` subscribes to
+  the machine slice (subscribe() replays the current slice), refreshes `currentMachineFrame`
+  continuously, and re-renders only when trusted/absoluteFromHome/workZeroValid/homingEpoch
+  change (position-only updates stay silent to keep jog streaming cheap).
+- Note: re-homing invalidates saved work zeros by design (homingEpoch bump) - the user must
+  re-set work zero after Home All; that part of the flow behaved correctly.
+- Verified: vitest 787/787 (65 files); www synced to SD root. Not committed at time of writing.
+
 ## 2026-09-04 - Offline round 3: boot-spew poisoning fixed + workbench HTTP fallback
 
 - ROOT CAUSE (Marlin side), caught by the raw-response capture in boot `36E5605E`: after an ESP
