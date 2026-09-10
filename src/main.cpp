@@ -105,7 +105,12 @@ constexpr uint32_t kJogTickIntervalMs = 25;
 constexpr uint32_t kJogSegmentDurationMs = 40;
 constexpr uint32_t kJogHorizonRefillMs = 40;
 constexpr uint32_t kJogMaxHorizonMs = 80;
-constexpr uint32_t kJogDeadmanMs = 500;
+// Motion self-limits within the ~80 ms horizon when updates stop, so this
+// deadman only resets jog state - it does not stop motion. 1500 ms absorbs
+// phone/WiFi update stalls (~600 ms observed in the field); a shorter value
+// fired spuriously, and every M410 quickstop invalidates the trusted frame,
+// forcing a full re-home after a harmless network hiccup.
+constexpr uint32_t kJogDeadmanMs = 1500;
 constexpr uint8_t kJogPlannerLookahead = 6;
 constexpr float kJogVectorRampPerTick = 0.125f;
 constexpr float kJogMaxXyStepMm = 4.0f;
