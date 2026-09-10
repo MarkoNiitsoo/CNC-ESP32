@@ -249,10 +249,16 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     expect(firmware).toContain('bool attemptControllerRecoverySequence() {');
   });
 
-  it('records how stale the jog heartbeat was at the deadman stop', () => {
-    const deadman = blockBetween('jog stop: heartbeat timeout', 'stopJogInternal(true);');
-    expect(deadman).toContain('lastUpdateAgeMs=');
-    expect(deadman).toContain('sinceStartMs=');
-    expect(deadman).toContain('"never"');
+  it('pauses motion and gently resets the jog session when updates stall', () => {
+    // Motion grant: updates license a <=80 ms horizon; a stall drains it and
+    // the machine stands still. The session reset is M410-free by design, so
+    // a network hiccup can no longer invalidate homing trust.
+    expect(firmware).toContain('constexpr uint32_t kJogMotionGrantMs = 400;');
+    expect(firmware).toContain('constexpr uint32_t kJogSessionResetMs = 10000;');
+    expect(firmware).not.toContain('kJogDeadmanMs');
+    expect(firmware).toContain('jog motion paused: no updates for ');
+    expect(firmware).toContain('jog session reset: no updates for ');
+    expect(firmware).toContain('"never"');
+    expect(firmware).toContain('spindle stopped, absolute mode restored');
   });
 });

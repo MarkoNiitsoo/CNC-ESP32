@@ -165,8 +165,14 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
     coalesced realtime transport design.
 - Safe analog jog:
   - Browser sends joystick intent and heartbeat updates only.
-  - ESP32 firmware owns the jog state machine, safe Z lift, 50 ms relative movement ticks, and
-    500 ms deadman timeout.
+  - ESP32 firmware owns the jog state machine, safe Z lift, and 25 ms movement ticks streaming a
+    motion horizon of at most 80 ms.
+  - Motion grant: each accepted jog update licenses 400 ms of streamed motion; when updates stall
+    the horizon drains and the machine stands still (a retained joystick vector never re-licenses
+    motion), so a network hiccup pauses jogging instead of triggering a quickstop.
+  - A jog session silent for 10 s is torn down without M410 (spindle off, G90, Idle). M410 remains
+    only as escalation when Marlin stops acknowledging, and any quickstop invalidates the trusted
+    machine frame until the next Home All.
   - Every active project derives one work-coordinate Safe Z from stock geometry:
     `stockTopWorkZ + safeZClearanceMm`. Top-referenced stock has a top at Z0, bottom-referenced
     stock has a top at its workpiece height, and custom reference stores the explicit stock-top Z.

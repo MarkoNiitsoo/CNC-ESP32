@@ -105,12 +105,14 @@ constexpr uint32_t kJogTickIntervalMs = 25;
 constexpr uint32_t kJogSegmentDurationMs = 40;
 constexpr uint32_t kJogHorizonRefillMs = 40;
 constexpr uint32_t kJogMaxHorizonMs = 80;
-// Motion self-limits within the ~80 ms horizon when updates stop, so this
-// deadman only resets jog state - it does not stop motion. 1500 ms absorbs
-// phone/WiFi update stalls (~600 ms observed in the field); a shorter value
-// fired spuriously, and every M410 quickstop invalidates the trusted frame,
-// forcing a full re-home after a harmless network hiccup.
-constexpr uint32_t kJogDeadmanMs = 1500;
+// Motion grant: each accepted /api/jog/update licenses this much streamed
+// motion. When updates stall the horizon drains and the machine stands still
+// (a retained vector alone never re-licenses motion), so a vanished client
+// cannot cause runaway jogging and a network hiccup cannot trigger M410.
+constexpr uint32_t kJogMotionGrantMs = 400;
+// A jog session silent this long is torn down without M410 - motion paused
+// long before via the grant; the spindle is stopped and G90 restored.
+constexpr uint32_t kJogSessionResetMs = 10000;
 constexpr uint8_t kJogPlannerLookahead = 6;
 constexpr float kJogVectorRampPerTick = 0.125f;
 constexpr float kJogMaxXyStepMm = 4.0f;
@@ -262,6 +264,7 @@ struct JogStatus {
   String lastM114;
   uint32_t startedAtMs = 0;
   uint32_t lastUpdateMs = 0;
+  bool motionGrantExpired = false;
   uint32_t lastTickMs = 0;
   uint32_t lastMoveSentAtMs = 0;
   uint32_t queuedMotionHorizonMs = 0;
@@ -5384,23 +5387,47 @@ void processJogRunner() {
     setJogError("Marlin jog acknowledgement timed out");
     return;
   }
-  if (jogStatus.lastUpdateMs == 0 || now - jogStatus.lastUpdateMs > kJogDeadmanMs) {
-    jogStatus.lastError = "jog heartbeat timeout; stopped jogging";
-    // The update age discriminates the failing side: an age near the deadman
-    // window means updates stopped arriving right after jog/start (client or
-    // network stall); a large age means they stopped mid-session.
-    String heartbeatDetail = "jog stop: heartbeat timeout; lastUpdateAgeMs=";
-    heartbeatDetail += jogStatus.lastUpdateMs == 0
+  // Motion grant: stream new moves only while updates are fresh. An expired
+  // grant drains the <=80 ms horizon and the machine stands still - a network
+  // stall pauses jogging instead of triggering a quickstop. A fresh update
+  // clears the flag and streaming resumes seamlessly.
+  const bool grantExpired = jogStatus.lastUpdateMs != 0 &&
+                            now - jogStatus.lastUpdateMs > kJogMotionGrantMs;
+  if (grantExpired != jogStatus.motionGrantExpired) {
+    jogStatus.motionGrantExpired = grantExpired;
+    if (grantExpired) {
+      String paused = "jog motion paused: no updates for ";
+      paused += String(now - jogStatus.lastUpdateMs);
+      paused += " ms";
+      logJobEvent(paused);
+    }
+  }
+
+  if (jogStatus.lastUpdateMs == 0 || now - jogStatus.lastUpdateMs > kJogSessionResetMs) {
+    // Vanished client: motion paused long ago via the grant; tear the session
+    // down gently - spindle off, absolute mode restored, no M410 needed.
+    String resetDetail = "jog session reset: no updates for ";
+    resetDetail += jogStatus.lastUpdateMs == 0
         ? String("never")
         : String(now - jogStatus.lastUpdateMs);
-    heartbeatDetail += "; sinceStartMs=";
-    heartbeatDetail += jogStatus.startedAtMs == 0
-        ? String("never")
-        : String(now - jogStatus.startedAtMs);
-    logJobEvent(heartbeatDetail);
-    stopJogInternal(true);
+    resetDetail += " ms; spindle stopped, absolute mode restored";
+    sendJogCommand("M5");
+    sendJogCommand("G90");
+    jogStatus.commandedPositionCaptured = false;
+    jogStatus.pendingMoveAcks = 0;
+    jogStatus.responseLine = "";
+    jogStatus.queuedMotionHorizonMs = 0;
+    jogStatus.lastHorizonUpdateMs = 0;
+    jogStatus.zRestoreAvailable = false;
+    jogStatus.motionGrantExpired = false;
+    jogStatus.state = JogState::Idle;
+    jogStatus.lastError = resetDetail;
+    logJobEvent(resetDetail);
+    touchJogStatus();
     return;
   }
+
+  if (grantExpired) return;
 
   if (now - jogStatus.lastTickMs < kJogTickIntervalMs) {
     return;

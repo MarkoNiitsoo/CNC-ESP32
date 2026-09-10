@@ -1,5 +1,35 @@
 # Handoff
 
+## 2026-09-04 - Field round 7: jog deadman replaced with a motion-grant model
+
+- Correction to rounds 5-6 notes: "motion self-limits within ~130 ms" was WRONG - the jog runner
+  refills the <=80 ms horizon from the retained joystick vector, so without a deadman a vanished
+  client jogs forever. The deadman was load-bearing; it was just tuned badly (500 ms) for a flaky
+  WiFi link, and every spurious M410 invalidated homing trust.
+- New model (user-approved direction): each accepted jog update licenses 400 ms of motion
+  (kJogMotionGrantMs). Stalled updates -> horizon drains -> machine stands still (~480 ms after
+  the last update) while the session survives for a seamless resume ("jog motion paused" logged
+  once per stall). 10 s of silence tears the session down gently (M5, G90, Idle - NO M410).
+  M410 remains only for real escalations: graceful-stop ack timeout and Marlin move-ack timeout.
+- Net effect: network hiccups pause jogging instead of killing homing trust; a vanished client
+  cannot cause runaway jogging (motion stops via the grant) and gets cleaned up after 10 s.
+- Verified: vitest 789/789 (contracts rewritten: exactly 2 M410 escalations in the runner, reset
+  path M410-free), native 21/21, esp32cam SUCCESS. Firmware 13d94bf1 on SD root.
+
+## 2026-09-04 - Field round 6: auto-recovery proven twice; jog deadman 500→1500 ms
+
+- Auto-recovery proven in the field: two full unresponsive→recovering→connected cycles (~3.3 s
+  each) in boot `4867A770`, both triggered by jog-deadman M410s that Marlin ignored. The state
+  observer logged every transition exactly as designed.
+- "Homing done but UI says not homed" (round 2 of this complaint) root-caused: a 624 ms jog update
+  gap fired the 500 ms deadman → M410 quickstop → trusted frame invalidated (absoluteFromHome/
+  homed drop is BY DESIGN after a quickstop) → workbench gate correctly demanded re-homing. The
+  UI was telling the truth; the deadman was the bug. kJogDeadmanMs is now 1500 ms - safe because
+  the jog horizon is <=80 ms and motion self-limits within ~130 ms.
+- Reminder for users: after any Stop/M410 quickstop, Home All is required before the position is
+  trusted again; work zero set on an untrusted frame does not restore trust.
+- Verified: vitest 789/789, esp32cam SUCCESS. Firmware 6c1ffcb8 on SD root.
+
 ## 2026-09-04 - Field round 5: auto-recovery shipped; incident timeline fully explained
 
 - Incident (boot `48CCDF85`, user report "bounds/aircut/joystick/buttons dead"): second jog start

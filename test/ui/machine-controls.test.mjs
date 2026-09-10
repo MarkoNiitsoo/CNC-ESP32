@@ -347,15 +347,23 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(stop).toContain('Normal pointer release');
     expect(stop).not.toContain('sendJogCommand("M400")');
     expect(stop).toContain('jogStatus.commandedPositionCaptured = false');
-    expect(runner).toContain('kJogDeadmanMs');
-    expect(runner).toContain('stopJogInternal(true)');
+    // Motion grant: fresh updates license streamed motion; a stalled link
+    // pauses jogging (the <=80 ms horizon drains) instead of firing M410, and
+    // a vanished client is torn down gently after 10 s - spindle off, G90,
+    // no quickstop - so a network hiccup can no longer invalidate homing.
+    expect(runner).toContain('kJogMotionGrantMs');
+    expect(runner).toContain('jog motion paused: no updates for ');
+    expect(runner).toContain('kJogSessionResetMs');
+    expect(runner).toContain('jog session reset: no updates for ');
+    expect(runner).toContain('spindle stopped, absolute mode restored');
     expect(runner).toContain('Marlin jog acknowledgement timed out');
-    expect(runner).toContain('sendJogCommand("M410")');
     expect(runner).toContain('sendJogCommand("G90")');
-    // The deadman stop logs the update age and time since start so the next
-    // incident shows whether updates stopped arriving at jog/start or later.
-    expect(firmware).toContain('jog stop: heartbeat timeout; lastUpdateAgeMs=');
-    expect(firmware).toContain('sinceStartMs=');
+    // Two M410 escalations remain: the graceful-stop acknowledgement timeout
+    // and the Marlin-acknowledgement timeout. The grant pause and the session
+    // reset must never quickstop.
+    expect(runner.split('sendJogCommand("M410")').length - 1).toBe(2);
+    const resetBlock = firmware.slice(firmware.indexOf('jog session reset: no updates for '), firmware.indexOf('bool restoreJogZNow'));
+    expect(resetBlock).not.toContain('sendJogCommand("M410")');
   });
 
   it('offers an explicit labelled Restore Z action instead of timed automatic motion', () => {

@@ -1,5 +1,38 @@
 # Progress
 
+## 2026-09-04 - Field round 7: jog deadman replaced with a motion-grant model
+
+- User decision: remove the deadman entirely ("no logical need"). Full removal is unsafe - the jog
+  runner keeps streaming from the last retained joystick vector, so a vanished client would jog
+  forever (the earlier "motion self-limits in 130 ms" note in the round-5/6 notes was wrong: the
+  <=80 ms horizon is continuously refilled from the retained vector).
+- Compromise shipped - a motion-grant model: each accepted /api/jog/update licenses 400 ms of
+  streamed motion; when updates stall the horizon drains and the machine physically stops (~480 ms
+  after the last update) while the session stays alive for a seamless resume. A session silent for
+  10 s is torn down without M410 (M5 + G90 + Idle + lastError). M410 remains only in the two
+  escalation paths (graceful-stop ack timeout, Marlin move-ack timeout).
+- Result: network hiccups can no longer trigger M410, so they can no longer invalidate homing
+  trust - the spurious-quickstop class of incidents (rounds 5-6) is structurally gone. A stalled
+  link now shows as "jog motion paused: no updates for N ms" in job.log; a vanished client as
+  "jog session reset" after 10 s.
+- Verified: vitest 789/789 (machine-controls + machine-operation-engine contracts rewritten for
+  the grant model, including "exactly 2 M410 escalations, session reset M410-free"), native 21/21,
+  esp32cam SUCCESS; firmware 13d94bf1 on SD root.
+
+## 2026-09-04 - Field round 6: auto-recovery proven twice in the field; jog deadman 500→1500 ms
+
+- Boot `4867A770` logs show the full self-heal cycle working in the field TWICE: jog deadman →
+  safety M410 → Marlin silent → unresponsive → auto probe → connected, ~3.3 s total each time
+  (291.6→294.9 s and 421.7→425.0 s). Controller state observer + auto-recovery did their job.
+- The user-visible bug "homing done but UI says not homed" root-caused: a 624 ms jog update stall
+  fired the 500 ms deadman, the M410 quickstop invalidated the trusted frame (absoluteFromHome/
+  homed drop by design), and the workbench gate correctly went back to "homing not done". The UI
+  was right; the deadman was too tight.
+- Fix: kJogDeadmanMs 500→1500 ms. Motion safety is unaffected - the jog streams a <=80 ms horizon
+  and self-limits within ~130 ms of the last update; the deadman only resets jog state. The
+  spurious M410s (which cost a full re-home) are gone for the observed ~600 ms class of stalls.
+- Verified: vitest 789/789, esp32cam SUCCESS; firmware 6c1ffcb8 on SD root.
+
 ## 2026-09-04 - Field round 5: M410 deadman caught on tape; controller auto-recovery shipped
 
 - The Controller state observer caught the field incident exactly: boot `48CCDF85` — second jog
