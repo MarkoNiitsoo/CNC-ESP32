@@ -1,5 +1,33 @@
 # Handoff
 
+## 2026-09-13 - Phase 4 shipped: F-3 canonical motion-stream admission
+
+- Commit 765c3a8: `admitMotionStream(MotionStreamKind)` + `MotionAdmissionResult` own the
+  shared machine-exclusivity ladder (machine-op / jog / job-runner) exactly once, derived
+  from the canonical FSMs. All four entry points (admitJobStart, handleTestMotionStart,
+  handleProductionResumeStart, handleJogStart) route through it. Ownership is DERIVED - no
+  new mutable owner state.
+- Behavior changes (all exclusivity-tightening): active jog now denies job/test/production
+  starts; machine-op active now denies test/production/jog starts; jog during any active
+  job-runner state denied (was Running-only; PausedIntact still converts to
+  RecoveryRequired interruption first); production resume now requires trusted-or-manual
+  frame + valid work zero (fence-demanded; no browser payload change). Legacy messages
+  preserved for pre-existing denials; JOG_ACTIVE / MACHINE_OPERATION_ACTIVE codes only on
+  new denials. Comm/SD gates and machine-op superset ladder (OTA/discovery/priority)
+  deliberately unchanged - see audit F-3 resolution note for the boundary rationale.
+- Mock parity: stream starts now reject while jog is active; jog during PAUSED no longer
+  exempted. Machine-op-vs-stream parity NOT mirrored (mock has no machine-op active flag);
+  noted as a known mock gap.
+- F-3 fences promoted to positive invariants + single-policy guards (owner ladder exactly
+  once; no handler reimplements it; exactly four call sites; stream-specific checks stay
+  explicit). Three existing anchors updated to canonical mechanism, intent preserved.
+- Verified: vitest 829/829, pio native 21/21, esp32cam SUCCESS, jscpd 124 clones.
+- Remaining: F-2 (firmware recovery-move gate), F-5 (firmware-issued start token), then
+  identity/safe-Z/readiness consolidation. F-1 hardware field check still pending. Field
+  check for this phase: jog during an active job must now be refused with
+  "jog rejected while a job is active"; production resume without Home All must now be
+  refused with the new frame message.
+
 ## 2026-09-13 - Phase 3 shipped: F-4 canonical terminal substate cleanup
 
 - Commit 848d646: `resetJobSubstates(JobSubstateResetScope)` owns transient terminal cleanup.

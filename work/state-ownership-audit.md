@@ -131,6 +131,25 @@ so the raw-move gap is the inconsistency. Recommended shape: firmware-owned reco
 class (or a trust gate in `/api/cmd` while `RecoveryRequired`), browser flag demoted to display.
 
 **F-3 · "May this motion stream start" has four firmware answers.** [V]
+
+> **RESOLVED (phase 4, commit 765c3a8).** Canonical
+> `admitMotionStream(MotionStreamKind)` (Job/TestMotion/ProductionResume/Jog) owns the shared
+> owner ladder — machine operation active, jog active, job-runner active — derived once from
+> the canonical FSMs and returning a typed `MotionAdmissionResult {allowed, httpStatus, code,
+> message}`. Legacy wire messages preserved for existing consumers; new canonical codes
+> (JOG_ACTIVE, MACHINE_OPERATION_ACTIVE) appear only on the newly added denials. Fixed:
+> active jog now denies job/test/production starts; machine-op active now denies
+> test/production/jog; jog during any active job-runner state (Preparing/Pausing/Resuming/
+> Paused/Stopping) is denied, not just Running. Deliberate exception kept and documented: a
+> jog start during PausedIntact still converts the pause into a RecoveryRequired interruption
+> (caller-owned). Production resume additionally requires a trusted or manually confirmed
+> machine frame + valid work zero (previously absent; no browser payload change). Controller-
+> comm and SD gates stay at call sites (OrdinarySync permission vs stream comm checks differ
+> deliberately); machine operations keep their superset ladder `machineFrameControlBusy`
+> (adds OTA, discovery, priority). Single-policy guards assert the ladder exists exactly once
+> and that no handler reimplements it.
+
+The original finding, for the record:
 `admitJobStart` 8654-8826: comm, SD, job, machineOp, frame echo, safe Z, auth — no jog check
 (8654-8671 [V]). `handleTestMotionStart` 8361-8458: comm, SD, job, safe Z, file — no machineOp, no
 jog, no frame. `handleProductionResumeStart` 8461-8570: identity/safe Z/file — **zero frame
@@ -354,8 +373,15 @@ chip becomes an output only, never an input.
 > evidence first, cleanup after. Non-terminal pause/resume explicitly excluded. Tool-change
 > parallel booleans kept deliberately (deriving them from phase is a tool-change redesign,
 > not a cleanup change). F-4 fences promoted to positive invariants with single-writer
-> guards (`toolChangePhase="NONE"` has exactly one writer). Remaining open: F-2, F-3, F-5,
+> guards (`toolChangePhase="NONE"` has exactly one writer). Remaining open: F-2, F-5,
 > then identity/safe-Z/readiness consolidation.
+>
+> **Phase 4 (2026-09-13, commit 765c3a8): F-3 RESOLVED** — canonical
+> `admitMotionStream(MotionStreamKind)` with typed `MotionAdmissionResult`; all four motion
+> entry points route through it; active-jog asymmetry removed (jog blocks job/test/production;
+> any active job-runner state blocks jog; machine-op blocks all streams); production resume
+> gained the previously missing frame gate. F-3 fences promoted to positive invariants with
+> single-policy guards (owner ladder exists exactly once).
 
 1. **Zero-risk deletions** (S2/S3 dead state): `jobRunning` (11 writer lines), dead `dirty*` flags
    2396-2401, orphaned `lib/job-core.mjs`, write-only `jogAnimationPosition` + no-listener events,
@@ -408,6 +434,11 @@ Status after phase 3: the five F-4 fences in `stop-cleanup-parity.test.mjs` are 
 positive invariants** (six terminal paths route through `resetJobSubstates` with the correct
 scope) plus evidence-ordering, pause/resume-boundary, and single-writer guards. The F-2/F-3/F-5
 fences remain inverted until their phases run.
+
+Status after phase 4: the six F-3 fences in `motion-stream-admission.test.mjs` are **promoted
+to positive invariants** (all four entry points route through `admitMotionStream`; production
+resume frame gate; PausedIntact exception preserved) plus stream-specific-boundary and
+single-policy guards. The F-2/F-5 fences remain inverted until their phases run.
 
 Firmware (native/host tests):
 1. **Frame-trust invariant**: for every M410-emitting entry point (job stop, jog emergency, jog ack

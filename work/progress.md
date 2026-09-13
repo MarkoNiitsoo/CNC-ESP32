@@ -1,5 +1,26 @@
 # Progress
 
+## 2026-09-13 - State-ownership phase 4: F-3 canonical motion-stream admission
+
+- Admission matrix built first across job/test-motion/production-resume/jog/machine-op:
+  exclusivity (job idle, jog idle, machine-op idle) was independently and partially
+  implemented per handler; controller-comm and SD gates already uniform per handler.
+- Canonical `admitMotionStream(MotionStreamKind)` + typed `MotionAdmissionResult` now owns
+  the owner ladder once (derived from jobIsActive/jogIsActive/machineOperationActive, never
+  stored). Deliberate PausedIntact exception preserved: jog start during an intact pause
+  converts the pause to RecoveryRequired (caller-owned flow).
+- Fixed: active jog now blocks job/test/production starts; machine-op active now blocks
+  test/production/jog; jog during ANY active job-runner state denied (was Running only).
+  Production resume gained the missing trusted/manual frame + work-zero gate (no browser
+  payload change). Legacy wire messages preserved; new codes only on new denials.
+- Machine operations keep their superset ladder (machineFrameControlBusy: adds OTA,
+  discovery, priority) - documented, not migrated.
+- F-3 fences promoted to positive invariants + single-policy guards (ladder exists exactly
+  once; no handler reimplements it; exactly four call sites). Three existing anchors updated
+  to the canonical mechanism. Mock mirrors jog-active stream denials; dropped its
+  jog-during-PAUSED exemption.
+- Verified: vitest 829/829, pio native 21/21, esp32cam SUCCESS, jscpd 124 clones (informational).
+
 ## 2026-09-13 - State-ownership phase 3: F-4 canonical terminal substate cleanup
 
 - `resetJobSubstates(JobSubstateResetScope)` is the single writer for transient terminal

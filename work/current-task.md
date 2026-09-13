@@ -84,9 +84,11 @@ executed (commit b94eb63): F-1 resolved via canonical
 to job quickstops; fences promoted to positive invariants. Phase 3 executed (commit 848d646):
 F-4 resolved via canonical `resetJobSubstates(JobSubstateResetScope)` (StopInitiated/Terminal) —
 all seven terminal/interrupt paths migrated, evidence-before-cleanup ordering enforced and
-tested, non-terminal pause/resume excluded. Still open, individually fenced: F-3 (unified
-stream admission), F-2 (firmware recovery-move gate), F-5 (firmware-issued start token), then
-identity/safe-Z/readiness consolidation.
+tested, non-terminal pause/resume excluded. Phase 4 executed (commit 765c3a8): F-3 resolved
+via canonical `admitMotionStream(MotionStreamKind)` — active-jog asymmetry removed, machine-op
+exclusions extended to all streams, production resume frame gate added, fences promoted.
+Still open, individually fenced: F-2 (firmware recovery-move gate), F-5 (firmware-issued
+start token), then identity/safe-Z/readiness consolidation.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata
