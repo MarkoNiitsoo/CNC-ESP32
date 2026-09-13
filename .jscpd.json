@@ -1,0 +1,8 @@
+{
+  "minLines": 5,
+  "minTokens": 40,
+  "maxLines": 20000,
+  "maxSize": "2mb",
+  "reporters": ["ai"],
+  "ignore": ["**/node_modules/**", "**/*.min.*"]
+}

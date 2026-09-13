@@ -1,5 +1,23 @@
 # Progress
 
+## 2026-09-13 - Duplication audit layer 1 (jscpd-rs scan, no refactoring)
+
+- Installed `vv-bogdanov/jscpd-rs` skills `jscpd` + `dry-refactoring` into `.zcode/skills/`
+  (zcode agent target, `--copy`, lock file `skills-lock.json`); added repo `.jscpd.json`.
+- Coverage trap found and fixed: jscpd-rs defaults to max-lines 1000 / max-size 100kb and
+  SILENTLY skips bigger files — with defaults only 44 files / 22 clones were visible and
+  main.cpp, preview.js, machine-bar.js, app.js, telemetry.js were all missed. `.jscpd.json`
+  now pins maxLines 20000 / maxSize 2mb.
+- Full scan of www/ + src/ (min 5 lines / min 40 tokens): 51 files, 33,456 lines, 128 clones,
+  1,219 duplicated lines (3.64%). No production code changed in this task.
+- Report with per-family verdicts (CONSOLIDATE / INTENTIONAL, severity S1 safety / S2 state /
+  S3 boilerplate): `work/duplication-audit.md`. Top safety families: firmware G-code admission
+  + M6 scanner (F11/F13), stop/quickstop state transition ×7 (F21/F8/F22), motion-endpoint
+  guards + job-authorization loaders (F14/F18), already-diverged web preflight (W1) and
+  safe-Z clamps (W3), five-copy job identity (W2).
+- Intentional duplication documented and left alone: skins, HTML chrome, CSS, data/ mirror,
+  postCriticalJobAction semantics, test fixtures.
+
 ## 2026-09-04 - Field round 7: jog deadman replaced with a motion-grant model
 
 - User decision: remove the deadman entirely ("no logical need"). Full removal is unsafe - the jog

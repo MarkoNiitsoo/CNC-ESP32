@@ -1,5 +1,24 @@
 # Handoff
 
+## 2026-09-13 - Duplication audit layer 1 complete; layer 2 (state ownership) seeded
+
+- Skills `jscpd` + `dry-refactoring` (from `vv-bogdanov/jscpd-rs`) installed repo-locally under
+  `.zcode/skills/` via `npx skills add vv-bogdanov/jscpd-rs --skill <name> --agent zcode -y`
+  (copied, not symlinked) plus `skills-lock.json`. New ZCode sessions auto-discover them; in
+  existing sessions read the SKILL.md directly.
+- Tool config: repo `.jscpd.json` (minLines 5, minTokens 40, maxLines 20000, maxSize 2mb,
+  reporters ai). IMPORTANT: jscpd-rs defaults max-lines to 1000 and silently skips larger files —
+  a default run missed main.cpp/preview.js/app.js/telemetry.js/machine-bar.js entirely and
+  under-reported 22 vs the true 128 clones. Always scan via `npx jscpd-rs www src` so the config
+  applies.
+- Results + classification: `work/duplication-audit.md` (128 clones, 3.64%, ~70 families; S1/S2/S3
+  severity + CONSOLIDATE vs INTENTIONAL verdicts; nothing refactored yet).
+- Highest-value next refactors (when approved, each its own commit): firmware admission/validation
+  (main.cpp F11/F13/F2), then guards/loaders/estop transitions (F14/F18/F21/F8/F22/F24); web side:
+  shared job-identity module (W2), finish job-core.mjs preflight extraction (W1), one safe-Z limit
+  source (W3). Layer-2 state-ownership seeds listed in audit section 8.
+- No production code was modified in this task; firmware.bin unchanged (skills/config/docs only).
+
 ## 2026-09-04 - Field round 7: jog deadman replaced with a motion-grant model
 
 - Correction to rounds 5-6 notes: "motion self-limits within ~130 ms" was WRONG - the jog runner

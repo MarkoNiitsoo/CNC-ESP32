@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "dry-refactoring": {
+      "source": "vv-bogdanov/jscpd-rs",
+      "sourceType": "github",
+      "skillPath": "skills/dry-refactoring/SKILL.md",
+      "computedHash": "7c2f6a71aaed16f495987ccaeee5434b87cdd1c315fe12b027ae5cc8f2989a49"
+    },
+    "jscpd": {
+      "source": "vv-bogdanov/jscpd-rs",
+      "sourceType": "github",
+      "skillPath": "skills/jscpd/SKILL.md",
+      "computedHash": "d4f29e7a07371c51df11bcca27226f3ba0ec06593051de8fe78d4206a83d3c94"
+    }
+  }
+}

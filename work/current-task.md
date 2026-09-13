@@ -72,6 +72,14 @@ for Marlin on a BTT SKR Pro.
 - Automatic or power-loss job resume. Guarded Production Resume is two-phase, requires manual
   router verification, and gives firmware ownership of Phase 2 after explicit operator hold.
 - WebSocket.
+
+## Duplication audit — layer 2 (pending)
+
+Layer 1 (jscpd-rs token/line clone scan) is done: see `work/duplication-audit.md` (128 clones /
+~70 families, top safety findings F11/F13/F14/F18/F21 firmware admission+estop duplication, W1/W3
+already-diverged web preflight/safe-Z, W2 five-copy job identity). Layer 2 is the semantic
+duplicate-state / source-of-truth audit seeded by section 8 of that report; the DRY refactors
+themselves are not started yet.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata
