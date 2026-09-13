@@ -1,5 +1,27 @@
 # Handoff
 
+## 2026-09-13 - Layer-2 state-ownership audit complete; refactoring plan ready for approval
+
+- `work/state-ownership-audit.md` is the deliverable: ownership matrix (22 domains), behavior
+  matrix (13 behaviors), 14 confirmed multiple-Source-of-Truth findings with file:line evidence
+  (F-1..F-14; 5 are S1 safety-class), contradictory-state list, canonical ownership model
+  (T0-T5), ordered 11-step refactor plan, 13 invariant tests. Evidence: 4 subsystem audits,
+  every load-bearing claim re-verified against source (17/17).
+- Top risks, in recommended fix order: (1) recovery raw motion gated only by browser
+  sessionStorage positionTrust - move gate to firmware, demote browser flag to display;
+  (2) jog-side M410 never invalidates frame trust while every job-side M410 does - one
+  invalidateMachineFrame(reason, scope); (3) four divergent motion-stream admissions, none
+  checking jog; (4) stop-path substate reset divergence (toolChange residue); (5) job
+  authorization literal 'AUTHORIZED' in browser-writable sidecar - firmware-issued token.
+- Layer-1 correction: lib/job-core.mjs is ORPHANED (zero importers) - W1 "already diverged"
+  was actually "dead twin"; preview.js is the only live preflight. Also dev/mock-sd/www/
+  preview.js is a stale manual copy (tests can skew).
+- Invariant tests in section 10 double as the acceptance fence: several are expected to FAIL
+  against current code (frame-trust policy, stop-reset, admission matrix, transport ordering,
+  history contamination, no-DOM gating, safe-Z parity).
+- No production code touched in this pass. Next session: get user approval on the §9 order
+  (or a subset) before any refactoring commit.
+
 ## 2026-09-13 - Duplication audit layer 1 complete; layer 2 (state ownership) seeded
 
 - Skills `jscpd` + `dry-refactoring` (from `vv-bogdanov/jscpd-rs`) installed repo-locally under

@@ -1,5 +1,24 @@
 # Progress
 
+## 2026-09-13 - State-ownership audit layer 2 (semantic MST audit, no refactoring)
+
+- Four parallel subsystem audits (fw job lifecycle, fw frame/telemetry, web job/identity,
+  web machine/telemetry/safe-Z) + 17/17 primary-agent spot verifications. Report:
+  `work/state-ownership-audit.md`. No production code changed.
+- Headline: representation discipline is good (single position committer, single job enum,
+  shared stop/admit cores) but CONTROL POLICY lives in several paths: >=5 divergent frame-
+  invalidation routines with jog-M410 paths invalidating nothing (F-1); 4 different motion-stream
+  admission predicates, none checking jog (F-3); stop-path substate resets diverge (F-4);
+  recovery raw motion gated only by browser-persisted sessionStorage positionTrust (F-2);
+  job authorization = literal 'AUTHORIZED' in a browser-writable sidecar (F-5).
+- 14 confirmed MST findings (5 S1, 9 S2), 8 stored-derived (S3), 13 intentional mirrors,
+  10 contradictory-state possibilities, 22 domains. Corrections vs layer 1: lib/job-core.mjs
+  has ZERO importers (dead twin, not live divergence); dev/mock-sd/www/preview.js is a stale
+  manual UI copy (test-skew risk).
+- Deliverables include canonical ownership model (T0 Marlin / T1 firmware RAM / T2 sidecar
+  intent / T3 telemetry projection / T4 browser-derived / T5 preferences), 11-step fix order,
+  13 invariant tests (most expected to FAIL today - they are the regression fence for the fixes).
+
 ## 2026-09-13 - Duplication audit layer 1 (jscpd-rs scan, no refactoring)
 
 - Installed `vv-bogdanov/jscpd-rs` skills `jscpd` + `dry-refactoring` into `.zcode/skills/`

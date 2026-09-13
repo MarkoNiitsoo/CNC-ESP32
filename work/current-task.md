@@ -73,13 +73,13 @@ for Marlin on a BTT SKR Pro.
   router verification, and gives firmware ownership of Phase 2 after explicit operator hold.
 - WebSocket.
 
-## Duplication audit — layer 2 (pending)
+## Duplication audit — layer 2 (report complete; refactoring pending approval)
 
-Layer 1 (jscpd-rs token/line clone scan) is done: see `work/duplication-audit.md` (128 clones /
-~70 families, top safety findings F11/F13/F14/F18/F21 firmware admission+estop duplication, W1/W3
-already-diverged web preflight/safe-Z, W2 five-copy job identity). Layer 2 is the semantic
-duplicate-state / source-of-truth audit seeded by section 8 of that report; the DRY refactors
-themselves are not started yet.
+Layer 1 (jscpd-rs clone scan): `work/duplication-audit.md`. Layer 2 (semantic state-ownership /
+source-of-truth audit): `work/state-ownership-audit.md` — 22 domains, 14 confirmed MST findings
+(5 × S1), ownership model, 11-step fix plan, 13 invariant tests. The DRY/state refactors
+themselves are NOT started: they need explicit approval of the plan order (audit §9), starting
+with dead-state deletion and the firmware frame-invalidation/admission/stop-reset consolidations.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata
