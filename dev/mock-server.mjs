@@ -672,12 +672,15 @@ export async function createMockServer(options = {}) {
         return json(res, 200, { ok: true, message: 'Recovery checkpoint cleared. Machine position remains untrusted until Home All.' });
       }
       if (req.method === 'POST' && pathname === '/api/job/start') {
+        if (env.jog.state !== 'IDLE') return json(res, 409, { ok: false, error: 'jog motion is active; release it before starting' });
         return json(res, 200, await env.runner.start(await readJson(req)));
       }
       if (req.method === 'POST' && pathname === '/api/test-motion/start') {
+        if (env.jog.state !== 'IDLE') return json(res, 409, { ok: false, error: 'jog motion is active; release it before starting' });
         return json(res, 200, await env.runner.startTestMotion(await readJson(req)));
       }
       if (req.method === 'POST' && pathname === '/api/recovery/production/start') {
+        if (env.jog.state !== 'IDLE') return json(res, 409, { ok: false, error: 'jog motion is active; release it before starting' });
         try {
           return json(res, 200, await env.runner.startProductionResume(await readJson(req)));
         } catch (err) {
@@ -992,8 +995,8 @@ export async function createMockServer(options = {}) {
           env.runner.interruptForManualMotion();
           return json(res, 409, { ok: false, error: 'direct Resume invalidated; wait for RECOVERY_REQUIRED before jogging' });
         }
-        if (env.runner.isActive() && env.runner.status.state !== 'PAUSED') {
-          return json(res, 409, { ok: false, error: 'jog rejected while job is active' });
+        if (env.runner.isActive()) {
+          return json(res, 409, { ok: false, error: 'jog rejected while a job is active' });
         }
         const body = await readJson(req);
         if (body.safeJog !== false && body.jobPath) {

@@ -34,8 +34,7 @@ describe('cooperative WS job.start (Phase 3D)', () => {
     for (const marker of [
       'ensureControllerCommunicationActive',
       'SD card is not mounted',
-      'another job is already active',
-      'machineOperationActive()',
+      'admitMotionStream(MotionStreamKind::Job)',
       'use_manual_work_frame',
       'requestedBootSessionId != bootSessionId',
       'machineFrame.homingEpoch',

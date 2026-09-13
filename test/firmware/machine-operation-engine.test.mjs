@@ -110,11 +110,15 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     const busy = blockBetween('bool machineFrameControlBusy()', 'bool runFrameCommand(');
     expect(busy).toContain('machineOperationActive()');
     // Job Start admission moved into the shared core (Phase 3D); the gate
-    // against active machine operations moved with it.
+    // against active machine operations moved with it, and Phase 4 routed the
+    // exclusivity ladder through the canonical admitMotionStream policy.
     const jobStart = blockBetween(
       'MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *entry) {',
       'void handleJobStart() {');
-    expect(jobStart).toContain('machineOperationActive()');
+    expect(jobStart).toContain('admitMotionStream(MotionStreamKind::Job)');
+    const admissionStart = firmware.indexOf('MotionAdmissionResult admitMotionStream(MotionStreamKind kind) {');
+    expect(admissionStart).toBeGreaterThan(-1);
+    expect(firmware.slice(admissionStart, admissionStart + 1200)).toContain('machineOperationActive()');
     const toolChange = blockBetween('void handleToolChangeComplete()', 'bool beginPausedManualInterruption()');
     expect(toolChange).toContain('machineOperationActive()');
   });

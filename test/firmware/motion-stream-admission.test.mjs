@@ -36,63 +36,103 @@ function extractFunction(source, name) {
   return null;
 }
 
-describe('motion-stream admission anchors (F-3 audit evidence)', () => {
-  it('extracts all four motion-stream admission predicates', () => {
-    expect(extractFunction(source, 'admitJobStart')).not.toBeNull();
-    expect(extractFunction(source, 'handleJogStart')).not.toBeNull();
-    expect(extractFunction(source, 'handleTestMotionStart')).not.toBeNull();
-    expect(extractFunction(source, 'handleProductionResumeStart')).not.toBeNull();
-  });
+function countMatches(text, regex) {
+  return (text.match(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`)) || []).length;
+}
 
-  it('characterizes the current job-start admission checks', () => {
+const OWNER_LADDER = /jobIsActive\(\)|jogIsActive\(\)|machineOperationActive\(\)/;
+
+// F-3 promoted invariants: one canonical shared machine-exclusivity policy
+// (admitMotionStream) answers "may this motion owner start now?" for every
+// motion-producing entry point. These were inverted it.fails fences until the
+// canonical admission layer landed (phase 4).
+describe('motion-stream admission (F-3, promoted after canonical admission layer)', () => {
+  it('normal job start routes through the canonical admission policy', () => {
     const admitJobStart = extractFunction(source, 'admitJobStart');
-    expect(admitJobStart).toContain('jobIsActive()');
-    expect(admitJobStart).toContain('machineOperationActive()');
-    expect(admitJobStart).toContain('sdMounted');
-    expect(admitJobStart).toContain('machineFrame');
+    expect(admitJobStart).toContain('admitMotionStream(MotionStreamKind::Job)');
   });
 
-  it('characterizes the current jog-start two-literal-state gate', () => {
+  it('test-motion start routes through the canonical admission policy', () => {
+    const handleTestMotionStart = extractFunction(source, 'handleTestMotionStart');
+    expect(handleTestMotionStart).toContain('admitMotionStream(MotionStreamKind::TestMotion)');
+  });
+
+  it('production-resume start routes through the canonical admission policy', () => {
+    const handleProductionResumeStart = extractFunction(source, 'handleProductionResumeStart');
+    expect(handleProductionResumeStart).toContain('admitMotionStream(MotionStreamKind::ProductionResume)');
+  });
+
+  it('jog start routes through the canonical admission policy', () => {
+    const handleJogStart = extractFunction(source, 'handleJogStart');
+    expect(handleJogStart).toContain('admitMotionStream(MotionStreamKind::Jog)');
+  });
+
+  it('production-resume start requires a trusted (or manually confirmed) machine frame', () => {
+    const handleProductionResumeStart = extractFunction(source, 'handleProductionResumeStart');
+    expect(handleProductionResumeStart).toContain('machineFrame.machineValid && machineFrame.absoluteFromHome');
+    expect(handleProductionResumeStart).toContain('manualWorkFrameValid');
+    expect(handleProductionResumeStart).toContain('machineFrame.workZeroValid');
+  });
+
+  it('jog start during an intact pause keeps its deliberate RecoveryRequired interruption', () => {
     const handleJogStart = extractFunction(source, 'handleJogStart');
     expect(handleJogStart).toContain('JobRunnerState::PausedIntact');
-    expect(handleJogStart).toContain('JobRunnerState::Running');
-    expect(handleJogStart).toContain('jog rejected while job is RUNNING');
-  });
-
-  it('characterizes the current test-motion admission checks', () => {
-    const handleTestMotionStart = extractFunction(source, 'handleTestMotionStart');
-    expect(handleTestMotionStart).toContain('jobIsActive()');
+    expect(handleJogStart).toContain('beginPausedManualInterruption()');
   });
 });
 
-describe('motion-stream admission invariants (F-3 acceptance fences)', () => {
-  it.fails('SAFETY FENCE (F-3, expected failing until fixed): job start rejects while a jog session is active', () => {
+describe('stream-specific admission stays explicit (F-3 boundary)', () => {
+  it('job start keeps its frame-echo and sidecar-authorization checks', () => {
     const admitJobStart = extractFunction(source, 'admitJobStart');
-    expect(admitJobStart).toMatch(/jogIsActive\(\)/);
+    expect(admitJobStart).toContain('FRAME_STATE_CONFLICT');
+    expect(admitJobStart).toContain('loadJobExecutionAuthorization');
   });
 
-  it.fails('SAFETY FENCE (F-3, expected failing until fixed): test motion rejects while a jog session is active', () => {
+  it('test-motion start keeps its generated-file validation', () => {
     const handleTestMotionStart = extractFunction(source, 'handleTestMotionStart');
-    expect(handleTestMotionStart).toMatch(/jogIsActive\(\)/);
+    expect(handleTestMotionStart).toContain('/jobs/generated');
   });
 
-  it.fails('SAFETY FENCE (F-3, expected failing until fixed): test motion rejects while a machine operation is active', () => {
-    const handleTestMotionStart = extractFunction(source, 'handleTestMotionStart');
-    expect(handleTestMotionStart).toMatch(/machineOperationActive\(\)/);
-  });
-
-  it.fails('SAFETY FENCE (F-3, expected failing until fixed): production resume start rejects while a jog session is active', () => {
+  it('production-resume start keeps its recovery identity validation', () => {
     const handleProductionResumeStart = extractFunction(source, 'handleProductionResumeStart');
-    expect(handleProductionResumeStart).toMatch(/jogIsActive\(\)/);
+    expect(handleProductionResumeStart).toContain('activeRunFingerprint');
+  });
+});
+
+describe('canonical admission single-policy guards (F-3)', () => {
+  it('the shared owner ladder exists exactly once, inside admitMotionStream', () => {
+    const canonical = extractFunction(source, 'admitMotionStream');
+    expect(canonical).not.toBeNull();
+    expect(canonical).toContain('MotionStreamKind kind');
+    expect(countMatches(canonical, /jobIsActive\(\)/)).toBe(1);
+    expect(countMatches(canonical, /jogIsActive\(\)/)).toBe(1);
+    expect(countMatches(canonical, /machineOperationActive\(\)/)).toBe(1);
   });
 
-  it.fails('SAFETY FENCE (F-3, expected failing until fixed): production resume start requires a trusted/valid machine frame', () => {
-    const handleProductionResumeStart = extractFunction(source, 'handleProductionResumeStart');
-    expect(handleProductionResumeStart).toMatch(/machineFrame/);
+  it('no stream handler reimplements the owner ladder', () => {
+    for (const name of ['admitJobStart', 'handleTestMotionStart', 'handleProductionResumeStart', 'handleJogStart']) {
+      const body = extractFunction(source, name);
+      expect(body, name).not.toBeNull();
+      expect(countMatches(body, OWNER_LADDER), name).toBe(0);
+    }
   });
 
-  it.fails('SAFETY FENCE (F-3, expected failing until fixed): jog start rejects during any active job state', () => {
-    const handleJogStart = extractFunction(source, 'handleJogStart');
-    expect(handleJogStart).toMatch(/jobIsActive\(\)/);
+  it('exactly four motion-stream call sites use the canonical policy', () => {
+    expect(countMatches(source, /admitMotionStream\(MotionStreamKind::/)).toBe(4);
+  });
+
+  it('active jog blocks job/test/production but never the deliberate pause interruption', () => {
+    const canonical = extractFunction(source, 'admitMotionStream');
+    expect(canonical).toMatch(/jogIsActive\(\) && kind != MotionStreamKind::Jog/);
+    expect(canonical).toContain('JobRunnerState::PausedIntact');
+    expect(canonical).toContain('jobStatus.directResumeValid');
+  });
+
+  it('active machine operation blocks every stream kind, and active job blocks jog', () => {
+    const canonical = extractFunction(source, 'admitMotionStream');
+    expect(canonical).toContain('machineOperationActive()');
+    expect(canonical).toContain('"MACHINE_OPERATION_ACTIVE"');
+    expect(canonical).toContain('jobIsActive()');
+    expect(canonical).toContain('"JOB_STATE_CONFLICT"');
   });
 });

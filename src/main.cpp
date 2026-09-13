@@ -2274,6 +2274,58 @@ bool jogIsActive() {
          jogStatus.state == JogState::Stopping;
 }
 
+// ── Canonical motion-stream admission (state-ownership audit F-3) ────────────
+// One shared machine-exclusivity policy for every motion-producing entry point:
+// exactly one motion owner at a time (job-runner stream / jog / machine operation),
+// derived from the canonical FSMs, never stored. Stream-specific requirements (frame
+// echo, authorization, safe-Z, file/identity validation) stay in each handler, as do
+// the controller-comm and SD gates (they already differ deliberately between
+// OrdinarySync permission and stream comm checks). Machine operations keep their own
+// superset ladder (machineFrameControlBusy: OTA + discovery + priority) because frame
+// commands must also exclude OTA and discovery windows.
+enum class MotionStreamKind : uint8_t {
+  Job,
+  TestMotion,
+  ProductionResume,
+  Jog,
+};
+
+struct MotionAdmissionResult {
+  bool allowed;
+  int httpStatus;
+  const char *code;
+  String message;
+};
+
+MotionAdmissionResult admitMotionStream(MotionStreamKind kind) {
+  // Deliberate domain exception: a jog start during an intact pause is not admitted
+  // as motion - the caller converts the pause into a RecoveryRequired interruption.
+  if (kind == MotionStreamKind::Jog && jobStatus.state == JobRunnerState::PausedIntact &&
+      jobStatus.directResumeValid) {
+    return {true, 200, "OK", String()};
+  }
+  if (machineOperationActive()) {
+    if (kind == MotionStreamKind::Job) {
+      return {false, 409, "MACHINE_STATE_CONFLICT",
+              "a machine operation is in progress; start the job after it completes"};
+    }
+    return {false, 409, "MACHINE_OPERATION_ACTIVE", "a machine operation is in progress"};
+  }
+  if (jogIsActive() && kind != MotionStreamKind::Jog) {
+    return {false, 409, "JOG_ACTIVE", "jog motion is active; release it before starting"};
+  }
+  if (jobIsActive()) {
+    if (kind == MotionStreamKind::Jog) {
+      return {false, 409, "JOB_STATE_CONFLICT", "jog rejected while a job is active"};
+    }
+    return {false, 409, "JOB_STATE_CONFLICT",
+            kind == MotionStreamKind::Job
+                ? "another job is already active"
+                : "another job or motion stream is already active"};
+  }
+  return {true, 200, "OK", String()};
+}
+
 String jogStatusJson(bool authoritativeState = false) {
   const uint32_t now = millis();
   String json = "{";
@@ -8410,8 +8462,9 @@ void handleTestMotionStart() {
     sendJsonError(503, "SD card is not mounted");
     return;
   }
-  if (jobIsActive()) {
-    sendJsonError(409, "another job or motion stream is already active");
+  const MotionAdmissionResult admission = admitMotionStream(MotionStreamKind::TestMotion);
+  if (!admission.allowed) {
+    sendJsonError(admission.httpStatus, admission.message);
     return;
   }
   if (!server.hasArg("plain")) {
@@ -8509,8 +8562,16 @@ void handleProductionResumeStart() {
     sendJsonError(503, "SD card is not mounted");
     return;
   }
-  if (jobIsActive()) {
-    sendJsonError(409, "another job or motion stream is already active");
+  const MotionAdmissionResult admission = admitMotionStream(MotionStreamKind::ProductionResume);
+  if (!admission.allowed) {
+    sendJsonError(admission.httpStatus, admission.message);
+    return;
+  }
+  const bool frameTrusted = machineFrame.machineValid && machineFrame.absoluteFromHome &&
+                            machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
+  if ((!frameTrusted && !machineFrame.manualWorkFrameValid) || !machineFrame.workZeroValid) {
+    sendJsonError(409,
+                  "production resume requires a trusted machine frame; Home All and restore the work zero first");
     return;
   }
   if (!server.hasArg("plain")) {
@@ -8698,12 +8759,9 @@ MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *e
   if (!sdMounted) {
     return {false, false, true, 503, "PRECONDITION_FAILED", "SD card is not mounted"};
   }
-  if (jobIsActive()) {
-    return {false, false, true, 409, "JOB_STATE_CONFLICT", "another job is already active"};
-  }
-  if (machineOperationActive()) {
-    return {false, false, true, 409, "MACHINE_STATE_CONFLICT",
-            "a machine operation is in progress; start the job after it completes"};
+  const MotionAdmissionResult admission = admitMotionStream(MotionStreamKind::Job);
+  if (!admission.allowed) {
+    return {false, false, true, admission.httpStatus, admission.code, admission.message};
   }
   if (body.length() == 0) {
     return {false, false, true, 400, "INVALID_PAYLOAD", "missing JSON body"};
@@ -9220,8 +9278,9 @@ void handleJogStart() {
     sendJsonError(409, "direct Resume was invalidated; wait for RECOVERY_REQUIRED before jogging");
     return;
   }
-  if (jobStatus.state == JobRunnerState::Running) {
-    sendJsonError(409, "jog rejected while job is RUNNING");
+  const MotionAdmissionResult admission = admitMotionStream(MotionStreamKind::Jog);
+  if (!admission.allowed) {
+    sendJsonError(admission.httpStatus, admission.message);
     return;
   }
   if (!server.hasArg("plain")) {
