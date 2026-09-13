@@ -81,9 +81,12 @@ source-of-truth audit): `work/state-ownership-audit.md` — 22 domains, 14 confi
 e139670..15d8e33): acceptance fences for F-1..F-5 + zero-risk dead-state cleanup. Phase 2
 executed (commit b94eb63): F-1 resolved via canonical
 `invalidateMachineFrame(scope, reason)` — jog M410 paths now invalidate frame trust identically
-to job quickstops; fences promoted to positive invariants. Still open, individually fenced:
-F-4 (stop-path substate parity), F-3 (unified stream admission), F-2 (firmware recovery-move
-gate), F-5 (firmware-issued start token), then identity/safe-Z/readiness consolidation.
+to job quickstops; fences promoted to positive invariants. Phase 3 executed (commit 848d646):
+F-4 resolved via canonical `resetJobSubstates(JobSubstateResetScope)` (StopInitiated/Terminal) —
+all seven terminal/interrupt paths migrated, evidence-before-cleanup ordering enforced and
+tested, non-terminal pause/resume excluded. Still open, individually fenced: F-3 (unified
+stream admission), F-2 (firmware recovery-move gate), F-5 (firmware-issued start token), then
+identity/safe-Z/readiness consolidation.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata

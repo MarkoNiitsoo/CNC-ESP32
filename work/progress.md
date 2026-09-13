@@ -1,5 +1,28 @@
 # Progress
 
+## 2026-09-13 - State-ownership phase 3: F-4 canonical terminal substate cleanup
+
+- `resetJobSubstates(JobSubstateResetScope)` is the single writer for transient terminal
+  cleanup (pauseRequested/stopRequested/directResumeValid/pauseRealtimeHold/pauseMode +
+  tool-change FSM). Two scopes: StopInitiated (stop intent asserted; stopRequested stays true
+  until the stop priority sequence completes) and Terminal (final state or resume completed).
+- Seven call sites migrated: performJobStop main + machine-op branches, beginPausedManual-
+  Interruption, finishPrioritySequence Stopping, setJobError, completeJob, and the
+  Resuming->Running advance (was a partial 5-field reset). Residue eliminated: directResume/
+  hold/mode after complete/error; tool-change residue after finish/error/interruption/
+  machine-op-stop.
+- Critical ordering hazard caught by the new ordering test: beginPausedManualInterruption
+  persists its checkpoint AFTER the stop sequence, and the checkpoint snapshots pauseMode/
+  directResumeValid/toolChangePhase as recovery evidence - so cleanup runs only AFTER
+  persist, with an explicit directResumeValid=false revocation kept up front. A tool-change
+  pause interrupted by manual movement still persists WAITING_FOR_TOOL evidence and still
+  ends RecoveryRequired. Non-terminal pause/resume deliberately excluded from the helper.
+- Tool-change booleans kept (per-checkpoint flags not derivable from phase); reset policy
+  centralized: toolChangePhase="NONE" now has exactly one writer.
+- F-4 fences promoted to positive invariants (6 terminal paths, pause/resume boundary,
+  evidence ordering, single-writer guards). Verified: vitest 825/825, pio native 21/21,
+  esp32cam SUCCESS, jscpd 125->123 clones.
+
 ## 2026-09-13 - State-ownership phase 2: F-1 canonical frame invalidation (fences promoted)
 
 - Re-mapped every invalidation/establishment path before editing: establishment (Home finalize,

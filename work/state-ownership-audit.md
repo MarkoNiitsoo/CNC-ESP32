@@ -48,9 +48,9 @@ only).
 |---|--------|-------------------------------|---------|--------------------|----------------|
 | 1 | Job phase | `jobStatus.state` enum (133-146, 47 values incl. RecoveryRequired) | 20+ transition sites, all gated on current state [A] | — | OK core; **FW canonical** |
 | 2 | `jobRunning` bool | main.cpp:554 | 11 writers, **0 readers** [V] | disagrees with state inside Stopping (9030 vs 9036), unobservable only because dead | **S2 → RESOLVED (deleted in phase 1, commit d639837)** |
-| 3 | Pause/resume substate | `pauseRequested` 170, `stopRequested` 176, `directResumeValid` 173, `pauseRealtimeHold` 171, `pauseMode` 175 | per-transition 8-17 field slams [A] | `pauseRealtimeHold`+`pauseMode` = one fact twice; error/complete paths leave residue (F-4) | **S2/S3 → derive flags from state where possible; single `resetJobSubstates()`** |
+| 3 | Pause/resume substate | `pauseRequested` 170, `stopRequested` 176, `directResumeValid` 173, `pauseRealtimeHold` 171, `pauseMode` 175 | per-transition field slams → **RESOLVED: one `resetJobSubstates(scope)` owns the terminal set (phase 3, commit 848d646)** | `pauseRealtimeHold` ≡ `pauseMode=="realtime"` (kept, documented S3) | **S2/S3 → terminal set RESOLVED; bool/string pairing remains** |
 | 4 | `recoveryRequired` | bool 174 + enum value | set true unconditionally in Stopping→Stopped **and** →RecoveryRequired (4757-4763) [V]; JSON-only reader | bool semantics ≠ enum semantics; `true` on clean stop | **S2 → RESOLVED (derived serialization from the enum, phase 1, commit d639837)** |
-| 5 | Tool-change substate | bool cluster 180-185 **and** `toolChangePhase` string 197 (two FSMs) | begin 6656-6662; ready 4729-4732; complete 9004-9008; resets ×3 divergent (6188-6194, 6215-6219, 9146-9152) [V: asymmetry] | stop paths disagree (F-4) | **S2 → one FSM (string), one reset fn** |
+| 5 | Tool-change substate | bool cluster 180-185 **and** `toolChangePhase` string 197 (two FSMs) | begin/ready/complete flow writers; terminal reset centralized in `resetJobSubstates` (phase 3): `toolChangePhase="NONE"` has exactly one writer | stop paths no longer disagree | **S2 → reset RESOLVED (phase 3); bool→phase derivation deferred (large tool-change redesign)** |
 | 6 | Stop/estop outcome | `stopWarning`, `stopEmergencyParserDetected` 215-216; enum Stopping/Stopped | performJobStop 9070-9178 (3 field-slams [V]); jog quickstop separate | post-stop state is path-dependent (F-1, F-4) | **S1 → single transition fn** |
 | 7 | Recovery/checkpoint | NVS active-job marker 1755-1766; `jobCheckpoint*` 856-867; browser `recoveries[]` + `runHistory[].firmwareCheckpoint` | FW writes checkpoint; browser imports (preview 2888-2944) **before** ack (2930) | browser writes sidecar possibly of another job (2856-2931) | OK-MIRROR + S2 note (import is path-keyed, ordering safe) |
 | 8 | Frame trust + homing epoch | `machineFrame` 418-445; `trusted` **computed** 5077-5078 [V]; epoch/session 441-442 | establishment: Home-all finalize only (9605-9615); invalidation: **≥5 divergent routines** (F-1) | jog M410 paths invalidated nothing [V] | **S1 → RESOLVED (canonical `invalidateMachineFrame(scope, reason)`, phase 2, commit b94eb63)** |
@@ -141,6 +141,25 @@ tool-change-Paused [V]. Only the machine-op engine checks jog (`machineFrameCont
 Preparing/Resuming drains stream acks → spurious COMMUNICATION_LOST [A].
 
 **F-4 · Post-stop job state depends on which stop path ran.** [V]
+
+> **RESOLVED (phase 3, commit 848d646).** Canonical `resetJobSubstates(JobSubstateResetScope)`
+> owns the transient terminal set (pauseRequested, stopRequested, directResumeValid,
+> pauseRealtimeHold, pauseMode, tool-change FSM: 6 booleans + phase). Scope `StopInitiated`
+> (entering Stopping — stopRequested stays asserted until the stop priority sequence
+> completes) vs `Terminal` (final state or resume completed). Migrated: both performJobStop
+> branches, beginPausedManualInterruption, finishPrioritySequence Stopping, setJobError,
+> completeJob, and the Resuming→Running advance (was a partial 5-field reset). Residue
+> eliminated: directResumeValid/pauseRealtimeHold/pauseMode after complete/error;
+> tool-change residue after finish/error/interruption/machine-op-stop. Ordering hazard caught
+> and handled: beginPausedManualInterruption persists its checkpoint (which snapshots
+> pauseMode/directResumeValid/toolChangePhase) BEFORE the cleanup, and keeps an explicit
+> directResumeValid=false revocation up front so the persisted evidence is unchanged.
+> Non-terminal Pause/Resume deliberately do not call the helper (resume authority must
+> survive pause). Tool-change booleans kept (per-checkpoint flags, not derivable from
+> phase); only reset policy is centralized. `toolChangePhase="NONE"` now has exactly one
+> writer.
+
+The original finding, for the record:
 Main job stop resets `toolChange*` (9146-9152); the machine-op stop branch does not (9086-9105
 [V]); `finishPrioritySequence` never does (4750-4775); `setJobError` (6015-6042) leaves
 `directResumeValid`, `pauseRealtimeHold/pauseMode`, toolChange fields; `completeJob` (6170-6200)
@@ -326,6 +345,17 @@ chip becomes an output only, never an input.
 > are promoted to ordinary positive assertions plus four structural guards; dev mock mirrors
 > the jog-quickstop invalidation. F-4 residue inside the stop branches (tool-change/pause
 > substate) was deliberately left for its own phase. Steps 3-6+ below are still open.
+>
+> **Phase 3 (2026-09-13, commit 848d646): F-4 RESOLVED** — canonical
+> `resetJobSubstates(JobSubstateResetScope)` (StopInitiated/Terminal) owns the transient
+> terminal set; seven call sites migrated including the previously divergent complete/error/
+> finish/interruption/machine-op-stop paths and the partial resume-advance reset. Ordering
+> hazard (checkpoint persistence vs cleanup) caught by the critical-ordering test and fixed:
+> evidence first, cleanup after. Non-terminal pause/resume explicitly excluded. Tool-change
+> parallel booleans kept deliberately (deriving them from phase is a tool-change redesign,
+> not a cleanup change). F-4 fences promoted to positive invariants with single-writer
+> guards (`toolChangePhase="NONE"` has exactly one writer). Remaining open: F-2, F-3, F-5,
+> then identity/safe-Z/readiness consolidation.
 
 1. **Zero-risk deletions** (S2/S3 dead state): `jobRunning` (11 writer lines), dead `dirty*` flags
    2396-2401, orphaned `lib/job-core.mjs`, write-only `jogAnimationPosition` + no-listener events,
@@ -373,6 +403,11 @@ structural guards; the F-2..F-5 fences remain inverted until their phases run. H
 behavioral extraction of the frame model remains impractical without restructuring main.cpp;
 source-audit assertions plus the dev-mock mirror are the current proof, to be supplemented by
 field verification of a jog quickstop on hardware.
+
+Status after phase 3: the five F-4 fences in `stop-cleanup-parity.test.mjs` are **promoted to
+positive invariants** (six terminal paths route through `resetJobSubstates` with the correct
+scope) plus evidence-ordering, pause/resume-boundary, and single-writer guards. The F-2/F-3/F-5
+fences remain inverted until their phases run.
 
 Firmware (native/host tests):
 1. **Frame-trust invariant**: for every M410-emitting entry point (job stop, jog emergency, jog ack

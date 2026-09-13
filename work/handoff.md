@@ -1,5 +1,33 @@
 # Handoff
 
+## 2026-09-13 - Phase 3 shipped: F-4 canonical terminal substate cleanup
+
+- Commit 848d646: `resetJobSubstates(JobSubstateResetScope)` owns transient terminal cleanup.
+  Scopes: StopInitiated (entering Stopping; stopRequested stays asserted until the priority
+  sequence completes) and Terminal (final state / resume completed). Field set owned:
+  pauseRequested, stopRequested, directResumeValid, pauseRealtimeHold, pauseMode, tool-change
+  FSM (pending/ready/zZeroCompleted/parked/toolConfirmed/routerReadyConfirmed + phase).
+  NOT owned (caller/evidence state): pauseInterruptedForManualMotion, streamingPausedReason,
+  stopWarning/lastError, toolChange tool/return-position metadata, checkpoint evidence.
+- Callers migrated: performJobStop (main + machine-op branches), beginPausedManualInterruption,
+  finishPrioritySequence Stopping, setJobError, completeJob, Resuming->Running advance.
+  Fixed residue: complete/error left directResumeValid+pauseMode+hold; finish/error/
+  interruption/machine-op-stop left tool-change state; resume advance reset only 5 of 7 TC
+  fields. Pause and Resume flows deliberately do NOT call the helper (resume authority must
+  survive a pause; resume consumes its own authority).
+- CRITICAL ordering rule now enforced + tested: persist recovery evidence BEFORE cleanup.
+  beginPausedManualInterruption persists its checkpoint (snapshots pauseMode/directResumeValid/
+  toolChangePhase) after the M410/M5 sequence and before resetJobSubstates - so a tool-change
+  pause interrupted by manual movement still persists WAITING_FOR_TOOL evidence and still ends
+  RecoveryRequired. The ordering test failed during development and forced the correct layout.
+- Tool-change parallel state: booleans kept (not derivable from phase without a redesign);
+  only reset policy centralized (single writer for toolChangePhase="NONE").
+- F-4 fences promoted to positive invariants in test/firmware/stop-cleanup-parity.test.mjs.
+- Verified: vitest 825/825, pio native 21/21, esp32cam SUCCESS, jscpd 123 clones.
+- Next fenced phases: F-3 (unified stream admission), F-2 (firmware recovery-move gate),
+  F-5 (firmware-issued start token), then identity/safe-Z/readiness consolidation. F-1
+  hardware field check (jog quickstop -> STALE chip) still pending.
+
 ## 2026-09-13 - Phase 2 shipped: F-1 canonical frame invalidation (jog M410 trust hole closed)
 
 - Commit b94eb63 on top of phase 1: `invalidateMachineFrame(FrameInvalidationScope, FrameInvalidationReason)`
