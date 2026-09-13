@@ -1,5 +1,17 @@
 # Handoff
 
+## 2026-09-13 - Phase 6.5 prepared: S1 hardware acceptance suite (awaiting field execution)
+
+- docs/manual-tests.md now contains the deterministic S1 acceptance suite for F-1..F-5:
+  Test A jog-quickstop frame invalidation (+ ordinary-release control), Test B motion-owner
+  exclusion (jog/job/test/production; production optional by safety), Test C recovery
+  authority (safe RECOVERY_REQUIRED via pause-intact + jog; FRAME_UNTRUSTED on /api/recovery/move;
+  /api/cmd M114 allowed vs G0 locked; trusted-frame 1 mm recovery move), Test D start grant
+  (no-grant/grant/re-use/identity-mutation), Test E pause-resume + stop smoke.
+- Checklist added to work/current-task.md; all five marked pending until Marko reports
+  physical results. Deterministic emergency-jog trigger: POST /api/jog/stop {"emergency":true}
+  mid-jog. No production code changed in this phase.
+
 ## 2026-09-13 - Phase 6 shipped: F-5 firmware-issued one-time start capability (last S1 closed)
 
 - Commit ad677e9: the client-writable "AUTHORIZED" sidecar contract is fully removed.

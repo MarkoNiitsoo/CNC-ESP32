@@ -100,6 +100,21 @@ removed; job start requires a firmware-issued one-time start grant via
 frame invalidation). No open S1 findings remain. Still open (S2/S3, individually fenced):
 identity consolidation, Safe-Z policy consolidation, readiness consolidation,
 run-history contamination fix, telemetry transport-order cleanup.
+
+## S1 hardware acceptance checklist (procedure: docs/manual-tests.md "S1 Safety Acceptance Suite")
+
+Safety pre-flight applies every session: router/spindle physically disabled, tool high,
+air-only moves, physical e-stop in reach. Record one log block per test in the manual-tests
+document; do NOT mark hardware-verified until Marko reports the physical result.
+
+- F-1 hardware (jog quickstop invalidates frame + ordinary release preserves trust): pending
+- F-2 hardware (untrusted frame blocks recovery move; /api/cmd locked; trusted tiny move ok): pending
+- F-3 hardware (active job blocks jog; active jog blocks job/test/production): pending
+- F-4 hardware (Pause->Resume intact; Stop leaves clean terminal state): pending
+- F-5 hardware (no grant refused; grant+start admitted; re-use refused; identity mutation refused): pending
+
+Failure rule: on any FAIL, stop that subsystem's sequence, capture reproduction + job.log/
+HTTP/telemetry evidence, and do not continue into S2 refactoring until understood.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata

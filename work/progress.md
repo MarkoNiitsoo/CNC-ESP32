@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-09-13 - Phase 6.5: S1 hardware acceptance suite documented (no code changes)
+
+- docs/manual-tests.md gains the "S1 Safety Acceptance Suite" (F-1..F-5): pre-flight safety
+  rules, deterministic procedures (direct HTTP calls for the emergency-jog quickstop, the
+  safe RECOVERY_REQUIRED generator via pause-intact + jog, grant/no-grant/re-use/identity
+  mutation start cases, pause-resume and stop smoke checks), expected UI/firmware states,
+  job.log markers, and a logging template.
+- work/current-task.md gains the pending/pass/fail hardware checklist. No production code
+  changed; suites remain green (vitest 850/850, native 21/21, esp32cam SUCCESS).
+
 ## 2026-09-13 - State-ownership phase 6: F-5 firmware-issued one-time start capability
 
 - Authorization re-ownered: the sidecar startAuthorizationToken/startAuthorizationState
