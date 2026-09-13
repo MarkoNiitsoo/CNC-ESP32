@@ -1,5 +1,27 @@
 # Progress
 
+## 2026-09-13 - State-ownership phase 5: F-2 firmware-owned recovery-motion authority
+
+- Surface mapped first: motion-only recovery move + production phase 1 sent planner-generated
+  M5/G21/G90/G54/G0/M400 sequences through generic /api/cmd (admitted during recovery except
+  standalone M5), gated only by browser sessionStorage positionTrust (operator self-grantable).
+- Firmware: new operator-gated POST /api/recovery/move + admitRecoveryMotion - admission derived
+  from canonical state only (RECOVERY_REQUIRED + Home-All-trusted frame + valid work zero + no
+  jog/machine-op/stop-sequence owner + comm). Strict planner-derived command allowlist (single
+  command, no comments/injection, finite numbers, F>0), machine-envelope target validation after
+  work-zero transform. Manual work frames explicitly NOT accepted as Home-All substitutes.
+- /api/cmd bypass closed: during RECOVERY_REQUIRED only read-only diagnostics pass
+  (M114/M115/M503/M119/M105); reserved standalone-M5 rejection preserved; semantic
+  classification (whole normalized command), not a one-string blacklist.
+- Browser: positionTrust state/persistence/operator buttons/local invalidation writes deleted;
+  trust presentation derives from the machine-frame slice (firmwareFrameTrusted/established);
+  recovery move + production phase-1 flows send through the new endpoint with no trust fields.
+- F-2 fences promoted to positive invariants; new firmware source-authority tests + direct-HTTP
+  mock tests (untrusted frame + client trust flags => rejected; trusted + valid => accepted;
+  /api/cmd bypass closed; diagnostics kept; forbidden commands rejected). Mock mirrors the
+  endpoint and the /api/cmd lock. protocol.md/recovery.md document the contract.
+- Verified: vitest 845/845, pio native 21/21, esp32cam SUCCESS, jscpd 128 clones (informational).
+
 ## 2026-09-13 - State-ownership phase 4: F-3 canonical motion-stream admission
 
 - Admission matrix built first across job/test-motion/production-resume/jog/machine-op:

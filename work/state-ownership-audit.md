@@ -60,7 +60,7 @@ only).
 | 12 | Jog session | `jogStatus` 256+ (state, commanded work pos, horizon); machine-bar jog vector + optimistic session reset (1370-1389) | FW runner; browser intent-only vector | commanded-position open-loop accumulation parallels marlinPosition (S3-4) | FW canonical; browser = intent + display |
 | 13 | Controller comm state | `ControllerCommManager` telemetry.state + activeTransaction token (controller_comm.h 8-71); mirrors `activeJobRunning/activeJogRunning` synced-on-use [A] | reserve/clear family | none found | OK-MIRROR (sync-on-use is safe: same task) |
 | 14 | Operator authorization | FW session (epoch+cookie / WS packet token, 560-577, 2883-2897); browser `browserId` localStorage (machine-bar 958-967) + silent reconnect 1061-1088; epoch reconciliation 1029-1056 [A] | claim/reconnect/release both sides | persisted bearer credential is by-design reconnect; bypassed entirely when `claimRequired=false` (7307) | OK-DOMAIN + document; browser flag must stay display-only |
-| 15 | Browser trust belief | `positionTrust` sessionStorage (preview 240, 2434-2462) | homing event, operator self-grant 6904-6906 [V], local invalidations, reboot detection | **gates recovery motion with no FW counterpart** (F-2) | **S1 → make display-only; move gate to FW** |
+| 15 | Browser trust belief | `positionTrust` sessionStorage (preview 240, 2434-2462) | homing event, operator self-grant 6904-6906 [V], local invalidations, reboot detection | **gates recovery motion with no FW counterpart** (F-2) | **S1 → RESOLVED (phase 5, commit a3c59f7): browser belief deleted; authority is firmware frame state via /api/recovery/move** |
 | 16 | Telemetry transport | WS conn + seq/revision/resync (telemetry.js 813-870); HTTP fallback polls | telemetry.js single cache writer [A] | preview `jobRunStatus` written by both transports (F-6) | cache OK; F-6 is the defect |
 | 17 | Telemetry slices | stagedState/cachedSlices (820-841, 1649-1668), single loop-context committer 2721-2858 [A]; browser mirrors via subscribe | `touch*` invalidators | dead global dirty flags 2396-2401 [V] → **RESOLVED (deleted, phase 1)** | OK-MIRROR |
 | 18 | Job identity | path-FNV sidecar path ×4 copies [V layer-1]; content fingerprint ×3 producers (SHA-256 / `size:fnv1a:cyrb53` preview 752-770 / `size:fnv1a` job-active-run 9-17); runId/zeroId/checkpointId | browser produces, FW re-hashes **bytes** (8045-8092) vs browser text [I] | producer fragmentation (F-10) | **S2 → one identity module; FW stays hash arbiter** |
@@ -121,6 +121,23 @@ job.start echo (epoch/session/zero unchanged, gate 8691-8708) would still pass. 
 live-position confidence does not); today the decision is made implicitly by which code path ran.
 
 **F-2 · Recovery motion is authorized by browser-persisted belief.** [V]
+
+> **RESOLVED (phase 5, commit a3c59f7).** New operator-gated `POST /api/recovery/move` owns
+> recovery-motion admission: job state `RECOVERY_REQUIRED` + Home-All-trusted frame
+> (`machineValid && absoluteFromHome && homedX/Y/Z`; manual work frames NOT accepted) +
+> valid work zero + no competing motion owner (jog/machine-op/stop-sequence) + controller
+> comm available, all derived from canonical state. Strict command allowlist from the
+> planner (M5/G21/G90/G54/M400, single `G0` with X/Y/Z/F, finite, F>0), machine-envelope
+> target validation, no browser trust fields in the contract. The generic `/api/cmd` bypass
+> is closed during `RECOVERY_REQUIRED` (read-only diagnostics only; reserved standalone-M5
+> rejection preserved; other transport gates untouched). Browser `positionTrust` machinery
+> (sessionStorage persistence, operator self-grant/untrust buttons, local invalidation
+> writes) is deleted; trust presentation derives from the machine-frame slice and the
+> planner gate is early-rejection UX only. Recovery move flows (motion-only move,
+> production phase 1) send through the new endpoint. F-2 fences promoted; firmware
+> source-authority tests + direct-HTTP mock tests cover the decisive bypass scenarios.
+
+The original finding, for the record:
 `positionTrust` lives in sessionStorage (preview.js 240, 2434-2462), can be **self-granted** by the
 operator confirm button (6904-6906 `setPositionTrust(true,'operator-confirmed-home-all')`), survives
 reload, and gates recovery planning and motion commands (job-recovery.js 273, 385; preview 2562).
@@ -382,6 +399,15 @@ chip becomes an output only, never an input.
 > any active job-runner state blocks jog; machine-op blocks all streams); production resume
 > gained the previously missing frame gate. F-3 fences promoted to positive invariants with
 > single-policy guards (owner ladder exists exactly once).
+>
+> **Phase 5 (2026-09-13, commit a3c59f7): F-2 RESOLVED** — firmware-owned recovery-motion
+> authority via `POST /api/recovery/move` + `admitRecoveryMotion` (RECOVERY_REQUIRED +
+> Home-All-trusted frame + valid work zero + no competing owner + strict planner-derived
+> command allowlist + envelope validation); generic `/api/cmd` locked to read-only
+> diagnostics during RECOVERY_REQUIRED (bypass closed); browser positionTrust machinery
+> deleted (presentation derives from the machine-frame slice). F-2 fences promoted to
+> positive invariants; direct-HTTP mock tests cover the decisive bypass scenarios.
+> Remaining open: F-5, then identity/safe-Z/readiness consolidation.
 
 1. **Zero-risk deletions** (S2/S3 dead state): `jobRunning` (11 writer lines), dead `dirty*` flags
    2396-2401, orphaned `lib/job-core.mjs`, write-only `jogAnimationPosition` + no-listener events,
@@ -438,7 +464,12 @@ fences remain inverted until their phases run.
 Status after phase 4: the six F-3 fences in `motion-stream-admission.test.mjs` are **promoted
 to positive invariants** (all four entry points route through `admitMotionStream`; production
 resume frame gate; PausedIntact exception preserved) plus stream-specific-boundary and
-single-policy guards. The F-2/F-5 fences remain inverted until their phases run.
+single-policy guards. The F-5 fences remain inverted until their phase runs; the F-2 fences in
+`recovery-trust-fence.test.mjs` were **promoted to positive invariants** (no persisted/grantable
+browser trust; presentation derived from the machine-frame slice; recovery motion posts to
+`/api/recovery/move` without trust fields), backed by firmware source-authority tests
+(`recovery-motion-authority.test.mjs`) and direct-HTTP mock tests (`recovery-move.test.mjs`)
+proving the decisive bypass scenarios.
 
 Firmware (native/host tests):
 1. **Frame-trust invariant**: for every M410-emitting entry point (job stop, jog emergency, jog ack

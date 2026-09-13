@@ -89,6 +89,12 @@ via canonical `admitMotionStream(MotionStreamKind)` — active-jog asymmetry rem
 exclusions extended to all streams, production resume frame gate added, fences promoted.
 Still open, individually fenced: F-2 (firmware recovery-move gate), F-5 (firmware-issued
 start token), then identity/safe-Z/readiness consolidation.
+Phase 5 executed (commit a3c59f7): F-2 resolved — recovery-motion authority moved into
+firmware via operator-gated `POST /api/recovery/move` (RECOVERY_REQUIRED + trusted frame +
+valid work zero + ownership ladder + strict command allowlist + envelope validation);
+generic `/api/cmd` locked to read-only diagnostics during RECOVERY_REQUIRED; browser
+positionTrust machinery deleted (presentation derives from the machine-frame slice).
+Still open, individually fenced: F-5, then identity/safe-Z/readiness consolidation.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata

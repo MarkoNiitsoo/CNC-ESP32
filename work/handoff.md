@@ -1,5 +1,37 @@
 # Handoff
 
+## 2026-09-13 - Phase 5 shipped: F-2 firmware-owned recovery-motion authority
+
+- Commit a3c59f7: new operator-gated `POST /api/recovery/move`. Admission
+  (`admitRecoveryMotion`) derives from canonical firmware state ONLY: RECOVERY_REQUIRED state,
+  Home-All-trusted frame (machineValid+absoluteFromHome+homedX/Y/Z; manual work frames NOT
+  accepted), valid work zero, no jog/machine-op/stop-sequence owner, controller comm. Strict
+  planner-derived command allowlist (M5/G21/G90/G54/M400 + single G0 X/Y/Z/F, no comments or
+  injection, finite numbers, F>0) + machine-envelope target validation after work-zero
+  transform. Browser trust fields are ignored by contract.
+- /api/cmd bypass CLOSED: during RECOVERY_REQUIRED only read-only diagnostics pass
+  (M114/M115/M503/M119/M105); standalone-M5 rejection preserved; other transport gates
+  untouched. Outside the recovery state the terminal is unchanged.
+- Browser: positionTrust machinery deleted (sessionStorage persistence, operator self-grant/
+  untrust buttons + their DOM elements, local invalidation writes, cnc-position-trust trust
+  writes). Trust presentation derives from the machine-frame slice
+  (firmwareFrameTrusted/established). Motion-only recovery move + production phase 1 send
+  through the new endpoint (one command per request, no trust fields). The recovery planner
+  gate remains as early-rejection UX, now fed from firmware truth.
+- Tests: F-2 browser fences promoted (no persistence/grant; derived presentation; recovery
+  endpoint usage); new test/firmware/recovery-motion-authority.test.mjs (route, admission
+  rule, strict class incl. explicit absence of G28/G53/G92/G1/M3/M4, envelope check,
+  /api/cmd lock) and test/mock/recovery-move.test.mjs (direct-HTTP decisive scenarios:
+  untrusted frame + client trust flags => 409 FRAME_UNTRUSTED; invalid work zero => 409;
+  wrong state => 409; jog active => 409; trusted+valid => 200; forbidden commands => 400;
+  /api/cmd G0 => 409 while M114 => 200). Mock mirrors endpoint + lock. Three pre-existing
+  contract tests updated to the new mechanism with intent preserved.
+- Verified: vitest 845/845, pio native 21/21, esp32cam SUCCESS, jscpd 128 clones.
+- Remaining: F-5 (firmware-issued start token), then identity/safe-Z/readiness consolidation
+  (safe-Z policy for the recovery envelope check currently uses discovered profile limits).
+- Field checks pending: jog-quickstop STALE behavior (F-1), jog/job-conflict refusals (F-3),
+  and now recovery-move refusals with untrusted frame (this phase).
+
 ## 2026-09-13 - Phase 4 shipped: F-3 canonical motion-stream admission
 
 - Commit 765c3a8: `admitMotionStream(MotionStreamKind)` + `MotionAdmissionResult` own the
