@@ -204,6 +204,20 @@ operation can leave `toolChangePending=true`, `phase="WAITING_FOR_TOOL"` in Stop
 [I — not runtime-verified].
 
 **F-5 · The job-authorization decision is stored in a browser-writable file.** [V token + check]
+
+> **RESOLVED (phase 6, commit ad677e9).** Authority is now a firmware-issued one-time
+> capability: `POST /api/job/authorize-start` (operator-gated, F-3 exclusivity ladder applied)
+> validates the full objective evidence set - sidecar v3 schema, active-run identity,
+> physical-verification record, work-zero/homing identity against the live frame, generated
+> validation, and the byte re-hash of the run file - then mints an opaque 128-bit
+> `esp_random()` token bound to gcode path, job path, run mode/fingerprint/size, work-zero id,
+> homing epoch and session. 60-second TTL; consumed by any `job.start` attempt that presents
+> it; cleared by `invalidateMachineFrame`; identity re-verified at use time (fail closed:
+> START_GRANT_REQUIRED/INVALID/EXPIRED/IDENTITY_CHANGED). `startAuthorizationToken` and
+> `startAuthorizationState` are removed from the sidecar struct, JSON filter, deserializer,
+> and validator; the browser no longer writes the literal. The start checklist remains
+> UI-only (unchanged boundary, documented in the fence test).
+
 `startAuthorizationToken` is the literal `'AUTHORIZED'` (preview.js 2014), validated as such by
 firmware (8100) alongside the identity tuple and a re-hash of the referenced run file (8027-8093).
 The file is browser-authored and, in open-control mode (`claimRequired=false`), the upload route is
@@ -407,7 +421,13 @@ chip becomes an output only, never an input.
 > diagnostics during RECOVERY_REQUIRED (bypass closed); browser positionTrust machinery
 > deleted (presentation derives from the machine-frame slice). F-2 fences promoted to
 > positive invariants; direct-HTTP mock tests cover the decisive bypass scenarios.
-> Remaining open: F-5, then identity/safe-Z/readiness consolidation.
+>
+> **Phase 6 (2026-09-13, commit ad677e9): F-5 RESOLVED** - the last open S1 finding. The
+> constant-token contract is fully removed (sidecar struct/filter/deserializer/validator and
+> the browser writer) and replaced by the firmware-issued one-time start capability above.
+> Evidence validation was preserved in full; a grant means firmware personally validated the
+> exact evidence. Remaining open: identity/safe-Z/readiness consolidations (S2/S3 refactors;
+> no open S1 findings).
 
 1. **Zero-risk deletions** (S2/S3 dead state): `jobRunning` (11 writer lines), dead `dirty*` flags
    2396-2401, orphaned `lib/job-core.mjs`, write-only `jogAnimationPosition` + no-listener events,
@@ -464,7 +484,12 @@ fences remain inverted until their phases run.
 Status after phase 4: the six F-3 fences in `motion-stream-admission.test.mjs` are **promoted
 to positive invariants** (all four entry points route through `admitMotionStream`; production
 resume frame gate; PausedIntact exception preserved) plus stream-specific-boundary and
-single-policy guards. The F-5 fences remain inverted until their phase runs; the F-2 fences in
+single-policy guards. Status after phase 6: the F-5 fence and anchor in
+`job-authorization-fence.test.mjs` are **promoted to positive invariants** (constant contract
+absent from firmware and browser; single-writer grant lifecycle; use-time identity binding;
+frame-invalidation hook; in-memory browser grant) and direct-bypass start-grant denials are
+exercised through the mock runner and server tests. No inverted fences remain for S1 findings.
+The F-5 fences had remained inverted until this phase ran; the F-2 fences in
 `recovery-trust-fence.test.mjs` were **promoted to positive invariants** (no persisted/grantable
 browser trust; presentation derived from the machine-frame slice; recovery motion posts to
 `/api/recovery/move` without trust fields), backed by firmware source-authority tests

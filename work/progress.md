@@ -1,5 +1,29 @@
 # Progress
 
+## 2026-09-13 - State-ownership phase 6: F-5 firmware-issued one-time start capability
+
+- Authorization re-ownered: the sidecar startAuthorizationToken/startAuthorizationState
+  authority literals are gone from firmware (struct, JSON filter, deserializer, validator) and
+  from the browser writer. Sidecar startAuthorization records remain browser-writable
+  EVIDENCE; the start checklist remains UI-only (unchanged boundary).
+- New operator-gated POST /api/job/authorize-start: validates frame identity echo + full
+  objective evidence (schema, active-run identity, verification record, work-zero/homing
+  identity, generated validation, byte re-hash of the run file) via the existing validator,
+  then mints an opaque 128-bit esp_random token. Grant bound to gcode path, job path, run
+  mode/fingerprint/size, workZeroId, homingEpoch, homingSession; 60 s TTL; consumed by any
+  presenting job.start attempt; cleared from invalidateMachineFrame.
+- admitJobStart consumes and re-verifies the grant before evidence re-validation; failures
+  fail closed with START_GRANT_REQUIRED/INVALID/EXPIRED/IDENTITY_CHANGED (403). HTTP and WS
+  job.start share the same path. Browser requests the grant in-memory immediately before
+  dispatch; never persisted.
+- All decisive bypass scenarios tested: old AUTHORIZED sidecar without grant => denied;
+  invented/consumed/expired/identity-changed grants => denied; valid fresh grant + exact
+  identity => admitted. F-5 fence + anchors promoted to positive invariants incl.
+  single-writer lifecycle guards. Mock mirrors authorize-start + grant consumption
+  (randomBytes token, bound identity, TTL, consume-on-attempt).
+- Verified: vitest 850/850, pio native 21/21, esp32cam SUCCESS, jscpd 131 clones (informational).
+- No open S1 findings remain. Remaining: identity/safe-Z/readiness consolidations (S2/S3).
+
 ## 2026-09-13 - State-ownership phase 5: F-2 firmware-owned recovery-motion authority
 
 - Surface mapped first: motion-only recovery move + production phase 1 sent planner-generated

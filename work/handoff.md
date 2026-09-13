@@ -1,5 +1,38 @@
 # Handoff
 
+## 2026-09-13 - Phase 6 shipped: F-5 firmware-issued one-time start capability (last S1 closed)
+
+- Commit ad677e9: the client-writable "AUTHORIZED" sidecar contract is fully removed.
+  Authority is `JobStartGrant` in firmware RAM: issued by operator-gated
+  `POST /api/job/authorize-start` ONLY after full objective evidence validation (schema,
+  active-run identity, verification record, work-zero/homing identity vs live frame,
+  generated validation, byte re-hash) + F-3 exclusivity + frame identity echo. Bound to
+  gcodePath/jobPath/activeRunMode/activeRunFingerprint/activeRunSizeBytes/workZeroId/
+  homingEpoch/homingSessionId. 128-bit esp_random token, 60 s TTL, consumed by ANY
+  presenting job.start attempt (HTTP or WS identically), cleared by
+  invalidateMachineFrame. Fail-closed codes: START_GRANT_REQUIRED / INVALID / EXPIRED /
+  IDENTITY_CHANGED (403).
+- Browser: Start flow persists evidence, then `requestStartGrant(identity)` and carries the
+  grant in-memory in the immediate job.start payload. Never persisted anywhere. The literal
+  token is no longer written by preview.js or job-safe-z.js.
+- Objective evidence checks (validator + byte re-hash) preserved in full and now run TWICE:
+  at authorize and at start - a grant means firmware personally validated that exact
+  evidence, and the file must still match at start.
+- Checklist stays advisory: firmware never reads startChecklist (fence-documented).
+- Tests: F-5 fence/anchors promoted (constant contract absent in firmware+browser;
+  single-writer lifecycle: one issue, one consume, one clear; use-time identity binding;
+  in-memory browser grant); mock direct-bypass denials covered (no-grant, invented,
+  consumed, expired, identity-changed, valid-fresh) via runner fixture authorizeStart +
+  prepareAuthorizedJob authorize step. Stale-generated fixture now asserts the
+  authorization-stage rejection (earlier pipeline stage, same outcome).
+- Verified: vitest 850/850, pio native 21/21, esp32cam SUCCESS, jscpd 131 clones.
+- Remaining (S2/S3, no S1 open): identity consolidation (F-10 family), Safe-Z policy
+  consolidation, readiness consolidation, run-history contamination fix, telemetry
+  transport-order cleanup. Field checks pending: F-1 jog-quickstop STALE, F-3
+  jog/job-conflict refusals, F-2 recovery-move refusals, and now: job.start without a
+  fresh grant must refuse with START_GRANT_REQUIRED; re-using a grant must refuse with
+  START_GRANT_INVALID.
+
 ## 2026-09-13 - Phase 5 shipped: F-2 firmware-owned recovery-motion authority
 
 - Commit a3c59f7: new operator-gated `POST /api/recovery/move`. Admission

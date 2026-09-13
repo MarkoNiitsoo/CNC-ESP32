@@ -94,7 +94,12 @@ firmware via operator-gated `POST /api/recovery/move` (RECOVERY_REQUIRED + trust
 valid work zero + ownership ladder + strict command allowlist + envelope validation);
 generic `/api/cmd` locked to read-only diagnostics during RECOVERY_REQUIRED; browser
 positionTrust machinery deleted (presentation derives from the machine-frame slice).
-Still open, individually fenced: F-5, then identity/safe-Z/readiness consolidation.
+Phase 6 executed (commit ad677e9): F-5 resolved — the sidecar "AUTHORIZED" contract is
+removed; job start requires a firmware-issued one-time start grant via
+`POST /api/job/authorize-start` (60 s TTL, identity-bound, consume-on-attempt, cleared on
+frame invalidation). No open S1 findings remain. Still open (S2/S3, individually fenced):
+identity consolidation, Safe-Z policy consolidation, readiness consolidation,
+run-history contamination fix, telemetry transport-order cleanup.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata

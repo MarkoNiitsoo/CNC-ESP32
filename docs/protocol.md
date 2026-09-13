@@ -471,6 +471,30 @@ one bounded G-code line in RAM, waits for Marlin `ok`, and advances the byte off
 transform warnings must not change `gcodePath`, substitute another file, or reject an otherwise
 valid normal SD job.
 
+### `POST /api/job/authorize-start`
+
+Operator-gated (state-ownership audit F-5). Validates the job's objective execution evidence
+(sidecar v3 schema, active-run identity, physical-verification record, work-zero and homing
+identity, generated-run validation, and a byte re-hash of the referenced run file) against the
+live machine frame, then returns an opaque one-time start capability:
+
+```json
+{
+  "ok": true,
+  "startGrant": "8f3a...",
+  "expiresInSeconds": 60
+}
+```
+
+The grant is bound to the validated run/frame identity, held only in firmware RAM, consumed
+by the first `job.start` attempt that presents it, expires after 60 seconds, and is cleared
+whenever the machine frame is invalidated. The sidecar field `startAuthorizationToken` is no
+longer read by firmware and confers nothing; `startAuthorization` records in the job JSON are
+browser-writable evidence only. The request carries the same run/frame identity fields as
+`job.start` (`gcodePath`, `jobPath`, `activeRunMode`, `activeRunFingerprint`,
+`activeRunSizeBytes`, `workZeroId`, `homingEpoch`, `homingSessionId`, `startMode`,
+`bootSessionId` for manual-frame mode).
+
 ### `POST /api/job/start`
 
 Request body:
@@ -479,6 +503,7 @@ Request body:
 {
   "gcodePath": "/gcode/test.gcode",
   "jobPath": "/jobs/test.gcode.job.json",
+  "startGrant": "<opaque token from /api/job/authorize-start>",
   "activeRunMode": "source",
   "startMode": "use_active_work_zero",
   "bootSessionId": "A1B2C3D4-E5F60708",
