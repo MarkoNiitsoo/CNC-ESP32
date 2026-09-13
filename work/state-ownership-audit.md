@@ -47,9 +47,9 @@ only).
 | # | Domain | Representations (owner today) | Writers | Confirmed conflict | Class → target |
 |---|--------|-------------------------------|---------|--------------------|----------------|
 | 1 | Job phase | `jobStatus.state` enum (133-146, 47 values incl. RecoveryRequired) | 20+ transition sites, all gated on current state [A] | — | OK core; **FW canonical** |
-| 2 | `jobRunning` bool | main.cpp:554 | 11 writers, **0 readers** [V] | disagrees with state inside Stopping (9030 vs 9036), unobservable only because dead | **S2 → delete** (F-13) |
+| 2 | `jobRunning` bool | main.cpp:554 | 11 writers, **0 readers** [V] | disagrees with state inside Stopping (9030 vs 9036), unobservable only because dead | **S2 → RESOLVED (deleted in phase 1, commit d639837)** |
 | 3 | Pause/resume substate | `pauseRequested` 170, `stopRequested` 176, `directResumeValid` 173, `pauseRealtimeHold` 171, `pauseMode` 175 | per-transition 8-17 field slams [A] | `pauseRealtimeHold`+`pauseMode` = one fact twice; error/complete paths leave residue (F-4) | **S2/S3 → derive flags from state where possible; single `resetJobSubstates()`** |
-| 4 | `recoveryRequired` | bool 174 + enum value | set true unconditionally in Stopping→Stopped **and** →RecoveryRequired (4757-4763) [V]; JSON-only reader | bool semantics ≠ enum semantics; `true` on clean stop | **S2 → report only `state==RecoveryRequired`; delete bool** |
+| 4 | `recoveryRequired` | bool 174 + enum value | set true unconditionally in Stopping→Stopped **and** →RecoveryRequired (4757-4763) [V]; JSON-only reader | bool semantics ≠ enum semantics; `true` on clean stop | **S2 → RESOLVED (derived serialization from the enum, phase 1, commit d639837)** |
 | 5 | Tool-change substate | bool cluster 180-185 **and** `toolChangePhase` string 197 (two FSMs) | begin 6656-6662; ready 4729-4732; complete 9004-9008; resets ×3 divergent (6188-6194, 6215-6219, 9146-9152) [V: asymmetry] | stop paths disagree (F-4) | **S2 → one FSM (string), one reset fn** |
 | 6 | Stop/estop outcome | `stopWarning`, `stopEmergencyParserDetected` 215-216; enum Stopping/Stopped | performJobStop 9070-9178 (3 field-slams [V]); jog quickstop separate | post-stop state is path-dependent (F-1, F-4) | **S1 → single transition fn** |
 | 7 | Recovery/checkpoint | NVS active-job marker 1755-1766; `jobCheckpoint*` 856-867; browser `recoveries[]` + `runHistory[].firmwareCheckpoint` | FW writes checkpoint; browser imports (preview 2888-2944) **before** ack (2930) | browser writes sidecar possibly of another job (2856-2931) | OK-MIRROR + S2 note (import is path-keyed, ordering safe) |
@@ -62,10 +62,10 @@ only).
 | 14 | Operator authorization | FW session (epoch+cookie / WS packet token, 560-577, 2883-2897); browser `browserId` localStorage (machine-bar 958-967) + silent reconnect 1061-1088; epoch reconciliation 1029-1056 [A] | claim/reconnect/release both sides | persisted bearer credential is by-design reconnect; bypassed entirely when `claimRequired=false` (7307) | OK-DOMAIN + document; browser flag must stay display-only |
 | 15 | Browser trust belief | `positionTrust` sessionStorage (preview 240, 2434-2462) | homing event, operator self-grant 6904-6906 [V], local invalidations, reboot detection | **gates recovery motion with no FW counterpart** (F-2) | **S1 → make display-only; move gate to FW** |
 | 16 | Telemetry transport | WS conn + seq/revision/resync (telemetry.js 813-870); HTTP fallback polls | telemetry.js single cache writer [A] | preview `jobRunStatus` written by both transports (F-6) | cache OK; F-6 is the defect |
-| 17 | Telemetry slices | stagedState/cachedSlices (820-841, 1649-1668), single loop-context committer 2721-2858 [A]; browser mirrors via subscribe | `touch*` invalidators | dead global dirty flags 2396-2401 [V] | OK-MIRROR + **S3 delete dead flags** |
+| 17 | Telemetry slices | stagedState/cachedSlices (820-841, 1649-1668), single loop-context committer 2721-2858 [A]; browser mirrors via subscribe | `touch*` invalidators | dead global dirty flags 2396-2401 [V] → **RESOLVED (deleted, phase 1)** | OK-MIRROR |
 | 18 | Job identity | path-FNV sidecar path ×4 copies [V layer-1]; content fingerprint ×3 producers (SHA-256 / `size:fnv1a:cyrb53` preview 752-770 / `size:fnv1a` job-active-run 9-17); runId/zeroId/checkpointId | browser produces, FW re-hashes **bytes** (8045-8092) vs browser text [I] | producer fragmentation (F-10) | **S2 → one identity module; FW stays hash arbiter** |
 | 19 | Job authorization | sidecar `startAuthorizationToken='AUTHORIZED'` (preview 2014 [V]; FW check 8100 [V]) + identity tuple + byte hash (8095-8143); checklist fields NOT read by FW (filter 7942-7944) [A] | browser writes; FW validates consistency only | the decision lives in a browser-writable file (F-5) | **S1 → FW-issued token/bind to evidence** |
-| 20 | Readiness ("can I cut?") | preview `computePreflight` 1207-1288; **orphaned** lib/job-core.mjs 31-115 (0 importers [V]); job-readiness.js 117-269; app.js ladder 709-732; machine-bar DOM scrape 564-586 [V] | five computers | same question, different answers per surface (F-8) | **S2 → one readiness module, display-only** |
+| 20 | Readiness ("can I cut?") | preview `computePreflight` 1207-1288 (live); job-readiness.js 117-269; app.js ladder 709-732; machine-bar DOM scrape 564-586 [V]; orphaned lib/job-core.mjs **deleted** (phase 1, commit 725df11) | four computers remain | same question, different answers per surface (F-8) | **S2 → one readiness module, display-only** |
 | 21 | Run history | sidecar `runHistory[]` — optimistic entries (preview 2016), terminal sync 2141-2154 [V: no path check] | browser only | cross-file contamination (F-7) | **S2 → path-checked, terminal-only writes** |
 | 22 | Run-progress display | `animatedToolPosition` PREDICTED beats MACHINE on canvas during run (preview 837-858 [V]); readouts always telemetry | preview only, source-tagged, 1 s age guard | display-only; precedence is surprising but labeled | S3 note; keep labeled, prefer MACHINE |
 
@@ -288,6 +288,20 @@ chip becomes an output only, never an input.
 
 ## 9. Ordered refactoring plan (each step = one focused commit; no step executed yet)
 
+> **Phase 1 progress (2026-09-13, commits e139670/bd4f179/d639837/725df11):** the acceptance
+> fence was built FIRST (17 inverted `it.fails` invariant tests for F-1..F-5 in
+> `test/firmware/*fence*|invariants*` + `test/ui/recovery-trust-fence.test.mjs`), then the
+> zero-risk cleanup landed: `jobRunning` deleted (F-13), dead dirty globals deleted (S3-5),
+> `recoveryRequired` converted to derived serialization from the canonical enum (F-12 —
+> wire contract unchanged in every steady state; divergence limited to a transient Stopping
+> window and an error-after-stop edge, neither observed by any reader), orphaned
+> `lib/job-core.mjs` + its test + its safety-testing.md entry removed (F-8 partial: four
+> readiness computers remain). Known accepted gap: the live preview.js twins of
+> clampFeedPercent/computePreflight/effectiveFeedRange/nextJobAction now have no direct unit
+> tests — owned by step 10. F-5 refinement: `startChecklist` appears nowhere in main.cpp;
+> the checklist is UI-side only (fence test documents this boundary). Steps 2-6+ below are
+> still open.
+
 1. **Zero-risk deletions** (S2/S3 dead state): `jobRunning` (11 writer lines), dead `dirty*` flags
    2396-2401, orphaned `lib/job-core.mjs`, write-only `jogAnimationPosition` + no-listener events,
    `pauseRealtimeHold`. UI-only; firmware.bin unaffected for the web half.
@@ -320,6 +334,13 @@ Steps 2-6 are firmware (rebuild + field deploy, invariants testable native); 1 a
 SPIFFS-only.
 
 ## 10. Suggested invariant tests
+
+Status after phase 1: items 1-5 of the firmware list and the browser items 7-8 (source-audit
+form) exist as **inverted acceptance fences** (`it.fails`, currently failing by design) in
+`test/firmware/frame-trust-invariants.test.mjs`, `motion-stream-admission.test.mjs`,
+`stop-cleanup-parity.test.mjs`, `job-authorization-fence.test.mjs`,
+`test/ui/recovery-trust-fence.test.mjs`. Items 6, 9-13 and behavioral/mock variants of 1-5
+remain to be written when their fix phases start.
 
 Firmware (native/host tests):
 1. **Frame-trust invariant**: for every M410-emitting entry point (job stop, jog emergency, jog ack

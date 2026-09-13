@@ -77,9 +77,12 @@ for Marlin on a BTT SKR Pro.
 
 Layer 1 (jscpd-rs clone scan): `work/duplication-audit.md`. Layer 2 (semantic state-ownership /
 source-of-truth audit): `work/state-ownership-audit.md` — 22 domains, 14 confirmed MST findings
-(5 × S1), ownership model, 11-step fix plan, 13 invariant tests. The DRY/state refactors
-themselves are NOT started: they need explicit approval of the plan order (audit §9), starting
-with dead-state deletion and the firmware frame-invalidation/admission/stop-reset consolidations.
+(5 × S1), ownership model, 11-step fix plan, 13 invariant tests. Phase 1 executed (commit chain
+e139670..725df11): acceptance fences for F-1..F-5 + zero-risk dead-state cleanup (jobRunning,
+dirty globals, recoveryRequired→derived, orphaned job-core.mjs, mock-sd UI single-source rule).
+The remaining safety refactors (frame-invalidation policy, unified admission, recovery-move
+authorization, firmware-issued start token, identity/safe-Z/readiness consolidation) are still
+NOT started: each is an individually fenced follow-up phase per audit §9.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata

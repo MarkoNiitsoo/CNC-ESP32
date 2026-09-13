@@ -1,5 +1,25 @@
 # Progress
 
+## 2026-09-13 - State-ownership phase 1: acceptance fence + zero-risk dead-state cleanup
+
+- Fence-first per plan: 17 inverted it.fails SAFETY FENCE tests (F-1..F-5) across 5 new test
+  files (frame-trust-invariants, motion-stream-admission, stop-cleanup-parity,
+  job-authorization-fence, recovery-trust-fence), each paired with passing anchors so source
+  drift fails loudly instead of a fence silently passing. Fixing a fence defect turns it red
+  until promoted to a real assertion.
+- Cleanup (all consumers verified unchanged): deleted write-only jobRunning (12 lines), dead
+  telemetry dirty globals (struct members untouched - one over-broad script deletion was caught
+  and reverted in the same working session before commit), converted recoveryRequired to a
+  derived serialization from the canonical enum (wire contract unchanged in steady states),
+  deleted orphaned lib/job-core.mjs + its test + safety-testing.md entry.
+- Mock single-source: stale dev/mock-sd/www UI copies (untracked local files) deleted; new
+  drift-guard test keeps the mock SD free of UI code; rule documented in AGENTS.md.
+- Verified: vitest 814/814 (8 orphan-module tests retired with their dead implementation),
+  pio native 21/21, esp32cam SUCCESS, jscpd informational 128→124 clones.
+- Open S1 findings unchanged: F-1 (jog-M410 frame invalidation), F-2 (browser-owned recovery
+  trust), F-3 (stream admission asymmetries), F-4 (stop-path cleanup divergence), F-5
+  ('AUTHORIZED' constant token) - all now fenced.
+
 ## 2026-09-13 - State-ownership audit layer 2 (semantic MST audit, no refactoring)
 
 - Four parallel subsystem audits (fw job lifecycle, fw frame/telemetry, web job/identity,

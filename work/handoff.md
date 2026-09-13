@@ -1,5 +1,26 @@
 # Handoff
 
+## 2026-09-13 - Phase 1 shipped: safety fences + dead-state cleanup (no behavior change)
+
+- Commit chain from 987e1e2: e139670 (mock UI single-source + drift guard + AGENTS.md rule),
+  bd4f179 (17 SAFETY FENCE it.fails tests for F-1..F-5 + passing anchors),
+  d639837 (delete jobRunning + dead dirty globals; recoveryRequired now derived in
+  jobStatusJson from state==Stopped||RecoveryRequired - wire contract unchanged),
+  725df11 (delete orphaned www/lib/job-core.mjs + test + safety-testing.md entry).
+- Fences: test/firmware/{frame-trust-invariants,motion-stream-admission,stop-cleanup-parity,
+  job-authorization-fence}.test.mjs + test/ui/recovery-trust-fence.test.mjs. They are
+  it.fails INVERTED tests: green today (defect present), RED when a defect is fixed, which
+  forces promoting each fence to a real assertion in its fix phase. Never weaken or delete
+  a fence to make it green.
+- Suite state: vitest 814/814, pio native 21/21, esp32cam SUCCESS, jscpd 124 clones
+  (informational). Accepted coverage gap: preview.js twins of the deleted dead module's
+  pure functions (clampFeedPercent/computePreflight/effectiveFeedRange/nextJobAction) have
+  no direct unit tests - readiness consolidation phase owns them.
+- Next phases (individually fenced, in audit S9 order): (2) one invalidateMachineFrame
+  policy incl. jog-M410 decision, (3) resetJobSubstates + finish path parity, (4) unified
+  motion-stream admission, (5) firmware recovery-move gate, (6) firmware-issued start token.
+  Each phase promotes its fences to passing as acceptance proof.
+
 ## 2026-09-13 - Layer-2 state-ownership audit complete; refactoring plan ready for approval
 
 - `work/state-ownership-audit.md` is the deliverable: ownership matrix (22 domains), behavior
