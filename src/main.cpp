@@ -464,6 +464,7 @@ enum class FrameInvalidationReason : uint8_t {
 };
 
 void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReason reason);
+void clearJobStartGrant();
 
 // Single writer for transient job-control cleanup on terminal/interrupted job paths
 // (state-ownership audit F-4): same terminal semantic outcome => same transient cleanup.
@@ -4766,6 +4767,9 @@ void startNextPriorityCommand() {
 }
 
 void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReason reason) {
+  // A frame-trust change invalidates any outstanding start grant (F-5): the
+  // grant is bound to the homing/work-zero identity the frame carried.
+  clearJobStartGrant();
   const uint32_t invalidatedRevision = machineFrame.revision + 1;
   if (scope == FrameInvalidationScope::Full) {
     // A quickstop interrupts motion mid-segment regardless of which entry point fired,
@@ -8086,8 +8090,6 @@ void handleCommand() {
 
 struct JobExecutionAuthorization {
   int schemaVersion = 0;
-  String startAuthorizationToken;
-  String startAuthorizationState;
   String activeRunMode;
   String activeRunPath;
   String activeRunFingerprint;
@@ -8209,13 +8211,12 @@ bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorizat
 
   JsonDocument filter;
   filter["schemaVersion"] = true;
-  filter["startAuthorizationToken"] = true;
   filter["activeWorkZeroId"] = true;
   filter["allowedWorkspaceCommands"] = true;
   for (const char *key : {"mode", "path", "sizeBytes", "sourceFingerprint", "generatedFingerprint"}) {
     filter["activeRun"][key] = true;
   }
-  for (const char *key : {"state", "activeRunMode", "activeRunPath", "activeRunFingerprint",
+  for (const char *key : {"activeRunMode", "activeRunPath", "activeRunFingerprint",
                           "activeRunSizeBytes", "workZeroId", "homingEpoch", "homingSessionId"}) {
     filter["startAuthorization"][key] = true;
   }
@@ -8237,7 +8238,6 @@ bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorizat
   }
 
   authorization.schemaVersion = doc["schemaVersion"] | 0;
-  authorization.startAuthorizationToken = jsonVariantString(doc["startAuthorizationToken"]);
   authorization.activeWorkZeroId = jsonVariantString(doc["activeWorkZeroId"]);
   authorization.allowedWorkspaceCommands = doc["allowedWorkspaceCommands"] | false;
 
@@ -8250,7 +8250,6 @@ bool loadJobExecutionAuthorization(const String &jobPath, JobExecutionAuthorizat
                                            : jsonVariantString(activeRun["sourceFingerprint"]);
 
   JsonObjectConst start = doc["startAuthorization"];
-  authorization.startAuthorizationState = jsonVariantString(start["state"]);
   authorization.authorizationRunMode = jsonVariantString(start["activeRunMode"]);
   authorization.authorizationRunPath = normalizeSdPath(jsonVariantString(start["activeRunPath"]));
   authorization.authorizationRunFingerprint = jsonVariantString(start["activeRunFingerprint"]);
@@ -8373,9 +8372,11 @@ bool validateJobExecutionAuthorization(const JobExecutionAuthorization &authoriz
                                        const String &activeRunFingerprint, size_t activeRunSizeBytes,
                                        const String &workZeroId, uint32_t homingEpoch,
                                        const String &homingSessionId, String &error) {
-  if (authorization.schemaVersion != 3 || authorization.startAuthorizationToken != "AUTHORIZED" ||
-      authorization.startAuthorizationState != "authorized") {
-    error = "job JSON has no valid v3 start authorization";
+  if (authorization.schemaVersion != 3) {
+    // Evidence only: the sidecar is browser-writable and can never authorize a
+    // start. Authority is the firmware-issued one-time grant checked in
+    // admitJobStart (state-ownership audit F-5).
+    error = "job JSON is not v3 execution evidence";
     return false;
   }
   if (activeRunMode != "source" && activeRunMode != "generated") {
@@ -8933,6 +8934,167 @@ void completeJobStartCommand(bool ok, const char *code, const String &message) {
 // checkpoint-before-motion ordering, and preamble enqueue. The WS binding
 // completes later from the cooperative preparation hooks; the HTTP route
 // answers immediately as it always has.
+// ── F-5: firmware-issued one-time job-start capability ──────────────────────
+// Authorization lives only in firmware RAM. The sidecar carries evidence
+// (identity records the browser asks firmware to validate); the grant is the
+// only permission to start, issued once per validated evidence set, bound to
+// the exact run/frame identity, and consumed by any start attempt that
+// presents it. Not persisted, not mirrored into the sidecar.
+struct JobStartGrant {
+  bool valid = false;
+  bool consumed = false;
+  String token;
+  String gcodePath;
+  String jobPath;
+  String activeRunMode;
+  String activeRunFingerprint;
+  size_t activeRunSizeBytes = 0;
+  String workZeroId;
+  uint32_t homingEpoch = 0;
+  String homingSessionId;
+  uint32_t issuedAtMs = 0;
+};
+
+JobStartGrant jobStartGrant;
+constexpr uint32_t kJobStartGrantTtlMs = 60000;
+
+enum class JobGrantCheck : uint8_t {
+  Granted,
+  NotFound,
+  Consumed,
+  Expired,
+  IdentityChanged,
+};
+
+void clearJobStartGrant() {
+  jobStartGrant = JobStartGrant();
+}
+
+void issueJobStartGrant(const String &token, const String &gcodePath, const String &jobPath,
+                        const String &activeRunMode, const String &activeRunFingerprint,
+                        size_t activeRunSizeBytes, const String &workZeroId,
+                        uint32_t homingEpoch, const String &homingSessionId) {
+  jobStartGrant.valid = true;
+  jobStartGrant.consumed = false;
+  jobStartGrant.token = token;
+  jobStartGrant.gcodePath = gcodePath;
+  jobStartGrant.jobPath = jobPath;
+  jobStartGrant.activeRunMode = activeRunMode;
+  jobStartGrant.activeRunFingerprint = activeRunFingerprint;
+  jobStartGrant.activeRunSizeBytes = activeRunSizeBytes;
+  jobStartGrant.workZeroId = workZeroId;
+  jobStartGrant.homingEpoch = homingEpoch;
+  jobStartGrant.homingSessionId = homingSessionId;
+  jobStartGrant.issuedAtMs = millis();
+}
+
+// Any job.start attempt presenting the token consumes the grant, whether or not
+// the attempt succeeds: retry always requires fresh authorization.
+JobGrantCheck checkAndConsumeJobStartGrant(const String &token, const String &gcodePath,
+                                           const String &jobPath, const String &activeRunMode,
+                                           const String &activeRunFingerprint,
+                                           size_t activeRunSizeBytes, const String &workZeroId,
+                                           uint32_t homingEpoch, const String &homingSessionId) {
+  if (!jobStartGrant.valid || jobStartGrant.consumed || jobStartGrant.token != token) {
+    return jobStartGrant.consumed ? JobGrantCheck::Consumed : JobGrantCheck::NotFound;
+  }
+  jobStartGrant.consumed = true;
+  if (millis() - jobStartGrant.issuedAtMs > kJobStartGrantTtlMs) {
+    return JobGrantCheck::Expired;
+  }
+  if (jobStartGrant.gcodePath != gcodePath || jobStartGrant.jobPath != jobPath ||
+      jobStartGrant.activeRunMode != activeRunMode ||
+      jobStartGrant.activeRunFingerprint != activeRunFingerprint ||
+      jobStartGrant.activeRunSizeBytes != activeRunSizeBytes ||
+      jobStartGrant.workZeroId != workZeroId || jobStartGrant.homingEpoch != homingEpoch ||
+      jobStartGrant.homingSessionId != homingSessionId) {
+    return JobGrantCheck::IdentityChanged;
+  }
+  return JobGrantCheck::Granted;
+}
+
+// Authorize-start: validate the exact objective evidence against the live
+// frame, then mint an opaque 128-bit capability. No browser value participates
+// in the decision.
+void handleJobAuthorizeStart() {
+  String commError;
+  if (!ensureControllerCommunicationActive(commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+  const MotionAdmissionResult admission = admitMotionStream(MotionStreamKind::Job);
+  if (!admission.allowed) {
+    sendJsonError(admission.httpStatus, admission.message);
+    return;
+  }
+  const String body = server.arg("plain");
+  const String gcodePath = normalizeSdPath(extractJsonString(body, "gcodePath"));
+  const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  const String activeRunMode = extractJsonString(body, "activeRunMode");
+  const String activeRunFingerprint = extractJsonString(body, "activeRunFingerprint");
+  const int requestedActiveRunSize = extractJsonInt(body, "activeRunSizeBytes", -1);
+  const String requestedWorkZeroId = extractJsonString(body, "workZeroId");
+  const int requestedHomingEpoch = extractJsonInt(body, "homingEpoch", -1);
+  const String requestedHomingSessionId = extractJsonString(body, "homingSessionId");
+  String startMode = extractJsonString(body, "startMode");
+  if (startMode.length() == 0) startMode = "use_active_work_zero";
+
+  if (startMode == "use_manual_work_frame") {
+    const String requestedBootSessionId = extractJsonString(body, "bootSessionId");
+    if (!machineFrame.manualWorkFrameValid || !machineFrame.workZeroValid ||
+        requestedBootSessionId.length() == 0 || requestedBootSessionId != bootSessionId) {
+      sendJsonError(409,
+                    "manual work frame expired; confirm Continue without homing and work zero again");
+      return;
+    }
+  } else {
+    if (!machineFrame.machineValid || !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
+        requestedWorkZeroId.length() == 0 || requestedHomingEpoch < 0 ||
+        requestedHomingSessionId.length() == 0 ||
+        static_cast<uint32_t>(requestedHomingEpoch) != machineFrame.homingEpoch ||
+        requestedHomingSessionId != machineFrame.homingSessionId) {
+      sendJsonError(409,
+                    "active work zero does not match this absolute Home All session; restore or set work zero again");
+      return;
+    }
+  }
+
+  JobExecutionAuthorization authorization;
+  String authorizationError;
+  if (!loadJobExecutionAuthorization(jobPath, authorization, authorizationError)) {
+    sendJsonError(400, authorizationError);
+    return;
+  }
+  if (requestedActiveRunSize <= 0 ||
+      !validateJobExecutionAuthorization(authorization, gcodePath, activeRunMode,
+                                         activeRunFingerprint,
+                                         static_cast<size_t>(requestedActiveRunSize),
+                                         requestedWorkZeroId,
+                                         static_cast<uint32_t>(requestedHomingEpoch),
+                                         requestedHomingSessionId, authorizationError)) {
+    sendJsonError(409, authorizationError.length() > 0 ? authorizationError
+                                                       : String("active run authorization is invalid"));
+    return;
+  }
+
+  String token;
+  for (int block = 0; block < 4; ++block) {
+    char hex[9];
+    snprintf(hex, sizeof(hex), "%08lx", static_cast<unsigned long>(esp_random()));
+    token += hex;
+  }
+  issueJobStartGrant(token, gcodePath, jobPath, activeRunMode, activeRunFingerprint,
+                     static_cast<size_t>(requestedActiveRunSize), requestedWorkZeroId,
+                     static_cast<uint32_t>(requestedHomingEpoch), requestedHomingSessionId);
+  String json = "{\"ok\":true,\"startGrant\":\"" + jsonEscape(token) +
+                "\",\"expiresInSeconds\":" + String(kJobStartGrantTtlMs / 1000) + "}";
+  server.send(200, "application/json", json);
+}
+
 MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *entry) {
   String commError;
   if (!ensureControllerCommunicationActive(commError)) {
@@ -8991,6 +9153,27 @@ MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *e
   if (!validateSafeWorkZ(safeStartZ, true, safeZError)) {
     return {false, false, true, 400, "INVALID_PAYLOAD", safeZError};
   }
+  const uint32_t normalizedHomingEpoch =
+      requestedHomingEpoch >= 0 ? static_cast<uint32_t>(requestedHomingEpoch) : 0;
+  const String requestedStartGrant = extractJsonString(body, "startGrant");
+  const JobGrantCheck grantCheck = checkAndConsumeJobStartGrant(
+      requestedStartGrant, gcodePath, jobPath, activeRunMode, activeRunFingerprint,
+      static_cast<size_t>(requestedActiveRunSize > 0 ? requestedActiveRunSize : 0),
+      requestedWorkZeroId, normalizedHomingEpoch, requestedHomingSessionId);
+  if (grantCheck != JobGrantCheck::Granted) {
+    const char *grantCode = grantCheck == JobGrantCheck::NotFound      ? "START_GRANT_REQUIRED"
+                            : grantCheck == JobGrantCheck::Consumed   ? "START_GRANT_INVALID"
+                            : grantCheck == JobGrantCheck::Expired    ? "START_GRANT_EXPIRED"
+                                                                      : "START_GRANT_IDENTITY_CHANGED";
+    const char *grantMessage = grantCheck == JobGrantCheck::NotFound
+                                   ? "job start requires a fresh firmware-issued start grant (/api/job/authorize-start)"
+                               : grantCheck == JobGrantCheck::Expired
+                                   ? "start grant expired; request a new one"
+                               : grantCheck == JobGrantCheck::IdentityChanged
+                                   ? "start grant no longer matches the run or machine identity"
+                                   : "start grant was already used";
+    return {false, false, true, 403, grantCode, grantMessage};
+  }
   const float travelFeedMmMin = clampFloat(
       extractJsonFloat(body, "travelFeedMmMin", kDefaultTravelFeed), 600.0f, 6000.0f);
   const bool sourceRunPath = isPathUnderRoot(gcodePath, "/gcode");
@@ -9020,9 +9203,6 @@ MachineOperationResult admitJobStart(const String &body, const WsCommandEntry *e
             authorizationError.length() > 0 ? authorizationError
                                             : String("job start Safe Z does not match project metadata")};
   }
-  const uint32_t normalizedHomingEpoch = requestedHomingEpoch >= 0
-                                             ? static_cast<uint32_t>(requestedHomingEpoch)
-                                             : 0;
   if (requestedActiveRunSize <= 0 ||
       !validateJobExecutionAuthorization(authorization, gcodePath, activeRunMode,
                                          activeRunFingerprint,
@@ -10997,6 +11177,7 @@ void startHttpServer() {
   httpRoute("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet);
   operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
   operatorRoute("/api/recovery/move", HTTP_POST, handleRecoveryMove);
+  operatorRoute("/api/job/authorize-start", HTTP_POST, handleJobAuthorizeStart);
   operatorRoute("/api/job/pause", HTTP_POST, handleJobPause);
   operatorRoute("/api/job/resume", HTTP_POST, handleJobResume);
   operatorRoute("/api/job/interrupt-for-manual-motion", HTTP_POST, handlePausedManualInterruption);

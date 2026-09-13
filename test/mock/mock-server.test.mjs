@@ -56,19 +56,21 @@ async function prepareAuthorizedJob(base, env, name) {
     },
     feedOverride: { startPercent: 100, resetTo100AfterJob: true },
   }));
-  return {
-    gcodePath,
-    jobPath,
-    request: {
-      gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
-      activeRunSizeBytes: sizeBytes, safeStartZ: 15,
-      startMode: 'use_active_work_zero', workZeroId,
-      homingEpoch: zeroFrame.frame.homingEpoch, homingSessionId: zeroFrame.frame.homingSessionId,
-      workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
-      workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
-      workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
-    },
+  const request = {
+    gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint,
+    activeRunSizeBytes: sizeBytes, safeStartZ: 15,
+    startMode: 'use_active_work_zero', workZeroId,
+    homingEpoch: zeroFrame.frame.homingEpoch, homingSessionId: zeroFrame.frame.homingSessionId,
+    workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
+    workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
+    workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
   };
+  // F-5: job start requires a firmware-issued one-time grant for this identity.
+  const authorization = await fetch(`${base}/api/job/authorize-start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+  }).then((res) => res.json());
+  request.startGrant = authorization.startGrant;
+  return { gcodePath, jobPath, request };
 }
 
 afterEach(async () => {
@@ -478,17 +480,23 @@ describe('mock HTTP API', () => {
       verificationDecision: { result: 'complete', type: 'bounds', activeRunPath: gcodePath, activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes },
       feedOverride: { startPercent: 100, resetTo100AfterJob: true },
     }));
+    const startIdentity = {
+      gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
+      safeStartZ: 15,
+      startMode: 'use_active_work_zero', workZeroId: 'zero-api', homingEpoch: zeroFrame.frame.homingEpoch,
+      homingSessionId: zeroFrame.frame.homingSessionId,
+      workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
+      workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
+      workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
+    };
+    const grantResponse = await fetch(`${base}/api/job/authorize-start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(startIdentity),
+    }).then((res) => res.json());
+    expect(grantResponse.ok).toBe(true);
     const startResponse = await fetch(`${base}/api/job/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        gcodePath, jobPath, activeRunMode: 'source', activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
-        safeStartZ: 15,
-        startMode: 'use_active_work_zero', workZeroId: 'zero-api', homingEpoch: zeroFrame.frame.homingEpoch,
-        homingSessionId: zeroFrame.frame.homingSessionId,
-        workZeroMachineX: zeroFrame.frame.workZeroMachine.x,
-        workZeroMachineY: zeroFrame.frame.workZeroMachine.y,
-        workZeroMachineZ: zeroFrame.frame.workZeroMachine.z,
-      }),
+      body: JSON.stringify({ ...startIdentity, startGrant: grantResponse.startGrant }),
     });
     expect(startResponse.ok).toBe(true);
     let status;
@@ -1934,7 +1942,7 @@ describe('WS job.start (Phase 3D)', () => {
     ws.close();
   });
 
-  it('rejects an invalid start identity after ACK with PRECONDITION_FAILED', async () => {
+  it('rejects a mutated start identity with START_GRANT_IDENTITY_CHANGED', async () => {
     const { base, env } = await start();
     const job = await prepareAuthorizedJob(base, env, 'ws-start-4');
     const { ws, send } = await claimWsController(base);
@@ -1944,7 +1952,7 @@ describe('WS job.start (Phase 3D)', () => {
     const result = await ws.recv();
     expect(result.type).toBe('commandResult');
     expect(result.ok).toBe(false);
-    expect(result.code).toBe('PRECONDITION_FAILED');
+    expect(result.code).toBe('START_GRANT_IDENTITY_CHANGED');
     expect(env.runner.status.state).toBe('IDLE');
     expect(preambleLiftCount(env)).toBe(0);
     ws.close();

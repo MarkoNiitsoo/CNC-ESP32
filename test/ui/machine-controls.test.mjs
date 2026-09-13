@@ -35,7 +35,8 @@ describe('compact machine drawer', () => {
     expect(previewHtml).toContain('data-run-check="spindleStateReady"');
     expect(previewHtml).not.toContain('data-run-check="toolAtWorkZero"');
     expect(preview).toMatch(/reviewAndStartJobRun[\s\S]*await startJobRun\(\)/);
-    expect(preview).toContain("job.startAuthorizationToken = 'AUTHORIZED'");
+    expect(preview).toContain("await requestStartGrant(");
+    expect(preview).toContain("'/api/job/authorize-start'");
   });
 
   it('prevents mobile long-press selection on interactive buttons', () => {

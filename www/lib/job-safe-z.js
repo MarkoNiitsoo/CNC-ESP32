@@ -176,7 +176,6 @@ export function markSafeZDependentsStale(job = {}, options = {}) {
   }
   if (job.arm?.state === 'ARMED') job.arm = { ...job.arm, state: 'STALE', staleAt, staleReason: reason };
   if (job.startAuthorization) job.startAuthorization = { state: 'not_authorized' };
-  job.startAuthorizationToken = '';
   return job;
 }
 

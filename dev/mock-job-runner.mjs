@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { assertCanUseActiveRunForExecution, getActiveRun, getActiveRunFingerprint } from '../www/lib/job-active-run.js';
 import { migrateProjectSafeZ } from '../www/lib/job-safe-z.js';
 
@@ -35,6 +35,7 @@ export class MockJobRunner {
     this.realtimeHold = realtimeHold !== false;
     this.controllerState = controllerState;
     this.runToken = 0;
+    this.startGrant = null;
     this.status = this.emptyStatus();
   }
 
@@ -264,14 +265,64 @@ export class MockJobRunner {
     return this.snapshot();
   }
 
+  // F-5: authorize-start validates the exact objective evidence against the live
+  // frame, then mints an opaque one-time capability. The sidecar is evidence only;
+  // the browser never creates authorization.
+  async authorizeStart(request = {}) {
+    this.assertControllerCommunication();
+    if (this.isActive()) throw new Error('another job is already active');
+    if ((!this.frame.trusted && !this.frame.manualWorkFrameValid) || !this.frame.workZeroValid) {
+      throw new Error('start authorization requires a trusted machine frame and a valid work zero');
+    }
+    await this.validateStartEvidence(request);
+    const token = randomBytes(16).toString('hex');
+    this.startGrant = {
+      token, consumed: false, issuedAtMs: Date.now(),
+      bound: {
+        gcodePath: String(request.gcodePath || ''), jobPath: String(request.jobPath || ''),
+        activeRunMode: String(request.activeRunMode || ''),
+        activeRunFingerprint: String(request.activeRunFingerprint || ''),
+        activeRunSizeBytes: String(Number(request.activeRunSizeBytes || 0)),
+        workZeroId: String(request.workZeroId || ''),
+        homingEpoch: String(Number(request.homingEpoch || 0)),
+        homingSessionId: String(request.homingSessionId || ''),
+      },
+    };
+    return { ok: true, startGrant: token, expiresInSeconds: 60 };
+  }
+
+  // Any start attempt presenting the token consumes the grant, whether or not
+  // the attempt succeeds; retry requires fresh authorization.
+  assertStartGrant(request = {}) {
+    const grant = this.startGrant;
+    const token = String(request.startGrant || '');
+    if (!grant || grant.consumed || !token || grant.token !== token) {
+      throw new Error(grant?.consumed
+        ? 'start grant was already used'
+        : 'job start requires a fresh firmware-issued start grant');
+    }
+    grant.consumed = true;
+    if (Date.now() - grant.issuedAtMs > 60000) throw new Error('start grant expired; request a new one');
+    for (const key of ['gcodePath', 'jobPath', 'activeRunMode', 'activeRunFingerprint',
+                       'activeRunSizeBytes', 'workZeroId', 'homingEpoch', 'homingSessionId']) {
+      if (String(grant.bound[key] ?? '') !== String(request[key] ?? '')) {
+        throw new Error('start grant no longer matches the run or machine identity');
+      }
+    }
+  }
+
   async validateStartRequest(request = {}) {
     this.assertControllerCommunication();
     if (this.isActive()) throw new Error('another job is already active');
+    this.assertStartGrant(request);
+    return this.validateStartEvidence(request);
+  }
+
+  async validateStartEvidence(request = {}) {
     const job = JSON.parse(await this.sd.readText(request.jobPath));
     const active = getActiveRun(job);
     const execution = assertCanUseActiveRunForExecution(job, { requireArm: false });
     if (!execution.ok) throw new Error(execution.message);
-    if (job.startAuthorizationToken !== 'AUTHORIZED') throw new Error('job JSON has no valid start authorization');
     if (active.path !== request.gcodePath) throw new Error('requested path is not the authorized active run path');
     if (request.activeRunMode && active.mode !== request.activeRunMode) throw new Error('active run mode changed after authorization');
 
@@ -284,7 +335,7 @@ export class MockJobRunner {
     const start = job.startAuthorization || {};
     const arm = job.arm || {};
     const verification = job.verificationDecision || {};
-    if (!identityMatches || start.state !== 'authorized' || start.activeRunMode !== active.mode ||
+    if (!identityMatches || start.activeRunMode !== active.mode ||
         start.activeRunPath !== active.path || start.activeRunFingerprint !== fingerprint || start.activeRunSizeBytes !== bytes ||
         arm.state !== 'ARMED' || arm.activeRunMode !== active.mode || arm.activeRunPath !== active.path ||
         arm.activeRunFingerprint !== fingerprint || arm.activeRunSizeBytes !== bytes ||

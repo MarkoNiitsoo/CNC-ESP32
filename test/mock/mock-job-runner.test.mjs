@@ -52,18 +52,29 @@ async function fixture({ gcode, gcodePath = '/gcode/job.gc', mode = 'source', va
   const jobPath = '/jobs/job.job.json';
   await sd.writeText(jobPath, JSON.stringify(job));
   const marlin = new MockMarlin(marlinConfig || {});
-  const frame = { trusted: true, absoluteFromHome: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
+  const frame = { trusted: true, absoluteFromHome: true, workZeroValid: true, homingEpoch: 1, workZeroMachine: { x: 0, y: 0, z: 0 } };
   const runner = new MockJobRunner({
     sd, marlin, frame, lineDelayMs: delay,
     realtimeHold: marlin.realtimeHold,
     toolChangeSettings: toolChangeSettings || { handling: 'pause', zZeroMethod: 'manual' },
   });
-  return { sd, marlin, runner, job, jobPath, gcodePath, request: {
+  const request = {
     gcodePath, jobPath, activeRunMode: mode, activeRunFingerprint: fingerprint, activeRunSizeBytes: sizeBytes,
     safeStartZ: 15,
     startMode: 'use_active_work_zero', workZeroId: 'zero-test', homingEpoch: 1,
+    homingSessionId: '',
     workZeroMachineX: 0, workZeroMachineY: 0, workZeroMachineZ: 0,
-  } };
+  };
+  // F-5: a start requires a firmware-issued one-time grant. The fixture grants
+  // when the evidence is valid; intentionally-invalid evidence fixtures (stale
+  // generated runs, deleted files) start without a grant and are rejected.
+  try {
+    const grant = await runner.authorizeStart(request);
+    request.startGrant = grant.startGrant;
+  } catch (err) {
+    request.grantError = err.message;
+  }
+  return { sd, marlin, runner, job, jobPath, gcodePath, request };
 }
 
 async function waitForState(runner, states, timeout = 1000) {
@@ -154,7 +165,8 @@ describe('MockJobRunner', () => {
     expect(valid.runner.status.gcodePath).toBe('/jobs/generated/job.run.gc');
 
     const stale = await fixture({ mode: 'generated', validation: 'stale', gcodePath: '/jobs/generated/stale.run.gc' });
-    await expect(stale.runner.start(stale.request)).rejects.toThrow(/not valid|stale/i);
+    expect(stale.request.grantError).toMatch(/generated run file is not valid/i);
+    await expect(stale.runner.start(stale.request)).rejects.toThrow(/start grant/i);
   });
 
   it('does not silently fall back to source after a transformed run is missing', async () => {

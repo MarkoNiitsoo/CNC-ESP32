@@ -703,6 +703,9 @@ export async function createMockServer(options = {}) {
         });
         return json(res, 200, { ok: true, message: 'Recovery checkpoint cleared. Machine position remains untrusted until Home All.' });
       }
+      if (req.method === 'POST' && pathname === '/api/job/authorize-start') {
+        return json(res, 200, await env.runner.authorizeStart(await readJson(req)));
+      }
       if (req.method === 'POST' && pathname === '/api/job/start') {
         if (env.jog.state !== 'IDLE') return json(res, 409, { ok: false, error: 'jog motion is active; release it before starting' });
         return json(res, 200, await env.runner.start(await readJson(req)));
@@ -1373,6 +1376,13 @@ export async function createMockServer(options = {}) {
 
   function mapJobStartError(error) {
     const message = String(error.message || error);
+    if (/start grant/i.test(message)) {
+      const code = /already used/i.test(message) ? 'START_GRANT_INVALID'
+        : /expired/i.test(message) ? 'START_GRANT_EXPIRED'
+        : /no longer matches/i.test(message) ? 'START_GRANT_IDENTITY_CHANGED'
+        : 'START_GRANT_REQUIRED';
+      return { httpStatus: 403, code, message };
+    }
     if (/another job is already active/i.test(message)) {
       return { httpStatus: 409, code: 'JOB_STATE_CONFLICT', message };
     }

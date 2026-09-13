@@ -117,8 +117,10 @@ describe('canonical admission single-policy guards (F-3)', () => {
     }
   });
 
-  it('exactly four motion-stream call sites use the canonical policy', () => {
-    expect(countMatches(source, /admitMotionStream\(MotionStreamKind::/)).toBe(4);
+  it('every motion-stream entry point uses the canonical policy', () => {
+    // Four stream handlers plus the F-5 authorize-start endpoint, which applies
+    // the same exclusivity ladder before minting a capability.
+    expect(countMatches(source, /admitMotionStream\(MotionStreamKind::/)).toBe(5);
   });
 
   it('active jog blocks job/test/production but never the deliberate pause interruption', () => {

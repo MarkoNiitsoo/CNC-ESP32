@@ -2012,16 +2012,30 @@ async function startJobRun() {
     checklist: runChecklistState(),
     authorizedAt: nowIso(),
   };
-  job.startAuthorizationToken = 'AUTHORIZED';
   const history = await jobHistoryPromise;
   const run = history.startRunHistory(job, jobRunStatus || {});
   try {
     await saveJobQuietly();
     renderHistoryPanels();
+    // F-5: request a one-time firmware-issued start capability for this exact
+    // run/frame identity. The grant lives only in this closure - never persisted.
+    const startGrant = await requestStartGrant({
+      gcodePath: runPath,
+      jobPath: jobPathFor(filePath),
+      activeRunMode: runMode,
+      activeRunFingerprint: gcodeFingerprint,
+      activeRunSizeBytes,
+      workZeroId: zeroReference.id,
+      homingEpoch: Number(zeroReference.homingEpoch) || 0,
+      homingSessionId: zeroReference.homingSessionId || '',
+      startMode: job.startMode,
+      bootSessionId: currentMachineFrame?.bootSessionId || '',
+    });
     const jobBaseline = socketSliceToken('job');
     const data = await dispatchJobStart({
       gcodePath: runPath,
       jobPath: jobPathFor(filePath),
+      startGrant,
       startMode: job.startMode,
       bootSessionId: currentMachineFrame?.bootSessionId || '',
       workZeroId: zeroReference.id,
@@ -2050,7 +2064,6 @@ async function startJobRun() {
     );
     history.updateRunHistoryFromStatus(job, confirmed);
     job.startAuthorization = emptyWorkflow().startAuthorization;
-    job.startAuthorizationToken = '';
     await saveJobQuietly();
     renderHistoryPanels();
     appendRunLog(`Started ${confirmed.gcodePath || runPath} with ${job.startMode}; live state confirmed.`);
@@ -4389,6 +4402,22 @@ async function recoverControllerConnection() {
   return false;
 }
 
+// F-5: request a one-time start capability from firmware. The request identifies
+// the intended job/run; firmware validates the evidence and frame and returns an
+// opaque grant. The browser never creates authorization and never persists it.
+async function requestStartGrant(identity) {
+  const res = await fetch('/api/job/authorize-start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(identity),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok || !data.startGrant) {
+    throw new Error(data.error || 'Firmware did not issue a start grant.');
+  }
+  return data.startGrant;
+}
+
 // Recovery motion goes through the firmware-owned endpoint; the request carries no
 // trust values - admission is decided by canonical firmware state alone (F-2).
 async function recoveryMove(command) {
@@ -5047,7 +5076,6 @@ async function armJob(options = {}) {
     return true;
   } catch (err) {
     job.startAuthorization = emptyWorkflow().startAuthorization;
-    job.startAuthorizationToken = '';
     job.arm = previousArm;
     setArmResult(`Arm failed because the job JSON could not be saved: ${err.message}`, true);
     renderArmPanel();
