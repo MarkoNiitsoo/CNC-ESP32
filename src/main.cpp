@@ -7829,6 +7829,173 @@ void handleRename() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// ── F-2: firmware-owned recovery-motion authority ───────────────────────────
+// Recovery motion is authorized exclusively by canonical firmware state
+// (RECOVERY_REQUIRED + trusted homed frame + valid work zero + no competing
+// motion owner). Browser-reported trust values are untrusted input and never
+// participate in admission; the browser recovery planner is early-rejection UX.
+struct RecoveryMotionAdmission {
+  bool allowed;
+  int httpStatus;
+  const char *code;
+  String message;
+};
+
+// Strict recovery command class, derived from the recovery planner's emitted
+// sequence (M5, G21, G90, G54, G0 X/Y/Z/F, M400). One command per request;
+// comments, multiple commands, unknown words, and non-finite numbers are
+// rejected. Homing, machine-coordinate, work-offset, and spindle commands fall
+// outside the class.
+bool recoveryMotionCommandAllowed(const String &cmd) {
+  String upper = cmd;
+  upper.toUpperCase();
+  upper.trim();
+  if (upper.length() == 0) return false;
+  if (upper.indexOf(';') >= 0 || upper.indexOf('(') >= 0 || upper.indexOf(',') >= 0 ||
+      upper.indexOf('\n') >= 0 || upper.indexOf('\r') >= 0) {
+    return false;
+  }
+  if (upper == "M5" || upper == "M400" || upper == "G21" || upper == "G90" || upper == "G54") {
+    return true;
+  }
+  if (!upper.startsWith("G0 ")) {
+    return false;
+  }
+  bool sawAxis = false;
+  bool sawFeed = false;
+  uint32_t index = 3;
+  const uint32_t length = upper.length();
+  while (index < length) {
+    while (index < length && upper[index] == ' ') index++;
+    if (index >= length) break;
+    const char letter = upper[index];
+    if (letter != 'X' && letter != 'Y' && letter != 'Z' && letter != 'F') return false;
+    const uint32_t numberStart = index + 1;
+    uint32_t numberEnd = numberStart;
+    if (numberEnd < length && (upper[numberEnd] == '-' || upper[numberEnd] == '+')) numberEnd++;
+    while (numberEnd < length && ((upper[numberEnd] >= '0' && upper[numberEnd] <= '9') || upper[numberEnd] == '.')) numberEnd++;
+    if (numberEnd == numberStart) return false;
+    const float value = upper.substring(numberStart, numberEnd).toFloat();
+    if (!isfinite(value)) return false;
+    if (letter == 'F') {
+      if (sawFeed || value <= 0) return false;
+      sawFeed = true;
+    } else {
+      sawAxis = true;
+    }
+    index = numberEnd;
+  }
+  return sawAxis;
+}
+
+bool recoveryMoveTargetWithinLimits(const String &upper) {
+  // upper is an already-validated "G0 X.. Y.. Z.. F.." command in work
+  // coordinates. Axes that are present must land inside the discovered machine
+  // envelope after the work-zero transform; omitted axes keep their position.
+  if (!machineProfile.available) return true;
+  float target[3] = {NAN, NAN, NAN};
+  uint32_t index = 3;
+  const uint32_t length = upper.length();
+  while (index < length) {
+    while (index < length && upper[index] == ' ') index++;
+    if (index >= length) break;
+    const char letter = upper[index];
+    const uint32_t numberStart = index + 1;
+    uint32_t numberEnd = numberStart;
+    if (numberEnd < length && (upper[numberEnd] == '-' || upper[numberEnd] == '+')) numberEnd++;
+    while (numberEnd < length && ((upper[numberEnd] >= '0' && upper[numberEnd] <= '9') || upper[numberEnd] == '.')) numberEnd++;
+    const float value = upper.substring(numberStart, numberEnd).toFloat();
+    if (letter == 'X') target[0] = value;
+    else if (letter == 'Y') target[1] = value;
+    else if (letter == 'Z') target[2] = value;
+    index = numberEnd;
+  }
+  const float workZero[3] = {machineFrame.workZeroMachineX, machineFrame.workZeroMachineY,
+                             machineFrame.workZeroMachineZ};
+  const float fullMin[3] = {machineProfile.fullXMin, machineProfile.fullYMin, machineProfile.fullZMin};
+  const float fullMax[3] = {machineProfile.fullXMax, machineProfile.fullYMax, machineProfile.fullZMax};
+  for (int axis = 0; axis < 3; axis++) {
+    if (!isfinite(target[axis])) continue;
+    const float machineTarget = workZero[axis] + target[axis];
+    if (machineTarget < fullMin[axis] - 0.5f || machineTarget > fullMax[axis] + 0.5f) return false;
+  }
+  return true;
+}
+
+RecoveryMotionAdmission admitRecoveryMotion(const String &cmd) {
+  if (jobStatus.state != JobRunnerState::RecoveryRequired) {
+    return {false, 409, "RECOVERY_STATE_REQUIRED",
+            "recovery motion is only available while the job is in RECOVERY_REQUIRED"};
+  }
+  if (machineOperationActive()) {
+    return {false, 409, "MACHINE_OPERATION_ACTIVE", "a machine operation is in progress"};
+  }
+  if (jogIsActive()) {
+    return {false, 409, "JOG_ACTIVE", "jog motion is active; release it before recovery motion"};
+  }
+  if (priorityCommandCount > 0) {
+    return {false, 409, "BUSY", "a stop sequence is in progress"};
+  }
+  String commError;
+  if (!ensureControllerCommunicationActive(commError)) {
+    return {false, 503, "COMM_ERROR", commError};
+  }
+  const bool frameTrusted = machineFrame.machineValid && machineFrame.absoluteFromHome &&
+                            machineFrame.homedX && machineFrame.homedY && machineFrame.homedZ;
+  if (!frameTrusted || !machineFrame.workZeroValid) {
+    return {false, 409, "FRAME_UNTRUSTED",
+            "recovery motion requires a trusted homed frame and a valid work zero; Home All and restore the work zero first"};
+  }
+  String upper = cmd;
+  upper.toUpperCase();
+  upper.trim();
+  if (!recoveryMotionCommandAllowed(upper)) {
+    return {false, 400, "COMMAND_FORBIDDEN", "command is not part of the recovery motion command class"};
+  }
+  if (!recoveryMoveTargetWithinLimits(upper)) {
+    return {false, 409, "TARGET_OUT_OF_LIMITS", "recovery move target is outside the discovered machine envelope"};
+  }
+  return {true, 200, "OK", String()};
+}
+
+void handleRecoveryMove() {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    sendJsonError(503, commError);
+    return;
+  }
+  if (!server.hasArg("plain")) {
+    sendJsonError(400, "missing JSON body");
+    return;
+  }
+  const String cmd = extractCmdFromJson(server.arg("plain"));
+  const RecoveryMotionAdmission admission = admitRecoveryMotion(cmd);
+  if (!admission.allowed) {
+    sendJsonError(admission.httpStatus, admission.message);
+    return;
+  }
+
+  const MarlinCommandResult result = executeSynchronousCommand(cmd, kMarlinTimeoutMs, ControllerCommandClass::OrdinarySync, true);
+  if (result.timeout) {
+    String json = "{\"ok\":false,\"error\":\"Marlin did not respond within timeout.\",\"controllerState\":\"unresponsive\",\"failedCommand\":\"" + jsonEscape(cmd) + "\"}";
+    server.send(503, "application/json", json);
+    return;
+  }
+  if (result.controllerError) {
+    String json = "{\"ok\":false,\"error\":\"" + jsonEscape(result.error) + "\",\"response\":\"" + jsonEscape(result.response) + "\",\"controllerState\":\"connected\"}";
+    server.send(400, "application/json", json);
+    return;
+  }
+  if (!result.success && result.error.length() > 0) {
+    sendJsonError(503, result.error);
+    return;
+  }
+  String json = "{\"ok\":true,\"response\":\"";
+  json += jsonEscape(result.response);
+  json += "\"}";
+  server.send(200, "application/json", json);
+}
+
 void handleCommand() {
   String commError;
   if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
@@ -7855,9 +8022,24 @@ void handleCommand() {
   upper.toUpperCase();
   upper.trim();
 
-  if (upper == "M5" && jobStatus.state == JobRunnerState::RecoveryRequired) {
-    sendJsonError(409, "standalone M5 is unavailable while interrupted-job Recovery is required");
-    return;
+  if (jobStatus.state == JobRunnerState::RecoveryRequired) {
+    // F-2: during recovery review the generic terminal may not move or
+    // re-program the machine. Only read-only diagnostics pass; M5 stays reserved
+    // for the recovery flow and physical motion must use /api/recovery/move.
+    static const char *const kRecoveryDiagnostics[] = {"M114", "M115", "M503", "M119", "M105"};
+    bool diagnostic = false;
+    for (const char *allowed : kRecoveryDiagnostics) {
+      if (upper == allowed) {
+        diagnostic = true;
+        break;
+      }
+    }
+    if (!diagnostic) {
+      sendJsonError(409, upper == "M5"
+                             ? "standalone M5 is unavailable while interrupted-job Recovery is required"
+                             : "Marlin transport is locked to recovery review; motion commands require /api/recovery/move");
+      return;
+    }
   }
   if (jobIsActive() || jobWaitingForOk || priorityCommandCount > 0) {
     sendJsonError(409, "Marlin transport is busy with the active job; retry diagnostics when idle");
@@ -10814,6 +10996,7 @@ void startHttpServer() {
   operatorRoute("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);
   httpRoute("/api/recovery/checkpoint", HTTP_GET, handleRecoveryCheckpointGet);
   operatorRoute("/api/recovery/checkpoint/acknowledge", HTTP_POST, handleRecoveryCheckpointAcknowledge);
+  operatorRoute("/api/recovery/move", HTTP_POST, handleRecoveryMove);
   operatorRoute("/api/job/pause", HTTP_POST, handleJobPause);
   operatorRoute("/api/job/resume", HTTP_POST, handleJobResume);
   operatorRoute("/api/job/interrupt-for-manual-motion", HTTP_POST, handlePausedManualInterruption);

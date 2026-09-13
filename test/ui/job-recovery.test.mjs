@@ -300,18 +300,19 @@ describe('motion-only recovery UI safety contract', () => {
     expect(previewSource).toContain('recoveryId: selectedRecoveryId');
   });
 
-  it('requires session position trust and clears it on firmware reboot', () => {
-    expect(previewSource).toContain("const positionTrustKey = 'lowrider.positionTrust'");
-    expect(previewSource).toContain('sessionStorage.setItem(positionTrustKey');
-    expect(previewSource).toMatch(/uptime < positionTrust\.bootUptimeMs[\s\S]*setPositionTrust\(false, 'firmware-reboot'\)/);
+  it('derives position trust from the firmware machine-frame slice (F-2)', () => {
+    expect(previewSource).toContain('const firmwareFrameTrusted = () => currentMachineFrame?.trusted === true');
+    expect(previewSource).toContain('firmwareHomeFrameEstablished()');
+    expect(previewSource).not.toContain('positionTrustKey');
     expect(machineBarSource).toContain("dispatchConfirmedMachineEvent('cnc-position-trust'");
     expect(machineBarSource).toContain('trusted: frame.trusted === true');
     expect(machineBarSource).toContain('confirmedBySocket: true');
     expect(machineBarSource).toMatch(/home\('G28',[\s\S]*true\)/);
   });
 
-  it('sends generated recovery commands one at a time and records a recovery event', () => {
-    expect(previewSource).toMatch(/for \(const command of generated\.commands\)[\s\S]*await sendCmd\(command\)/);
+  it('sends generated recovery commands one at a time through the recovery endpoint', () => {
+    expect(previewSource).toMatch(/for \(const command of generated\.commands\)[\s\S]*await recoveryMove\(command\)/);
+    expect(previewSource).toContain("'/api/recovery/move'");
     expect(previewSource).toContain('appendMotionOnlyRecoveryEvent');
     expect(previewSource).not.toMatch(/runMotionOnlyRecoveryMove[\s\S]{0,2500}\/api\/job\/start/);
     expect(previewSource).toContain("recordRecoveryMove('completed', sent)");

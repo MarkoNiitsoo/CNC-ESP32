@@ -155,7 +155,8 @@ describe('Marlin transport safety', () => {
   it('rejects standalone M5 through the normal active-job transport gate', () => {
     const command = source.slice(source.indexOf('void handleCommand()'), source.indexOf('void handleJobStart()'));
     expect(command).not.toContain('queuePriorityCommands("M5")');
-    expect(command).toMatch(/upper == "M5" && jobStatus\.state == JobRunnerState::RecoveryRequired/);
+    expect(command).toContain('standalone M5 is unavailable while interrupted-job Recovery is required');
+    expect(command).toContain('kRecoveryDiagnostics');
     expect(command).toContain('Marlin transport is busy with the active job');
   });
 

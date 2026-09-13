@@ -84,8 +84,6 @@ const preflightChecksEl = document.querySelector('#preflight-checks');
 const refreshPreflightButton = document.querySelector('#refresh-preflight');
 const saveJobPreflightButton = document.querySelector('#save-job-preflight');
 const recoveryTrustEl = document.querySelector('#recovery-trust');
-const recoveryTrustButton = document.querySelector('#recovery-trust-position');
-const recoveryUntrustButton = document.querySelector('#recovery-untrust-position');
 const recoveryOverlayInput = document.querySelector('#show-recovery-overlay');
 const recoverySummaryEl = document.querySelector('#recovery-summary');
 const recoveryCollectionEl = document.querySelector('#recovery-collection');
@@ -179,7 +177,6 @@ let TOOLLESS_LIMITS = { ...MACHINE, zMin: -30, zMax: 70 };
 const SAFETY_Z_FEED_MM_MIN = 400;
 const PREVIEW_SOFT_WARNING_BYTES = 4 * 1024 * 1024;
 const TRANSFORM_SOFT_WARNING_BYTES = 2 * 1024 * 1024;
-const positionTrustKey = 'lowrider.positionTrust';
 let parsed = null;
 let toolpathModel = null;
 let previewSummaryData = null;
@@ -237,7 +234,11 @@ let recoveryActionNotice = null;
 let firmwareRecoveryCheckpoint = null;
 let firmwareRecoveryImported = false;
 let selectedRecoveryId = '';
-let positionTrust = { trusted: false, fullHoming: false, source: '', confirmedAt: null, bootUptimeMs: null, firmwareVersion: '' };
+// F-2: position trust is firmware-owned (machineFrame.trusted via the telemetry
+// mirror). The browser may present it but must never store, persist, or grant it.
+const firmwareFrameTrusted = () => currentMachineFrame?.trusted === true;
+const firmwareHomeFrameEstablished = () =>
+  currentMachineFrame?.trusted === true && currentMachineFrame?.absoluteFromHome === true;
 let toollessResumePlan = null;
 let toollessResumeRunning = false;
 let toollessResumeCancelRequested = false;
@@ -2431,54 +2432,11 @@ function renderPreviewFileWarning() {
   }
 }
 
-function restorePositionTrust() {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem(positionTrustKey) || 'null');
-    if (saved?.trusted === true) positionTrust = { ...positionTrust, ...saved };
-  } catch (err) {
-    sessionStorage.removeItem(positionTrustKey);
-  }
-}
-
-function storePositionTrust() {
-  sessionStorage.setItem(positionTrustKey, JSON.stringify(positionTrust));
-}
-
-function setPositionTrust(trusted, source = '', fullHoming = false) {
-  const health = window.CncTelemetry?.state?.health || {};
-  positionTrust = trusted ? {
-    trusted: true,
-    fullHoming: Boolean(fullHoming),
-    source,
-    confirmedAt: nowIso(),
-    bootUptimeMs: Number.isFinite(Number(health.uptimeMs)) ? Number(health.uptimeMs) : null,
-    firmwareVersion: health.firmwareVersion || health.firmware || '',
-  } : { trusted: false, fullHoming: false, source, confirmedAt: null, bootUptimeMs: null, firmwareVersion: '' };
-  storePositionTrust();
-  refreshRecoveryPlan();
-  renderZeroOriginPanel();
-  renderPreflight();
-  renderRunPanel();
-}
-
-function handleRecoveryHealth(health = {}) {
-  if (!positionTrust.trusted) return;
-  const uptime = Number(health.uptimeMs);
-  const firmware = health.firmwareVersion || health.firmware || '';
-  if (positionTrust.firmwareVersion && firmware && firmware !== positionTrust.firmwareVersion) {
-    setPositionTrust(false, 'firmware-changed');
-    return;
-  }
-  if (Number.isFinite(positionTrust.bootUptimeMs) && Number.isFinite(uptime) && uptime < positionTrust.bootUptimeMs) {
-    setPositionTrust(false, 'firmware-reboot');
-    return;
-  }
-  if (!Number.isFinite(positionTrust.bootUptimeMs) && Number.isFinite(uptime)) {
-    positionTrust.bootUptimeMs = uptime;
-    positionTrust.firmwareVersion = firmware;
-    storePositionTrust();
-  }
-}
+// Position trust previously lived here as browser state (sessionStorage-persisted,
+// operator-grantable). It is now derived from the firmware machine-frame slice; no
+// local persistence or grant path remains (state-ownership audit F-2). Callers that
+// relied on local trust writes now re-derive the display from the machine slice and call
+// refreshRecoveryPlan()/render panels directly.
 
 function recoverySafeZ() {
   return projectSafeZValue();
@@ -2559,7 +2517,7 @@ function refreshRecoveryPlan() {
     safeZ: recoverySafeZ(),
     limits: RECOVERY_LIMITS,
     workZeroMachine: recoveryWorkZeroMachine(),
-    positionTrusted: positionTrust.trusted,
+    positionTrusted: firmwareFrameTrusted(),
     workZeroFrameMatches: workZeroMatchesMachineFrame(),
     machineState: jobRunStatus?.state,
   });
@@ -2598,7 +2556,7 @@ function renderWorkZeroRestore() {
   const zero = interruptedWorkZeroEntry();
   const counts = zero?.machineReference?.counts || zero?.countsBefore || zero?.countsAfter;
   const position = zero?.machineReference?.position;
-  const trusted = positionTrust.trusted && positionTrust.fullHoming;
+  const trusted = firmwareHomeFrameEstablished();
   const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
   workZeroRestoreSummaryEl.innerHTML = zero ? `
     <dl>
@@ -2637,7 +2595,7 @@ async function resolveWorkZeroMachineReference(zero) {
 }
 
 async function restoreInterruptedWorkZero() {
-  if (!positionTrust.trusted || !positionTrust.fullHoming) throw new Error('Home All first so every machine axis is trusted.');
+  if (!firmwareHomeFrameEstablished()) throw new Error('Home All first so every machine axis is trusted.');
   const zero = interruptedWorkZeroEntry();
   if (!zero) throw new Error('Interrupted run has no saved work zero.');
   const reference = await resolveWorkZeroMachineReference(zero);
@@ -2953,7 +2911,6 @@ async function dismissFirmwareRecoveryCheckpoint() {
   await acknowledgeFirmwareRecoveryCheckpoint();
   firmwareRecoveryImported = false;
   firmwareRecoveryCheckpoint = { available: false, requiresReview: false, checkpoint: null };
-  setPositionTrust(false, 'firmware-recovery-dismissed');
   appendRecoveryLog(legacyTestMotion
     ? 'Old test-motion record cleared. Continue with Home → Zero → Bounds/Aircut → Cut.'
     : 'Interrupted cut record deliberately discarded. Home All before new motion.');
@@ -2970,8 +2927,8 @@ function renderRecoveryPanel() {
   renderRecoveryCollection();
   renderWorkZeroRestore();
   if (recoveryTrustEl) {
-    recoveryTrustEl.textContent = positionTrust.trusted ? 'POSITION TRUSTED' : 'POSITION UNTRUSTED';
-    recoveryTrustEl.className = `arm-state ${positionTrust.trusted ? 'arm-ready' : 'arm-not-ready'}`;
+    recoveryTrustEl.textContent = firmwareFrameTrusted() ? 'POSITION TRUSTED' : 'POSITION UNTRUSTED';
+    recoveryTrustEl.className = `arm-state ${firmwareFrameTrusted() ? 'arm-ready' : 'arm-not-ready'}`;
   }
   if (!recoverySummaryEl) return;
   if (!recoveryPlan) {
@@ -2990,7 +2947,7 @@ function renderRecoveryPanel() {
   const available = recoveryPlan.status === 'available';
   const needsHome = blockers.some((item) => item.id === 'positionUntrusted');
   const needsWorkZero = blockers.some((item) => item.id === 'workZeroFrame' || item.id === 'workZeroMismatch');
-  const fullHomeReady = positionTrust.trusted && positionTrust.fullHoming && currentMachineFrame?.absoluteFromHome === true;
+  const fullHomeReady = firmwareHomeFrameEstablished();
   const idle = !['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(jobRunStatus?.state);
   const zero = interruptedWorkZeroEntry();
   const recoveryFixes = needsHome || needsWorkZero ? `
@@ -3162,7 +3119,7 @@ async function recordRecoveryMove(result, commandsSent, error = '') {
 async function runMotionOnlyRecoveryMove() {
   const plan = refreshRecoveryPlan();
   const generated = jobRecoveryModule?.buildMotionOnlyRecoveryCommands(plan, {
-    positionTrusted: positionTrust.trusted,
+    positionTrusted: firmwareFrameTrusted(),
     limits: RECOVERY_LIMITS,
     workZeroMachine: recoveryWorkZeroMachine(),
     travelFeedMmMin: automaticTravelFeed(),
@@ -3181,7 +3138,7 @@ async function runMotionOnlyRecoveryMove() {
   try {
     for (const command of generated.commands) {
       appendRecoveryLog(`> ${command}`);
-      const response = await sendCmd(command);
+      const response = await recoveryMove(command);
       sent.push(command);
       if (response) appendRecoveryLog(response.trim());
     }
@@ -3273,7 +3230,6 @@ function cancelToollessResumeFromControl(type) {
   }
   if (type === 'stop' || type === 'pause') {
     fetch('/api/jog/stop', { method: 'POST' }).catch(() => {});
-    setPositionTrust(false, `recovery-${type}`);
   }
 }
 
@@ -3285,7 +3241,7 @@ async function sendProductionCommands(commands, label) {
       throw stopped;
     }
     appendRecoveryLog(`> ${label} [${productionCommandsSent + 1}] ${command}`);
-    const response = await sendCmd(command);
+    const response = await recoveryMove(command);
     productionCommandsSent += 1;
     if (response) appendRecoveryLog(response.trim());
   }
@@ -3571,7 +3527,7 @@ function renderPrepareWorkZeroHistory() {
       : entries[0].id;
   prepareWorkZeroHistorySelect.value = preferredId;
   prepareWorkZeroHistorySelect.disabled = false;
-  const homed = positionTrust.trusted && positionTrust.fullHoming && currentMachineFrame?.absoluteFromHome === true;
+  const homed = firmwareHomeFrameEstablished();
   const busy = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']
     .includes(String(jobRunStatus?.state || '').toUpperCase());
   restorePrepareWorkZeroButton.disabled = !homed || busy;
@@ -4214,7 +4170,7 @@ function renderZeroHistoryPanel() {
 }
 
 async function restoreHistoryZero(zero) {
-  if (!positionTrust.trusted || !positionTrust.fullHoming) {
+  if (!firmwareHomeFrameEstablished()) {
     throw new Error('Home All first so the saved point can be resolved from machine home.');
   }
   const activeStates = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'];
@@ -4431,6 +4387,30 @@ async function recoverControllerConnection() {
     return window.LowRiderMachineBar.recoverControllerConnection();
   }
   return false;
+}
+
+// Recovery motion goes through the firmware-owned endpoint; the request carries no
+// trust values - admission is decided by canonical firmware state alone (F-2).
+async function recoveryMove(command) {
+  let res;
+  try {
+    res = await fetch('/api/recovery/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+  } catch (netErr) {
+    const err = new Error('Marlin did not respond. Recovery motion is blocked until controller communication is restored.');
+    err.isTimeout = true;
+    throw err;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    const err = new Error(data.error || `${command} failed`);
+    err.status = res.status;
+    throw err;
+  }
+  return data.response || '';
 }
 
 async function sendCmd(cmd) {
@@ -6901,11 +6881,6 @@ recoveryOverlayInput?.addEventListener('change', () => {
   recoveryOverlayVisible = Boolean(recoveryOverlayInput.checked);
   draw();
 });
-recoveryTrustButton?.addEventListener('click', () => {
-  if (!confirm('Confirm that the machine has been homed in this powered session and has not been moved manually. Position trust is required for recovery motion.')) return;
-  setPositionTrust(true, 'operator-confirmed-home-all', true);
-});
-recoveryUntrustButton?.addEventListener('click', () => setPositionTrust(false, 'operator-marked-untrusted'));
 firmwareRecoveryDismissButton?.addEventListener('click', () => {
   dismissFirmwareRecoveryCheckpoint().catch((err) => appendRecoveryLog(`Recovery record dismiss failed: ${err.message}`));
 });
@@ -6941,7 +6916,6 @@ productionResumeHoldButton?.addEventListener('contextmenu', (event) => event.pre
 cancelRecoveryButton?.addEventListener('click', () => {
   if (toollessResumeRunning || productionResumeRunning) return;
   resetProductionWorkflow();
-  setPositionTrust(false, 'recovery-cancelled');
   recoveryOverlayVisible = false;
   if (recoveryOverlayInput) recoveryOverlayInput.checked = false;
   if (recoveryLogEl) recoveryLogEl.textContent = '';
@@ -6997,13 +6971,10 @@ addEventListener('cnc-z-zero-set', (event) => {
   setZZeroWithCapture(event.detail).catch((err) => setToolZeroResult(err.message, true));
 });
 addEventListener('cnc-position-trust', (event) => {
-  if (event.detail?.trusted) {
-    setPositionTrust(true, event.detail.source || 'homing', event.detail.fullHoming === true);
-    if (event.detail.fullHoming === true) {
-      setRecoveryActionNotice('Home All complete. Next: restore the interrupted work zero.');
-    }
+  // Display notice only: firmware frame trust arrives through the machine slice.
+  if (event.detail?.trusted && event.detail.fullHoming === true) {
+    setRecoveryActionNotice('Home All complete. Next: restore the interrupted work zero.');
   }
-  else setPositionTrust(false, event.detail?.source || 'external');
 });
 addEventListener('cnc-critical-control', (event) => {
   cancelToollessResumeFromControl(event.detail?.type || 'stop');
@@ -7030,7 +7001,6 @@ addEventListener('unhandledrejection', (event) => {
   appendRunLog(`Browser promise error: ${event.reason?.message || event.reason}`);
   if (stopJobButton) stopJobButton.disabled = false;
 });
-restorePositionTrust();
 jobState = newJobState();
 Promise.all([workbenchUiPromise, workbenchControllerPromise])
   .then(([, controllerModule]) => {
@@ -7092,7 +7062,8 @@ window.CncTelemetry?.subscribe('job', (data) => {
 });
 window.CncTelemetry?.subscribe('motion', handleMotionTelemetry);
 window.CncTelemetry?.subscribe('system', (data) => {
-  if (data) handleRecoveryHealth(data.health || data);
+  // Firmware frame trust flows in through the machine slice; no browser-side
+  // recovery-health trust bookkeeping remains (F-2).
 });
 // The workbench homing gate (machineNeedsHome / workflow 'frame' gate) reads
 // currentMachineFrame. Feed it from the live machine slice so a Home done via

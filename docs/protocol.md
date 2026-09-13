@@ -336,6 +336,11 @@ Request body:
 }
 ```
 
+While a job is in `RECOVERY_REQUIRED`, this endpoint is locked to read-only diagnostics
+(`M114`, `M115`, `M503`, `M119`, `M105`); every other command - including motion and
+coordinate commands - is rejected with HTTP `409` and must use `POST /api/recovery/move`
+(state-ownership audit F-2). Standalone `M5` keeps its dedicated recovery-flow rejection.
+
 The firmware sends the command to Marlin with a newline, waits up to 1500 ms, collects all
 available serial response text, and returns it to the browser.
 
@@ -603,6 +608,33 @@ may follow the already browser-validated remaining Z path.
 The endpoint does not run the normal job-start preamble and never applies G92. It uses the existing
 SD/UART `ok`-paced runner, so `/api/job/pause`, `/api/job/resume`, `/api/job/stop`, and telemetry
 remain available. Job status reports `streamMode` as `aircut`, `toolless`, or `job`.
+
+### `POST /api/recovery/move`
+
+Operator-gated recovery-motion endpoint (state-ownership audit F-2). Authorization is derived
+from canonical firmware state only; browser-supplied trust flags are ignored:
+
+- job state must be `RECOVERY_REQUIRED`;
+- the machine frame must be trusted (Home-All derived: `machineValid`, `absoluteFromHome`,
+  homed X/Y/Z) and the work zero valid; a manually declared work frame is not accepted;
+- no competing motion owner (job runner, jog, machine operation, stop sequence);
+- controller communication must be available.
+
+Request body:
+
+```json
+{
+  "command": "G0 X10 Y10 F3000"
+}
+```
+
+The command class is a strict allowlist derived from the recovery planner: `M5`, `G21`,
+`G90`, `G54`, `M400`, and a single `G0` with X/Y/Z coordinates and at most one positive `F`
+feed. One command per request; comments, multiple commands, unknown words, and non-finite
+numbers are rejected with HTTP `400` `COMMAND_FORBIDDEN`. `G0` targets are validated against
+the discovered machine envelope after the work-zero transform. Homing (`G28`), machine
+coordinates (`G53`), work offsets (`G92`), and spindle commands (`M3`/`M4`) are outside the
+class. The response mirrors `POST /api/cmd`.
 
 ### `POST /api/recovery/production/start`
 

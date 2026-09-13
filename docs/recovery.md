@@ -29,9 +29,12 @@ restarted and the machine does not descend to cutting depth.
   positioned. Software does not claim to verify physical stock placement.
 
 Position trust is anchored by firmware `homingEpoch` and homed-axis state. Successful Home All
-creates the trusted frame consumed by Machine Bar and Preview. Operator confirmation remains an
-additional recovery gate, not the source of machine coordinates. Firmware reboot,
-firmware identity change, Cancel/Start Over, or the explicit untrust action clears it.
+creates the trusted frame consumed by Machine Bar and Preview. Recovery motion is authorized
+exclusively by this firmware frame state (`machineFrame` trusted + valid work zero) through
+`POST /api/recovery/move`; browser-tracked trust was removed (state-ownership audit F-2) - the
+browser may present trust from the telemetry frame slice and may reject early, but it can never
+grant motion. Firmware reboot or a firmware identity change therefore invalidates recovery
+motion by construction: the frame boots untrusted.
 
 Recovery never owns a separate Safe Z. It uses the current Job JSON `projectSafeZ.effectiveSafeZ`
 and validates that value against current stock geometry, Work Zero, trusted machine frame, and

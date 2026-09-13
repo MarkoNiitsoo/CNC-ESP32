@@ -616,10 +616,42 @@ export async function createMockServer(options = {}) {
         const errors = env.marlin.log.filter((entry) => entry.level === 'error');
         return json(res, 200, { ok: true, entries: env.marlin.log.slice(-100), lastCritical: errors.at(-1)?.text || null });
       }
+      // Mirror firmware F-2: recovery motion is authorized by firmware frame state
+      // only; browser-supplied trust flags are ignored.
+      if (req.method === 'POST' && pathname === '/api/recovery/move') {
+        const body = await readJson(req);
+        const command = String(body.command || '').trim();
+        const upper = command.toUpperCase();
+        if (env.runner.status.state !== 'RECOVERY_REQUIRED') {
+          return json(res, 409, { ok: false, code: 'RECOVERY_STATE_REQUIRED', error: 'recovery motion is only available while the job is in RECOVERY_REQUIRED' });
+        }
+        if (env.jog.state !== 'IDLE') {
+          return json(res, 409, { ok: false, code: 'JOG_ACTIVE', error: 'jog motion is active; release it before recovery motion' });
+        }
+        if (!env.frame.trusted || !env.frame.workZeroValid) {
+          return json(res, 409, { ok: false, code: 'FRAME_UNTRUSTED', error: 'recovery motion requires a trusted homed frame and a valid work zero; Home All and restore the work zero first' });
+        }
+        const simpleAllowed = ['M5', 'M400', 'G21', 'G90', 'G54'].includes(upper);
+        const g0Allowed = /^G0( [XYZF]-?\d+(?:\.\d+)?)+$/.test(upper) && / [XYZ]/.test(upper);
+        if (!simpleAllowed && !g0Allowed) {
+          return json(res, 400, { ok: false, code: 'COMMAND_FORBIDDEN', error: 'command is not part of the recovery motion command class' });
+        }
+        const result = env.marlin.execute(command, { priority: true });
+        return json(res, result.ok ? 200 : 502, { ok: result.ok, response: result.response || '' });
+      }
       if (req.method === 'POST' && pathname === '/api/cmd') {
         const command = String((await readJson(req)).cmd || '').trim();
         if (!command) throw new Error('missing cmd');
         const upper = command.toUpperCase();
+        // Mirror firmware F-2: during recovery review the generic terminal only
+        // passes read-only diagnostics; motion requires /api/recovery/move.
+        if (env.runner.status.state === 'RECOVERY_REQUIRED' &&
+            !['M114', 'M115', 'M503', 'M119', 'M105'].includes(upper)) {
+          return json(res, 409, {
+            ok: false,
+            error: 'Marlin transport is locked to recovery review; motion commands require /api/recovery/move',
+          });
+        }
         if (env.runner.controllerState === 'unresponsive' || env.runner.controllerState === 'recovering' || env.runner.controllerState === 'waiting') {
           return json(res, 503, {
             ok: false,
