@@ -1,5 +1,24 @@
 # Progress
 
+## 2026-09-13 - State-ownership phase 2: F-1 canonical frame invalidation (fences promoted)
+
+- Re-mapped every invalidation/establishment path before editing: establishment (Home finalize,
+  partial home, manual frame, touchplate/restore, counts re-derivation) deliberately stays
+  outside the new API; five trust-loss variants + three jog M410 paths now route through one
+  canonical `invalidateMachineFrame(FrameInvalidationScope, FrameInvalidationReason)`
+  (Baseline vs Full; six typed reasons, logged to job.log).
+- THE FIX: jog emergency release + both jog move-ack timeout escalations previously left the
+  frame trusted after M410; they now take Full invalidation identical to job quickstops
+  (documented rule: M410 cuts motion mid-segment -> live coords uncertain -> Home All
+  required; job and jog quickstops are the same physical-uncertainty class). Ordinary jog
+  release and the 10 s session teardown remain trust-preserving by design.
+- Dev mock mirrors the jog-quickstop frame drop. Telemetry mechanisms unchanged (revision+1
+  on Full only - Baseline keeps revision so home-confirm waits stay sound).
+- F-1 fences promoted from it.fails to positive invariants + 4 single-writer structural
+  guards; three existing tests updated to the canonical mechanism (intent preserved).
+- Verified: vitest 820/820, pio native 21/21, esp32cam SUCCESS, jscpd 125 clones (informational).
+- F-2..F-5 untouched, still fenced; F-4 stop-branch substate residue deliberately not mixed in.
+
 ## 2026-09-13 - State-ownership phase 1: acceptance fence + zero-risk dead-state cleanup
 
 - Fence-first per plan: 17 inverted it.fails SAFETY FENCE tests (F-1..F-5) across 5 new test

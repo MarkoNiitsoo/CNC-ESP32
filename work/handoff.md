@@ -1,5 +1,29 @@
 # Handoff
 
+## 2026-09-13 - Phase 2 shipped: F-1 canonical frame invalidation (jog M410 trust hole closed)
+
+- Commit b94eb63 on top of phase 1: `invalidateMachineFrame(FrameInvalidationScope, FrameInvalidationReason)`
+  is now the single writer for frame trust loss. Scopes: Baseline (machineValid/workZeroValid only;
+  homing reference re-derivable from counts - used by machine-op baseline failures) and Full
+  (wholesale reset + revision+1 - used by every quickstop). Reasons typed + logged to job.log
+  ("machine frame invalidated: scope=... reason=...") for field diagnostics.
+- Jog M410 paths (emergency release, both move-ack timeout escalations) now take Full
+  invalidation = same trust result as job quickstops. This closes the F-1 defect where a jog
+  quickstop left a stale trusted frame (stale job.start echo would pass). Ordinary jog release
+  and 10 s session teardown deliberately do NOT invalidate (no M410; horizon drains with acks).
+- Establishment paths (Home finalize incl. partial-home downgrade, zero capture/restore,
+  manual frame, counts re-derivation) intentionally stay outside the API. Boot interrupted-job
+  now bumps revision to 1 (was reset to 0 - inconsistency fixed as a side effect).
+- F-1 fences PROMOTED: test/firmware/frame-trust-invariants.test.mjs now has positive
+  invariant tests (jog quickstop + both escalations fully invalidate; ordinary release keeps
+  trust) + single-writer guards (wholesale reset exactly once, no hand-cleared epoch). Three
+  pre-existing tests updated to the canonical mechanism with intent preserved.
+- Verified: vitest 820/820, pio native 21/21, esp32cam SUCCESS. jscpd 125 clones (noise).
+- Next phases (individually fenced): F-4 resetJobSubstates parity, F-3 unified stream
+  admission, F-2 firmware recovery-move gate, F-5 firmware-issued start token. NOTE: field
+  verification on hardware still pending for the jog-quickstop scenario (Home All demanded
+  after emergency jog release) - expected browser behavior: STALE chip + gated controls.
+
 ## 2026-09-13 - Phase 1 shipped: safety fences + dead-state cleanup (no behavior change)
 
 - Commit chain from 987e1e2: e139670 (mock UI single-source + drift guard + AGENTS.md rule),

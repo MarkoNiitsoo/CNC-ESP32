@@ -77,12 +77,13 @@ for Marlin on a BTT SKR Pro.
 
 Layer 1 (jscpd-rs clone scan): `work/duplication-audit.md`. Layer 2 (semantic state-ownership /
 source-of-truth audit): `work/state-ownership-audit.md` — 22 domains, 14 confirmed MST findings
-(5 × S1), ownership model, 11-step fix plan, 13 invariant tests. Phase 1 executed (commit chain
-e139670..725df11): acceptance fences for F-1..F-5 + zero-risk dead-state cleanup (jobRunning,
-dirty globals, recoveryRequired→derived, orphaned job-core.mjs, mock-sd UI single-source rule).
-The remaining safety refactors (frame-invalidation policy, unified admission, recovery-move
-authorization, firmware-issued start token, identity/safe-Z/readiness consolidation) are still
-NOT started: each is an individually fenced follow-up phase per audit §9.
+(5 × S1), ownership model, 11-step fix plan, 13 invariant tests. Phase 1 executed (commits
+e139670..15d8e33): acceptance fences for F-1..F-5 + zero-risk dead-state cleanup. Phase 2
+executed (commit b94eb63): F-1 resolved via canonical
+`invalidateMachineFrame(scope, reason)` — jog M410 paths now invalidate frame trust identically
+to job quickstops; fences promoted to positive invariants. Still open, individually fenced:
+F-4 (stop-path substate parity), F-3 (unified stream admission), F-2 (firmware recovery-move
+gate), F-5 (firmware-issued start token), then identity/safe-Z/readiness consolidation.
 ## Operator Zero / Origin workflow
 
 Replace developer-facing Setup zero controls with one compact operator panel, automatic metadata

@@ -53,7 +53,7 @@ only).
 | 5 | Tool-change substate | bool cluster 180-185 **and** `toolChangePhase` string 197 (two FSMs) | begin 6656-6662; ready 4729-4732; complete 9004-9008; resets ×3 divergent (6188-6194, 6215-6219, 9146-9152) [V: asymmetry] | stop paths disagree (F-4) | **S2 → one FSM (string), one reset fn** |
 | 6 | Stop/estop outcome | `stopWarning`, `stopEmergencyParserDetected` 215-216; enum Stopping/Stopped | performJobStop 9070-9178 (3 field-slams [V]); jog quickstop separate | post-stop state is path-dependent (F-1, F-4) | **S1 → single transition fn** |
 | 7 | Recovery/checkpoint | NVS active-job marker 1755-1766; `jobCheckpoint*` 856-867; browser `recoveries[]` + `runHistory[].firmwareCheckpoint` | FW writes checkpoint; browser imports (preview 2888-2944) **before** ack (2930) | browser writes sidecar possibly of another job (2856-2931) | OK-MIRROR + S2 note (import is path-keyed, ordering safe) |
-| 8 | Frame trust + homing epoch | `machineFrame` 418-445; `trusted` **computed** 5077-5078 [V]; epoch/session 441-442 | establishment: Home-all finalize only (9605-9615); invalidation: **≥5 divergent routines** (F-1) | jog M410 paths invalidate nothing [V] | **S1 → one `invalidateMachineFrame(reason, scope)`** |
+| 8 | Frame trust + homing epoch | `machineFrame` 418-445; `trusted` **computed** 5077-5078 [V]; epoch/session 441-442 | establishment: Home-all finalize only (9605-9615); invalidation: **≥5 divergent routines** (F-1) | jog M410 paths invalidated nothing [V] | **S1 → RESOLVED (canonical `invalidateMachineFrame(scope, reason)`, phase 2, commit b94eb63)** |
 | 9 | Machine position | `marlinPosition` 411-416; commit `updatePositionFromMarlinResponse` 4982-5026 — **single committer** [A] | 7 producers converge on it (§ position map in evidence) | first-`X:` parse vs interleaved autoreport (4883) — residual stale-sample window [I] | OK core; **FW canonical** |
 | 10 | Work zero | live `workZeroMachine*` 429-431; `workZeroValid` 422; saved zeros in sidecar `zeroHistory[]`; checkpoint SD copy 1837-1844; restore writes browser coords (10271-10273) | machine ops; browser restore (gated trusted 10202-10206 [A]) | saved-zero ↔ live-frame match checked in browser **and** FW (±0.05 mm, same tuple) | dual but equivalent — OK-DOMAIN; keep FW authoritative |
 | 11 | Safe Z | `frame.safeZ` (FW, work-frame mm); projectSafeZ in sidecar (job-safe-z.js 10-78); RECOVERY/TOOLLESS/MACHINE limits (preview 176-178); machine-bar fallback `{1..70}` (52, 394) [V]; jog lift (9226-9235); SAFETY_Z_FEED 400 | FW computes frame.safeZ; browser clamps in 2 divergent formulas (F-9) | two clamp policies for the same work-frame value [V] | **S1/S2 → one browser safe-Z policy module over frame.safeZ** |
@@ -92,6 +92,22 @@ only).
 ### S1 — multiple authoritative safety state
 
 **F-1 · Frame-trust invalidation policy is path-dependent; jog M410 invalidates nothing.** [V]
+
+> **RESOLVED (phase 2, commit b94eb63).** Canonical `invalidateMachineFrame(scope, reason)` is
+> now the single writer for trust loss: scope `Full` (wholesale struct reset + revision+1) vs
+> `Baseline` (machineValid/workZeroValid only, homing reference re-derivable). Migrated: both
+> job-stop branches (JobQuickstop), paused manual interruption, boot interrupted-job,
+> controller-reset recovery, machine-op baseline failures ×2 — and the defect: jog emergency
+> release + both move-ack timeout escalations now take `Full` (JogQuickstop). Explicit semantic
+> rule: any M410 cuts motion mid-segment, so live coordinates are uncertain within the
+> interrupted segment; the conservative documented policy drops the homing reference and
+> requires Home All, identically for job and jog quickstops. Ordinary jog release and the 10 s
+> session teardown stay M410-free and trust-preserving. Establishment paths (Home finalize,
+> zero capture/restore, manual frame, counts re-derivation) deliberately do NOT route through
+> the API. Remaining nuance (documented, accepted): Baseline scope leaves `updatedAtMs`
+> refreshed but revision unchanged by design (revision gates home-confirm waits).
+
+The original finding, for the record:
 `trusted` is computed from `machineValid && absoluteFromHome && homedX/Y/Z` (5077-5078) — never
 stored — so the *policy* lives entirely in who resets which fields: (a)
 `invalidateMachineFrameAfterQuickstop` 4685-4692 from job stop 9103/9166 and paused-interruption
@@ -301,6 +317,15 @@ chip becomes an output only, never an input.
 > tests — owned by step 10. F-5 refinement: `startChecklist` appears nowhere in main.cpp;
 > the checklist is UI-side only (fence test documents this boundary). Steps 2-6+ below are
 > still open.
+>
+> **Phase 2 (2026-09-13, commit b94eb63): F-1 RESOLVED** — canonical
+> `invalidateMachineFrame(FrameInvalidationScope, FrameInvalidationReason)` with two scopes
+> (Baseline/Full) and six typed reasons; all five old ad-hoc invalidation variants plus the
+> three jog M410 paths (the defect) now route through it; the old helper is deleted and
+> single-writer guards assert the wholesale reset exists exactly once. The three F-1 fences
+> are promoted to ordinary positive assertions plus four structural guards; dev mock mirrors
+> the jog-quickstop invalidation. F-4 residue inside the stop branches (tool-change/pause
+> substate) was deliberately left for its own phase. Steps 3-6+ below are still open.
 
 1. **Zero-risk deletions** (S2/S3 dead state): `jobRunning` (11 writer lines), dead `dirty*` flags
    2396-2401, orphaned `lib/job-core.mjs`, write-only `jogAnimationPosition` + no-listener events,
@@ -341,6 +366,13 @@ form) exist as **inverted acceptance fences** (`it.fails`, currently failing by 
 `stop-cleanup-parity.test.mjs`, `job-authorization-fence.test.mjs`,
 `test/ui/recovery-trust-fence.test.mjs`. Items 6, 9-13 and behavioral/mock variants of 1-5
 remain to be written when their fix phases start.
+
+Status after phase 2: the three F-1 fences in `frame-trust-invariants.test.mjs` are **promoted
+to ordinary positive assertions** (canonical-call matchers) alongside four new single-writer
+structural guards; the F-2..F-5 fences remain inverted until their phases run. Host-testable
+behavioral extraction of the frame model remains impractical without restructuring main.cpp;
+source-audit assertions plus the dev-mock mirror are the current proof, to be supplemented by
+field verification of a jog quickstop on hardware.
 
 Firmware (native/host tests):
 1. **Frame-trust invariant**: for every M410-emitting entry point (job stop, jog emergency, jog ack
