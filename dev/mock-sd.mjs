@@ -1,6 +1,9 @@
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+// '/www' emulates the SD card's UI directory. It must stay EMPTY of UI code: the mock
+// dev server serves all UI from the repo's www/ directory (single source). Guarded by
+// test/mock/mock-sd.test.mjs ("mock SD UI single-source rule").
 export const MOCK_ROOTS = ['/gcode', '/jobs', '/logs', '/firmware', '/www', '/esp32-cnc'];
 
 const SAMPLE_FILES = {

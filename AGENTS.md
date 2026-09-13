@@ -8,6 +8,9 @@ Offline CNC web pendant firmware for an AI-Thinker ESP32-CAM talking to Marlin o
 
 - Keep changes small, readable, and documented.
 - Update `work/progress.md` and `work/handoff.md` after every implementation step.
+- Single source for UI code: the dev mock serves the browser UI only from the repo `www/` directory.
+  `dev/mock-sd/www` emulates SD data storage and must never contain HTML/JS/CSS copies (guarded by
+  `test/mock/mock-sd.test.mjs`).
 - Finish every completed implementation task with a focused Git commit. Do not leave completed task
   changes uncommitted or mix unrelated tasks in the same commit.
 - Job execution must be streaming-based and must not require loading the full G-code file into RAM.

@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MockSD } from '../../dev/mock-sd.mjs';
 
@@ -38,5 +39,28 @@ describe('MockSD', () => {
     await sd.writeText('/jobs/generated/part.run.gc', 'G21\nG90\n');
     expect(await sd.readText('/jobs/generated/part.run.gc')).toContain('G90');
     expect((await sd.list('/firmware')).path).toBe('/firmware');
+  });
+});
+
+// Single-source rule (state-ownership audit, Step 0): the mock dev server serves all
+// UI from the repo's www/ directory. The mock SD's /www emulates the card's data
+// directory and must never contain UI code, or tests can pass against a stale copy.
+describe('mock SD UI single-source rule', () => {
+  it('keeps dev/mock-sd/www free of UI code (UI is served from www/ only)', async () => {
+    const mockWww = fileURLToPath(new URL('../../dev/mock-sd/www', import.meta.url));
+    let entries = [];
+    try {
+      entries = await readdir(mockWww, { recursive: true });
+    } catch (error) {
+      if (error.code === 'ENOENT') return; // directory not created yet: nothing to guard
+      throw error;
+    }
+    const uiFiles = entries.filter((name) => /\.(html|js|mjs|css)$/i.test(name));
+    expect(uiFiles, [
+      'dev/mock-sd/www contains UI code copies:',
+      ...uiFiles.map((name) => `  ${name}`),
+      'UI must come from the repo www/ directory only.',
+      'Delete these files (or run: npm run dev:mock:reset).',
+    ].join('\n')).toEqual([]);
   });
 });
