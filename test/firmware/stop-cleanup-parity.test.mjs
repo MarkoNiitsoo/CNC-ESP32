@@ -40,82 +40,113 @@ function countMatches(text, regex) {
   return (text.match(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`)) || []).length;
 }
 
-// Every job-ending path must leave the SAME required substate cleaned up:
-// pause flags, direct-resume authority, and tool-change state (F-4 parity set).
-const PAUSE_CLEARED = /jobStatus\.pauseRequested\s*=\s*false/;
-const STOP_CLEARED = /jobStatus\.stopRequested\s*=\s*false/;
-const DIRECT_RESUME_REVOKED = /jobStatus\.directResumeValid\s*=\s*false/;
-const TOOL_CHANGE_PENDING_CLEARED = /jobStatus\.toolChangePending\s*=\s*false/;
-const TOOL_CHANGE_PHASE_RESET = /jobStatus\.toolChangePhase\s*=\s*"NONE"/;
+const STOP_INITIATED = /resetJobSubstates\(JobSubstateResetScope::StopInitiated\)/;
+const TERMINAL = /resetJobSubstates\(JobSubstateResetScope::Terminal\)/;
 
-describe('stop-cleanup parity anchors (F-4 audit evidence)', () => {
-  it('extracts all five job-ending paths', () => {
-    expect(extractFunction(source, 'performJobStop')).not.toBeNull();
-    expect(extractFunction(source, 'beginPausedManualInterruption')).not.toBeNull();
-    expect(extractFunction(source, 'finishPrioritySequence')).not.toBeNull();
-    expect(extractFunction(source, 'setJobError')).not.toBeNull();
-    expect(extractFunction(source, 'completeJob')).not.toBeNull();
-  });
-
-  it('anchors the terminal and error transitions to their current cleanup code', () => {
-    const finishPrioritySequence = extractFunction(source, 'finishPrioritySequence');
-    expect(finishPrioritySequence).toContain('resetFeedOverrideAfterJobIfNeeded()');
-    expect(finishPrioritySequence).toContain('jobStatus.pauseMode = "none"');
-    const completeJob = extractFunction(source, 'completeJob');
-    expect(completeJob).toContain('jobStatus.toolChangePhase = "NONE"');
-    const setJobError = extractFunction(source, 'setJobError');
-    expect(setJobError).toContain('jobWaitingForOk = false');
-  });
-
-  it('documents the cleanup facts that already hold today', () => {
+// F-4 promoted invariants: same terminal semantic outcome => same transient job-control
+// cleanup, through one canonical resetJobSubstates(scope) policy. These were inverted
+// it.fails fences until the canonical cleanup landed (phase 3).
+describe('stop-cleanup parity (F-4, promoted after canonical resetJobSubstates)', () => {
+  it('normal/safety Stop cleans the full substate set via the canonical policy', () => {
     const performJobStop = extractFunction(source, 'performJobStop');
-    expect(countMatches(performJobStop, PAUSE_CLEARED)).toBeGreaterThanOrEqual(2);
+    // Main branch (Stop/Safety Stop) and machine-operation branch (stop during an
+    // active machine operation) both enter Stopping through the canonical reset.
+    expect(countMatches(performJobStop, STOP_INITIATED)).toBe(2);
+  });
+
+  it('paused manual interruption cleans the full substate set via the canonical policy', () => {
+    const beginPausedManualInterruption = extractFunction(source, 'beginPausedManualInterruption');
+    expect(countMatches(beginPausedManualInterruption, STOP_INITIATED)).toBe(1);
+  });
+
+  it('the Stopping terminal transition cleans the full substate set via the canonical policy', () => {
     const finishPrioritySequence = extractFunction(source, 'finishPrioritySequence');
-    expect(countMatches(finishPrioritySequence, STOP_CLEARED)).toBeGreaterThanOrEqual(1);
+    expect(finishPrioritySequence).toContain('JobRunnerState::Stopping');
+    expect(countMatches(finishPrioritySequence, TERMINAL)).toBe(1);
+  });
+
+  it('job error cleans the full substate set via the canonical policy', () => {
+    const setJobError = extractFunction(source, 'setJobError');
+    expect(setJobError).toContain('JobRunnerState::Error');
+    expect(countMatches(setJobError, TERMINAL)).toBe(1);
+  });
+
+  it('job completion cleans the full substate set via the canonical policy', () => {
+    const completeJob = extractFunction(source, 'completeJob');
+    expect(completeJob).toContain('JobRunnerState::Completed');
+    expect(countMatches(completeJob, TERMINAL)).toBe(1);
+  });
+
+  it('successful resume discards the tool-change window via the canonical policy', () => {
+    const processJobRunner = extractFunction(source, 'processJobRunner');
+    const advance = processJobRunner.slice(
+      processJobRunner.indexOf('JobRunnerState::Resuming'),
+      processJobRunner.indexOf('JobRunnerState::Running') + 1,
+    );
+    expect(advance).toContain('JobRunnerState::Resuming');
+    expect(countMatches(processJobRunner, TERMINAL)).toBe(1);
   });
 });
 
-describe('stop-cleanup parity invariants (F-4 acceptance fences)', () => {
-  it.fails('SAFETY FENCE (F-4, expected failing until fixed): performJobStop cleans the full substate set in both stop branches', () => {
-    const performJobStop = extractFunction(source, 'performJobStop');
-    expect(countMatches(performJobStop, PAUSE_CLEARED)).toBeGreaterThanOrEqual(2);
-    expect(countMatches(performJobStop, DIRECT_RESUME_REVOKED)).toBeGreaterThanOrEqual(2);
-    expect(countMatches(performJobStop, TOOL_CHANGE_PENDING_CLEARED)).toBeGreaterThanOrEqual(2);
-    expect(countMatches(performJobStop, TOOL_CHANGE_PHASE_RESET)).toBeGreaterThanOrEqual(2);
-  });
-
-  it.fails('SAFETY FENCE (F-4, expected failing until fixed): beginPausedManualInterruption cleans the full substate set', () => {
+describe('critical ordering and evidence preservation (F-4)', () => {
+  it('persists recovery evidence BEFORE transient cleanup on the manual-interruption path', () => {
     const beginPausedManualInterruption = extractFunction(source, 'beginPausedManualInterruption');
-    expect(countMatches(beginPausedManualInterruption, PAUSE_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(beginPausedManualInterruption, DIRECT_RESUME_REVOKED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(beginPausedManualInterruption, TOOL_CHANGE_PENDING_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(beginPausedManualInterruption, TOOL_CHANGE_PHASE_RESET)).toBeGreaterThanOrEqual(1);
+    expect(beginPausedManualInterruption.indexOf('writePersistentJobCheckpoint(false, true'))
+      .toBeLessThan(beginPausedManualInterruption.indexOf('resetJobSubstates('));
   });
 
-  it.fails('SAFETY FENCE (F-4, expected failing until fixed): finishPrioritySequence Stopping transition cleans the full substate set', () => {
+  it('the canonical reset never touches recovery evidence or the RecoveryRequired decision input', () => {
+    const canonical = extractFunction(source, 'resetJobSubstates');
+    // pauseInterruptedForManualMotion decides Stopped vs RecoveryRequired at the terminal
+    // transition and must survive cleanup; callers own it explicitly.
+    expect(canonical).not.toContain('pauseInterruptedForManualMotion');
+    expect(canonical).not.toContain('streamingPausedReason');
+    expect(canonical).not.toContain('lastError');
+    expect(canonical).not.toContain('stopWarning');
+    expect(canonical).not.toContain('homingEpoch');
+  });
+
+  it('still reports RecoveryRequired for a manual-motion interruption after cleanup', () => {
     const finishPrioritySequence = extractFunction(source, 'finishPrioritySequence');
-    expect(countMatches(finishPrioritySequence, PAUSE_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(finishPrioritySequence, STOP_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(finishPrioritySequence, DIRECT_RESUME_REVOKED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(finishPrioritySequence, TOOL_CHANGE_PENDING_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(finishPrioritySequence, TOOL_CHANGE_PHASE_RESET)).toBeGreaterThanOrEqual(1);
+    const stopping = finishPrioritySequence.slice(finishPrioritySequence.indexOf('JobRunnerState::Stopping'));
+    expect(stopping).toMatch(/pauseInterruptedForManualMotion[\s\S]*JobRunnerState::RecoveryRequired[\s\S]*JobRunnerState::Stopped/);
+  });
+});
+
+describe('non-terminal pause and resume stay intact (F-4 boundary)', () => {
+  it('ordinary Pause retains exactly the state direct Resume needs', () => {
+    const performJobPause = extractFunction(source, 'performJobPause');
+    expect(performJobPause).not.toContain('resetJobSubstates');
+    expect(countMatches(performJobPause, /jobStatus\.directResumeValid = true/)).toBe(2);
+    expect(countMatches(performJobPause, /jobStatus\.pauseRequested = true/)).toBe(2);
+    expect(performJobPause).toContain('pauseMode = "realtime"');
+    expect(performJobPause).toContain('pauseMode = "boundary"');
   });
 
-  it.fails('SAFETY FENCE (F-4, expected failing until fixed): setJobError cleans the full substate set', () => {
-    const setJobError = extractFunction(source, 'setJobError');
-    expect(countMatches(setJobError, PAUSE_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(setJobError, STOP_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(setJobError, DIRECT_RESUME_REVOKED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(setJobError, TOOL_CHANGE_PENDING_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(setJobError, TOOL_CHANGE_PHASE_RESET)).toBeGreaterThanOrEqual(1);
+  it('direct Resume consumes its own authority without the terminal cleanup', () => {
+    const performJobResume = extractFunction(source, 'performJobResume');
+    expect(performJobResume).not.toContain('resetJobSubstates');
+    expect(performJobResume).toContain('jobStatus.directResumeValid = false');
+    expect(performJobResume).toContain('JobRunnerState::PausedIntact');
+  });
+});
+
+describe('canonical substate cleanup single-writer guards (F-4)', () => {
+  it('owns the tool-change terminal reset: exactly one toolChangePhase="NONE" writer', () => {
+    const canonical = extractFunction(source, 'resetJobSubstates');
+    expect(canonical).not.toBeNull();
+    expect(canonical).toContain('JobSubstateResetScope scope');
+    expect(canonical).toContain('jobStatus.toolChangePhase = "NONE"');
+    expect(countMatches(source, /jobStatus\.toolChangePhase\s*=\s*"NONE"/)).toBe(1);
   });
 
-  it.fails('SAFETY FENCE (F-4, expected failing until fixed): completeJob cleans the full substate set', () => {
-    const completeJob = extractFunction(source, 'completeJob');
-    expect(countMatches(completeJob, PAUSE_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(completeJob, STOP_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(completeJob, DIRECT_RESUME_REVOKED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(completeJob, TOOL_CHANGE_PENDING_CLEARED)).toBeGreaterThanOrEqual(1);
-    expect(countMatches(completeJob, TOOL_CHANGE_PHASE_RESET)).toBeGreaterThanOrEqual(1);
+  it('keeps the old per-path field-slam blocks out of the stop paths', () => {
+    expect(countMatches(source, /jobStatus\.toolChangePending\s*=\s*false/)).toBe(2);
+    const canonical = extractFunction(source, 'resetJobSubstates');
+    const toolChangeComplete = extractFunction(source, 'handleToolChangeComplete');
+    // One writer is the canonical reset; the other is the deliberate tool-change
+    // completion flow transition (window closed, stream resumes).
+    expect(countMatches(canonical, /jobStatus\.toolChangePending\s*=\s*false/)).toBe(1);
+    expect(countMatches(toolChangeComplete, /jobStatus\.toolChangePending\s*=\s*false/)).toBe(1);
   });
 });

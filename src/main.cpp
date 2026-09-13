@@ -465,6 +465,23 @@ enum class FrameInvalidationReason : uint8_t {
 
 void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReason reason);
 
+// Single writer for transient job-control cleanup on terminal/interrupted job paths
+// (state-ownership audit F-4): same terminal semantic outcome => same transient cleanup.
+// Owns pauseRequested/stopRequested/directResumeValid/pauseRealtimeHold/pauseMode and
+// the tool-change transient FSM (booleans + phase). Does NOT own domain evidence or
+// caller-specific state: pauseInterruptedForManualMotion, streamingPausedReason,
+// stopWarning/lastError, toolChange return-position/tool metadata, and recovery/
+// checkpoint evidence must be persisted BEFORE calling this.
+enum class JobSubstateResetScope : uint8_t {
+  StopInitiated, // entering Stopping: stop intent asserted, resume/pause authority revoked,
+                 // tool-change window closed; stopRequested stays asserted until the stop
+                 // priority sequence completes.
+  Terminal,      // job reached a final state (Stopped/RecoveryRequired/Completed/Error) or
+                 // a resume completed: all transient control state discarded.
+};
+
+void resetJobSubstates(JobSubstateResetScope scope);
+
 struct MotionTelemetryEvent {
   uint32_t sequence = 0;
   uint32_t sentAtMs = 0;
@@ -4721,6 +4738,21 @@ void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReaso
               " reason=" + kFrameInvalidationReasonLabels[static_cast<uint8_t>(reason)]);
 }
 
+void resetJobSubstates(JobSubstateResetScope scope) {
+  jobStatus.pauseRequested = false;
+  jobStatus.stopRequested = scope == JobSubstateResetScope::StopInitiated;
+  jobStatus.directResumeValid = false;
+  jobStatus.pauseRealtimeHold = false;
+  jobStatus.pauseMode = "none";
+  jobStatus.toolChangePending = false;
+  jobStatus.toolChangeReady = false;
+  jobStatus.toolChangeZZeroCompleted = false;
+  jobStatus.toolChangeParked = false;
+  jobStatus.toolChangeToolConfirmed = false;
+  jobStatus.toolChangeRouterReadyConfirmed = false;
+  jobStatus.toolChangePhase = "NONE";
+}
+
 void startImmediateStopPrioritySequence() {
   // Stop owns the UART immediately: discard any buffered response and replace lower-priority
   // controls (including M220 or a boundary-pause M400) before writing M410 here.
@@ -4785,11 +4817,7 @@ void finishPrioritySequence() {
     jobStatus.state = jobStatus.pauseInterruptedForManualMotion
                           ? JobRunnerState::RecoveryRequired
                           : JobRunnerState::Stopped;
-    jobStatus.pauseRequested = false;
-    jobStatus.stopRequested = false;
-    jobStatus.directResumeValid = false;
-    jobStatus.pauseRealtimeHold = false;
-    jobStatus.pauseMode = "none";
+    resetJobSubstates(JobSubstateResetScope::Terminal);
     jobStatus.streamingPausedReason =
         jobStatus.pauseInterruptedForManualMotion
             ? "Manual movement invalidated direct Resume. Review Recovery before continuing."
@@ -6056,8 +6084,7 @@ void setJobError(const String &message, bool resetFeedOverride) {
   jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
   jobCommandEstimatedDurationMs = 0;
   jobCommandPlannerWaitMs = 0;
-  jobStatus.pauseRequested = false;
-  jobStatus.stopRequested = false;
+  resetJobSubstates(JobSubstateResetScope::Terminal);
   jobStatus.state = JobRunnerState::Error;
   jobStatus.lastError = message;
   if (jobStartCommandActive()) {
@@ -6210,15 +6237,7 @@ void completeJob() {
   jobCommandPlannerWaitMs = 0;
   jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
   jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
-  jobStatus.pauseRequested = false;
-  jobStatus.stopRequested = false;
-  jobStatus.toolChangePending = false;
-  jobStatus.toolChangeReady = false;
-  jobStatus.toolChangeZZeroCompleted = false;
-  jobStatus.toolChangeParked = false;
-  jobStatus.toolChangeToolConfirmed = false;
-  jobStatus.toolChangeRouterReadyConfirmed = false;
-  jobStatus.toolChangePhase = "NONE";
+  resetJobSubstates(JobSubstateResetScope::Terminal);
   jobStatus.streamingPausedReason = "";
   jobStatus.state = JobRunnerState::Completed;
   jobStatus.completedAtMs = millis();
@@ -6239,11 +6258,7 @@ void processJobRunner() {
 
   if (jobStatus.state == JobRunnerState::Resuming) {
     jobStatus.state = JobRunnerState::Running;
-    jobStatus.toolChangePhase = "NONE";
-    jobStatus.toolChangeParked = false;
-    jobStatus.toolChangeToolConfirmed = false;
-    jobStatus.toolChangeRouterReadyConfirmed = false;
-    jobStatus.toolChangeZZeroCompleted = false;
+    resetJobSubstates(JobSubstateResetScope::Terminal);
     touchJobStatus();
   }
 
@@ -9049,8 +9064,6 @@ bool beginPausedManualInterruption() {
   if (jobFile) jobFile.close();
   jobWaitingForOk = false;
   jobResponseBuffer = "";
-  jobStatus.pauseRequested = false;
-  jobStatus.stopRequested = true;
   jobStatus.directResumeValid = false;
   jobStatus.pauseInterruptedForManualMotion = true;
   jobStatus.state = JobRunnerState::Stopping;
@@ -9066,6 +9079,7 @@ bool beginPausedManualInterruption() {
   } else {
     logJobEvent("warning: could not persist paused manual-movement evidence");
   }
+  resetJobSubstates(JobSubstateResetScope::StopInitiated);
   invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::PausedManualInterruption);
   touchJobStatus();
   logJobEvent("paused direct Resume invalidated for manual movement");
@@ -9106,9 +9120,7 @@ MachineOperationResult performJobStop() {
     if (jobFile) jobFile.close();
     jobWaitingForOk = false;
     jobResponseBuffer = "";
-    jobStatus.pauseRequested = false;
-    jobStatus.stopRequested = true;
-    jobStatus.directResumeValid = false;
+    resetJobSubstates(JobSubstateResetScope::StopInitiated);
     jobStatus.pauseInterruptedForManualMotion = false;
     jobStatus.state = JobRunnerState::Stopping;
     jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
@@ -9155,17 +9167,8 @@ MachineOperationResult performJobStop() {
   if (jobFile) jobFile.close();
   jobWaitingForOk = false;
   jobResponseBuffer = "";
-  jobStatus.pauseRequested = false;
-  jobStatus.stopRequested = true;
-  jobStatus.directResumeValid = false;
+  resetJobSubstates(JobSubstateResetScope::StopInitiated);
   jobStatus.pauseInterruptedForManualMotion = false;
-  jobStatus.toolChangePending = false;
-  jobStatus.toolChangeReady = false;
-  jobStatus.toolChangeZZeroCompleted = false;
-  jobStatus.toolChangeParked = false;
-  jobStatus.toolChangeToolConfirmed = false;
-  jobStatus.toolChangeRouterReadyConfirmed = false;
-  jobStatus.toolChangePhase = "NONE";
   jobStatus.state = JobRunnerState::Stopping;
   jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
   jobStatus.stopWarning = communicationLostStop
