@@ -171,7 +171,6 @@ struct JobRunnerStatus {
   bool pauseRealtimeHold = false;
   bool pauseInterruptedForManualMotion = false;
   bool directResumeValid = false;
-  bool recoveryRequired = false;
   String pauseMode = "none";
   bool stopRequested = false;
   bool priorityCommandInProgress = false;
@@ -551,7 +550,6 @@ DeviceIdentity deviceIdentity;
 ToolChangeSettings toolChangeSettings;
 String activeWifiMode = "ap";
 String activeWifiSsid = kSetupApSsid;
-bool jobRunning = false; // TODO: Replace with real Marlin job state tracking.
 bool otaActive = false;
 bool otaUploadSeen = false;
 bool otaUploadOk = false;
@@ -2052,7 +2050,10 @@ String jobStatusJson(bool authoritativeState = false) {
   json += ",\"directResumeValid\":";
   json += jobStatus.directResumeValid ? "true" : "false";
   json += ",\"recoveryRequired\":";
-  json += jobStatus.recoveryRequired ? "true" : "false";
+  // Derived from the canonical enum (state-ownership audit F-12): only a job that
+  // ended Stopped or RecoveryRequired keeps asking the operator for a recovery review.
+  json += (jobStatus.state == JobRunnerState::Stopped ||
+            jobStatus.state == JobRunnerState::RecoveryRequired) ? "true" : "false";
   json += ",\"cutterState\":\"";
   json += (jobStatus.state == JobRunnerState::PausedIntact || jobStatus.state == JobRunnerState::Pausing)
               ? "running_assumed"
@@ -2392,13 +2393,6 @@ CachedAuthoritativeSlices cachedSlices;
 
 inline void touchJogStatus() { cachedSlices.jogJson = ""; }
 inline void touchPositionStatus() { cachedSlices.positionX = -999999.0f; }
-
-bool dirtySystem = false;
-bool dirtyController = false;
-bool dirtyMachine = false;
-bool dirtyJob = false;
-bool dirtyJog = false;
-bool dirtyControl = false;
 
 String controllerStateNormalized() {
   switch (jobStatus.state) {
@@ -4707,7 +4701,6 @@ void finishPrioritySequence() {
   clearPriorityCommands();
   if (jobStatus.state == JobRunnerState::Preparing) {
     if (machineProfile.capAutoreportPos) marlinAutoreportSeconds = 1;
-    jobRunning = true;
     jobStatus.state = JobRunnerState::Running;
     logJobEvent("start preamble complete: " + jobStatus.gcodePath);
     // The WS job.start command completes when the job actually reaches RUNNING.
@@ -4753,14 +4746,12 @@ void finishPrioritySequence() {
     }
     jobWaitingForOk = false;
     jobResponseBuffer = "";
-    jobRunning = false;
     jobStatus.state = jobStatus.pauseInterruptedForManualMotion
                           ? JobRunnerState::RecoveryRequired
                           : JobRunnerState::Stopped;
     jobStatus.pauseRequested = false;
     jobStatus.stopRequested = false;
     jobStatus.directResumeValid = false;
-    jobStatus.recoveryRequired = true;
     jobStatus.pauseRealtimeHold = false;
     jobStatus.pauseMode = "none";
     jobStatus.streamingPausedReason =
@@ -4808,7 +4799,6 @@ void processPriorityCommands() {
         jobStatus.state == JobRunnerState::Stopping) {
       jobStatus.state = JobRunnerState::Error;
       jobStatus.lastError = jobStatus.lastPriorityError;
-      jobRunning = false;
       if (jobFile) jobFile.close();
       if (startPreparation) {
         completeJobStartCommand(false, "EXECUTION_FAILED",
@@ -6027,7 +6017,6 @@ void setJobError(const String &message, bool resetFeedOverride) {
   jobCommandHardTimeoutMs = kMarlinDefaultHardAckTimeoutMs;
   jobCommandEstimatedDurationMs = 0;
   jobCommandPlannerWaitMs = 0;
-  jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
   jobStatus.state = JobRunnerState::Error;
@@ -6182,7 +6171,6 @@ void completeJob() {
   jobCommandPlannerWaitMs = 0;
   jobStatus.lastAcknowledgedByteOffset = jobStatus.currentByteOffset;
   jobStatus.lastAcknowledgedLineNumber = jobStatus.currentLineNumber;
-  jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = false;
   jobStatus.toolChangePending = false;
@@ -8452,7 +8440,6 @@ void handleTestMotionStart() {
     return;
   }
   logJobEvent("test motion start: " + mode + " " + path + " commands=" + String(commandCount));
-  jobRunning = true;
   jobStatus.state = JobRunnerState::Running;
   touchJobStatus();
   server.send(200, "application/json", jobStatusJson());
@@ -8576,7 +8563,6 @@ void handleProductionResumeStart() {
 
     if (jobFile) jobFile.close();
     clearPersistentJobCheckpoint();
-    jobRunning = false;
     jobStatus = JobRunnerStatus();
     jobStatus.feedOverridePercent = appliedFeedOverridePercent;
     touchJobStatus();
@@ -8584,7 +8570,6 @@ void handleProductionResumeStart() {
     return;
   }
   logJobEvent("Production Resume stream start: " + path + " commands=" + String(commandCount));
-  jobRunning = true;
   jobStatus.state = JobRunnerState::Running;
   touchJobStatus();
   server.send(200, "application/json", jobStatusJson());
@@ -8852,7 +8837,6 @@ MachineOperationResult performJobPause() {
     jobStatus.pauseRequested = true;
     jobStatus.stopRequested = false;
     jobStatus.directResumeValid = true;
-    jobStatus.recoveryRequired = false;
     jobStatus.pauseInterruptedForManualMotion = false;
     jobStatus.pauseRealtimeHold = true;
     jobStatus.pauseMode = "realtime";
@@ -8866,7 +8850,6 @@ MachineOperationResult performJobPause() {
     jobStatus.pauseRequested = true;
     jobStatus.stopRequested = false;
     jobStatus.directResumeValid = true;
-    jobStatus.recoveryRequired = false;
     jobStatus.pauseInterruptedForManualMotion = false;
     jobStatus.pauseRealtimeHold = false;
     jobStatus.pauseMode = "boundary";
@@ -9027,11 +9010,9 @@ bool beginPausedManualInterruption() {
   if (jobFile) jobFile.close();
   jobWaitingForOk = false;
   jobResponseBuffer = "";
-  jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = true;
   jobStatus.directResumeValid = false;
-  jobStatus.recoveryRequired = true;
   jobStatus.pauseInterruptedForManualMotion = true;
   jobStatus.state = JobRunnerState::Stopping;
   jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
@@ -9086,11 +9067,9 @@ MachineOperationResult performJobStop() {
     if (jobFile) jobFile.close();
     jobWaitingForOk = false;
     jobResponseBuffer = "";
-    jobRunning = false;
     jobStatus.pauseRequested = false;
     jobStatus.stopRequested = true;
     jobStatus.directResumeValid = false;
-    jobStatus.recoveryRequired = true;
     jobStatus.pauseInterruptedForManualMotion = false;
     jobStatus.state = JobRunnerState::Stopping;
     jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
@@ -9137,11 +9116,9 @@ MachineOperationResult performJobStop() {
   if (jobFile) jobFile.close();
   jobWaitingForOk = false;
   jobResponseBuffer = "";
-  jobRunning = false;
   jobStatus.pauseRequested = false;
   jobStatus.stopRequested = true;
   jobStatus.directResumeValid = false;
-  jobStatus.recoveryRequired = true;
   jobStatus.pauseInterruptedForManualMotion = false;
   jobStatus.toolChangePending = false;
   jobStatus.toolChangeReady = false;
