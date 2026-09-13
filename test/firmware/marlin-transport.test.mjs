@@ -176,9 +176,9 @@ describe('Marlin transport safety', () => {
     expect(source).toMatch(/JobRunnerState::Resuming[\s\S]*writeControllerLine\("R000", ControllerCommandClass::ManagedJobStream/);
     expect(source).toMatch(/capRealtimeReporting\s*=\s*[\s\S]*capEmergencyParser[\s\S]*REALTIME_REPORTING/);
     expect(stop).toContain('startImmediateStopPrioritySequence()');
-    expect(stop).toContain('invalidateMachineFrameAfterQuickstop()');
+    expect(stop).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop)');
     expect(source).toMatch(/void startImmediateStopPrioritySequence\(\)[\s\S]*queuePriorityCommands\("M410", "M5"\);[\s\S]*drainMarlinInput\(\);[\s\S]*startNextPriorityCommand\(\);/);
-    expect(source).toMatch(/void invalidateMachineFrameAfterQuickstop\(\)[\s\S]*machineFrame = MachineFrameState\(\)[\s\S]*marlinPosition = PositionTelemetry\(\)/);
+    expect(source).toMatch(/void invalidateMachineFrame\(FrameInvalidationScope scope, FrameInvalidationReason reason\)[\s\S]*machineFrame = MachineFrameState\(\)[\s\S]*marlinPosition = PositionTelemetry\(\)/);
     expect(finish).toMatch(/JobRunnerState::Stopping[\s\S]*JobRunnerState::RecoveryRequired[\s\S]*JobRunnerState::Stopped/);
     expect(source).toContain('\\"positionValid\\":');
   });
@@ -194,7 +194,7 @@ describe('Marlin transport safety', () => {
       invalidate.indexOf('writePersistentJobCheckpoint(false, true'),
     );
     expect(invalidate.indexOf('writePersistentJobCheckpoint(false, true')).toBeLessThan(
-      invalidate.indexOf('invalidateMachineFrameAfterQuickstop()'),
+      invalidate.indexOf('invalidateMachineFrame(FrameInvalidationScope::Full'),
     );
     expect(invalidate).toMatch(/writePersistentJobCheckpoint\(false, true[\s\S]*jobCheckpointTracking = false/);
     expect(source).toContain('"stopping_pending_m5"');

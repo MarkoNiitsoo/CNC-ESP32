@@ -56,7 +56,7 @@ describe('persistent active-job checkpoint', () => {
       firmware.indexOf('String jobStatusJson('),
     );
     expect(boot).toContain('sendImmediateJobSafetyM5');
-    expect(boot).toContain('machineFrame = MachineFrameState()');
+    expect(boot).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::BootInterruptedJob)');
     expect(boot).toContain('discarded legacy non-recoverable test-motion checkpoint');
     expect(boot).toMatch(/startMode.*validated_test_motion[\s\S]*clearPersistentJobCheckpoint\(\)/);
     expect(boot).not.toContain('openJobFileAtOffset');

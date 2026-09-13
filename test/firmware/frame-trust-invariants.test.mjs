@@ -40,16 +40,25 @@ function countMatches(text, regex) {
   return (text.match(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`)) || []).length;
 }
 
+const FULL_JOB_QUICKSTOP = /invalidateMachineFrame\(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop\)/;
+const FULL_JOG_QUICKSTOP = /invalidateMachineFrame\(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop\)/;
+const FULL_PAUSED_INTERRUPTION = /invalidateMachineFrame\(FrameInvalidationScope::Full, FrameInvalidationReason::PausedManualInterruption\)/;
+
 describe('frame-trust invalidation anchors (F-1 audit evidence)', () => {
-  it('extracts the computed frame-trust core and every quickstop entry point', () => {
-    expect(extractFunction(source, 'invalidateMachineFrameAfterQuickstop')).not.toBeNull();
+  it('extracts the canonical policy function and every quickstop entry point', () => {
+    const canonical = extractFunction(source, 'invalidateMachineFrame');
+    expect(canonical).not.toBeNull();
+    expect(canonical).toContain('FrameInvalidationScope scope');
+    expect(canonical).toContain('FrameInvalidationReason reason');
+    expect(canonical).toContain('machineFrame = MachineFrameState()');
+    expect(canonical).toContain('marlinPosition = PositionTelemetry()');
+    expect(canonical).toContain('touchPositionStatus()');
     const performJobStop = extractFunction(source, 'performJobStop');
     expect(performJobStop).not.toBeNull();
     expect(performJobStop).toContain('startImmediateStopPrioritySequence');
     expect(performJobStop).toContain('stopWarning');
     const beginPausedManualInterruption = extractFunction(source, 'beginPausedManualInterruption');
     expect(beginPausedManualInterruption).not.toBeNull();
-    expect(beginPausedManualInterruption).toContain('invalidateMachineFrameAfterQuickstop()');
     const stopJogInternal = extractFunction(source, 'stopJogInternal');
     expect(stopJogInternal).not.toBeNull();
     expect(stopJogInternal).toContain('sendJogCommand("M410")');
@@ -60,11 +69,16 @@ describe('frame-trust invalidation anchors (F-1 audit evidence)', () => {
     expect(processJogRunner).toContain('Marlin graceful jog stop acknowledgement timed out');
   });
 
-  it('invalidates the machine frame on job-side quickstops today', () => {
+  it('invalidates the machine frame through the canonical policy on job-side quickstops', () => {
     const performJobStop = extractFunction(source, 'performJobStop');
-    expect(countMatches(performJobStop, /invalidateMachineFrameAfterQuickstop\(\)/)).toBeGreaterThanOrEqual(2);
+    expect(countMatches(performJobStop, FULL_JOB_QUICKSTOP)).toBeGreaterThanOrEqual(2);
     const beginPausedManualInterruption = extractFunction(source, 'beginPausedManualInterruption');
-    expect(countMatches(beginPausedManualInterruption, /invalidateMachineFrameAfterQuickstop\(\)/)).toBeGreaterThanOrEqual(1);
+    expect(countMatches(beginPausedManualInterruption, FULL_PAUSED_INTERRUPTION)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('routes stop-during-jog through the emergency jog quickstop path', () => {
+    const performJobStop = extractFunction(source, 'performJobStop');
+    expect(performJobStop).toContain('stopJogInternal(true)');
   });
 
   it('keeps the 10 s jog session teardown intentionally M410-free under the motion-grant model', () => {
@@ -79,25 +93,63 @@ describe('frame-trust invalidation anchors (F-1 audit evidence)', () => {
   });
 });
 
-describe('frame-trust invariants (F-1 acceptance fences)', () => {
-  it.fails('SAFETY FENCE (F-1, expected failing until fixed): emergency jog quickstop (M410) invalidates the machine frame', () => {
+// F-1 promoted invariants: same physical uncertainty => same frame-trust result,
+// independent of which entry point fired. These were inverted it.fails fences until
+// the canonical invalidateMachineFrame(scope, reason) policy landed.
+describe('frame-trust invariants (F-1, promoted after canonical invalidation)', () => {
+  it('emergency jog quickstop (M410) fully invalidates the machine frame', () => {
     const stopJogInternal = extractFunction(source, 'stopJogInternal');
-    expect(stopJogInternal).toMatch(/invalidateMachineFrame/);
+    expect(countMatches(stopJogInternal, FULL_JOG_QUICKSTOP)).toBe(1);
   });
 
-  it.fails('SAFETY FENCE (F-1, expected failing until fixed): jog move-ack timeout escalation (M410) invalidates the machine frame', () => {
+  it('jog move-ack timeout escalation (M410) fully invalidates the machine frame', () => {
     const processJogRunner = extractFunction(source, 'processJogRunner');
     const lines = processJogRunner.split('\n');
     const escalationEnd = lines.findIndex((line) => line.includes('Marlin jog acknowledgement timed out'));
-    const escalation = lines.slice(Math.max(0, escalationEnd - 10), escalationEnd + 1).join('\n');
-    expect(escalation).toMatch(/invalidateMachineFrame/);
+    const escalation = lines.slice(Math.max(0, escalationEnd - 12), escalationEnd + 1).join('\n');
+    expect(escalation).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop)');
   });
 
-  it.fails('SAFETY FENCE (F-1, expected failing until fixed): graceful jog stop ack-timeout escalation (M410) invalidates the machine frame', () => {
+  it('graceful jog stop ack-timeout escalation (M410) fully invalidates the machine frame', () => {
     const processJogRunner = extractFunction(source, 'processJogRunner');
     const lines = processJogRunner.split('\n');
     const escalationEnd = lines.findIndex((line) => line.includes('Marlin graceful jog stop acknowledgement timed out'));
-    const escalation = lines.slice(Math.max(0, escalationEnd - 10), escalationEnd + 1).join('\n');
-    expect(escalation).toMatch(/invalidateMachineFrame/);
+    const escalation = lines.slice(Math.max(0, escalationEnd - 12), escalationEnd + 1).join('\n');
+    expect(escalation).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop)');
+  });
+
+  it('ordinary jog release keeps the frame trusted when position certainty survives', () => {
+    const stopJogInternal = extractFunction(source, 'stopJogInternal');
+    // Exactly one invalidation (the emergency branch); the graceful pointer-release
+    // tail drains the planner horizon without M410 and must not touch frame trust.
+    expect(countMatches(stopJogInternal, /invalidateMachineFrame\(/)).toBe(1);
+    expect(stopJogInternal).toContain('// Normal pointer release');
+    expect(stopJogInternal.indexOf('invalidateMachineFrame('))
+      .toBeLessThan(stopJogInternal.indexOf('// Normal pointer release'));
+  });
+});
+
+describe('canonical frame invalidation single-writer guards (F-1)', () => {
+  it('replaces the old ad-hoc helper with one canonical policy function', () => {
+    expect(source).not.toContain('invalidateMachineFrameAfterQuickstop');
+    const canonical = extractFunction(source, 'invalidateMachineFrame');
+    expect(canonical).not.toBeNull();
+  });
+
+  it('keeps the canonical function the only writer of wholesale frame reset', () => {
+    expect(countMatches(source, /machineFrame = MachineFrameState\(\)/)).toBe(1);
+    expect(countMatches(source, /marlinPosition = PositionTelemetry\(\)/)).toBe(1);
+  });
+
+  it('routes baseline machine-operation failures through the canonical policy', () => {
+    expect(countMatches(source, /invalidateMachineFrame\(FrameInvalidationScope::Baseline, FrameInvalidationReason::MachineOperationFailure\)/)).toBe(2);
+  });
+
+  it('routes boot interrupted-job and controller-reset through the canonical policy', () => {
+    expect(source).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::BootInterruptedJob)');
+    expect(source).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::ControllerReset)');
+    // The homing epoch is only ever zeroed by the wholesale struct reset inside the
+    // canonical function; no invalidation site may hand-clear frame fields anymore.
+    expect(countMatches(source, /machineFrame\.homingEpoch = 0;/)).toBe(0);
   });
 });

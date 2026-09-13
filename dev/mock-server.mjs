@@ -1096,6 +1096,14 @@ export async function createMockServer(options = {}) {
         if (emergency) {
           env.marlin.execute('M410', { priority: true });
           env.marlin.execute('M5', { priority: true });
+          // Mirror firmware F-1 policy: a jog quickstop cuts motion mid-segment, so the
+          // frame loses trust exactly like a job-side quickstop (Home All re-establishes).
+          Object.assign(env.frame, {
+            machine: null, work: { x: 0, y: 0, z: 0 }, positionValid: false, workZeroMachine: null,
+            homedAxes: { x: false, y: false, z: false }, absoluteFromHome: false,
+            manualWorkFrameValid: false, workZeroValid: false, frameMode: 'untrusted',
+            homeReference: null, trusted: false, revision: Number(env.frame.revision || 0) + 1,
+          });
           env.jog.zRestoreAvailable = false;
           env.jog.commandedPositionCaptured = false;
         } else {

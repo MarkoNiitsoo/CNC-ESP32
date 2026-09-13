@@ -443,6 +443,28 @@ struct MachineFrameState {
   uint32_t updatedAtMs = 0;
 };
 
+// Single writer for machine-frame trust-loss policy (state-ownership audit F-1):
+// same physical uncertainty => same frame-trust result, independent of entry point.
+// Establishing/refreshing a trusted frame (Home All finalize, zero capture, restore,
+// manual frame) is a separate canonical path and must not route through this.
+enum class FrameInvalidationScope : uint8_t {
+  Baseline,  // live position + work-zero confidence lost; the homing reference survives
+             // and counts-based M114 re-derivation may restore machineValid.
+  Full,      // the homing reference itself is unusable; Home All is required to
+             // re-establish trust.
+};
+
+enum class FrameInvalidationReason : uint8_t {
+  JobQuickstop,             // job/safety stop quickstop (M410)
+  JogQuickstop,             // jog emergency stop or move-ack timeout quickstop (M410)
+  PausedManualInterruption, // manual motion during a pause invalidated direct resume
+  MachineOperationFailure,  // machine-operation baseline step failed or timed out
+  ControllerReset,          // Marlin restart detected during a recovery probe
+  BootInterruptedJob,       // active-job marker found at boot
+};
+
+void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReason reason);
+
 struct MotionTelemetryEvent {
   uint32_t sequence = 0;
   uint32_t sentAtMs = 0;
@@ -1976,9 +1998,7 @@ void loadPersistentJobCheckpointAtBoot() {
 
   bootInterruptedJobDetected = true;
   recoveryCheckpointResetReason = resetReasonName(esp_reset_reason());
-  machineFrame = MachineFrameState();
-  marlinPosition.valid = false;
-  touchPositionStatus();
+  invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::BootInterruptedJob);
   sendImmediateJobSafetyM5("active job marker found during boot; position invalidated");
   logJobEvent("boot interrupted job: reset=" + recoveryCheckpointResetReason +
               " gcode=" + recoveryCheckpointGcodePath +
@@ -4676,13 +4696,29 @@ void startNextPriorityCommand() {
               " hardTimeoutMs=" + String(priorityCommandHardTimeoutMs));
 }
 
-void invalidateMachineFrameAfterQuickstop() {
+void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReason reason) {
   const uint32_t invalidatedRevision = machineFrame.revision + 1;
-  machineFrame = MachineFrameState();
-  machineFrame.revision = invalidatedRevision;
+  if (scope == FrameInvalidationScope::Full) {
+    // A quickstop interrupts motion mid-segment regardless of which entry point fired,
+    // so the homing reference is dropped wholesale: this is the documented post-quickstop
+    // policy (Home All re-establishes trust; absoluteFromHome/homed drop is by design).
+    machineFrame = MachineFrameState();
+    machineFrame.revision = invalidatedRevision;
+  } else {
+    // Baseline loss keeps the homing reference and epoch untouched.
+    machineFrame.machineValid = false;
+    machineFrame.workZeroValid = false;
+  }
   machineFrame.updatedAtMs = millis();
   marlinPosition = PositionTelemetry();
   touchPositionStatus();
+  static const char *const kFrameInvalidationReasonLabels[] = {
+      "job-quickstop", "jog-quickstop", "paused-manual-interruption",
+      "machine-operation-failure", "controller-reset", "boot-interrupted-job",
+  };
+  logJobEvent(String("machine frame invalidated: scope=") +
+              (scope == FrameInvalidationScope::Full ? "full" : "baseline") +
+              " reason=" + kFrameInvalidationReasonLabels[static_cast<uint8_t>(reason)]);
 }
 
 void startImmediateStopPrioritySequence() {
@@ -5247,6 +5283,7 @@ void stopJogInternal(bool emergencyStop) {
     sendJogCommand("M410");
     sendJogCommand("M5");
     sendJogCommand("G90");
+    invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop);
     jogStatus.commandedPositionCaptured = false;
     jogStatus.pendingMoveAcks = 0;
     jogStatus.responseLine = "";
@@ -5357,6 +5394,7 @@ void processJogRunner() {
       sendJogCommand("M410");
       sendJogCommand("M5");
       sendJogCommand("G90");
+      invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop);
       jogStatus.commandedPositionCaptured = false;
       jogStatus.pendingMoveAcks = 0;
       setJogError("Marlin graceful jog stop acknowledgement timed out");
@@ -5372,6 +5410,7 @@ void processJogRunner() {
     sendJogCommand("M410");
     sendJogCommand("M5");
     sendJogCommand("G90");
+    invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop);
     jogStatus.commandedPositionCaptured = false;
     jogStatus.pendingMoveAcks = 0;
     setJogError("Marlin jog acknowledgement timed out");
@@ -9027,7 +9066,7 @@ bool beginPausedManualInterruption() {
   } else {
     logJobEvent("warning: could not persist paused manual-movement evidence");
   }
-  invalidateMachineFrameAfterQuickstop();
+  invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::PausedManualInterruption);
   touchJobStatus();
   logJobEvent("paused direct Resume invalidated for manual movement");
   return true;
@@ -9079,7 +9118,7 @@ MachineOperationResult performJobStop() {
     jobStatus.streamingPausedReason =
         "Stop cancelled a machine operation with M410 quickstop. Position is untrusted until Home All.";
     startImmediateStopPrioritySequence();
-    invalidateMachineFrameAfterQuickstop();
+    invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop);
     touchJobStatus();
     logJobEvent("stop cancelled an active machine operation");
     return {
@@ -9140,7 +9179,7 @@ MachineOperationResult performJobStop() {
                                               ? "Stop now requested. M410 quickstop was sent; M5 output shutdown will follow. Position is untrusted until Home All."
                                               : jobStatus.stopWarning + " Position is untrusted until Home All.";
   startImmediateStopPrioritySequence();
-  invalidateMachineFrameAfterQuickstop();
+  invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop);
   touchJobStatus();
   logJobEvent("stop requested: " + jobStatus.gcodePath +
               " emergencyParser=" + String(machineProfile.capEmergencyParser ? "detected" : "not-detected"));
@@ -9676,9 +9715,7 @@ bool processMachineOperation() {
         {false, true, true, 502, "EXECUTION_FAILED", String(step.failMessage) + machineOp.responseBuffer},
         MachineOpCompletion::ControllerError);
     if (invalidateBaseline) {
-      machineFrame.machineValid = false;
-      machineFrame.workZeroValid = false;
-      touchPositionStatus();
+      invalidateMachineFrame(FrameInvalidationScope::Baseline, FrameInvalidationReason::MachineOperationFailure);
     }
     return false;
   }
@@ -9715,9 +9752,7 @@ bool processMachineOperation() {
                                          : String("Marlin did not respond within timeout."))},
         MachineOpCompletion::Timeout);
     if (invalidateBaseline) {
-      machineFrame.machineValid = false;
-      machineFrame.workZeroValid = false;
-      touchPositionStatus();
+      invalidateMachineFrame(FrameInvalidationScope::Baseline, FrameInvalidationReason::MachineOperationFailure);
     }
     return false;
   }
@@ -10606,26 +10641,7 @@ bool attemptControllerRecoverySequence() {
   parseMachineProfile(m115Res.response);
 
   if (m115Upper.indexOf("START") >= 0 || m115Upper.indexOf("RESET") >= 0) {
-    machineFrame.machineValid = false;
-    machineFrame.absoluteFromHome = false;
-    machineFrame.manualWorkFrameValid = false;
-    machineFrame.workZeroValid = false;
-    machineFrame.homedX = false;
-    machineFrame.homedY = false;
-    machineFrame.homedZ = false;
-    machineFrame.homingSessionId = "";
-    machineFrame.homingEpoch = 0;
-    machineFrame.machineX = 0;
-    machineFrame.machineY = 0;
-    machineFrame.machineZ = 0;
-    machineFrame.workZeroMachineX = 0;
-    machineFrame.workZeroMachineY = 0;
-    machineFrame.workZeroMachineZ = 0;
-    marlinPosition.valid = false;
-    marlinPosition.x = 0;
-    marlinPosition.y = 0;
-    marlinPosition.z = 0;
-    machineFrame.revision++;
+    invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::ControllerReset);
     stageTelemetryUpdates();
     logJobEvent("Controller reset detected during M115 recovery. Complete machine and work frame invalidated.");
   }

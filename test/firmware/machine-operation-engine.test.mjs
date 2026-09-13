@@ -129,7 +129,7 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     // engine alone would leave Marlin executing the already-sent G28.
     expect(preempt.indexOf('startImmediateStopPrioritySequence();'))
       .toBeGreaterThan(preempt.indexOf('cancelMachineOperation('));
-    expect(preempt).toContain('invalidateMachineFrameAfterQuickstop();');
+    expect(preempt).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop);');
     expect(preempt).toContain('jobStatus.state = JobRunnerState::Stopping;');
   });
 
