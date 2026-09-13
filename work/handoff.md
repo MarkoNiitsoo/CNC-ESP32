@@ -1,5 +1,21 @@
 # Handoff
 
+## 2026-09-13 - Phase 6.7: /test.html is the primary S1 field-test interface
+
+- www/test.html is now fully self-contained: operator instructions, preconditions with live
+  READY checks, expected outcomes (incl. must-nots and expected HTTP), EXPECTED REJECTION
+  markers, per-subtest PASS/FAIL/NOT EXECUTED + notes (FAIL reveals what-went-wrong + stop
+  notice), session event log, copy results, completion summary (F-1..F-5 + HARDWARE VERIFIED).
+  Marko can run the whole suite from a phone without DevTools or the markdown doc.
+- docs/manual-tests.md stays as the technical reference and now points to /test.html as the
+  preferred interface. SD card E:\www	est.html refreshed to the new build.
+- Design invariants enforced by test/ui/test-console.test.mjs: API path allowlist (production
+  endpoints only), read-only polling, safety interlock gating with data-motion markers, grant
+  held in page memory only (never localStorage/sessionStorage/DOM/results/log), confirm
+  dialogs before deliberate motion, no invented jog protocol (jog starts happen in the normal
+  UI). Firmware untouched this phase.
+- Still awaiting physical field execution of the suite (checklist in work/current-task.md).
+
 ## 2026-09-13 - Phase 6.5 prepared: S1 hardware acceptance suite (awaiting field execution)
 
 - docs/manual-tests.md now contains the deterministic S1 acceptance suite for F-1..F-5:

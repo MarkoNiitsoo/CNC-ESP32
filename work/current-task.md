@@ -103,6 +103,10 @@ run-history contamination fix, telemetry transport-order cleanup.
 
 ## S1 hardware acceptance checklist (procedure: docs/manual-tests.md "S1 Safety Acceptance Suite")
 
+Primary interface: open http://192.168.4.1/test.html on the machine AP - it contains the full
+operator instructions, live state, buttons, and result recording. The markdown suite remains
+the technical reference.
+
 Safety pre-flight applies every session: router/spindle physically disabled, tool high,
 air-only moves, physical e-stop in reach. Record one log block per test in the manual-tests
 document; do NOT mark hardware-verified until Marko reports the physical result.

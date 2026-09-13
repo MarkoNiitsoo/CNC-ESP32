@@ -1,0 +1,1579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 CNC - S1 Hardware Acceptance Tests</title>
+<style>
+  :root {
+    --bg: #101418; --card: #1a2027; --line: #2c3540; --text: #e8edf2; --dim: #9fb0bf;
+    --accent: #4da3ff; --ok: #35c46f; --bad: #ff5d5d; --warn: #ffb648; --danger: #c23434;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: 110px;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--card);
+    border-bottom: 1px solid var(--line); padding: 10px 12px 8px;
+  }
+  header h1 { font-size: 16px; margin: 0 0 2px; }
+  header .sub { color: var(--dim); font-size: 12px; }
+  nav {
+    display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px 2px; font-size: 13px;
+  }
+  nav a {
+    color: var(--accent); text-decoration: none; white-space: nowrap;
+    border: 1px solid var(--line); border-radius: 14px; padding: 4px 10px;
+  }
+  .progress { font-size: 12px; color: var(--warn); padding: 2px 12px 6px; }
+  .orderbox {
+    margin: 8px 12px 0; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; font-size: 13px; color: var(--dim);
+  }
+  .orderbox b { color: var(--text); }
+  main { padding: 10px 12px; display: flex; flex-direction: column; gap: 16px; max-width: 760px; margin: 0 auto; }
+  section.card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+  }
+  section.card h2 { font-size: 16px; margin: 0 0 2px; }
+  .auditid { color: var(--dim); font-size: 12px; margin: 0 0 8px; }
+  h3.subtest-title { font-size: 14px; margin: 14px 0 6px; }
+  h4.blockhead {
+    font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent); margin: 12px 0 4px;
+  }
+  .hint { color: var(--dim); font-size: 13px; margin: 4px 0; }
+  .expected {
+    border-left: 3px solid var(--accent); background: #14202b; padding: 8px 10px;
+    font-size: 13px; margin: 8px 0; white-space: pre-line;
+  }
+  .shouldsee {
+    border: 1px solid var(--line); border-radius: 8px; background: #131a21;
+    padding: 8px 10px; font-size: 13px; margin: 8px 0; white-space: pre-line;
+  }
+  .shouldsee b { color: var(--accent); }
+  .warning {
+    border-left: 3px solid var(--danger); background: #2a1518; padding: 8px 10px;
+    font-size: 13px; margin: 8px 0;
+  }
+  .rejection {
+    border: 1px dashed var(--warn); border-radius: 8px; background: #241d10;
+    padding: 6px 10px; font-size: 13px; margin: 8px 0; color: var(--warn);
+  }
+  ol { margin: 6px 0 6px 18px; padding: 0; }
+  li { margin: 4px 0; }
+  button {
+    min-height: 44px; padding: 8px 14px; margin: 4px 6px 4px 0; border-radius: 8px;
+    border: 1px solid var(--line); background: #232c35; color: var(--text); font-size: 14px;
+  }
+  button:disabled { opacity: 0.4; }
+  button.motion { border-color: var(--danger); background: #3a1d1d; font-weight: 600; }
+  button.small { min-height: 36px; font-size: 13px; padding: 4px 10px; }
+  .whycontinue {
+    display: none; margin-top: 6px; border-left: 3px solid var(--warn);
+    background: #241d10; padding: 6px 10px; font-size: 13px; color: var(--warn);
+  }
+  .whycontinue ul { margin: 4px 0 2px 16px; padding: 0; }
+  .ready {
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+    font-size: 13px; margin: 8px 0; white-space: pre-line;
+  }
+  .ready.ok { border-color: var(--ok); color: var(--ok); }
+  .ready.notready { border-color: var(--warn); color: var(--warn); }
+  .stategrid { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
+  .stategrid dt { color: var(--dim); }
+  .stategrid dd { margin: 0; font-family: ui-monospace, Consolas, monospace; }
+  .stategrid dd.hl-bad { color: var(--bad); font-weight: 600; }
+  .stategrid dd.hl-ok { color: var(--ok); font-weight: 600; }
+  .result {
+    margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 6px; font-size: 13px;
+    display: none;
+  }
+  .result .line { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .result .ok { color: var(--ok); }
+  .result .unexpected { color: var(--bad); }
+  .result pre {
+    margin: 4px 0 0; padding: 6px; background: #0d1116; border-radius: 6px;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 11px;
+  }
+  .verdict { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .verdict button { min-height: 40px; }
+  .verdict input, .failreason textarea {
+    flex: 1 1 160px; min-height: 34px; background: #0d1116; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 13px;
+  }
+  .failreason { display: none; margin-top: 8px; }
+  .failreason .stopnote {
+    border-left: 3px solid var(--danger); background: #2a1518; padding: 6px 10px;
+    font-size: 13px; color: var(--bad); margin: 6px 0; font-weight: 600;
+  }
+  .failreason textarea {
+    width: 100%; min-height: 60px; font-family: inherit; resize: vertical;
+  }
+  details { margin-top: 6px; font-size: 12px; color: var(--dim); }
+  textarea, pre {
+    width: 100%; background: #0d1116; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; font-size: 12px;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  #eventlog { min-height: 60px; max-height: 200px; overflow-y: auto; padding: 6px;
+    white-space: pre-wrap; word-break: break-word; }
+  a.openui { color: var(--accent); }
+  .summarytable { width: 100%; font-size: 14px; border-collapse: collapse; }
+  .summarytable td { padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  .summarytable .st-pass { color: var(--ok); font-weight: 700; }
+  .summarytable .st-fail { color: var(--bad); font-weight: 700; }
+  .summarytable .st-pending { color: var(--warn); font-weight: 700; }
+  .overall { font-size: 16px; font-weight: 700; margin-top: 8px; }
+  .overall.ok { color: var(--ok); }
+  .overall.pending { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>ESP32 CNC</h1>
+  <div class="sub">S1 Hardware Acceptance Tests &middot; safety verification for the machine controller</div>
+  <nav>
+    <a href="#safety">Safety</a>
+    <a href="#test-a">1 &middot; A</a>
+    <a href="#test-b">2 &middot; B</a>
+    <a href="#test-d">3 &middot; D</a>
+    <a href="#test-c">4 &middot; C</a>
+    <a href="#test-e">5 &middot; E</a>
+    <a href="#results">Results</a>
+  </nav>
+  <div class="progress" id="progress">0 / 5 findings hardware verified</div>
+</header>
+
+<main>
+<section class="card" id="state">
+  <h2>Current machine state</h2>
+  <button class="small" id="btn-refresh">Refresh state</button>
+  <a class="openui" href="/"><button class="small">Open normal CNC UI</button></a>
+  <dl class="stategrid" id="stategrid" style="margin-top:8px">
+    <dt>Controller</dt><dd id="st-conn">-</dd>
+    <dt>Firmware</dt><dd id="st-fw">-</dd>
+    <dt>Job</dt><dd id="st-job">-</dd>
+    <dt>Jog</dt><dd id="st-jog">-</dd>
+    <dt>Frame</dt><dd id="st-frame">-</dd>
+    <dt>Work Zero</dt><dd id="st-zero">-</dd>
+    <dt>Homed</dt><dd id="st-homed">-</dd>
+    <dt>Operator control</dt><dd id="st-op">-</dd>
+  </dl>
+  <p class="hint">Refreshes automatically from read-only firmware endpoints every 1.5 s.
+  Polling never causes motion. This page never stores or sends machine-authority values.</p>
+  <div class="warning">Software Stop is NOT a physical emergency stop.</div>
+  <div id="op-hint" style="display:none">
+    <p class="hint">Operator control is not claimed.
+    Open the main UI and claim machine control first.</p>
+    <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a>
+  </div>
+
+  <h3 class="subtest-title">Recommended order</h3>
+  <div class="orderbox">
+    <b>1. A - Emergency Stop / Frame</b> &middot; 2. B - Motion ownership &middot;
+    3. D - Job Start Grant &middot; 4. C - Recovery Safety &middot; 5. E - Pause/Resume/Stop<br>
+    This order starts with simple low-risk tests and leaves recovery-state testing until later.
+    Cards for later tests stay accessible, but follow the numbered path.
+  </div>
+</section>
+
+<section class="card interlock" id="safety">
+  <h2>Mandatory safety pre-flight</h2>
+  <div class="warnline">Software Stop is NOT a physical emergency stop.</div>
+  <label><input type="checkbox" id="safety-router"> Router/spindle is physically disabled</label>
+  <label><input type="checkbox" id="safety-tool"> Tool is safely above table/fixtures</label>
+  <label><input type="checkbox" id="safety-estop"> Physical emergency stop is reachable</label>
+  <p class="hint">Motion-affecting buttons stay disabled until all three are checked. These
+  confirmations are not stored across reloads. Buttons that can cause motion are marked
+  MOTION. Disabled buttons always explain why beneath them.</p>
+</section>
+
+<!-- ────────────────────────── TEST A ────────────────────────── -->
+<section class="card finding" id="test-a">
+  <h2>A &middot; Does Emergency Stop correctly invalidate position?</h2>
+  <div class="auditid">audit finding F-1 &middot; canonical machine-frame invalidation</div>
+  <div class="hint">Emergency Stop uses M410, which can stop the machine between planned motion
+  segments. After that the software must no longer trust its exact position until Home All is
+  completed again.</div>
+
+  <div class="subtest" id="sub-A1">
+    <h3 class="subtest-title">A1 Emergency jog stop</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>Emergency Stop uses M410, which can stop the machine between planned motion segments.
+    After that the software must no longer trust its exact position until Home All is completed
+    again.</p>
+    <div class="ready" id="ready-A1">checking...</div>
+    <h4 class="blockhead">Before you start</h4>
+    <div class="hint">Required: safety pre-flight, machine ONLINE, frame TRUSTED, work zero
+    VALID. The readiness panel above shows the live check.</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Home All. <button class="small motion" id="a1-home" data-motion>[ Home All ]</button>
+          (blocking, up to ~1 minute)</li>
+      <li>Set the Work Zero (normal CNC UI, Zero section).</li>
+      <li>Confirm the frame shows TRUSTED.
+          <button class="small" id="a1-frame" data-readonly>[ Refresh Frame ]</button></li>
+      <li>Open the normal CNC controls.
+          <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a></li>
+      <li>Begin a slow X/Y jog.</li>
+      <li>While the machine is visibly moving, return here and press STOP JOG NOW.</li>
+    </ol>
+    <button class="motion" id="a1-stop" data-motion>[ STOP JOG NOW ]</button>
+    <div class="whycontinue" id="why-A1"></div>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+The machine stops immediately. The Frame indicator above changes from TRUSTED to UNTRUSTED,
+and the Work Zero shows INVALID. job.log contains
+"machine frame invalidated: scope=full reason=jog-quickstop".
+
+The machine must NOT continue moving. The frame must NOT remain TRUSTED.
+
+Expected HTTP: 200 from the stop call; a later /api/job/authorize-start returns
+409 FRAME_STATE_CONFLICT (meaning: starting is blocked until Home All).</div>
+    <div class="result" id="res-A1"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="A1:PASS">PASS</button>
+      <button class="fail" data-verdict="A1:FAIL">FAIL</button>
+      <button class="ne" data-verdict="A1:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-A1">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="A1"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-A2">
+    <h3 class="subtest-title">A2 Ordinary release (control test)</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>Releasing the jog normally lets the machine finish its short planned motion. That is not
+    an emergency, so position trust must survive it - otherwise Home All would be demanded
+    after every jog.</p>
+    <div class="ready" id="ready-A2">checking...</div>
+    <h4 class="blockhead">Before you start</h4>
+    <div class="hint">Required: safety pre-flight, frame TRUSTED (Home All if A1 invalidated
+    it).</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Start a small jog from the normal CNC UI.</li>
+      <li>Release the joystick normally - DO NOT press STOP JOG NOW.</li>
+      <li>Return here and press Check Frame.</li>
+    </ol>
+    <button class="small" id="a2-frame" data-readonly>[ Check Frame ]</button>
+    <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+The machine finishes the short move smoothly. The frame stays TRUSTED. No M410 is transmitted
+and no "machine frame invalidated" line appears in job.log.
+
+The frame must NOT become untrusted, and no Home All requirement may appear.</div>
+    <div class="result" id="res-A2"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="A2:PASS">PASS</button>
+      <button class="fail" data-verdict="A2:FAIL">FAIL</button>
+      <button class="ne" data-verdict="A2:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-A2">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="A2"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────── TEST B ────────────────────────── -->
+<section class="card finding" id="test-b">
+  <h2>B &middot; Can two motion systems ever take control at the same time?</h2>
+  <div class="auditid">audit finding F-3 &middot; canonical motion-stream admission</div>
+  <div class="hint">The jog system, job streams (normal job, test motion, production resume) and
+  machine operations (Home/Zero) must never drive the machine at the same time. Exactly one
+  motion owner is allowed.</div>
+
+  <div class="subtest" id="sub-B1">
+    <h3 class="subtest-title">B1 Active job blocks jog</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>While a job is streaming motion, the jog system must be locked out. Two motion sources
+    on one machine would fight over the actual tool movement.</p>
+    <div class="ready" id="ready-B1">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Start an air-only job or test motion in the normal UI.
+          <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a></li>
+      <li>While it is running, attempt a jog from the normal UI joystick.</li>
+      <li>Watch the refusal and confirm the running stream is undisturbed.</li>
+    </ol>
+    <button class="small" data-readonly id="b1-refresh">[ Refresh Job/Jog State ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 409 "jog rejected while a job is active" (direct call) or the same refusal shown in the
+UI. The running stream keeps running and completes normally.
+
+The job must NOT pause, stop, or error because of the jog attempt.
+
+Expected HTTP: 409 (meaning: the jog was refused before anything was sent to the machine).</div>
+    <div class="result" id="res-B1"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="B1:PASS">PASS</button>
+      <button class="fail" data-verdict="B1:FAIL">FAIL</button>
+      <button class="ne" data-verdict="B1:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-B1">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="B1"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-B2">
+    <h3 class="subtest-title">B2 Active jog blocks job authorization</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>Starting a job while the jog system owns the machine must be impossible. This button
+    makes exactly the same authorize request the Start workflow makes.</p>
+    <div class="ready" id="ready-B2">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Start and hold a jog using the normal joystick.</li>
+      <li>While the jog is active, press the button below.</li>
+    </ol>
+    <button class="motion" id="b2-authorize" data-motion>[ Attempt Authorize-Start ]</button>
+    <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 409 "jog motion is active; release it before starting". The jog keeps running as the
+sole motion owner and no job stream begins.
+
+The machine must NOT start a job or move on its own.
+
+Expected HTTP: 409 (meaning: the job never left the starting line).</div>
+    <div class="result" id="res-B2"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="B2:PASS">PASS</button>
+      <button class="fail" data-verdict="B2:FAIL">FAIL</button>
+      <button class="ne" data-verdict="B2:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-B2">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="B2"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-B3">
+    <h3 class="subtest-title">B3 Active jog blocks test motion</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>Test motion (Bounds/Aircut) is a real machine stream. It must be refused while a jog is
+    active, exactly like a normal job.</p>
+    <div class="ready" id="ready-B3">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Hold a jog active.</li>
+      <li>In the normal UI, attempt Test Motion (Bounds/Aircut).</li>
+    </ol>
+    <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 409 "jog motion is active; release it before starting". No test motion begins.
+
+Expected HTTP: 409 (meaning: the test motion was refused before anything reached the
+machine).</div>
+    <div class="result" id="res-B3"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="B3:PASS">PASS</button>
+      <button class="fail" data-verdict="B3:FAIL">FAIL</button>
+      <button class="ne" data-verdict="B3:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-B3">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="B3"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-B4">
+    <h3 class="subtest-title">B4 Active jog blocks production resume (optional)</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>Production resume is also a motion stream and must be blocked while a jog is active.
+    This subtest is optional: only run it if Test C already left a safe RECOVERY_REQUIRED
+    state with a prepared production stream. Otherwise mark NOT EXECUTED - the shared
+    admission policy covers it.</p>
+    <div class="ready" id="ready-B4">checking...</div>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 409 "jog motion is active; release it before starting".
+
+Expected HTTP: 409 (meaning: the production stream cannot start while jogging).</div>
+    <div class="result" id="res-B4"></div>
+    <div class="verdict">
+      <span class="hint">Mark the real outcome.</span>
+      <button class="pass" data-verdict="B4:PASS">PASS</button>
+      <button class="fail" data-verdict="B4:FAIL">FAIL</button>
+      <button class="ne" data-verdict="B4:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-B4">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="B4"></textarea>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────── TEST D ────────────────────────── -->
+<section class="card finding" id="test-d">
+  <h2>D &middot; Can a job start without firmware permission?</h2>
+  <div class="auditid">audit finding F-5 &middot; firmware-issued one-time start capability</div>
+  <div class="hint">The job file on the SD card is written by the browser. Nothing in it may
+  authorize a start. Only a short-lived capability minted by firmware - after firmware checked
+  the real files and the machine frame - may start a job, and it works exactly once.</div>
+
+  <div class="subtest" id="sub-D0">
+    <h3 class="subtest-title">Prepare the job identity</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The tests below need the identity of a real prepared air-only job. This page reads the
+    prepared sidecar through the existing file API - it never computes fingerprints itself and
+    never creates authorization.</p>
+    <h4 class="blockhead">No hidden setup: prepare an air-only test job</h4>
+    <ol>
+      <li>Open the normal CNC UI. Keep the router physically disconnected.</li>
+      <li>Select a small existing G-code file (a few lines are enough).</li>
+      <li>Complete the normal Preview/verification flow (Home All, Work Zero, Bounds/Aircut
+          check) until Start Cutting is available.</li>
+      <li>Return here when Start Cutting is available.</li>
+    </ol>
+    <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a>
+    <div class="ready" id="ready-D0">checking...</div>
+    <button class="small" data-readonly id="d-jobs">[ Load /jobs list ]</button>
+    <select id="d-jobselect" style="margin:6px 0"></select>
+    <button class="small" data-readonly id="d-load">[ Load Job Evidence ]</button>
+    <button class="small" data-readonly id="d-manual">[ I have prepared the job ]</button>
+    <div class="result" id="res-DID"></div>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+"Prepared job detected" once a sidecar with valid active-run evidence has been loaded. The
+page shows the identity claims it read (mode, size, work-zero id). Firmware re-validates all
+of it - including re-hashing the actual run file - at authorize and again at start.</div>
+  </div>
+
+  <div class="subtest" id="sub-D1">
+    <h3 class="subtest-title">D1 Start WITHOUT grant</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The old defect: a job file could carry a magic "authorized" marker and the machine would
+    start. Now the marker must be worthless.</p>
+    <div class="rejection">EXPECTED REJECTION TEST - a 403 START_GRANT_REQUIRED response is the
+PASS condition. The command must be refused before anything reaches the machine.</div>
+    <div class="ready" id="ready-D1">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol><li>With the prepared job identity loaded (and a trusted frame), press the button.
+    No grant is requested.</li></ol>
+    <button class="motion" id="d1-start" data-motion>[ Attempt Start WITHOUT Grant ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 403 START_GRANT_REQUIRED - meaning: the firmware demands its own one-time capability and
+ignores anything the sidecar says. No motion. The machine must NOT start.
+
+Expected HTTP: 403 START_GRANT_REQUIRED.</div>
+    <div class="result" id="res-D1"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="D1:PASS">PASS</button>
+      <button class="fail" data-verdict="D1:FAIL">FAIL</button>
+      <button class="ne" data-verdict="D1:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-D1">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="D1"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-D2">
+    <h3 class="subtest-title">D2 Valid grant</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The happy path: firmware validates the evidence and the machine frame, issues a one-time
+    capability, and only then does the job actually start.</p>
+    <div class="ready" id="ready-D2">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Press Request Start Grant. The page shows only "grant received" - the token itself
+          stays hidden in page memory and is never stored or displayed.</li>
+      <li>Press Start With Grant and confirm. The air job should run.</li>
+    </ol>
+    <button class="motion" id="d2-grant" data-motion>[ Request Start Grant ]</button>
+    <button class="motion" id="d2-start" data-motion>[ Start With Grant ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+"Start grant received - expires in 60 s", then HTTP 200 and the job slice going
+PREPARING -> RUNNING for the air job.
+
+The grant text itself must never appear on this page or in the results.
+
+Expected HTTP: 200 (meaning: firmware accepted its own capability and started the job).</div>
+    <div class="result" id="res-D2"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="D2:PASS">PASS</button>
+      <button class="fail" data-verdict="D2:FAIL">FAIL</button>
+      <button class="ne" data-verdict="D2:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-D2">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="D2"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-D3">
+    <h3 class="subtest-title">D3 Grant re-use</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>A capability that could be replayed would be a reusable key to the machine. It must die
+    after one use.</p>
+    <div class="rejection">EXPECTED REJECTION TEST - the grant was consumed by D2; a 403 here is
+the PASS condition.</div>
+    <div class="ready" id="ready-D3">checking...</div>
+    <button class="motion" id="d3-reuse" data-motion>[ Re-use Same Grant ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 403 START_GRANT_INVALID - meaning: firmware recognized the capability as already used.
+No motion.
+
+Expected HTTP: 403 START_GRANT_INVALID.</div>
+    <div class="result" id="res-D3"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="D3:PASS">PASS</button>
+      <button class="fail" data-verdict="D3:FAIL">FAIL</button>
+      <button class="ne" data-verdict="D3:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-D3">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="D3"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-D4">
+    <h3 class="subtest-title">D4 Identity mutation</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The capability is bound to the exact run and machine frame it was issued for. If
+    anything changes (Home All, new work zero), the old capability must be worthless.</p>
+    <div class="ready" id="ready-D4">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Request a fresh grant.</li>
+      <li>Home All (homing epoch changes) or re-set the Work Zero (work-zero id changes) in
+          the normal supported workflow.</li>
+      <li>Attempt Start With Old Grant.</li>
+    </ol>
+    <button class="motion" id="d4-grant" data-motion>[ Request Fresh Grant ]</button>
+    <button class="motion" id="d4-home" data-motion>[ Home All ]</button>
+    <button class="motion" id="d4-start" data-motion>[ Start With Old Grant ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+A refusal with no motion. Depending on what changed, firmware answers:
+403 START_GRANT_IDENTITY_CHANGED (run/frame identity no longer matches),
+409 FRAME_STATE_CONFLICT (frame changed before the grant was checked), or
+409 "authorized work-zero or homing identity changed".
+All three prove the old capability no longer works.
+
+The machine must NOT start on the old grant.</div>
+    <div class="result" id="res-D4"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="D4:PASS">PASS</button>
+      <button class="fail" data-verdict="D4:FAIL">FAIL</button>
+      <button class="ne" data-verdict="D4:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-D4">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="D4"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────── TEST C ────────────────────────── -->
+<section class="card finding" id="test-c">
+  <h2>C &middot; Can recovery motion bypass firmware safety?</h2>
+  <div class="auditid">audit finding F-2 &middot; firmware-owned recovery authority</div>
+  <div class="hint">Recovery moves reposition the machine after an interrupted job. Firmware
+  alone decides when they are allowed - from its own frame trust, never from anything the
+  browser reports.</div>
+
+  <div class="subtest" id="sub-C1">
+    <h3 class="subtest-title">C1 Enter RECOVERY_REQUIRED</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>In this test we intentionally turn a safe Pause into RECOVERY_REQUIRED by asking to jog
+    while paused. The machine should not jog immediately. Instead, firmware first invalidates
+    direct Resume and the position frame, and requires a recovery review.</p>
+    <div class="ready" id="ready-C1">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Start a tiny air-only job (Test D2 or the normal UI).</li>
+      <li>Pause it (intact pause).</li>
+      <li>While PausedIntact, attempt a jog in the normal UI.
+          <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a></li>
+      <li>Expect the refusal below - that refusal is the correct behavior, not a bug.</li>
+    </ol>
+    <button class="small" data-readonly id="c1-refresh">[ Refresh Recovery State ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 409 "direct Resume was invalidated; wait for RECOVERY_REQUIRED before jogging".
+Job: RECOVERY_REQUIRED. Frame: UNTRUSTED (the interruption invalidates position trust).
+The checkpoint evidence is persisted before the frame is dropped.
+
+The machine must NOT jog while paused intact.
+
+Expected HTTP: 409 (meaning: firmware protected the resumable pause).</div>
+    <div class="result" id="res-C1"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="C1:PASS">PASS</button>
+      <button class="fail" data-verdict="C1:FAIL">FAIL</button>
+      <button class="ne" data-verdict="C1:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-C1">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="C1"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-C2">
+    <h3 class="subtest-title">C2 Untrusted frame refuses recovery motion</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>While the frame is untrusted, nothing may move - no matter what any screen claims. This
+    is the core F-2 invariant.</p>
+    <div class="rejection">EXPECTED REJECTION TEST - a 409 FRAME_UNTRUSTED is the PASS
+condition. The command must be refused before it reaches the machine.</div>
+    <div class="ready" id="ready-C2">checking...</div>
+    <button class="motion" id="c2-move" data-motion>[ Try Recovery G0 X1 ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 409 FRAME_UNTRUSTED - meaning: firmware knows the frame is not trusted and refuses the
+move regardless of what any browser page claims.
+
+The machine must remain completely still.
+
+Expected HTTP: 409 FRAME_UNTRUSTED.</div>
+    <div class="result" id="res-C2"></div>
+    <p class="hint" style="margin-top:6px">API check above. Now confirm physically:
+Did the machine remain completely still?</p>
+    <div class="verdict">
+      <button class="pass" data-verdict="C2:PASS">Yes - PASS</button>
+      <button class="fail" data-verdict="C2:FAIL">NO - FAIL</button>
+      <button class="ne" data-verdict="C2:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-C2">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="C2"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-C3">
+    <h3 class="subtest-title">C3 Generic /api/cmd lock</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The old generic terminal endpoint must not become a side door around the recovery gate:
+    motion words are refused during RECOVERY_REQUIRED, while read-only diagnostics keep
+    working.</p>
+    <div class="rejection">EXPECTED REJECTION TEST - the G0 and M5 refusals are the PASS
+condition. M114 must keep working.</div>
+    <div class="ready" id="ready-C3">checking...</div>
+    <button class="motion" id="c3-m114" data-motion>[ Diagnostic M114 ]</button>
+    <button class="motion" id="c3-g0" data-motion>[ Try forbidden raw G0 X1 ]</button>
+    <button class="motion" id="c3-m5" data-motion>[ Try raw M5 ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+M114 -> HTTP 200 with the position report (diagnostics stay available).
+G0 X1 -> HTTP 409 "Marlin transport is locked to recovery review; motion commands require
+/api/recovery/move" - no motion.
+M5 -> HTTP 409 "standalone M5 is unavailable while interrupted-job Recovery is required"
+(M5 is reserved for the recovery flow itself).
+
+No motion may occur from any of these buttons.
+
+Expected HTTP: 200 for M114; 409 for G0 X1 and M5.</div>
+    <div class="result" id="res-C3"></div>
+    <div class="verdict">
+      <span class="hint">Did all three behave as described?</span>
+      <button class="pass" data-verdict="C3:PASS">PASS</button>
+      <button class="fail" data-verdict="C3:FAIL">FAIL</button>
+      <button class="ne" data-verdict="C3:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-C3">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="C3"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-C4">
+    <h3 class="subtest-title">C4 Trusted frame accepts a tiny valid recovery move</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The recovery gate must not be a dead end: once firmware trusts the frame again and the
+    work zero is valid, a small recovery reposition must be allowed.</p>
+    <div class="ready" id="ready-C4">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Home All (frame becomes trusted).</li>
+      <li>Set/restore the Work Zero (work zero becomes valid). The job stays in
+          RECOVERY_REQUIRED.</li>
+      <li>Press the recovery move button and confirm the dialog.</li>
+    </ol>
+    <button class="motion" id="c4-home" data-motion>[ Home All ]</button>
+    <button class="small" data-readonly id="c4-refresh">[ Refresh Frame ]</button>
+    <button class="motion" id="c4-move" data-motion>[ Recovery move +1 mm X ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+HTTP 200 and a 1 mm move at F600, inside the machine envelope. The job remains in
+RECOVERY_REQUIRED (the move is a reposition test, not a resume).
+
+Expected HTTP: 200 (meaning: firmware authorized the move from its own trusted state).</div>
+    <div class="result" id="res-C4"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="C4:PASS">PASS</button>
+      <button class="fail" data-verdict="C4:FAIL">FAIL</button>
+      <button class="ne" data-verdict="C4:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-C4">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="C4"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-C5">
+    <h3 class="subtest-title">C5 Forbidden command class</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>The recovery endpoint is not a second generic terminal. Homing, machine coordinates,
+    work offsets, and spindle commands must never pass - even with a trusted frame.</p>
+    <div class="rejection">EXPECTED REJECTION TEST - for each button, HTTP 400
+COMMAND_FORBIDDEN is the PASS condition. The command must NOT reach Marlin.</div>
+    <div class="ready" id="ready-C5">checking...</div>
+    <button class="motion" id="c5-g28" data-motion>[ Test G28 rejection ]</button>
+    <button class="motion" id="c5-g53" data-motion>[ Test G53 rejection ]</button>
+    <button class="motion" id="c5-g92" data-motion>[ Test G92 rejection ]</button>
+    <button class="motion" id="c5-m3" data-motion>[ Test M3 rejection ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+Each button returns HTTP 400 COMMAND_FORBIDDEN. The machine must not home, change coordinate
+systems, set offsets, or start the spindle.
+
+Expected HTTP: 400 COMMAND_FORBIDDEN for every button.</div>
+    <div class="result" id="res-C5"></div>
+    <div class="verdict">
+      <span class="hint">Did all four return the rejection?</span>
+      <button class="pass" data-verdict="C5:PASS">PASS</button>
+      <button class="fail" data-verdict="C5:FAIL">FAIL</button>
+      <button class="ne" data-verdict="C5:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-C5">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="C5"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────── TEST E ────────────────────────── -->
+<section class="card finding" id="test-e">
+  <h2>E &middot; Does Pause/Resume/Stop leave the machine in a clean state?</h2>
+  <div class="auditid">audit finding F-4 &middot; canonical terminal job-substate cleanup</div>
+  <div class="hint">Every way a job ends must leave the same clean control state. Leftover
+  pause, resume, or tool-change flags from one job must never affect the next one.</div>
+
+  <div class="subtest" id="sub-E1">
+    <h3 class="subtest-title">E1 Pause -> Resume stays intact</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>A normal pause must keep exactly the state a resume needs - and the cleanup must not
+    have erased it.</p>
+    <div class="ready" id="ready-E1">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Start an air-only job (Test D2 or the normal UI).</li>
+      <li>Pause it. Confirm Resume is offered.</li>
+      <li>Resume. Confirm Running returns without RECOVERY_REQUIRED.</li>
+    </ol>
+    <a class="openui" href="/"><button class="small">[ Open CNC UI ]</button></a>
+    <button class="motion" id="e1-pause" data-motion>[ Pause ]</button>
+    <button class="motion" id="e1-resume" data-motion>[ Resume ]</button>
+    <button class="small" data-readonly id="e1-refresh">[ Refresh Job State ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+Pause -> intact pause with Resume offered. Resume -> RUNNING. No RECOVERY_REQUIRED appears
+and no Home All is demanded after the resume.</div>
+    <div class="result" id="res-E1"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="E1:PASS">PASS</button>
+      <button class="fail" data-verdict="E1:FAIL">FAIL</button>
+      <button class="ne" data-verdict="E1:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-E1">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="E1"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+
+  <div class="subtest" id="sub-E2">
+    <h3 class="subtest-title">E2 Stop cleanup</h3>
+    <h4 class="blockhead">Why are we testing this?</h4>
+    <p>A Stop is a quickstop: the frame intentionally becomes untrusted and the job must end
+    with a clean, identical control state every time - ready for a fresh start after Home
+    All.</p>
+    <div class="ready" id="ready-E2">checking...</div>
+    <h4 class="blockhead">What do I do?</h4>
+    <ol>
+      <li>Start an air-only job.</li>
+      <li>Press NORMAL JOB STOP below (or the normal UI Stop).</li>
+      <li>Confirm the frame becomes untrusted (STALE) and the recovery review indication
+          appears.</li>
+      <li>Home All.</li>
+      <li>Start a new job (Test D2).</li>
+      <li>Confirm no stale Pause/Resume/Tool Change state remains.</li>
+    </ol>
+    <button class="motion" id="e2-stop" data-motion>[ NORMAL JOB STOP ]</button>
+    <button class="motion" id="e2-home" data-motion>[ Home All ]</button>
+    <button class="small" data-readonly id="e2-refresh">[ Refresh State ]</button>
+    <div class="shouldsee"><b>WHAT SHOULD I SEE?</b>
+Stop -> quickstop (M410 then M5), frame UNTRUSTED, recovery review indication. After Home
+All, a new job starts cleanly: no stale tool-change prompt, no unexpected direct-Resume
+offer, no leftover pause state.</div>
+    <div class="result" id="res-E2"></div>
+    <div class="verdict">
+      <span class="hint">Did everything above happen exactly as described?</span>
+      <button class="pass" data-verdict="E2:PASS">PASS</button>
+      <button class="fail" data-verdict="E2:FAIL">FAIL</button>
+      <button class="ne" data-verdict="E2:NOT EXECUTED">NOT EXECUTED</button>
+    </div>
+    <div class="failreason" id="fail-E2">
+      <div class="hint">What went wrong?</div>
+      <textarea data-failnotes="E2"></textarea>
+      <div class="stopnote">STOP this subsystem's test sequence. Do not continue with later
+      steps for this finding.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ────────────────────────── RESULTS ────────────────────────── -->
+<section class="card" id="results">
+  <h2>Results &amp; completion summary</h2>
+  <table class="summarytable" id="summarytable">
+    <tr><td>F-1 Emergency Stop / frame</td><td class="st-pending" id="sum-F-1">PENDING</td></tr>
+    <tr><td>F-2 Recovery safety</td><td class="st-pending" id="sum-F-2">PENDING</td></tr>
+    <tr><td>F-3 Motion ownership</td><td class="st-pending" id="sum-F-3">PENDING</td></tr>
+    <tr><td>F-4 Terminal cleanup</td><td class="st-pending" id="sum-F-4">PENDING</td></tr>
+    <tr><td>F-5 Job start permission</td><td class="st-pending" id="sum-F-5">PENDING</td></tr>
+  </table>
+  <div class="overall pending" id="overall">NOT YET VERIFIED</div>
+  <button class="small" id="btn-copy" style="margin-top:8px">[ Copy Results ]</button>
+  <button class="small" id="btn-copylog">[ Copy Session Log ]</button>
+  <button class="small" id="btn-reset">[ Reset Results ]</button>
+  <p class="hint">PASS/FAIL/notes are stored in this browser (localStorage,
+  key "s1AcceptanceResults") as test documentation only. They never participate in any CNC
+  authorization or safety decision. The start grant is never stored - it lives in page memory
+  only and does not survive a reload. A finding shows PASS only when all of its required
+  subtests were explicitly marked PASS.</p>
+  <textarea id="report" readonly placeholder="Copy Results writes the report here and to the clipboard."></textarea>
+
+  <h3 class="subtest-title">Session log</h3>
+  <p class="hint">Diagnostic convenience only. Contains no secrets and no start-grant values.</p>
+  <pre id="eventlog"></pre>
+</section>
+</main>
+
+<script>
+'use strict';
+// ── state ────────────────────────────────────────────────────────────────────
+// The start grant lives ONLY in this variable (page memory). It is never written
+// to localStorage/sessionStorage/URL/results, never rendered, and does not
+// survive a reload (F-5 requirement).
+let startGrant = null;
+let grantIssuedAtMs = 0;
+let startIdentity = null;
+const RESULTS_KEY = 's1AcceptanceResults';
+const $ = (id) => document.getElementById(id);
+const live = { online: false, health: null, frame: null, job: null, jog: null, operator: null };
+const eventLogLines = [];
+let lastFrameTrusted = null;
+let lastJobState = null;
+
+function logEvent(text) {
+  const time = new Date().toTimeString().slice(0, 8);
+  eventLogLines.push(time + ' ' + text);
+  if (eventLogLines.length > 300) eventLogLines.shift();
+  const box = $('eventlog');
+  if (box) box.textContent = eventLogLines.join('\n');
+}
+
+// ── API helper: logs every non-poll call ─────────────────────────────────────
+async function api(method, path, body, options = {}) {
+  const fetchOptions = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) fetchOptions.body = JSON.stringify(body);
+  const res = await fetch(path, fetchOptions);
+  let data = null;
+  try { data = await res.json(); } catch (err) { data = null; }
+  if (!options.silent) logEvent(method + ' ' + path + ' -> ' + res.status);
+  if (res.status === 423 && $('op-hint')) $('op-hint').style.display = 'block';
+  return { status: res.status, ok: res.ok, data };
+}
+
+// ── safety interlock ─────────────────────────────────────────────────────────
+function safetyChecked() {
+  return $('safety-router').checked && $('safety-tool').checked && $('safety-estop').checked;
+}
+function updateInterlocks() {
+  document.querySelectorAll('button[data-motion]').forEach((button) => {
+    button.disabled = !safetyChecked();
+  });
+  renderReadiness();
+}
+document.querySelectorAll('#safety input').forEach((box) => box.addEventListener('change', updateInterlocks));
+
+// ── live state polling (read-only GETs only) ─────────────────────────────────
+async function refreshState() {
+  const [health, frame, job, jog, operator] = await Promise.allSettled([
+    api('GET', '/api/health', undefined, { silent: true }),
+    api('GET', '/api/machine/frame', undefined, { silent: true }),
+    api('GET', '/api/job/status', undefined, { silent: true }),
+    api('GET', '/api/jog/status', undefined, { silent: true }),
+    api('GET', '/api/operator/status', undefined, { silent: true }),
+  ]);
+  live.health = health.status === 'fulfilled' && health.value.ok ? health.value.data : null;
+  live.frame = frame.status === 'fulfilled' && frame.value.ok ? frame.value.data : null;
+  live.job = job.status === 'fulfilled' && job.value.ok ? job.value.data : null;
+  live.jog = jog.status === 'fulfilled' && jog.value.ok ? jog.value.data : null;
+  live.operator = operator.status === 'fulfilled' && operator.value.ok ? operator.value.data : null;
+  live.online = Boolean(live.health);
+
+  $('st-conn').textContent = live.online ? 'ONLINE' : 'OFFLINE';
+  $('st-fw').textContent = live.health
+    ? (live.health.firmware || '-') + ' ' + (live.health.firmwareVersion || '') + ' ' + (live.health.buildDate || '')
+    : '-';
+  const trusted = Boolean(live.frame && live.frame.trusted);
+  $('st-frame').textContent = live.frame
+    ? (trusted ? 'TRUSTED' : 'UNTRUSTED') + ' (epoch ' + (live.frame.homingEpoch ?? '-') + ')'
+    : '-';
+  $('st-frame').className = trusted ? 'hl-ok' : 'hl-bad';
+  $('st-zero').textContent = live.frame
+    ? (live.frame.workZeroValid ? 'VALID' : 'INVALID')
+    : '-';
+  $('st-zero').className = live.frame && live.frame.workZeroValid ? 'hl-ok' : 'hl-bad';
+  const homed = live.frame ? ['x', 'y', 'z'].filter((axis) => live.frame['homed' + axis.toUpperCase()]).length : 0;
+  $('st-homed').textContent = live.frame
+    ? (homed === 3 ? 'XYZ' : homed > 0 ? 'PARTIAL (' + homed + '/3)' : 'NO')
+    : '-';
+  const jobState = live.job ? String(live.job.state || '-') : '-';
+  $('st-job').textContent = jobState + (live.job && live.job.streamMode ? ' / ' + live.job.streamMode : '');
+  $('st-job').className = /RECOVERY_REQUIRED/.test(jobState) ? 'hl-bad' : '';
+  const jogState = live.jog ? String(live.jog.state || '-') : '-';
+  $('st-jog').textContent = jogState;
+  $('st-jog').className = /JOGGING/.test(jogState) ? 'hl-bad' : '';
+  const op = live.operator;
+  $('st-op').textContent = op
+    ? (op.claimRequired ? (op.controller ? 'CLAIMED (CONTROLLER)' : 'NOT CLAIMED (READ-ONLY)') : 'OPEN CONTROL')
+    : '-';
+  $('st-op').className = op && op.controller ? 'hl-ok' : '';
+
+  if (lastFrameTrusted !== null && lastFrameTrusted !== trusted) {
+    logEvent('Frame changed ' + (lastFrameTrusted ? 'TRUSTED' : 'UNTRUSTED') + ' -> ' +
+             (trusted ? 'TRUSTED' : 'UNTRUSTED'));
+  }
+  if (lastJobState !== null && lastJobState !== jobState) {
+    logEvent('Job changed ' + lastJobState + ' -> ' + jobState);
+  }
+  lastFrameTrusted = trusted;
+  lastJobState = jobState;
+
+  renderReadiness();
+  renderSummary();
+}
+$('btn-refresh').addEventListener('click', refreshState);
+setInterval(refreshState, 1500);
+
+// ── readiness model ──────────────────────────────────────────────────────────
+const REASONS = {
+  safety: 'safety pre-flight is incomplete',
+  online: 'machine is OFFLINE',
+  idle: 'a job or motion is already active',
+  jobRunning: 'no job is currently running',
+  jogActive: 'no jog is currently active',
+  recovery: 'job is not in RECOVERY_REQUIRED',
+  frameTrusted: 'frame is not TRUSTED (Home All required)',
+  frameUntrusted: 'frame is TRUSTED - this test needs the untrusted state',
+  workZeroValid: 'work zero is not VALID',
+  identity: 'no prepared job is selected/loaded',
+};
+
+function jobIsActive() {
+  const state = live.job ? String(live.job.state || '') : '';
+  return ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']
+    .includes(state);
+}
+
+function checkRequirements(keys) {
+  const reasons = [];
+  const frameTrusted = Boolean(live.frame && live.frame.trusted);
+  const jobState = live.job ? String(live.job.state || '') : '';
+  const jogActive = Boolean(live.jog && live.jog.state && live.jog.state !== 'IDLE');
+  for (const key of keys) {
+    if (key === 'safety' && !safetyChecked()) reasons.push(REASONS.safety);
+    if (key === 'online' && !live.online) reasons.push(REASONS.online);
+    if (key === 'idle' && (jobIsActive() || jogActive)) reasons.push(REASONS.idle);
+    if (key === 'jobRunning' && jobState !== 'RUNNING') reasons.push(REASONS.jobRunning);
+    if (key === 'jogActive' && !jogActive) reasons.push(REASONS.jogActive);
+    if (key === 'recovery' && jobState !== 'RECOVERY_REQUIRED') reasons.push(REASONS.recovery);
+    if (key === 'frameTrusted' && !frameTrusted) reasons.push(REASONS.frameTrusted);
+    if (key === 'frameUntrusted' && frameTrusted) reasons.push(REASONS.frameUntrusted);
+    if (key === 'workZeroValid' && !(live.frame && live.frame.workZeroValid)) reasons.push(REASONS.workZeroValid);
+    if (key === 'identity' && !startIdentity) reasons.push(REASONS.identity);
+  }
+  return { ready: reasons.length === 0, reasons };
+}
+
+const READY_REQUIREMENTS = {
+  A1: ['safety', 'online', 'frameTrusted', 'workZeroValid'],
+  A2: ['safety', 'online', 'frameTrusted'],
+  B1: ['online', 'jobRunning'],
+  B2: ['safety', 'online', 'jogActive'],
+  B3: ['safety', 'online', 'jogActive'],
+  B4: ['safety', 'online', 'recovery', 'jogActive'],
+  C1: ['safety', 'online', 'jobRunning'],
+  C2: ['safety', 'online', 'recovery', 'frameUntrusted'],
+  C3: ['safety', 'online', 'recovery'],
+  C4: ['safety', 'online', 'recovery', 'frameTrusted', 'workZeroValid'],
+  C5: ['safety', 'online', 'recovery', 'frameTrusted', 'workZeroValid'],
+  D1: ['safety', 'online', 'identity', 'frameTrusted', 'workZeroValid', 'idle'],
+  D2: ['safety', 'online', 'identity', 'frameTrusted', 'workZeroValid', 'idle'],
+  D3: ['safety', 'online', 'identity'],
+  D4: ['safety', 'online', 'identity'],
+  E1: ['safety', 'online', 'jobRunning'],
+  E2: ['safety', 'online', 'jobRunning'],
+};
+
+function renderReadiness() {
+  for (const [id, keys] of Object.entries(READY_REQUIREMENTS)) {
+    const box = $('ready-' + id);
+    if (!box) continue;
+    const { ready, reasons } = checkRequirements(keys);
+    box.className = 'ready ' + (ready ? 'ok' : 'notready');
+    box.textContent = ready
+      ? 'READY - all preconditions met'
+      : 'NOT READY:\n- ' + reasons.join('\n- ');
+    const why = $('why-' + id);
+    if (why) {
+      if (ready) { why.style.display = 'none'; why.innerHTML = ''; }
+      else {
+        why.style.display = 'block';
+        why.innerHTML = 'Cannot run yet:<ul>' +
+          reasons.map((reason) => '<li>' + reason + '</li>').join('') + '</ul>';
+      }
+    }
+    document.querySelectorAll('#sub-' + id + ' button[data-motion]').forEach((button) => {
+      button.disabled = !ready || !safetyChecked();
+    });
+  }
+}
+
+// ── results storage (test documentation only) ────────────────────────────────
+function loadResults() {
+  try { return JSON.parse(localStorage.getItem(RESULTS_KEY) || '{}'); }
+  catch (err) { return {}; }
+}
+function saveResults(results) {
+  localStorage.setItem(RESULTS_KEY, JSON.stringify(results));
+  renderVerdicts();
+  renderSummary();
+}
+const REQUIRED_SUBTESTS = {
+  'F-1': ['A1', 'A2'],
+  'F-2': ['C1', 'C2', 'C3', 'C4', 'C5'],
+  'F-3': ['B1', 'B2', 'B3'],
+  'F-4': ['E1', 'E2'],
+  'F-5': ['D1', 'D2', 'D3', 'D4'],
+};
+function findingStatus(finding) {
+  const results = loadResults();
+  const ids = REQUIRED_SUBTESTS[finding] || [];
+  const states = ids.map((id) => (results[id] ? results[id].result : null));
+  if (states.includes('FAIL')) return 'FAIL';
+  if (states.length > 0 && states.every((state) => state === 'PASS')) return 'PASS';
+  return 'PENDING';
+}
+function renderSummary() {
+  let allPass = true;
+  for (const finding of ['F-1', 'F-2', 'F-3', 'F-4', 'F-5']) {
+    const status = findingStatus(finding);
+    const cell = $('sum-' + finding);
+    cell.textContent = status;
+    cell.className = status === 'PASS' ? 'st-pass' : status === 'FAIL' ? 'st-fail' : 'st-pending';
+    if (status !== 'PASS') allPass = false;
+  }
+  const overall = $('overall');
+  overall.textContent = allPass ? 'HARDWARE VERIFIED' : 'NOT YET VERIFIED';
+  overall.className = 'overall ' + (allPass ? 'ok' : 'pending');
+  const results = loadResults();
+  const done = Object.values(REQUIRED_SUBTESTS).flat()
+    .filter((id) => results[id] && results[id].result).length;
+  const total = Object.values(REQUIRED_SUBTESTS).reduce((sum, ids) => sum + ids.length, 0);
+  const verified = ['F-1', 'F-2', 'F-3', 'F-4', 'F-5'].filter((f) => findingStatus(f) === 'PASS').length;
+  $('progress').textContent = verified + ' / 5 findings hardware verified (' + done + '/' + total + ' subtests recorded)';
+}
+function renderVerdicts() {
+  const results = loadResults();
+  document.querySelectorAll('.failreason').forEach((box) => {
+    const id = (box.id || '').replace('fail-', '');
+    const failed = results[id] && results[id].result === 'FAIL';
+    box.style.display = failed ? 'block' : 'none';
+  });
+  document.querySelectorAll('[data-notes]').forEach((input) => {
+    const entry = results[input.dataset.notes];
+    if (entry && entry.notes && input.value !== entry.notes) input.value = entry.notes;
+  });
+}
+document.querySelectorAll('[data-verdict]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const id = button.dataset.verdict;
+    const subId = id.split(':')[0];
+    const result = id.split(':')[1];
+    setVerdict(subId, result);
+    if (result === 'FAIL') logEvent('FAILURE recorded on ' + subId + ' - subsystem sequence stops');
+  });
+});
+document.querySelectorAll('[data-notes]').forEach((input) => {
+  input.addEventListener('change', () => {
+    const results = loadResults();
+    const id = input.dataset.notes;
+    results[id] = Object.assign({ result: (results[id] || {}).result || 'NOT EXECUTED' }, results[id], {
+      notes: input.value, recordedAt: new Date().toISOString(),
+    });
+    saveResults(results);
+  });
+});
+
+// ── result rendering ─────────────────────────────────────────────────────────
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function showResult(targetId, parts, technical, redactSecrets = false) {
+  const box = $(targetId);
+  if (!box) return;
+  box.style.display = 'block';
+  let html = '';
+  html += '<div class="line">Request: ' + escapeHtml(parts.request || '') + '</div>';
+  html += '<div class="line">HTTP status: ' + escapeHtml(String(parts.status)) + '</div>';
+  if (parts.code) html += '<div class="line">Code: ' + escapeHtml(parts.code) + '</div>';
+  if (parts.message) html += '<div class="line">Message: ' + escapeHtml(parts.message) + '</div>';
+  html += '<div class="line">Time: ' + new Date().toLocaleTimeString() + '</div>';
+  if (parts.expectedStatus) {
+    const matched = String(parts.expectedStatus).split('/').includes(String(parts.status));
+    html += matched
+      ? '<div class="line ok">EXPECTED RESULT MATCHED &#10003; (HTTP ' + escapeHtml(parts.expectedStatus) +
+        ' - ' + escapeHtml(parts.expectedMeaning || 'as documented') + ')</div>'
+      : '<div class="line unexpected">UNEXPECTED RESULT &#10007; expected HTTP ' +
+        escapeHtml(parts.expectedStatus) + '</div>';
+  }
+  let tech = technical;
+  if (redactSecrets && tech && tech.startGrant) {
+    tech = Object.assign({}, tech, { startGrant: '(redacted - held in page memory only)' });
+  }
+  html += '<details><summary>Technical response</summary><pre>' +
+          escapeHtml(JSON.stringify(tech, null, 2)) + '</pre></details>';
+  box.innerHTML = html;
+}
+
+// ── shared action helpers ────────────────────────────────────────────────────
+async function checkFrame(targetId) {
+  const result = await api('GET', '/api/machine/frame');
+  const frame = result.ok ? result.data : null;
+  showResult(targetId, {
+    request: 'GET /api/machine/frame', status: result.status,
+    message: frame ? 'trusted=' + frame.trusted + ' workZeroValid=' + frame.workZeroValid +
+      ' frameMode=' + (frame.frameMode || '') + ' epoch=' + (frame.homingEpoch ?? '-') : '',
+  }, frame);
+  await refreshState();
+  return frame;
+}
+async function homeAll(targetId) {
+  logEvent('Home All requested (may take up to ~1 minute)');
+  const result = await api('POST', '/api/machine/home', { axes: 'all' });
+  showResult(targetId, {
+    request: 'POST /api/machine/home {"axes":"all"}', status: result.status,
+    message: result.data && result.data.error ? result.data.error
+      : 'Home All complete; frame re-established from the homing sequence.',
+  }, result.data);
+  await refreshState();
+  return result;
+}
+
+// ── Test A ───────────────────────────────────────────────────────────────────
+$('a1-home').addEventListener('click', async () => {
+  if (!confirm('Home All now? The machine will move through the homing sequence.')) return;
+  await homeAll('res-A1');
+});
+$('a1-frame').addEventListener('click', () => checkFrame('res-A1'));
+$('a1-stop').addEventListener('click', async () => {
+  if (!confirm('Send EMERGENCY jog stop (M410 quickstop) now, while the machine is moving?')) return;
+  const result = await api('POST', '/api/jog/stop', { emergency: true });
+  logEvent('Emergency jog stop sent -> ' + result.status);
+  showResult('res-A1', {
+    request: 'POST /api/jog/stop {"emergency":true}', status: result.status,
+    message: result.data && result.data.error ? result.data.error : 'emergency jog stop accepted',
+  }, result.data);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await checkFrame('res-A1');
+});
+$('a2-frame').addEventListener('click', () => checkFrame('res-A2'));
+
+// ── Test B ───────────────────────────────────────────────────────────────────
+$('b1-refresh').addEventListener('click', refreshState);
+$('b2-authorize').addEventListener('click', async () => {
+  const identity = startIdentity || {
+    gcodePath: '', jobPath: '', activeRunMode: '', activeRunFingerprint: '',
+    activeRunSizeBytes: 0, workZeroId: '', homingEpoch: 0, homingSessionId: '',
+    startMode: 'use_active_work_zero',
+  };
+  const result = await api('POST', '/api/job/authorize-start', identity);
+  showResult('res-B2', {
+    request: 'POST /api/job/authorize-start', status: result.status,
+    expectedStatus: '409', expectedMeaning: 'jog is the active motion owner; authorize refused',
+    message: (result.data && result.data.error) || '',
+  }, result.data);
+});
+
+// ── Test C ───────────────────────────────────────────────────────────────────
+$('c1-refresh').addEventListener('click', refreshState);
+$('c2-move').addEventListener('click', async () => {
+  if (!confirm('Send recovery move G0 X1 F600 while the frame is UNTRUSTED?\nExpected: firmware refuses with FRAME_UNTRUSTED. The machine must remain still.')) return;
+  const result = await api('POST', '/api/recovery/move', { command: 'G0 X1 F600' });
+  showResult('res-C2', {
+    request: 'POST /api/recovery/move {"command":"G0 X1 F600"}', status: result.status,
+    expectedStatus: '409', expectedMeaning: 'frame untrusted; motion refused',
+    message: (result.data && result.data.error) || '',
+  }, result.data);
+});
+$('c3-m114').addEventListener('click', async () => {
+  const result = await api('POST', '/api/cmd', { cmd: 'M114' });
+  showResult('res-C3', {
+    request: 'POST /api/cmd {"cmd":"M114"}', status: result.status,
+    expectedStatus: '200', expectedMeaning: 'diagnostics stay available during recovery',
+    message: (result.data && result.data.response) || (result.data && result.data.error) || '',
+  }, result.data);
+});
+$('c3-g0').addEventListener('click', async () => {
+  const result = await api('POST', '/api/cmd', { cmd: 'G0 X1' });
+  showResult('res-C3', {
+    request: 'POST /api/cmd {"cmd":"G0 X1"}', status: result.status,
+    expectedStatus: '409', expectedMeaning: 'motion during recovery is locked; no motion occurs',
+    message: (result.data && result.data.error) || '',
+  }, result.data);
+});
+$('c3-m5').addEventListener('click', async () => {
+  const result = await api('POST', '/api/cmd', { cmd: 'M5' });
+  showResult('res-C3', {
+    request: 'POST /api/cmd {"cmd":"M5"}', status: result.status,
+    expectedStatus: '409', expectedMeaning: 'standalone M5 is reserved for the recovery flow',
+    message: (result.data && result.data.error) || '',
+  }, result.data);
+});
+$('c4-home').addEventListener('click', async () => {
+  if (!confirm('Home All now? The machine will move through the homing sequence.')) return;
+  await homeAll('res-C4');
+});
+$('c4-refresh').addEventListener('click', () => checkFrame('res-C4'));
+$('c4-move').addEventListener('click', async () => {
+  if (!confirm('Move X to work coordinate 1 mm at F600?\nTool must be clear.')) return;
+  const result = await api('POST', '/api/recovery/move', { command: 'G0 X1 F600' });
+  showResult('res-C4', {
+    request: 'POST /api/recovery/move {"command":"G0 X1 F600"}', status: result.status,
+    expectedStatus: '200', expectedMeaning: 'firmware authorized the recovery reposition',
+    message: (result.data && (result.data.response || result.data.error)) || '',
+  }, result.data);
+});
+for (const [buttonId, command] of [
+  ['c5-g28', 'G28'], ['c5-g53', 'G53 G0 Z5'], ['c5-g92', 'G92 X0'], ['c5-m3', 'M3 S1000'],
+]) {
+  $(buttonId).addEventListener('click', async () => {
+    if (!confirm('Send forbidden command "' + command + '" to /api/recovery/move?\nEXPECTED: HTTP 400 COMMAND_FORBIDDEN. The command must NOT reach Marlin.')) return;
+    const result = await api('POST', '/api/recovery/move', { command });
+    showResult('res-C5', {
+      request: 'POST /api/recovery/move {"command":"' + command + '"}', status: result.status,
+      expectedStatus: '400', expectedMeaning: 'command is outside the recovery class; never forwarded',
+      message: (result.data && result.data.error) || '',
+    }, result.data);
+  });
+}
+
+// ── Test D identity helpers ──────────────────────────────────────────────────
+let jobList = [];
+$('d-jobs').addEventListener('click', async () => {
+  const result = await api('GET', '/api/files?path=/jobs');
+  if (!result.ok) {
+    showResult('res-DID', { request: 'GET /api/files?path=/jobs', status: result.status,
+      message: 'could not list /jobs' }, result.data);
+    return;
+  }
+  jobList = ((result.data && result.data.items) || [])
+    .filter((item) => item.type === 'file' && /\.job\.json$/i.test(item.name));
+  const select = $('d-jobselect');
+  select.innerHTML = '';
+  for (const item of jobList) {
+    const option = document.createElement('option');
+    option.value = item.path;
+    option.textContent = item.path + ' (' + item.size + ' B)';
+    select.appendChild(option);
+  }
+  showResult('res-DID', {
+    request: 'GET /api/files?path=/jobs', status: result.status,
+    message: jobList.length + ' job sidecar(s) found. Select one and press Load Job Evidence.',
+  }, { items: jobList.map((item) => item.path) });
+});
+$('d-load').addEventListener('click', async () => {
+  const jobPath = $('d-jobselect').value;
+  if (!jobPath) {
+    showResult('res-DID', { request: '-', status: '-', message: 'Select a .job.json first.' }, null);
+    return;
+  }
+  const result = await api('GET', '/api/download?path=' + encodeURIComponent(jobPath));
+  const job = result.ok && result.data && result.data.activeRun ? result.data : null;
+  if (!job) {
+    showResult('res-DID', { request: 'GET /api/download', status: result.status,
+      message: 'could not read a sidecar with activeRun evidence' }, result.data);
+    return;
+  }
+  const frame = await api('GET', '/api/machine/frame');
+  const frameData = frame.ok ? frame.data : {};
+  startIdentity = {
+    gcodePath: job.activeRun.path,
+    jobPath,
+    activeRunMode: job.activeRun.mode,
+    activeRunFingerprint: job.activeRun.mode === 'generated'
+      ? (job.activeRun.generatedFingerprint || '')
+      : (job.activeRun.sourceFingerprint || ''),
+    activeRunSizeBytes: Number(job.activeRun.sizeBytes || 0),
+    workZeroId: job.activeWorkZeroId || '',
+    homingEpoch: Number(frameData.homingEpoch ?? 0),
+    homingSessionId: String(frameData.homingSessionId || ''),
+    startMode: 'use_active_work_zero',
+  };
+  logEvent('Job identity loaded: ' + jobPath);
+  showResult('res-DID', {
+    request: 'GET /api/download?path=' + jobPath, status: result.status,
+    message: 'Identity loaded from sidecar claims (mode=' + startIdentity.activeRunMode +
+      ' size=' + startIdentity.activeRunSizeBytes + ' workZeroId=' + startIdentity.workZeroId +
+      '). Firmware re-validates everything, including the run-file hash.',
+  }, startIdentity);
+  renderReadiness();
+});
+
+// ── Test D actions ───────────────────────────────────────────────────────────
+async function requestStartGrant() {
+  if (!startIdentity) return null;
+  const frame = await api('GET', '/api/machine/frame');
+  const frameData = frame.ok ? frame.data : {};
+  const identity = Object.assign({}, startIdentity, {
+    homingEpoch: Number(frameData.homingEpoch ?? 0),
+    homingSessionId: String(frameData.homingSessionId || ''),
+  });
+  const result = await api('POST', '/api/job/authorize-start', identity);
+  if (result.ok && result.data && result.data.startGrant) {
+    startGrant = result.data.startGrant;
+    grantIssuedAtMs = Date.now();
+    logEvent('Start grant received (token withheld; expires in ' +
+             (result.data.expiresInSeconds || 60) + ' s)');
+    return startGrant;
+  }
+  return null;
+}
+$('d2-grant').addEventListener('click', async () => {
+  const grant = await requestStartGrant();
+  showResult('res-D2', {
+    request: 'POST /api/job/authorize-start', status: grant ? 200 : 0,
+    message: grant ? 'Start grant received. Expires in 60 s.' :
+      'Firmware did not issue a grant - check the readiness panel and the error above.',
+  }, grant ? { ok: true, startGrant: '(redacted - held in page memory only)', expiresInSeconds: 60 } : null,
+  true);
+});
+$('d4-grant').addEventListener('click', async () => {
+  const grant = await requestStartGrant();
+  showResult('res-D4', {
+    request: 'POST /api/job/authorize-start', status: grant ? 200 : 0,
+    message: grant ? 'Fresh grant received. Now change the identity: Home All or re-set the Work Zero.'
+                   : 'Firmware did not issue a grant - check readiness.',
+  }, grant ? { ok: true } : null, true);
+});
+$('d1-start').addEventListener('click', async () => {
+  if (!startIdentity) {
+    showResult('res-D1', { request: '-', status: '-', message: 'Load a prepared job identity first (D0).' }, null);
+    return;
+  }
+  const result = await api('POST', '/api/job/start', startIdentity);
+  showResult('res-D1', {
+    request: 'POST /api/job/start (no startGrant)', status: result.status,
+    expectedStatus: '403', expectedMeaning: 'firmware demands its own one-time capability',
+    message: (result.data && result.data.error) || '',
+  }, result.data);
+});
+$('d2-start').addEventListener('click', async () => {
+  if (!startIdentity || !startGrant) {
+    showResult('res-D2', { request: '-', status: '-', message: 'Need the loaded job identity and a fresh grant.' }, null);
+    return;
+  }
+  if (!confirm('Start the prepared air-only job now?')) return;
+  const result = await api('POST', '/api/job/start', Object.assign({}, startIdentity, { startGrant }));
+  showResult('res-D2', {
+    request: 'POST /api/job/start (with grant)', status: result.status,
+    expectedStatus: '200', expectedMeaning: 'firmware accepted the capability; job is PREPARING',
+    message: (result.data && (result.data.error || 'start admitted; preparation in progress')) || '',
+  }, result.data);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const job = await api('GET', '/api/job/status');
+    if (job.ok && ['RUNNING', 'COMPLETED', 'ERROR', 'STOPPED'].includes(String(job.data.state))) {
+      showResult('res-D2', {
+        request: 'POST /api/job/start (with grant)', status: result.status,
+        message: 'job state: ' + job.data.state,
+      }, job.data);
+      break;
+    }
+  }
+});
+$('d3-reuse').addEventListener('click', async () => {
+  if (!startIdentity || !startGrant) {
+    showResult('res-D3', { request: '-', status: '-', message: 'Run D2 first (grant + start).' }, null);
+    return;
+  }
+  const result = await api('POST', '/api/job/start', Object.assign({}, startIdentity, { startGrant }));
+  showResult('res-D3', {
+    request: 'POST /api/job/start (re-used grant)', status: result.status,
+    expectedStatus: '403', expectedMeaning: 'the capability was consumed by D2 and cannot be replayed',
+    message: (result.data && result.data.error) || '',
+  }, result.data);
+});
+$('d4-start').addEventListener('click', async () => {
+  if (!startIdentity || !startGrant) {
+    showResult('res-D4', { request: '-', status: '-', message: 'Request a fresh grant first.' }, null);
+    return;
+  }
+  const result = await api('POST', '/api/job/start', Object.assign({}, startIdentity, { startGrant }));
+  showResult('res-D4', {
+    request: 'POST /api/job/start (old grant after identity change)', status: result.status,
+    expectedStatus: '403/409', expectedMeaning: 'the old capability must not start the job',
+    message: (result.data && result.data.error) || 'ADMITTED - UNEXPECTED',
+  }, result.data);
+});
+
+// ── Test E job transport (exact existing endpoints) ──────────────────────────
+$('e1-refresh').addEventListener('click', refreshState);
+$('e2-refresh').addEventListener('click', refreshState);
+$('e1-pause').addEventListener('click', async () => {
+  if (!confirm('Pause the running air job now?')) return;
+  const result = await api('POST', '/api/job/pause', {});
+  showResult('res-E1', { request: 'POST /api/job/pause', status: result.status,
+    message: (result.data && (result.data.error || 'pause requested')) || '' }, result.data);
+  await refreshState();
+});
+$('e1-resume').addEventListener('click', async () => {
+  if (!confirm('Resume the paused job now?')) return;
+  const result = await api('POST', '/api/job/resume', {});
+  showResult('res-E1', { request: 'POST /api/job/resume', status: result.status,
+    message: (result.data && (result.data.error || 'resume requested')) || '' }, result.data);
+  await refreshState();
+});
+$('e2-stop').addEventListener('click', async () => {
+  if (!confirm('NORMAL JOB STOP: send /api/job/stop for the running job?\nThe frame will become untrusted and Home All will be required.')) return;
+  const result = await api('POST', '/api/job/stop', {});
+  showResult('res-E2', { request: 'POST /api/job/stop', status: result.status,
+    message: (result.data && (result.data.error || 'stop requested')) || '' }, result.data);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await refreshState();
+});
+
+// ── verdicts ─────────────────────────────────────────────────────────────────
+function setVerdict(subId, result) {
+  const results = loadResults();
+  results[subId] = {
+    result,
+    notes: (document.querySelector('[data-notes="' + subId + '"]') || {}).value || '',
+    recordedAt: new Date().toISOString(),
+  };
+  saveResults(results);
+  logEvent('Verdict ' + subId + ': ' + result);
+}
+document.querySelectorAll('[data-verdict]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const id = button.dataset.verdict;
+    const subId = id.split(':')[0];
+    const result = id.split(':')[1];
+    setVerdict(subId, result);
+    if (result === 'FAIL') logEvent('FAILURE recorded on ' + subId + ' - subsystem sequence stops');
+  });
+});
+document.querySelectorAll('[data-notes]').forEach((input) => {
+  input.addEventListener('change', () => {
+    const results = loadResults();
+    const id = input.dataset.notes;
+    results[id] = Object.assign({ result: (results[id] || {}).result || 'NOT EXECUTED' }, results[id], {
+      notes: input.value, recordedAt: new Date().toISOString(),
+    });
+    saveResults(results);
+  });
+});
+
+// ── reports ──────────────────────────────────────────────────────────────────
+$('btn-copy').addEventListener('click', async () => {
+  const results = loadResults();
+  const health = live.health || {};
+  const lines = [
+    'S1 Hardware Acceptance Results',
+    'Firmware: ' + (health.firmware || '-') + ' ' + (health.firmwareVersion || '-') +
+      ' build ' + (health.buildDate || '-') + ' ' + (health.buildTime || '-'),
+    'Recorded: ' + new Date().toISOString(),
+    '',
+  ];
+  for (const finding of ['F-1', 'F-2', 'F-3', 'F-4', 'F-5']) {
+    lines.push(finding + ': ' + findingStatus(finding));
+    for (const id of REQUIRED_SUBTESTS[finding]) {
+      const entry = results[id];
+      lines.push('  ' + id + ': ' + (entry ? entry.result : 'NOT EXECUTED') +
+                 (entry && entry.notes ? ' - ' + entry.notes : ''));
+    }
+  }
+  lines.push('');
+  lines.push('Session log:');
+  lines.push(...eventLogLines);
+  $('report').value = lines.join('\n');
+  $('report').select();
+  try { await navigator.clipboard.writeText($('report').value); } catch (err) { /* clipboard unavailable on plain HTTP; text stays in the textarea */ }
+});
+$('btn-copylog').addEventListener('click', async () => {
+  $('report').value = eventLogLines.join('\n');
+  $('report').select();
+  try { await navigator.clipboard.writeText($('report').value); } catch (err) { /* keep text in textarea */ }
+});
+$('btn-reset').addEventListener('click', () => {
+  if (!confirm('Clear all recorded PASS/FAIL results and notes?')) return;
+  localStorage.removeItem(RESULTS_KEY);
+  renderVerdicts();
+  renderSummary();
+  renderReadiness();
+  $('report').value = '';
+});
+
+// ── initial pass ─────────────────────────────────────────────────────────────
+refreshState();
+renderVerdicts();
+renderSummary();
+renderReadiness();
+</script>
+</body>
+</html>

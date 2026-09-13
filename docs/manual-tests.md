@@ -184,6 +184,11 @@ For each test above, confirm:
 
 ## S1 Safety Acceptance Suite (Phases 2-6, audit findings F-1..F-5)
 
+> For normal on-machine execution, use `/test.html` (open `http://192.168.4.1/test.html`).
+> The test page contains the full operator instructions, live state, buttons, and result
+> recording, and is the preferred field-test interface. This section remains the technical
+> reference: exact API calls, expected firmware internals, and the failure rule.
+
 Hardware acceptance for the five resolved S1 state-ownership findings. Execute on the real
 ESP32 + Marlin CNC. Record one log block per test (template below). Do not mark a finding
 hardware-verified until the physical result is recorded in `work/current-task.md`.

@@ -1,5 +1,23 @@
 # Progress
 
+## 2026-09-13 - Phase 6.7: test.html is now the primary S1 field-test interface
+
+- www/test.html rewritten as a fully self-contained console: every subtest carries the five
+  operator sections (Why / Before you start with live READY check / What do I do / WHAT SHOULD
+  I SEE incl. must-nots and expected HTTP / Did it work), plain-language finding titles with
+  audit IDs as secondary info, EXPECTED REJECTION markers on intentional-failure tests, and
+  "Why can't I continue?" reasons under disabled buttons.
+- Persistent Current-machine-state panel (controller/job/jog/frame/work-zero/homed/operator)
+  with relevant-state emphasis; recommended order A->B->D->C->E shown at top; completion
+  summary table (F-1..F-5 PASS/FAIL/PENDING + HARDWARE VERIFIED / NOT YET VERIFIED).
+- Session event log added (GET/POST calls, frame/job state transitions; no secrets, no grant
+  values) with Copy Session Log; Copy Results includes the summary + log. Start grant remains
+  in page memory only, never rendered/stored/logged; authorize technical responses redact it.
+- Operator gate: 423 responses surface "Operator control is not claimed..." with an
+  [Open CNC UI] shortcut. No second auth mechanism; same-origin cookie applies.
+- No production safety semantics changed; firmware untouched. Suites: vitest 861/861 (includes
+  new serving + source-guard tests), esp32cam SUCCESS. SD card E:\www	est.html refreshed.
+
 ## 2026-09-13 - Phase 6.5: S1 hardware acceptance suite documented (no code changes)
 
 - docs/manual-tests.md gains the "S1 Safety Acceptance Suite" (F-1..F-5): pre-flight safety
