@@ -7477,8 +7477,20 @@ bool serveSdWwwFile(const String &uri) {
   }
 
   sendCacheHeadersFor(sdPath);
+  const size_t servedBytes = file.size();
   server.streamFile(file, contentTypeForPath(sdPath));
   file.close();
+  // Field diagnostics: fingerprint which UI build the browser receives. First
+  // serve of a file logs its size; a size change (new deploy) logs again.
+  // Skins/icons are excluded to keep the ring small.
+  if (!uri.startsWith("/skins/")) {
+    static String servedUiFingerprint = "";
+    const String marker = uri + "=" + String(servedBytes) + "B";
+    if (servedUiFingerprint.indexOf(marker) < 0) {
+      servedUiFingerprint += marker + " ";
+      logSystemEvent("UI served " + marker);
+    }
+  }
   return true;
 }
 
