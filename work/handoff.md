@@ -1,5 +1,19 @@
 # Handoff
 
+## 2026-09-15 - FIELD BUG FIXED: HTTP zero confirmation resolved a bare frame (UI-only, eff10bb)
+
+- Marko's hardware run hit a real bug in the phase's own fallback: the WS-down confirmation
+  (waitForMachineFrameHttp) resolved the RAW /api/machine/frame JSON, but every consumer
+  (dispatchConfirmedMachineEvent -> machineFrameFromSlice, zero verification) re-extracts
+  .frame from a machine SLICE. Result: an empty frame (work=null, trusted=undefined,
+  homing session unknown) replaced the mirror -> "Could not verify zero", Zero/Origin
+  "Unknown - Home machine first", frame gate disabled. EXACTLY the reported screenshots.
+- Fix: the HTTP confirmation now resolves the same slice-shaped object the WS path delivers
+  (frame + position + homedAxes + homingEpoch) and feeds applyMachineSlice. UI-only;
+  machine-bar.js changed. Regression guard in work-zero-ownership.test.mjs.
+- ACTION FOR MARKO: just reload /preview (and /test.html) - no reflash needed. Then Home All
+  -> Set Work Zero -> expect VALID, and continue the S1 suite.
+
 ## 2026-09-15 - Work Zero ownership consolidated (field-failure fix)
 
 - Field session 10474D96 (build Sep 14): Home All ok; ELEVEN work-zero sets ALL ok=true

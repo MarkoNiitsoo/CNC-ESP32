@@ -1,5 +1,16 @@
 # Progress
 
+## 2026-09-15 - Field bug: HTTP zero confirmation resolved a bare frame (fixed, UI-only)
+
+- Hardware run exposed a bug in the phase's own fallback: waitForMachineFrameHttp resolved
+  the RAW /api/machine/frame JSON, but dispatchConfirmedMachineEvent re-extracts .frame from
+  a machine SLICE -> empty frame (work=null, trusted undefined, homing session unknown) ->
+  "Could not verify zero" + Zero/Origin "Unknown - Home machine first" + gate disabled.
+  Matches Marko's screenshots exactly; firmware work-zero sets were succeeding all along.
+- Fix: HTTP confirmation resolves a slice-shaped object (frame + position + homedAxes +
+  homingEpoch) and feeds applyMachineSlice; regression guard added
+  (work-zero-ownership.test.mjs). machine-bar.js only - reload /preview, no reflash.
+
 ## 2026-09-15 - Work Zero ownership consolidation (field-failure fix, phase per audit step 3-7)
 
 - Field evidence (SD logs, session 10474D96, build Sep 14): Home All completed ok=true twice;
