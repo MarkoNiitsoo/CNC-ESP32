@@ -36,7 +36,7 @@ function extractFunctionSource(name) {
 // Compile the real applyMachineFrameSlice body. currentMachineFrame and
 // lastAppliedFrameGateKey are free variables in the page; in the compiled
 // function they resolve to globals, so the harness plants them on globalThis.
-const compileApplyMachineFrameSlice = ({ renderWorkbenchStatusCalls, renderRunPanelCalls }) => {
+const compileApplyMachineFrameSlice = ({ renderWorkbenchStatusCalls, renderRunPanelCalls, renderZeroGateCalls = [] }) => {
   const machineFrameFromSlice = new Function(
     `return (${extractFunctionSource('machineFrameFromSlice')});`,
   )();
@@ -44,12 +44,15 @@ const compileApplyMachineFrameSlice = ({ renderWorkbenchStatusCalls, renderRunPa
     'machineFrameFromSlice',
     'renderWorkbenchStatus',
     'renderRunPanel',
+    'renderZeroGate',
     `return (${extractFunctionSource('applyMachineFrameSlice')});`,
   );
   return factory(machineFrameFromSlice, () => {
     renderWorkbenchStatusCalls.push('workbench');
   }, () => {
     renderRunPanelCalls.push('run-panel');
+  }, () => {
+    renderZeroGateCalls.push('zero-gate');
   });
 };
 

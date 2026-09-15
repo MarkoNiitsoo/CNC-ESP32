@@ -1108,5 +1108,35 @@
       isValidCommandResponse,
     };
   }
-  window.CncTelemetry = api;
+    // ── F-2/F-3 field fix (2026-09-14): machine-frame HTTP reconciliation ─────
+  // The frame/homing state must reach the UI even while the WebSocket is down
+  // (field logs: WS cycling left the UI without homing info, blocking Work
+  // Zero). WebSocket patches and this HTTP poll feed the SAME emit('machine')
+  // update; stale HTTP frames (older revision) are dropped.
+  let machineFrameHttpBusy = false;
+  function reconcileMachineFrameOverHttp() {
+    if (transportStatus === 'synchronized' || machineFrameHttpBusy) return;
+    machineFrameHttpBusy = true;
+    fetch('/api/machine/frame', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((frame) => {
+        machineFrameHttpBusy = false;
+        if (!frame || typeof frame.revision !== 'number') return;
+        const current = state.machine && typeof state.machine === 'object' ? state.machine : null;
+        const currentRevision = current
+          ? Number(current.frame ? current.frame.revision : current.revision) || 0
+          : -1;
+        if (Number(frame.revision) <= currentRevision) return; // stale HTTP frame
+        emit('machine', {
+          frame,
+          position: { work: frame.work || null, machine: frame.machine || null },
+          homedAxes: frame.homedAxes || { x: false, y: false, z: false },
+          homingEpoch: frame.homingEpoch || 0,
+        });
+      })
+      .catch(() => { machineFrameHttpBusy = false; });
+  }
+  setInterval(reconcileMachineFrameOverHttp, 2000);
+
+window.CncTelemetry = api;
 }());

@@ -54,8 +54,7 @@
     '[data-requires-live-control]',
     '#mb-pause',
     '#mb-home-x', '#mb-home-y', '#mb-home-z', '#mb-home-all', '#mb-m119',
-    '#mb-set-work-zero', '#mb-set-z-zero', '#mb-capture-work-zero', '#mb-capture-z-zero',
-    '#mb-touch-plate-z-zero', '[data-mb-goto-zero]',
+    '[data-mb-goto-zero]',
     '#mb-terminal-send', '#mb-terminal-select', '#mb-terminal-cmd', '#mb-m114', '#mb-capture-position',
     '#mb-jog-restore-z', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
     '#mb-jog-dock-toggle', '#mb-jog-settings-toggle', '#mb-jog-safe',
@@ -139,6 +138,23 @@
     });
   }
 
+  function waitForMachineFrameHttp(predicate, timeoutMs, description) {
+    const deadline = Date.now() + timeoutMs;
+    const attempt = () => fetch('/api/machine/frame', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((frame) => {
+        if (frame && frameRevision(frame) > -1 && predicate(frame)) return frame;
+        return Promise.reject(new Error('retry'));
+      });
+    const poll = () => attempt().then(
+      (frame) => frame,
+      () => (Date.now() < deadline
+        ? new Promise((resolve) => setTimeout(resolve, 400)).then(poll)
+        : Promise.reject(new Error(`Command accepted, but live-state confirmation timed out while waiting for ${description}.`))),
+    );
+    return poll();
+  }
+
   function waitForSocketSlice(slice, predicate = () => true, options = {}) {
     const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 5000;
     const description = options.description || `${slice} state`;
@@ -146,6 +162,10 @@
       ? Number(options.afterSequence)
       : socketSliceToken(slice);
     if (!socketLiveStateSynchronized()) {
+      // Field fix (2026-09-14): WS cycling must not strand a successful machine
+      // operation without confirmation. The authoritative machine frame
+      // reconciles over HTTP; other slices keep the strict socket gate.
+      if (slice === 'machine') return waitForMachineFrameHttp(predicate, timeoutMs, description);
       return Promise.reject(new Error(`Live socket state is not synchronized while waiting for ${description}.`));
     }
     const current = socketSlices.get(slice);
@@ -165,6 +185,29 @@
       };
       waiters.add(waiter);
       socketSliceWaiters.set(slice, waiters);
+      // If the WebSocket drops while waiting, the authoritative machine frame
+      // still confirms over HTTP.
+      if (slice === 'machine') {
+        waiter.httpPoll = setInterval(() => {
+          if (socketLiveStateSynchronized()) return;
+          fetch('/api/machine/frame', { cache: 'no-store' })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((frame) => {
+              if (!waiters.has(waiter) || !frame) return;
+              applyMachineSlice({
+                frame,
+                position: { work: frame.work || null, machine: frame.machine || null },
+                homedAxes: frame.homedAxes || { x: false, y: false, z: false },
+                homingEpoch: frame.homingEpoch || 0,
+              });
+              if (frameRevision(frame) > afterSequence && predicate(frame)) {
+                waiters.delete(waiter);
+                clearTimeout(waiter.timer);
+                waiter.resolve(frame);
+              }
+            }).catch(() => {});
+        }, 500);
+      }
     });
   }
 
@@ -636,8 +679,6 @@
     const trimmed = String(cmd || '').trim();
     if (!trimmed) return;
     const upper = trimmed.toUpperCase();
-    if (upper === 'G92 X0 Y0 Z0') return setWorkZero();
-    if (upper === 'G92 Z0') return setZZero();
     await sendCmd(trimmed);
   }
 
@@ -1576,10 +1617,14 @@
     zSlider?.addEventListener('contextmenu', (event) => event.preventDefault());
   }
 
-  async function setWorkZero() {
+
+
+
+  async function setWorkZero(axes = 'xyz') {
     if (!canSetup()) return;
     if (!confirmUnknown('setting work zero')) return;
-    if (!confirm('This will set the current tool position as work X0/Y0/Z0.')) return;
+    if (!confirm('This will set the current tool position as work '
+        + (axes === 'xyz' ? 'X0/Y0/Z0' : axes.toUpperCase() + '0') + '.')) return;
     const baseline = socketSliceToken('machine');
     const previousRevision = frameRevision(STATE.frame);
     const telemetry = window.CncTelemetry;
@@ -1592,7 +1637,7 @@
         },
         { afterSequence: baseline, description: 'new Work Zero frame' },
       );
-      dispatchConfirmedMachineEvent('cnc-work-zero-set', data, machine, { axes: 'xyz' });
+      dispatchConfirmedMachineEvent('cnc-work-zero-set', data, machine, { axes });
       setMessage('Work zero set and confirmed by live machine state');
     };
     if (telemetry?.beginCommand && (STATE.operator?.controller || machineControlOpen())) {
@@ -1600,13 +1645,13 @@
       // the result phase may legitimately take minutes (the firmware engine
       // runs G28/M400 with 120 s Marlin budgets per step) and must never be
       // mistaken for a failure to accept.
-      const handle = telemetry.beginCommand('machine.setWorkZero', { axes: 'xyz' },
+      const handle = telemetry.beginCommand('machine.setWorkZero', { axes },
         genCommandId('machine-setworkzero'), { admissionTimeoutMs: 5000, resultTimeoutMs: 600000 });
       let admitted = true;
       try {
         await handle.accepted;
       } catch (admissionError) {
-        // Only a proven non-acceptance allows the HTTP fallback; an admission
+        // Only a proven non-acceptance permits the HTTP fallback; an admission
         // timeout with the packet sent leaves the command possibly running.
         if (wsCommandDefinitelyNotAccepted(admissionError)) admitted = false;
       }
@@ -1615,13 +1660,13 @@
         return;
       }
     }
-    await confirmWorkZero(await apiPost('/api/work-zero/set', {}));
+    await confirmWorkZero(await apiPost('/api/work-zero/set', { axes }));
   }
 
   async function setZZero() {
     if (!canSetZ()) return;
-    if (!confirmUnknown('setting Z zero')) return;
-    if (!confirm('This will set only current Z as work Z0. X/Y will not change.')) return;
+    if (!confirmUnknown('setting tool Z zero')) return;
+    if (!confirm('This will set only the current tool position as work Z0. X/Y will not change.')) return;
     const baseline = socketSliceToken('machine');
     const previousRevision = frameRevision(STATE.frame);
     const telemetry = window.CncTelemetry;
@@ -1632,7 +1677,7 @@
         { afterSequence: baseline, description: 'new Z Zero frame' },
       );
       dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z' });
-      setMessage('Z zero set and confirmed by live machine state');
+      setMessage('Tool Z zero set and confirmed by live machine state');
     };
     if (telemetry?.beginCommand && (STATE.operator?.controller || machineControlOpen())) {
       const handle = telemetry.beginCommand('machine.setZZero', null,
@@ -1655,7 +1700,7 @@
     if (!canSetZ()) return;
     const settings = STATE.toolChangeSettings;
     if (!settings?.touchPlateEnabled) throw new Error('Touch plate is not enabled in Settings.');
-    if (!confirmUnknown('probing Z zero')) return;
+    if (!confirmUnknown('probing tool Z zero')) return;
     if (!confirm(`Probe downward up to ${settings.touchPlateProbeDistance.toFixed(1)} mm at ${settings.touchPlateProbeFeed.toFixed(0)} mm/min?\n\nPlate thickness: ${settings.touchPlateThickness.toFixed(2)} mm. Verify the probe lead is connected.`)) return;
     const baseline = socketSliceToken('machine');
     const previousRevision = frameRevision(STATE.frame);
@@ -1663,10 +1708,10 @@
     const machine = await waitForSocketSlice(
       'machine',
       (slice) => frameRevision(machineFrameFromSlice(slice)) > previousRevision,
-      { afterSequence: baseline, description: 'touch-plate Z Zero frame' },
+      { afterSequence: baseline, description: 'touch-plate tool Z Zero frame' },
     );
     dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z', method: 'touchplate' });
-    setMessage('Touch-plate Z zero confirmed by live machine state');
+    setMessage('Touch-plate tool Z zero confirmed by live machine state');
   }
 
   async function loadToolChangeSettings() {
@@ -1678,13 +1723,7 @@
     render();
   }
 
-  async function captureAndSetWorkZero() {
-    await setWorkZero();
-  }
 
-  async function captureAndSetZZero() {
-    await setZZero();
-  }
 
   async function home(cmd, message, fullHoming = false) {
     if (!canSetup()) return;
@@ -2044,13 +2083,6 @@
     setDisabled('mb-terminal-cmd', diagnosticsBusy);
 
     const disableZero = busy;
-    setDisabled('mb-set-work-zero', disableZero || !canSetup());
-    setDisabled('mb-set-z-zero', !canSetZ());
-    setDisabled('mb-capture-work-zero', disableZero || !canSetup());
-    setDisabled('mb-capture-z-zero', !canSetZ());
-    const touchPlateButton = el('mb-touch-plate-z-zero');
-    if (touchPlateButton) touchPlateButton.hidden = !STATE.toolChangeSettings?.touchPlateEnabled;
-    setDisabled('mb-touch-plate-z-zero', !canSetZ());
 
     const disableHoming = !canSetup();
     setDisabled('mb-m119', disableHoming);
@@ -2198,14 +2230,10 @@
         </div>
         <div class="machine-drawer-card">
           <h2>Zero</h2>
-          <p>Work Zero changes X/Y/Z. Z Zero changes only tool height.</p>
+          <p>Work Zero is set in the CNC UI: Home All, jog to origin, then press
+          <b>Set Work Zero</b> (Preview, Zero panel). Z Zero sets only tool height.</p>
           <div class="machine-drawer-grid">
             <button id="mb-capture-position" type="button" data-requires-live-control>Capture Current Position</button>
-            <button id="mb-set-work-zero" type="button" data-icon="workZero" data-requires-live-control>Set Work Zero XYZ</button>
-            <button id="mb-set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Z Zero Only</button>
-            <button id="mb-touch-plate-z-zero" type="button" hidden data-requires-live-control>Touch Plate Z Zero</button>
-            <button id="mb-capture-work-zero" type="button" data-requires-live-control>Capture + Set Work Zero</button>
-            <button id="mb-capture-z-zero" type="button" data-requires-live-control>Capture + Set Z Zero</button>
           </div>
         </div>
         <div class="machine-drawer-card">
@@ -2332,11 +2360,6 @@
     });
     button('mb-m114', refreshPosition);
     button('mb-capture-position', refreshPosition);
-    button('mb-set-work-zero', setWorkZero);
-    button('mb-set-z-zero', setZZero);
-    button('mb-touch-plate-z-zero', touchPlateZZero);
-    button('mb-capture-work-zero', captureAndSetWorkZero);
-    button('mb-capture-z-zero', captureAndSetZZero);
     button('mb-m119', () => sendCmd('M119'));
     button('mb-home-x', () => home('G28 X', 'This will move the CNC X axis toward its endstop. Keep your hand near the physical emergency stop.'));
     button('mb-home-y', () => home('G28 Y', 'This will move the CNC Y axis toward its endstop. Keep your hand near the physical emergency stop.'));

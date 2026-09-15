@@ -15,7 +15,7 @@ describe('operator Zero / Origin workflow', () => {
     expect(panel).toContain('Set Work Zero');
     expect(panel).toContain('Set Zero X');
     expect(panel).toContain('Set Zero Y');
-    expect(panel).toContain('Set Zero Z');
+    expect(panel).toContain('Set Tool Z Zero');
     expect(panel).toContain('History');
     expect(panel).toContain('data-preview-tab="preflight"');
     expect(panel).toContain('id="prepare-work-zero-history"');
@@ -54,9 +54,9 @@ describe('operator Zero / Origin workflow', () => {
   });
 
   it('automatically saves verified XYZ/X/Y/Z zero transactions', () => {
-    expect(preview).toContain("setWorkZeroWithCapture(null, 'xyz')");
-    expect(preview).toContain("setWorkZeroWithCapture(null, 'x')");
-    expect(preview).toContain("setWorkZeroWithCapture(null, 'y')");
+    expect(preview).toContain("setWorkZero('xyz')");
+    expect(preview).toContain("setWorkZero('x')");
+    expect(preview).toContain("setWorkZero('y')");
     expect(preview).toContain("setZZeroWithCapture(null, { confirm: false })");
     expect(preview).toMatch(/async function setWorkZeroWithCapture[\s\S]*await saveJobQuietly\(\)/);
     expect(preview).toMatch(/async function setZZeroWithCapture[\s\S]*await saveJobQuietly\(\)/);

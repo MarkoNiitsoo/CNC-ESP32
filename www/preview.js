@@ -66,6 +66,7 @@ const loadJobButton = document.querySelector('#load-job');
 const saveJobButton = document.querySelector('#save-job');
 const capturePositionButton = document.querySelector('#capture-position');
 const setWorkZeroButton = document.querySelector('#set-work-zero');
+const zeroGateEl = document.querySelector('#set-work-zero-gate');
 const setZeroXButton = document.querySelector('#set-zero-x');
 const setZeroYButton = document.querySelector('#set-zero-y');
 const captureSetZeroButton = document.querySelector('#capture-set-zero');
@@ -670,7 +671,7 @@ function renderReadiness() {
     readinessSecondaryEl.append(workflowButton('Continue Without Homing', continueWithoutHoming, 'machine-danger'));
   } else if (status.gate === 'work-zero') {
     if (status.frame.mode === 'homed') {
-      readinessPrimaryEl.append(workflowButton('Set Work Zero Here', () => setWorkZeroWithCapture(null, 'xyz'), 'primary-action'));
+      readinessPrimaryEl.append(workflowButton('Set Work Zero Here', () => window.LowRiderMachineBar?.setWorkZero('xyz'), 'primary-action'));
     } else {
       readinessPrimaryEl.append(workflowButton('Set Current Position as Zero', () => acceptManualWorkZero('set-zero'), 'primary-action'));
       readinessSecondaryEl.append(workflowButton('Use Existing G54 Coordinates', () => acceptManualWorkZero('preserve')));
@@ -5416,26 +5417,13 @@ async function saveToolZeroToJob() {
 }
 
 async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
+  // F-4-phase consolidation: the firmware call belongs to the canonical
+  // machine-bar transport (WS-first with HTTP frame confirmation). This
+  // function records the operator evidence from the CONFIRMED frame only.
   const selectedAxes = ['x', 'y'].includes(axes) ? axes : 'xyz';
   const job = ensureJobState();
-  let data = transaction;
-  if (!data) {
-    const machineBaseline = socketSliceToken('machine');
-    const previousRevision = machineFrameRevision(currentMachineFrame);
-    const res = await fetch('/api/work-zero/set', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: selectedAxes }),
-    });
-    data = await readJsonOrThrow(res);
-    if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Work Zero failed');
-    const { frame } = await waitForMachineFrame(
-      machineBaseline,
-      previousRevision,
-      `new ${selectedAxes.toUpperCase()} Work Zero frame`,
-      (candidate) => candidate.workZeroValid === true,
-    );
-    data = { ...data, frame, confirmedBySocket: true, axes: selectedAxes };
-  }
-  if (data.confirmedBySocket !== true) throw new Error('Work Zero was accepted but has no authoritative socket confirmation.');
+  const data = transaction;
+  if (!data || data.confirmedBySocket !== true) throw new Error('Work Zero was accepted but has no authoritative socket confirmation.');
   const frame = data.frame;
   const before = parseM114(data.before || '');
   const after = parseM114(data.after || '');
@@ -6808,11 +6796,17 @@ loadJobButton?.addEventListener('click', () => loadJob().catch((err) => setJobRe
 saveJobButton?.addEventListener('click', () => saveJob().catch((err) => setJobResult(err.message, true)));
 saveJobPreflightButton?.addEventListener('click', () => saveJobWithPreflight().catch((err) => setJobResult(err.message, true)));
 capturePositionButton?.addEventListener('click', () => captureCurrentPosition().catch((err) => setJobResult(err.message, true)));
-setWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz').catch((err) => setJobResult(operatorZeroError(err), true)));
+setWorkZeroButton?.addEventListener('click', () => {
+  const transport = window.LowRiderMachineBar?.setWorkZero;
+  if (!transport) { setJobResult('Machine controls are unavailable; reload the page.', true); return; }
+  transport('xyz').catch((err) => setJobResult(operatorZeroError(err), true));
+});
 readinessHomeAllButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
 });
-readinessSetWorkZeroButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'xyz'));
+readinessSetWorkZeroButton?.addEventListener('click', () => {
+  window.LowRiderMachineBar?.setWorkZero('xyz');
+});
 readinessSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture(null, { confirm: false }));
 readinessRunBoundsButton?.addEventListener('click', sendBoundingBoxTrace);
 readinessRunAircutButton?.addEventListener('click', sendAircutToolpath);
@@ -6846,8 +6840,12 @@ restorePrepareWorkZeroButton?.addEventListener('click', () => {
   }
   restoreHistoryZero(zero).catch((err) => setJobResult(err.message, true));
 });
-setZeroXButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'x').catch((err) => setJobResult(operatorZeroError(err), true)));
-setZeroYButton?.addEventListener('click', () => setWorkZeroWithCapture(null, 'y').catch((err) => setJobResult(operatorZeroError(err), true)));
+setZeroXButton?.addEventListener('click', () => {
+  window.LowRiderMachineBar?.setWorkZero('x');
+});
+setZeroYButton?.addEventListener('click', () => {
+  window.LowRiderMachineBar?.setWorkZero('y');
+});
 captureSetZeroButton?.addEventListener('click', () => setWorkZeroWithCapture().catch((err) => setJobResult(err.message, true)));
 downloadJobButton?.addEventListener('click', downloadJobJson);
 openZeroHistoryButton?.addEventListener('click', () => {
@@ -7110,6 +7108,27 @@ function applyMachineFrameSlice(data) {
     lastAppliedFrameGateKey = gateKey;
     renderWorkbenchStatus();
     renderRunPanel();
+  }
+  renderZeroGate();
+}
+
+// ONE canonical enable rule for the operator Set Work Zero control: the
+// firmware frame must be trusted (Home All) or a manually confirmed frame must
+// exist. Derived only from the firmware mirror - never from DOM text or local
+// browser belief. Work Zero validity is deliberately NOT required to set Work
+// Zero (that would be circular).
+function renderZeroGate() {
+  const trusted = currentMachineFrame?.trusted === true;
+  const manual = currentMachineFrame?.manualWorkFrameValid === true;
+  const canZero = trusted || manual;
+  if (setWorkZeroButton) setWorkZeroButton.disabled = !canZero;
+  if (setZeroXButton) setZeroXButton.disabled = !canZero;
+  if (setZeroYButton) setZeroYButton.disabled = !canZero;
+  if (zeroGateEl) {
+    zeroGateEl.style.display = canZero ? 'none' : 'block';
+    zeroGateEl.textContent = canZero
+      ? ''
+      : 'Home All is required before setting Work Zero.';
   }
 }
 window.CncTelemetry?.subscribe('machine', applyMachineFrameSlice);

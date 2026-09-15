@@ -101,6 +101,15 @@ frame invalidation). No open S1 findings remain. Still open (S2/S3, individually
 identity consolidation, Safe-Z policy consolidation, readiness consolidation,
 run-history contamination fix, telemetry transport-order cleanup.
 
+## Work Zero field-failure fix (2026-09-15) - awaiting Marko's re-test
+
+Field session 10474D96: Home All ok + 11 successful firmware work-zero sets, but the UI kept
+reporting failure (WS cycling + WS-only confirmation). Fixed: HTTP frame reconciliation
+(telemetry.js) + HTTP confirmation fallback (machine-bar waitForSocketSlice) + ONE Work Zero
+flow (Preview Zero panel -> machine-bar setWorkZero(axes)). Drawer zero controls removed.
+Re-test on hardware: Home All -> jog -> Set Work Zero (Preview panel) -> Work Zero VALID ->
+reload -> still VALID. Then continue the S1 checklist below.
+
 ## S1 hardware acceptance checklist (procedure: docs/manual-tests.md "S1 Safety Acceptance Suite")
 
 Primary interface: open http://192.168.4.1/test.html on the machine AP - it contains the full

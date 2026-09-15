@@ -48,9 +48,10 @@ describe('compact machine drawer', () => {
     const start = preview.indexOf('async function setWorkZeroWithCapture(');
     const end = preview.indexOf('function downloadJobJson()', start);
     const action = preview.slice(start, end);
-    expect(action).toContain("fetch('/api/work-zero/set'");
+    // The transport lives in machine-bar (WS-first + HTTP frame reconcile);
+    // the recorder only accepts the CONFIRMED transaction.
+    expect(action).toContain('data.confirmedBySocket !== true');
     expect(action).not.toContain("sendCmd('G92 X0 Y0 Z0')");
-    expect(action).toContain('waitForMachineFrame(');
     expect(action).toContain('const machinePosition = frame?.workZeroMachine');
     expect(action).toContain('confirmedBySocket');
     expect(action).toContain('homingEpoch');
@@ -386,7 +387,9 @@ describe('browser control disabling', () => {
     expect(machineBar).toContain("if (!telemetry || telemetry.transportStatus !== 'synchronized') return true");
     expect(machineBar).toContain("return controllerCommunicationState() !== 'connected'");
     expect(machineBar).toContain("'#mb-home-x', '#mb-home-y', '#mb-home-z', '#mb-home-all'");
-    expect(machineBar).toContain("'#mb-set-work-zero', '#mb-set-z-zero'");
+    // The drawer no longer carries Work Zero controls (single primary control
+    // lives in the Preview Zero panel, gated by renderZeroGate).
+    expect(machineBar).not.toContain('mb-set-work-zero');
     expect(machineBar).toContain("'#start-job', '#pause-job', '#resume-job'");
     expect(machineBar).toContain("'#feed-live-percent', '#feed-live-set'");
     expect(machineBar).toContain('function safetyStopDisabled(');

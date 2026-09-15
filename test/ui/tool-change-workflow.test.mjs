@@ -25,9 +25,11 @@ describe('manual tool-change operator workflow', () => {
 
   it('exposes configured touch-plate Z zero beside normal Z-zero controls too', () => {
     expect(html).toContain('id="touch-plate-z-zero"');
-    expect(machineBar).toContain('id="mb-touch-plate-z-zero"');
+    // The touch plate is a TOOL-domain control and lives in the Preview panel
+    // only; the machine drawer no longer duplicates it.
+    expect(machineBar).not.toContain('mb-touch-plate-z-zero');
+    expect(preview).toContain("'#touch-plate-z-zero'");
     expect(preview).toContain("fetch('/api/work-zero/touch-plate'");
-    expect(machineBar).toContain("apiPost('/api/work-zero/touch-plate', {})");
     expect(mockServer).toContain("pathname === '/api/work-zero/touch-plate'");
   });
 

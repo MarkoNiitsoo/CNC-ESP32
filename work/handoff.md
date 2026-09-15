@@ -1,5 +1,25 @@
 # Handoff
 
+## 2026-09-15 - Work Zero ownership consolidated (field-failure fix)
+
+- Field session 10474D96 (build Sep 14): Home All ok; ELEVEN work-zero sets ALL ok=true
+  firmware-side; operator kept retrying XYZ/X/Y because the UI reported failure. Root cause:
+  the zero confirmation (waitForSocketSlice) hard-refused while the WS was down, and the WS
+  cycled 5x in one session; the browser frame mirror updated only over WS.
+- Fixes: (1) telemetry.js reconciles the machine frame over GET /api/machine/frame while the
+  WS is not synchronized (revision-ordered, stale frames dropped, same emit('machine') update);
+  (2) machine-bar waitForSocketSlice confirms the machine frame over HTTP when the WS is down
+  (entry fallback + mid-wait poll); (3) ONE Work Zero flow: Preview Zero panel "Set Work Zero"
+  -> machine-bar setWorkZero(axes) WS-first + HTTP confirmation fallback -> preview records
+  evidence from the confirmed frame; drawer duplicates/G92 intercepts/per-axis buttons removed
+  (per-axis under Preview "Advanced zero options"); Z Zero relabeled tool domain.
+- Enable rule: renderZeroGate - firmware frame trusted OR confirmed manual frame; work-zero
+  validity deliberately NOT required (circular); no DOM scraping.
+- Verified: vitest 877/877, pio native 21/21, esp32cam SUCCESS, jscpd 146 clones. SD www
+  redeployed (byte-identical) + fresh firmware.bin (no src changes in this phase beyond none -
+  firmware unchanged, only www). Next: Marko re-runs the field procedure (Home All -> Set Work
+  Zero -> VALID), then the S1 suite on /test.html.
+
 ## 2026-09-13 - Phase 6.7: /test.html is the primary S1 field-test interface
 
 - www/test.html is now fully self-contained: operator instructions, preconditions with live

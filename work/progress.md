@@ -1,5 +1,32 @@
 # Progress
 
+## 2026-09-15 - Work Zero ownership consolidation (field-failure fix, phase per audit step 3-7)
+
+- Field evidence (SD logs, session 10474D96, build Sep 14): Home All completed ok=true twice;
+  ELEVEN /api/work-zero/set attempts ALL completed ok=true firmware-side (workZeroValid=true
+  each time); operator pressed XYZ/X/Y zero buttons repeatedly and re-homed mid-flow. Root
+  cause: the confirmation layer (waitForSocketSlice) hard-refused when the WS was down
+  ("Live socket state is not synchronized"), so every successful firmware set was reported to
+  the operator as a failure; WS cycled all session (lifetimes 6.5/13.9/125/134/0 s).
+- Fixes (no new endpoints, no weakened safety):
+  1. telemetry.js: machine-frame HTTP reconciliation - while the WS is not synchronized,
+     GET /api/machine/frame feeds the SAME emit('machine') update, stale frames dropped by
+     revision. Work Zero validity now reaches every surface regardless of WS state.
+  2. machine-bar.js waitForSocketSlice: the authoritative machine frame confirms over HTTP
+     when the WS is down (entry fallback + mid-wait poll feeding applyMachineSlice).
+     Set Work Zero now succeeds and confirms reliably without the WS.
+  3. Consolidation: machine drawer zero buttons/capture wrappers/G92 intercepts/WS zero
+     transport removed; ONE canonical client flow remains - preview Zero panel "Set Work Zero"
+     -> machine-bar setWorkZero(axes) WS-first with HTTP confirmation fallback -> preview
+     records evidence from the confirmed frame. Per-axis X/Y moved under "Advanced zero
+     options"; Z Zero relabeled "Set Tool Z Zero" (tool domain).
+  4. Enable rule: renderZeroGate derives from the firmware frame mirror only (trusted OR
+     confirmed manual frame); never workZeroValid (circular), never DOM text.
+- Tests: new work-zero-ownership.test.mjs (single control, single transport, gates, drawer
+  removal) + mock work-zero.test.mjs (jog/job active refusals, trusted-frame success,
+  untrusted refusal) + updated contract tests. Verified: vitest 877/877, pio native 21/21,
+  esp32cam SUCCESS, jscpd 146 clones. SD www + firmware redeployed and verified.
+
 ## 2026-09-13 - Phase 6.7: test.html is now the primary S1 field-test interface
 
 - www/test.html rewritten as a fully self-contained console: every subtest carries the five

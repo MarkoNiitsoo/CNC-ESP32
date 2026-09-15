@@ -851,6 +851,7 @@ export async function createMockServer(options = {}) {
         return json(res, 200, { ok: true, mode, before, after, frame: env.frame });
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/set') {
+        if (env.jog.state !== 'IDLE') return json(res, 409, { ok: false, error: 'jog motion is active; release it before setting Work Zero' });
         if ((!env.frame.trusted && !env.frame.manualWorkFrameValid) || env.runner.isActive()) return json(res, 409, { ok: false, error: 'Home All or a confirmed manual work frame is required before setting work zero' });
         const body = await readJson(req);
         // Body and axes are optional (default xyz); invalid axes are rejected like

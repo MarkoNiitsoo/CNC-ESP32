@@ -173,10 +173,14 @@
         </div>
         <div class="zero-origin-actions">
           <button id="home-machine-zero" type="button" data-requires-live-control>Home Machine</button>
+          <div id="set-work-zero-gate" class="form-hint" style="display:none">Home All is required before setting Work Zero.</div>
           <button id="set-work-zero" type="button" data-icon="workZero" data-requires-live-control>Set Work Zero</button>
-          <button id="set-zero-x" type="button" data-requires-live-control>Set Zero X</button>
-          <button id="set-zero-y" type="button" data-requires-live-control>Set Zero Y</button>
-          <button id="set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Zero Z</button>
+          <details class="advanced-zero-options">
+            <summary>Advanced zero options</summary>
+            <button id="set-zero-x" type="button" data-requires-live-control>Set Zero X</button>
+            <button id="set-zero-y" type="button" data-requires-live-control>Set Zero Y</button>
+          </details>
+          <button id="set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Tool Z Zero</button>
           <button id="touch-plate-z-zero" type="button" hidden data-requires-live-control>Touch Plate Z Zero</button>
           <button id="open-zero-history" type="button">History</button>
         </div>

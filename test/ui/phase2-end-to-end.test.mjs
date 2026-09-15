@@ -6,7 +6,7 @@ const previewCode = await readFile(new URL('../../www/preview.js', import.meta.u
 
 const guardedIds = [
   'mb-home-x', 'mb-home-y', 'mb-home-z', 'mb-home-all',
-  'mb-set-work-zero', 'mb-set-z-zero', 'mb-jog-restore-z', 'mb-jog-safe-z',
+  'mb-jog-restore-z', 'mb-jog-safe-z',
   'mb-jog-z-slider', 'jog-direction', 'mb-terminal-send',
   'readiness-run-bounds', 'readiness-run-aircut', 'send-dry-run',
   'start-job', 'pause-job', 'resume-job', 'feed-live-percent', 'feed-live-set',
@@ -101,8 +101,7 @@ function createMachineBarEnv(options = {}) {
     'mb-jog-status', 'mb-live-marlin', 'mb-operator-strip', 'mb-operator-toggle',
     'mb-operator-panel', 'mb-operator-claim', 'mb-operator-release', 'mb-operator-change',
     'mb-operator-title', 'mb-operator-hint', 'mb-operator-owner', 'mb-operator-pin',
-    'mb-operator-result', 'mb-touch-plate-z-zero', 'mb-capture-work-zero',
-    'mb-capture-z-zero', 'mb-terminal-select', 'mb-terminal-cmd', 'mb-m119',
+    'mb-operator-result', 'mb-terminal-select', 'mb-terminal-cmd', 'mb-m119',
   ].forEach((id) => ensure(id));
   ensure('jog-direction').setAttribute('data-mb-jog-direction', '');
 
