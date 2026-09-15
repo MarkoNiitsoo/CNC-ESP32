@@ -5431,9 +5431,10 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
   // HTTP responses carry Marlin before/after text; WS commandResults do not, so
   // verification falls back to the socket-confirmed frame's work coordinates.
   const verification = zeroAxesVerified({ afterPosition: after.position, frame, axes: selectedAxes });
-  if (!verification.confirmed) {
-    throw new Error(`Could not verify zero (${verification.source})`);
-  }
+  // The firmware operation's own trailing M114 already read back the new zero
+  // before the op completed ok; a lagging browser-side readback must never
+  // discard the operator's zero (field failure 2026-09-15). Record with a note.
+  const zeroRecorded = verification.confirmed;
 
   const machinePosition = frame?.workZeroMachine;
   const machineReference = machinePosition ? {
@@ -5479,7 +5480,8 @@ async function setWorkZeroWithCapture(transaction = null, axes = 'xyz') {
   invalidateDependentSetup(job, 'Work zero changed after physical verification.');
   if (job.arm?.state === 'ARMED') job.arm.state = 'STALE';
   await saveJobQuietly();
-  setJobResult(selectedAxes === 'x' ? 'X zero saved' : selectedAxes === 'y' ? 'Y zero saved' : 'Work zero saved');
+  setJobResult((selectedAxes === 'x' ? 'X zero saved' : selectedAxes === 'y' ? 'Y zero saved' : 'Work zero saved') +
+    (zeroRecorded ? '' : ' (position readback pending; firmware op confirmed)'));
   renderJobPanel();
   renderToolZeroPanel();
   renderHistoryPanels();
