@@ -140,14 +140,24 @@
 
   function waitForMachineFrameHttp(predicate, timeoutMs, description) {
     const deadline = Date.now() + timeoutMs;
+    // Resolve with a SLICE-shaped object: every consumer (dispatchConfirmed-
+    // MachineEvent, zero verification, frame gates) re-extracts .frame from a
+    // machine slice, exactly as it does for WebSocket-delivered slices.
     const attempt = () => fetch('/api/machine/frame', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((frame) => {
-        if (frame && frameRevision(frame) > -1 && predicate(frame)) return frame;
+        if (frame && frameRevision(frame) > -1 && predicate(frame)) {
+          return {
+            frame,
+            position: { work: frame.work || null, machine: frame.machine || null },
+            homedAxes: frame.homedAxes || { x: false, y: false, z: false },
+            homingEpoch: frame.homingEpoch || 0,
+          };
+        }
         return Promise.reject(new Error('retry'));
       });
     const poll = () => attempt().then(
-      (frame) => frame,
+      (slice) => slice,
       () => (Date.now() < deadline
         ? new Promise((resolve) => setTimeout(resolve, 400)).then(poll)
         : Promise.reject(new Error(`Command accepted, but live-state confirmation timed out while waiting for ${description}.`))),
@@ -194,16 +204,17 @@
             .then((res) => (res.ok ? res.json() : null))
             .then((frame) => {
               if (!waiters.has(waiter) || !frame) return;
-              applyMachineSlice({
+              const machineSlice = {
                 frame,
                 position: { work: frame.work || null, machine: frame.machine || null },
                 homedAxes: frame.homedAxes || { x: false, y: false, z: false },
                 homingEpoch: frame.homingEpoch || 0,
-              });
+              };
+              applyMachineSlice(machineSlice);
               if (frameRevision(frame) > afterSequence && predicate(frame)) {
                 waiters.delete(waiter);
                 clearTimeout(waiter.timer);
-                waiter.resolve(frame);
+                waiter.resolve(machineSlice);
               }
             }).catch(() => {});
         }, 500);

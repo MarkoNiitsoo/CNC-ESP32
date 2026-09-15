@@ -47,6 +47,19 @@ describe('single browser frame mirror with WS + HTTP reconciliation', () => {
     expect(machineBar).toContain("fetch('/api/machine/frame', { cache: 'no-store' })");
     expect(machineBar).toContain("if (!socketLiveStateSynchronized()) {");
   });
+
+  it('resolves HTTP confirmations as SLICE-shaped objects (field bug: raw frames lost homing info)', () => {
+    const httpWait = machineBar.slice(machineBar.indexOf('function waitForMachineFrameHttp'));
+    expect(httpWait).toContain('frame,');
+    expect(httpWait).toContain('position: { work: frame.work || null, machine: frame.machine || null }');
+    expect(httpWait).toContain('(slice) => slice');
+    // Consumers re-extract .frame from the resolved value; the raw frame must
+    // never be resolved bare.
+    const dispatch = machineBar.slice(machineBar.indexOf('function dispatchConfirmedMachineEvent'));
+    // Consumers re-extract .frame from the machine slice; the confirmed value
+    // must therefore BE a slice (with .frame), never the bare frame JSON.
+    expect(dispatch).toContain('machineFrameFromSlice(machineSlice)');
+  });
 });
 
 describe('single operator-facing Work Zero control (consolidation)', () => {
