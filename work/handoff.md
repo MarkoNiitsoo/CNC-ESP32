@@ -1,5 +1,24 @@
 # Handoff
 
+## 2026-09-15 - NEW FIELD FAILURE: stop-during-Home-All hangs Marlin (docs only, unfixed)
+
+- Session 0F4DC42C: operator Stop (x4) during an active Home All G28 -> priority M410 ack
+  timeout x2 -> communication_lost -> auto-recovery looped 5+ times on "M115: Marlin did not
+  respond within timeout" -> controller never recovered; printer power cycle required.
+- UI behavior was CORRECT: frame invalidated (F-1 reason=job-quickstop twice), everything
+  locked with the BLOCKED chip - the operator-visible "Unknown" is the controller-unresponsive
+  gate, not a Work Zero defect. The Work Zero chain was simply never reached.
+- Also observed: emergencyParser=not-detected (M410 queued, not injected) and the boot itself
+  followed reset=OTHER_WATCHDOG (previous session tripped the ESP watchdog).
+- NEXT FIELD FIX (needs design decision): stop-during-homing must not send M410 into an
+  in-flight G28. Candidate designs: (a) cancel the machine-op and defer M410 until the in-
+  flight G28 boundary, (b) homing-aware stop that skips M410 entirely and relies on the G28
+  finishing + M5, (c) require/verify EMERGENCY_PARSER capability before ever queueing M410.
+  No production change in this pass per the failure rule.
+- Meanwhile the Work Zero fix (0cd8e90/eff10bb) is deployed and UNTESTED on hardware - the
+  failed session never reached it. Re-test after a printer power cycle: Home All -> Set Work
+  Zero without pressing Stop mid-home.
+
 ## 2026-09-15 - FIELD BUG FIXED: HTTP zero confirmation resolved a bare frame (UI-only, eff10bb)
 
 - Marko's hardware run hit a real bug in the phase's own fallback: the WS-down confirmation

@@ -101,6 +101,14 @@ frame invalidation). No open S1 findings remain. Still open (S2/S3, individually
 identity consolidation, Safe-Z policy consolidation, readiness consolidation,
 run-history contamination fix, telemetry transport-order cleanup.
 
+## NEW FIELD FAILURE (2026-09-15): stop-during-Home-All hangs Marlin - UNFIXED
+
+Session 0F4DC42C: Stop pressed during an active Home All G28 -> M410 ack timeout x2 ->
+communication lost -> auto-recovery M115 probes all timed out -> printer power cycle required.
+F-1/F-4/UI-lock behavior verified correct in the field. Next: design + implement
+homing-aware stop (no M410 into an in-flight G28). Until then: do NOT press Stop while
+Home All is running; power-cycle the printer if the controller shows UNRESPONSIVE.
+
 ## Work Zero field-failure fix (2026-09-15) - awaiting Marko's re-test
 
 Field session 10474D96: Home All ok + 11 successful firmware work-zero sets, but the UI kept

@@ -1,5 +1,28 @@
 # Progress
 
+## 2026-09-15 - NEW FIELD FAILURE: Stop during Home All leaves Marlin unresponsive
+
+- Session 0F4DC42C (build Sep 14 11:29, boot reset=OTHER_WATCHDOG - a previous session had
+  already tripped the ESP watchdog). The operator pressed Stop (POST /api/job/stop x4) while a
+  Home All G28 was in flight.
+- Chain: home cancel ABORTED_BY_STOP -> priority M410 -> Marlin ack TIMEOUT (x2, 10 s each)
+  -> communication_lost -> immediate best-effort M5 -> controller UNRESPONSIVE -> auto-recovery
+  started 5+ times over ~100 s, every M115 probe timed out (12 s each) -> never recovered.
+  Only a printer power cycle can clear it.
+- What worked: F-1 invalidation fired twice (scope=full reason=job-quickstop); op cancellation;
+  comm-lost best-effort M5; auto-recovery scheduling; the UI correctly locked everything
+  (BLOCKED chip, frame UNTRUSTED) - that is why the operator sees "Unknown" everywhere.
+- Contributing factor: emergencyParser=not-detected (M115 did not advertise it), so M410 goes
+  as a queued command behind the in-flight G28 instead of being injected immediately.
+- Leading hypothesis: this Marlin build hangs when M410 (queued, non-injected) lands during the
+  G28 homing sequence; afterwards the UART stays silent even for M115. The Work Zero chain was
+  never reached - this failure masks it.
+- Operator guidance until fixed: do NOT press Stop while Home All is running; if the controller
+  shows UNRESPONSIVE after a mid-home stop, power-cycle the printer (SKR full power), not just
+  the ESP.
+- Next-phase fix proposal (needs design + approval): stop-during-homing must not send M410
+  into an in-flight G28. No production change in this pass (failure rule).
+
 ## 2026-09-15 - Field bug: HTTP zero confirmation resolved a bare frame (fixed, UI-only)
 
 - Hardware run exposed a bug in the phase's own fallback: waitForMachineFrameHttp resolved
