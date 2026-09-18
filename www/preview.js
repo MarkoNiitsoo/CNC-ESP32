@@ -3556,24 +3556,43 @@ function renderZeroOriginPanel() {
   const position = zero?.machineReference?.position || jobState?.workZero?.machineReference?.position;
   const zeroSession = zero?.frame?.homingSessionId || jobState?.workZero?.frame?.homingSessionId || '';
   const frameTrusted = currentMachineFrame?.trusted === true && currentMachineFrame?.absoluteFromHome === true;
+  const workZeroValid = currentMachineFrame?.workZeroValid === true;
   const sameSession = Boolean(zeroSession && zeroSession === currentMachineFrame?.homingSessionId);
   const savedPosition = ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(position?.[axis])));
-  const trustworthy = currentMachineFrame?.workZeroValid === true && frameTrusted && sameSession && savedPosition;
-  if (homeMachineZeroButton) homeMachineZeroButton.hidden = frameTrusted;
-  zeroOriginSummaryEl.innerHTML = trustworthy ? `
-    <p class="zero-origin-label">Active work zero</p>
-    <div class="zero-origin-coordinates">
-      <span><small>X</small>${fmtValue(position.x)}</span>
-      <span><small>Y</small>${fmtValue(position.y)}</span>
-      <span><small>Z</small>${fmtValue(position.z)}</span>
-    </div>
-    <p class="form-hint">${jobExists ? `Saved to this job${zero?.capturedAt ? ` · Last saved: ${localTimestamp(zero.capturedAt)}` : ''}` : 'Not saved yet'}</p>
-  ` : `
-    <p class="zero-origin-label">Work zero from home</p>
-    <p class="zero-origin-unknown">Unknown — Home machine first</p>
-    <p class="form-hint">${jobExists ? 'Saved metadata cannot be trusted in the current homing session.' : 'Not saved yet'}</p>
-  `;
-  if (!trustworthy && savedPosition) {
+  const fwCoords = currentMachineFrame?.workZeroMachine;
+
+  if (!frameTrusted) {
+    // Firmware frame untrusted: Home All required before a work zero can exist.
+    zeroOriginSummaryEl.innerHTML = `
+      <p class="zero-origin-label">Work zero from home</p>
+      <p class="zero-origin-unknown">Unknown — Home machine first</p>
+      <p class="form-hint">${jobExists ? 'Saved metadata cannot be trusted in the current homing session.' : 'Not saved yet'}</p>
+    `;
+  } else if (workZeroValid && fwCoords) {
+    // Firmware says the work zero is valid and the frame is trusted.
+    const matchesSession = !zero || !zero.frame?.homingSessionId ||
+      zero.frame.homingSessionId === currentMachineFrame?.homingSessionId;
+    const activeNote = matchesSession
+      ? (jobExists ? `Saved to this job${zero?.capturedAt ? ` · Last saved: ${localTimestamp(zero.capturedAt)}` : ''}` : 'Not saved yet')
+      : 'Saved zero is from a different homing session — use Restore &amp; Activate below.';
+    zeroOriginSummaryEl.innerHTML = `
+      <p class="zero-origin-label">Active work zero</p>
+      <div class="zero-origin-coordinates">
+        <span><small>X</small>${fmtValue(fwCoords.x)}</span>
+        <span><small>Y</small>${fmtValue(fwCoords.y)}</span>
+        <span><small>Z</small>${fmtValue(fwCoords.z)}</span>
+      </div>
+      <p class="form-hint">${activeNote}</p>
+    `;
+  } else {
+    // Frame trusted but the work zero has not been set yet.
+    zeroOriginSummaryEl.innerHTML = `
+      <p class="zero-origin-label">Work zero</p>
+      <p class="zero-origin-unknown">NOT SET</p>
+      <p class="form-hint">Jog to the desired origin, then press <b>Set Work Zero</b> above.</p>
+    `;
+  }
+  if (frameTrusted && !workZeroValid && savedPosition) {
     zeroOriginSummaryEl.innerHTML = `
       <p class="zero-origin-label">Saved work zero — not active</p>
       <div class="zero-origin-coordinates">
