@@ -102,7 +102,8 @@ describe('generic /api/cmd recovery bypass closure (F-2)', () => {
     for (const diagnostic of ['"M114"', '"M115"', '"M503"', '"M119"', '"M105"']) {
       expect(handleCommand).toContain(diagnostic);
     }
-    expect(handleCommand).toContain('/api/recovery/move');
+    // The lock error message guides the operator away from /api/cmd.
+    expect(handleCommand).toContain('Marlin transport is locked');
   });
 
   it('keeps the diagnostic lock semantic: motion-capable words are rejected, not blacklisted strings', () => {

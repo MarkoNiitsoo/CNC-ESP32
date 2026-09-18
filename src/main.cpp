@@ -335,6 +335,28 @@ bool homeOperationInFlight();
 // (field failure 2026-09-15). Marlin stays in the killed state until M999 or
 // a power cycle; every motion admission gate treats this as hard-blocked.
 bool controllerKilledByEmergencyStop = false;
+bool operatorStopLatchRestartRequested = false;
+
+// ── Operator Stop latch (firmware-owned operator safety state) ──────────────
+// Stop is a latched operator state, not just a transient command. While
+// latched, no motion-producing operation is admitted by any path (WS, HTTP,
+// /api/cmd, recovery). The latch survives browser reloads, WS reconnects,
+// and other browsers connecting: it lives here, in firmware RAM.
+enum class OperatorStopLatch : uint8_t { None, Stopped, EmergencyStopped, HomeRequired };
+OperatorStopLatch operatorStopLatch = OperatorStopLatch::None;
+
+const char *operatorStopLatchName() {
+  switch (operatorStopLatch) {
+    case OperatorStopLatch::Stopped: return "stopped";
+    case OperatorStopLatch::EmergencyStopped: return "emergency_stopped";
+    case OperatorStopLatch::HomeRequired: return "home_required";
+    default: return "none";
+  }
+}
+
+bool operatorStopLatchBlocksMotion() {
+  return operatorStopLatch != OperatorStopLatch::None;
+}
 struct WsCommandEntry;
 bool toolChangeZZeroWindowOpen();
 bool machineOperationActive();
@@ -2309,6 +2331,12 @@ struct MotionAdmissionResult {
 };
 
 MotionAdmissionResult admitMotionStream(MotionStreamKind kind) {
+  if (operatorStopLatchBlocksMotion()) {
+    return {false, 409, "STOP_LATCHED",
+            operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                : "Stop is latched. Return to controls to continue."};
+  }
   // Deliberate domain exception: a jog start during an intact pause is not admitted
   // as motion - the caller converts the pause into a RecoveryRequired interruption.
   if (kind == MotionStreamKind::Jog && jobStatus.state == JobRunnerState::PausedIntact &&
@@ -7974,6 +8002,12 @@ bool recoveryMoveTargetWithinLimits(const String &upper) {
 }
 
 RecoveryMotionAdmission admitRecoveryMotion(const String &cmd) {
+  if (operatorStopLatchBlocksMotion()) {
+    return {false, 409, "STOP_LATCHED",
+            operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                : "Stop is latched. Return to controls to continue."};
+  }
   if (jobStatus.state != JobRunnerState::RecoveryRequired) {
     return {false, 409, "RECOVERY_STATE_REQUIRED",
             "recovery motion is only available while the job is in RECOVERY_REQUIRED"};
@@ -8047,6 +8081,25 @@ void handleRecoveryMove() {
   server.send(200, "application/json", json);
 }
 
+void handleStopLatchRelease() {
+  if (operatorStopLatch == OperatorStopLatch::EmergencyStopped) {
+    sendJsonError(409,
+                  "EMERGENCY STOPPED. Restart the controller and Home All before returning to controls.");
+    return;
+  }
+  if (operatorStopLatch == OperatorStopLatch::HomeRequired) {
+    sendJsonError(409, "Home All is required before returning to controls.");
+    return;
+  }
+  if (operatorStopLatch != OperatorStopLatch::Stopped) {
+    sendJsonError(409, "Stop is not latched");
+    return;
+  }
+  operatorStopLatch = OperatorStopLatch::None;
+  logJobEvent("Stop latch released by operator");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void handleCommand() {
   String commError;
   if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
@@ -8073,10 +8126,10 @@ void handleCommand() {
   upper.toUpperCase();
   upper.trim();
 
-  if (jobStatus.state == JobRunnerState::RecoveryRequired) {
-    // F-2: during recovery review the generic terminal may not move or
-    // re-program the machine. Only read-only diagnostics pass; M5 stays reserved
-    // for the recovery flow and physical motion must use /api/recovery/move.
+  if (jobStatus.state == JobRunnerState::RecoveryRequired || operatorStopLatchBlocksMotion()) {
+    // F-2/F-4-phase stop latch: during recovery review or a latched stop, the
+    // generic terminal may not move or re-program the machine. Only read-only
+    // diagnostics pass; M5 stays reserved for the safety flow.
     static const char *const kRecoveryDiagnostics[] = {"M114", "M115", "M503", "M119", "M105"};
     bool diagnostic = false;
     for (const char *allowed : kRecoveryDiagnostics) {
@@ -8088,7 +8141,7 @@ void handleCommand() {
     if (!diagnostic) {
       sendJsonError(409, upper == "M5"
                              ? "standalone M5 is unavailable while interrupted-job Recovery is required"
-                             : "Marlin transport is locked to recovery review; motion commands require /api/recovery/move");
+                             : "Marlin transport is locked; motion commands are not available while stopped");
       return;
     }
   }
@@ -10114,6 +10167,11 @@ MachineOperationResult finalizeMachineOperation() {
       machineFrame.stepsX = stepsX;
       machineFrame.stepsY = stepsY;
       machineFrame.stepsZ = stepsZ;
+      if (operatorStopLatch == OperatorStopLatch::HomeRequired) {
+        operatorStopLatch = OperatorStopLatch::None;
+        operatorStopLatchRestartRequested = false;
+        logJobEvent("Home All complete; stop latch cleared. Normal controls restored.");
+      }
       machineFrame.homeCountX = homeCountX;
       machineFrame.homeCountY = homeCountY;
       machineFrame.homeCountZ = homeCountZ;
@@ -10266,6 +10324,17 @@ bool processMachineOperation() {
 // in-progress; completeMachineOperation publishes the terminal result.
 MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &axesParam,
                                              const WsCommandEntry *entry) {
+  if (operatorStopLatch == OperatorStopLatch::EmergencyStopped ||
+      operatorStopLatch == OperatorStopLatch::Stopped) {
+    return {false, false, true, 409, "STOP_LATCHED",
+            operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                : "Stop is latched. Return to controls to continue."};
+  }
+  if (operatorStopLatch == OperatorStopLatch::HomeRequired && kind != MachineOpKind::Home) {
+    return {false, false, true, 409, "HOME_REQUIRED",
+            "Home All is required before other operations after an emergency stop"};
+  }
   if (machineOp.active) {
     return {false, false, true, 409, "MACHINE_STATE_CONFLICT",
             "another machine operation is already in progress"};
@@ -10477,6 +10546,12 @@ MachineOperationResult performMachineHome(const String& axes) {
 }
 
 void handleSetWorkZero() {
+  if (operatorStopLatchBlocksMotion()) {
+    sendJsonError(409, operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                           ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                           : "Stop is latched. Return to controls to continue.");
+    return;
+  }
   // The body is optional and defaults to XYZ, matching the documented HTTP contract.
   const String axesParam = server.hasArg("plain")
                                ? extractJsonString(server.arg("plain"), "axes")
@@ -10508,6 +10583,12 @@ MachineOperationResult performSetWorkZero(const String& axesParam, String* axesO
 }
 
 void handleSetZZero() {
+  if (operatorStopLatchBlocksMotion()) {
+    sendJsonError(409, operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                           ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                           : "Stop is latched. Return to controls to continue.");
+    return;
+  }
   String before;
   String after;
   const MachineOperationResult result = performSetZZero(&before, &after);
@@ -10532,6 +10613,12 @@ MachineOperationResult performSetZZero(String* beforeOut, String* afterOut) {
 }
 
 void handleTouchPlateZZero() {
+  if (operatorStopLatchBlocksMotion()) {
+    sendJsonError(409, operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                           ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                           : "Stop is latched. Return to controls to continue.");
+    return;
+  }
   const bool toolChangeZZero = toolChangeZZeroWindowOpen();
   if (machineFrameControlBusy() && !toolChangeZZero) {
     sendJsonError(409, "touch-plate Z zero requires idle Marlin transport or a ready M6 stop");
@@ -10609,6 +10696,12 @@ void handleTouchPlateZZero() {
 }
 
 void handleGoToWorkZero() {
+  if (operatorStopLatchBlocksMotion()) {
+    sendJsonError(409, operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                           ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                           : "Stop is latched. Return to controls to continue.");
+    return;
+  }
   if (jobStatus.state == JobRunnerState::PausedIntact) {
     beginPausedManualInterruption();
     sendJsonError(409, "direct Resume was invalidated; wait for RECOVERY_REQUIRED before moving");
@@ -10705,6 +10798,12 @@ void handleGoToWorkZero() {
 }
 
 void handleRestoreWorkZero() {
+  if (operatorStopLatchBlocksMotion()) {
+    sendJsonError(409, operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                           ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                           : "Stop is latched. Return to controls to continue.");
+    return;
+  }
   if (otaActive) {
     sendJsonError(409, "OTA update in progress");
     return;
@@ -11124,6 +11223,13 @@ bool attemptControllerRecoverySequence() {
     return false;
   }
 
+  // Auto-recovery is suppressed while the operator has latched an emergency
+  // stop: only the explicit Restart Controller action may attempt recovery.
+  if (operatorStopLatch == OperatorStopLatch::EmergencyStopped &&
+      !operatorStopLatchRestartRequested) {
+    return false;
+  }
+
   invalidateControllerSessionSafetyCapabilities();
   markControllerRecovering();
 
@@ -11224,6 +11330,7 @@ void startHttpServer() {
   httpRoute("/app.js", HTTP_GET, handleAppJs);
   httpRoute("/files.js", HTTP_GET, handleFilesJs);
   httpRoute("/style.css", HTTP_GET, handleStyleCss);
+  operatorRoute("/api/stop-latch/release", HTTP_POST, handleStopLatchRelease);
   operatorRoute("/api/controller/recover", HTTP_POST, handleControllerRecover);
   httpRoute("/api/operator/status", HTTP_GET, handleOperatorStatus);
   httpRoute("/api/operator/claim", HTTP_POST, handleOperatorClaim);
