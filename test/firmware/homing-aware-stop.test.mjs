@@ -38,58 +38,92 @@ function countMatches(text, regex) {
   return (text.match(new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`)) || []).length;
 }
 
-// Field failure 2026-09-15 (session 0F4DC42C): Stop pressed during an active
-// Home All injected M410 into the running G28 homing sequence; this Marlin
-// build wedged (no ack, no M115 response, power cycle required). The stop
-// path is now homing-aware: while a Home operation owns the machine, the
-// priority sequence carries spindle-safe M5 ONLY - never M410 - and the
-// finish message reports "Homing interrupted". Repeated Stop presses are
-// idempotent via the existing Stopping-state gate.
-describe('homing-aware stop (stop-during-Home-All field failure)', () => {
-  it('routes stop-during-homing through the M5-only priority sequence', () => {
-    const performJobStop = extractFunction(source, 'performJobStop');
-    expect(performJobStop).not.toBeNull();
-    expect(performJobStop).toContain('homeOperationInterrupted');
-    expect(performJobStop).toContain('startHomingStopPrioritySequence()');
-    expect(performJobStop).toContain('startImmediateStopPrioritySequence()');
+// Field failure 2026-09-15 (session 0F4DC42C): an emergency-injected M410
+// during the G28 homing sequence wedges this Marlin build (no ack, no M115
+// response, power cycle required). The homing stop therefore sends M112 ALONE
+// - first on the wire - trading the Marlin session for an immediate physical
+// stop. Steppers disable on kill: the gantry may drop; first test protocol
+// requires the router disabled, tool high, nothing below.
+describe('homing emergency stop (M112, stop-during-Home-All field failure)', () => {
+  it('sends M112 ALONE as the homing emergency stop sequence', () => {
+    const emergency = extractFunction(source, 'startHomingEmergencyStopSequence');
+    expect(emergency).not.toBeNull();
+    expect(emergency).toContain('queuePriorityCommands("M112")');
+    expect(emergency).toContain('drainMarlinInput()');
+    expect(emergency).toContain('startNextPriorityCommand()');
+    expect(emergency).toContain('controllerKilledByEmergencyStop = true');
+    // M112 must go out ALONE - never queued behind M410 or M5.
+    expect(emergency).not.toContain('M410');
+    expect(emergency).not.toContain('"M5"');
   });
 
-  it('withholds M410 for the whole Home operation window', () => {
-    const stopBody = extractFunction(source, 'performJobStop');
-    const machineOpBranch = stopBody.slice(
-      stopBody.indexOf('if (machineOperationActive())'),
-      stopBody.indexOf('if (jogIsActive())'),
+  it('never sends M410 while homing motion is in flight', () => {
+    const performJobStop = extractFunction(source, 'performJobStop');
+    const machineOpBranch = performJobStop.slice(
+      performJobStop.indexOf('if (machineOperationActive())'),
+      performJobStop.indexOf('if (jogIsActive())'),
     );
-    // Both machine-op kinds are handled in the one branch: a Home keeps the
-    // M410 out; other ops (SetWorkZero/SetZZero, no homing motion) keep the
-    // immediate quickstop.
     expect(machineOpBranch).toContain('if (homeOperationInterrupted) {');
-    expect(machineOpBranch).toContain('startHomingStopPrioritySequence();');
+    expect(machineOpBranch).toContain('startHomingEmergencyStopSequence();');
+    // The non-homing machine ops (SetWorkZero/SetZZero - no homing motion)
+    // keep the ordinary quickstop.
     expect(machineOpBranch).toContain('startImmediateStopPrioritySequence();');
+    const homeArm = machineOpBranch.slice(
+      0, machineOpBranch.indexOf('} else {'),
+    );
+    // No M410 command may be issued from the Home arm (comments may mention
+    // the policy; only actual command strings matter).
+    expect(homeArm).not.toContain('"M410"');
   });
 
-  it('keeps the M410+M5 quickstop for non-homing stops (job stop unchanged)', () => {
-    const immediate = extractFunction(source, 'startImmediateStopPrioritySequence');
-    expect(immediate).toContain('queuePriorityCommands("M410", "M5")');
-    const jobStop = extractFunction(source, 'performJobStop');
-    expect(jobStop).toContain('startImmediateStopPrioritySequence()');
+  it('gates the emergency path on the G28 leg actually being in flight', () => {
+    const inFlight = extractFunction(source, 'homeOperationInFlight');
+    expect(inFlight).toContain("machineOp.kind == MachineOpKind::Home");
+    expect(inFlight).toContain('machineOp.stepIndex == 0');
+    // Later Home steps (M400/G92/M114/M503) carry no homing motion: the
+    // ordinary quickstop path is safe there.
   });
 
-  it('gives the queued M5 the extended homing ack budget', () => {
-    const homingStop = extractFunction(source, 'startHomingStopPrioritySequence');
-    expect(homingStop).toContain('kMarlinHomingAckTimeoutMs');
-    expect(homingStop).toContain("queuePriorityCommands(\"M5\")");
-    expect(homingStop).not.toContain('M410');
-  });
-
-  it('is idempotent: a second Stop while Stopping does not re-send the quickstop', () => {
+  it('treats position and homing state as completely lost after the kill', () => {
     const performJobStop = extractFunction(source, 'performJobStop');
-    expect(performJobStop).toContain('JobRunnerState::Stopping');
-    expect(performJobStop).toContain('M410 quickstop is in progress');
+    const machineOpBranch = performJobStop.slice(
+      performJobStop.indexOf('if (machineOperationActive())'),
+      performJobStop.indexOf('if (jogIsActive())'),
+    );
+    expect(machineOpBranch).toContain(
+      'invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop)');
+    expect(machineOpBranch).toContain('resetJobSubstates(JobSubstateResetScope::StopInitiated)');
   });
 
-  it('reports "Homing interrupted" on the terminal transition', () => {
-    const finish = extractFunction(source, 'finishPrioritySequence');
-    expect(finish).toContain('Homing interrupted by Stop. Home All is required before further motion.');
+  it('announces EMERGENCY STOPPING during the kill and the killed-state contract after', () => {
+    const stopBody = extractFunction(source, 'performJobStop');
+    expect(stopBody).toContain('EMERGENCY STOPPING');
+    // The killed-state message lands in the ack-timeout handler (a different
+    // function), asserted at source level here.
+    expect(source).toContain(
+      'EMERGENCY STOP. Controller killed. Restart required: power-cycle the printer, then Home All.');
+    expect(source).toContain("jobStatus.lastPriorityCommand == \"M112\"");
+  });
+
+  it('flags the controller as killed for the recovery sequence and admission gates', () => {
+    expect(source).toContain('bool controllerKilledByEmergencyStop = false;');
+    expect(source).toContain('controllerKilledByEmergencyStop = true;');
+    // Ack-timeout handler locks the killed messaging in.
+    expect(source).toContain(
+      'controllerKilledByEmergencyStop && jobStatus.lastPriorityCommand == "M112"');
+  });
+
+  it('attempts a best-effort M999 reboot during recovery probes', () => {
+    const recovery = extractFunction(source, 'attemptControllerRecoverySequence');
+    expect(recovery).not.toBeNull();
+    expect(recovery).toContain('controllerKilledByEmergencyStop');
+    expect(recovery).toContain('"M999"');
+  });
+
+  it('is idempotent: Stop after the kill does not re-send anything', () => {
+    const performJobStop = extractFunction(source, 'performJobStop');
+    expect(performJobStop).toContain('if (controllerKilledByEmergencyStop) {');
+    expect(performJobStop).toContain(
+      'EMERGENCY STOP already sent. The controller is killed; restart the printer (power cycle), then Home All.');
   });
 });

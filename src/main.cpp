@@ -331,6 +331,10 @@ void invalidateControllerSessionSafetyCapabilities();
 enum class MachineOpKind : uint8_t { Home, SetWorkZero, SetZZero };
 MachineOpKind machineOperationKind();
 bool homeOperationInFlight();
+// Set when an emergency M112 has been sent to Marlin during a homing stop
+// (field failure 2026-09-15). Marlin stays in the killed state until M999 or
+// a power cycle; every motion admission gate treats this as hard-blocked.
+bool controllerKilledByEmergencyStop = false;
 struct WsCommandEntry;
 bool toolChangeZZeroWindowOpen();
 bool machineOperationActive();
@@ -4823,16 +4827,17 @@ void startImmediateStopPrioritySequence() {
   startNextPriorityCommand();
 }
 
-// Homing-aware variant (field failure 2026-09-15): an M410 injected while the
-// G28 homing sequence is in flight wedges this Marlin build - the homing
-// routine stops observing the serial queue, so no ok and no further command
-// ever completes (session 0F4DC42C). The homing leg instead finishes normally
-// (axes stop at their endstops, bounded by the G28 ack budget) while the
-// spindle-safe M5 executes at that boundary and proves the controller is
-// still responsive.
-void startHomingStopPrioritySequence() {
-  queuePriorityCommands("M5");
-  priorityCommandAckTimeoutMs = kMarlinHomingAckTimeoutMs;
+// Homing emergency stop (field failure 2026-09-15, session 0F4DC42C): an
+// M410 injected while the G28 homing sequence is in flight wedges this
+// Marlin build - the homing routine stops observing the serial queue, so no
+// ok and no further command ever completes. Operator requirement: physical
+// motion stops FIRST, preserving the Marlin session is secondary. M112 alone
+// goes out first on the wire: the emergency parser injects it instantly,
+// Marlin kills (steppers and outputs disabled; a belt-suspended gantry may
+// drop), and the controller stays killed until M999 or a power cycle.
+void startHomingEmergencyStopSequence() {
+  controllerKilledByEmergencyStop = true;
+  queuePriorityCommands("M112");
   drainMarlinInput();
   startNextPriorityCommand();
 }
@@ -4962,6 +4967,13 @@ void processPriorityCommands() {
       noteFeedOverrideResult(jobStatus.lastPriorityCommand, priorityResponseBuffer, jobStatus.lastPriorityError);
       setJobCommunicationLost("Marlin acknowledgement timed out for priority command: " +
                               jobStatus.lastPriorityCommand);
+      if (controllerKilledByEmergencyStop && jobStatus.lastPriorityCommand == "M112") {
+        jobStatus.stopWarning =
+            "EMERGENCY STOP. Controller killed. Restart required: power-cycle the printer, then Home All.";
+        jobStatus.streamingPausedReason = jobStatus.stopWarning;
+        jobStatus.lastError = jobStatus.stopWarning;
+        touchJobStatus();
+      }
     }
     return;
   }
@@ -9566,11 +9578,12 @@ MachineOperationResult performJobStop() {
   if (machineOperationActive()) {
     // Stop preempts a running Home/Zero transaction from ANY job state: no
     // later phase may run, the operation gets exactly one terminal
-    // ABORTED_BY_STOP disposition, and the M410/M5 quickstop sequence replaces
-    // the UART immediately — cancelling the engine alone would leave Marlin
-    // executing the already-sent G28. Cancellation applies no frame mutations,
-    // so an interrupted Home can never publish a trusted frame; the quickstop
-    // below invalidates the previous frame as untrusted as well.
+    // ABORTED_BY_STOP disposition. For an in-flight Home G28 the emergency
+    // stop sequence (M112 alone) replaces the UART — M410 is withheld because
+    // a quickstop injected mid-homing wedges this Marlin build. Cancellation
+    // applies no frame mutations, so an interrupted Home can never publish a
+    // trusted frame; the emergency stop invalidates the previous frame as
+    // untrusted as well.
     const bool homeOperationInterrupted = homeOperationInFlight();
     cancelMachineOperation("ABORTED_BY_STOP", "Machine operation cancelled by Stop");
     if (jobFile) jobFile.close();
@@ -9581,17 +9594,20 @@ MachineOperationResult performJobStop() {
     jobStatus.stopDuringHomingLeg = homeOperationInterrupted;
     jobStatus.state = JobRunnerState::Stopping;
     jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
-    jobStatus.stopWarning = homeOperationInterrupted
-                                ? "Stop during homing: M410 is withheld (it wedges Marlin mid-homing); the homing leg finishes safely."
-                                : machineProfile.capEmergencyParser
-                                      ? ""
-                                      : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
-    jobStatus.streamingPausedReason = homeOperationInterrupted
-        ? "Homing interrupted by Stop. Home All is required before further motion."
-        : "Stop cancelled a machine operation with M410 quickstop. Position is untrusted until Home All.";
     if (homeOperationInterrupted) {
-      startHomingStopPrioritySequence();
+      // Emergency kill: M112 alone, first on the wire. Physical motion stops
+      // immediately (steppers disabled); preserving the Marlin session is
+      // secondary. Restart (M999 attempt or power cycle) + Home All required.
+      jobStatus.stopWarning =
+          "EMERGENCY STOPPING: M112 sent to kill the controller. Steppers are disabled - the gantry may drop. Controller restart and Home All will be required.";
+      jobStatus.streamingPausedReason = "EMERGENCY STOPPING...";
+      startHomingEmergencyStopSequence();
     } else {
+      jobStatus.stopWarning = machineProfile.capEmergencyParser
+                                  ? ""
+                                  : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
+      jobStatus.streamingPausedReason =
+          "Stop cancelled a machine operation with M410 quickstop. Position is untrusted until Home All.";
       startImmediateStopPrioritySequence();
     }
     invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop);
@@ -9622,6 +9638,12 @@ MachineOperationResult performJobStop() {
   }
   const bool communicationLostStop =
       jobStatus.state == JobRunnerState::Error && jobStatus.errorCode == "COMMUNICATION_LOST";
+  if (controllerKilledByEmergencyStop) {
+    // Idempotent emergency stop: the controller is already killed; nothing
+    // further can or should be sent until it restarts.
+    return {true, true, true, 200, "OK",
+            "EMERGENCY STOP already sent. The controller is killed; restart the printer (power cycle), then Home All."};
+  }
   if (jobStatus.state != JobRunnerState::Preparing && jobStatus.state != JobRunnerState::Running &&
       jobStatus.state != JobRunnerState::Pausing &&
       jobStatus.state != JobRunnerState::PausedIntact &&
@@ -9884,7 +9906,9 @@ MachineOpKind machineOperationKind() {
 }
 
 bool homeOperationInFlight() {
-  return machineOperationActive() && machineOp.kind == MachineOpKind::Home;
+  // Homing motion is in flight only while the G28 leg is unacknowledged.
+  return machineOperationActive() && machineOp.kind == MachineOpKind::Home &&
+         machineOp.stepIndex == 0;
 }
 MachineOperationResult machineOpResult;
 // Snapshots of the last completed operation's captured evidence, read by the
@@ -11107,6 +11131,15 @@ bool attemptControllerRecoverySequence() {
   delay(50);
   drainMarlinInput();
 
+  if (controllerKilledByEmergencyStop) {
+    // Best-effort: ask the killed Marlin to reboot. If this build honors
+    // post-kill M999 the controller returns; otherwise it stays silent and
+    // the operator power-cycles. The M115 probe below verifies either way.
+    executeSynchronousCommand("M999", 5000, ControllerCommandClass::RecoveryProbe, false);
+    delay(1000);
+    drainMarlinInput();
+  }
+
   const MarlinCommandResult m115Res = executeSynchronousCommand("M115", 5000, ControllerCommandClass::RecoveryProbe, false);
   String m115Upper = m115Res.response;
   m115Upper.toUpperCase();
@@ -11134,8 +11167,9 @@ bool attemptControllerRecoverySequence() {
 
   markControllerResponseSuccess();
   controllerCommStatus.lastError = "";
-  return true;
-}
+  controllerKilledByEmergencyStop = false;
+      return true;
+    }
 
 void handleControllerRecover() {
   if (jobIsActive() || jogIsActive()) {
