@@ -212,6 +212,10 @@ struct JobRunnerStatus {
   String lastPriorityResponse;
   String lastPriorityError;
   bool stopEmergencyParserDetected = false;
+  // Set when Stop interrupted an active Home All: M410 is withheld (field
+  // failure 2026-09-15 - an injected M410 during the G28 homing sequence
+  // wedges this Marlin build) and the finish message reports the interruption.
+  bool stopDuringHomingLeg = false;
   String stopWarning;
   String lastFeedOverrideCommand;
   String lastFeedOverrideResponse;
@@ -325,6 +329,8 @@ MachineOperationResult performSetZZero(String* beforeOut = nullptr, String* afte
 void invalidateControllerSessionSafetyCapabilities();
 // Cooperative machine-operation engine (definitions near the frame handlers).
 enum class MachineOpKind : uint8_t { Home, SetWorkZero, SetZZero };
+MachineOpKind machineOperationKind();
+bool homeOperationInFlight();
 struct WsCommandEntry;
 bool toolChangeZZeroWindowOpen();
 bool machineOperationActive();
@@ -4817,6 +4823,20 @@ void startImmediateStopPrioritySequence() {
   startNextPriorityCommand();
 }
 
+// Homing-aware variant (field failure 2026-09-15): an M410 injected while the
+// G28 homing sequence is in flight wedges this Marlin build - the homing
+// routine stops observing the serial queue, so no ok and no further command
+// ever completes (session 0F4DC42C). The homing leg instead finishes normally
+// (axes stop at their endstops, bounded by the G28 ack budget) while the
+// spindle-safe M5 executes at that boundary and proves the controller is
+// still responsive.
+void startHomingStopPrioritySequence() {
+  queuePriorityCommands("M5");
+  priorityCommandAckTimeoutMs = kMarlinHomingAckTimeoutMs;
+  drainMarlinInput();
+  startNextPriorityCommand();
+}
+
 uint32_t priorityAckTimeoutMs() {
   return priorityCommandAckTimeoutMs;
 }
@@ -4875,9 +4895,12 @@ void finishPrioritySequence() {
                           : JobRunnerState::Stopped;
     resetJobSubstates(JobSubstateResetScope::Terminal);
     jobStatus.streamingPausedReason =
-        jobStatus.pauseInterruptedForManualMotion
-            ? "Manual movement invalidated direct Resume. Review Recovery before continuing."
-            : "Stopped now with M410 quickstop. Home All and verify recovery before further motion.";
+        jobStatus.stopDuringHomingLeg
+            ? "Homing interrupted by Stop. Home All is required before further motion."
+            : jobStatus.pauseInterruptedForManualMotion
+                ? "Manual movement invalidated direct Resume. Review Recovery before continuing."
+                : "Stopped now with M410 quickstop. Home All and verify recovery before further motion.";
+    jobStatus.stopDuringHomingLeg = false;
     if (jobStatus.pauseInterruptedForManualMotion) {
       setPersistentActiveJobMarker(false);
     }
@@ -9548,23 +9571,34 @@ MachineOperationResult performJobStop() {
     // executing the already-sent G28. Cancellation applies no frame mutations,
     // so an interrupted Home can never publish a trusted frame; the quickstop
     // below invalidates the previous frame as untrusted as well.
+    const bool homeOperationInterrupted = homeOperationInFlight();
     cancelMachineOperation("ABORTED_BY_STOP", "Machine operation cancelled by Stop");
     if (jobFile) jobFile.close();
     jobWaitingForOk = false;
     jobResponseBuffer = "";
     resetJobSubstates(JobSubstateResetScope::StopInitiated);
     jobStatus.pauseInterruptedForManualMotion = false;
+    jobStatus.stopDuringHomingLeg = homeOperationInterrupted;
     jobStatus.state = JobRunnerState::Stopping;
     jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
-    jobStatus.stopWarning = machineProfile.capEmergencyParser
-                                ? ""
-                                : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
-    jobStatus.streamingPausedReason =
-        "Stop cancelled a machine operation with M410 quickstop. Position is untrusted until Home All.";
-    startImmediateStopPrioritySequence();
+    jobStatus.stopWarning = homeOperationInterrupted
+                                ? "Stop during homing: M410 is withheld (it wedges Marlin mid-homing); the homing leg finishes safely."
+                                : machineProfile.capEmergencyParser
+                                      ? ""
+                                      : "Marlin EMERGENCY_PARSER was not detected. M410 was sent first, but immediate interruption cannot be guaranteed.";
+    jobStatus.streamingPausedReason = homeOperationInterrupted
+        ? "Homing interrupted by Stop. Home All is required before further motion."
+        : "Stop cancelled a machine operation with M410 quickstop. Position is untrusted until Home All.";
+    if (homeOperationInterrupted) {
+      startHomingStopPrioritySequence();
+    } else {
+      startImmediateStopPrioritySequence();
+    }
     invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JobQuickstop);
     touchJobStatus();
-    logJobEvent("stop cancelled an active machine operation");
+    logJobEvent(homeOperationInterrupted
+        ? String("stop cancelled the active homing operation; M410 withheld")
+        : String("stop cancelled an active machine operation"));
     return {
       true, true, true, 200, "OK",
       "Stop now cancelled the running machine operation with M410 quickstop. Position and recovery must be verified after the quickstop."
@@ -9844,6 +9878,14 @@ struct MachineOperation {
 };
 
 MachineOperation machineOp;
+
+MachineOpKind machineOperationKind() {
+  return machineOp.kind;
+}
+
+bool homeOperationInFlight() {
+  return machineOperationActive() && machineOp.kind == MachineOpKind::Home;
+}
 MachineOperationResult machineOpResult;
 // Snapshots of the last completed operation's captured evidence, read by the
 // legacy synchronous HTTP wrappers after the engine resets the live operation.
