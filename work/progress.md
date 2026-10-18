@@ -1,5 +1,15 @@
 # Progress
 
+## 2026-10-18 - Simulator snapshot and machine patch contract repaired
+
+- Resumed from clean `b897e9f`; baseline 886/886 Vitest tests passed.
+- Controller snapshots now distinguish communication state from job state, restoring the
+  normal UI admission gate in the simulator. Complete machine slices are used after WS Home
+  and zero commands, preserving frame and position ownership in the browser mirror.
+- Added executable raw WebSocket cases for connected idle/running/error jobs and unavailable
+  controllers; strengthened the Home patch assertion. Focused validation: 96/96 passed.
+- Real ESP32/SKR connectivity and hardware acceptance remain unverified.
+
 ## 2026-09-15 - NEW FIELD FAILURE: Stop during Home All leaves Marlin unresponsive
 
 - Session 0F4DC42C (build Sep 14 11:29, boot reset=OTHER_WATCHDOG - a previous session had

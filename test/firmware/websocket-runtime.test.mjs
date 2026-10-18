@@ -196,6 +196,26 @@ describe('Executable Raw TCP WebSocket Runtime Tests', () => {
     client.close();
   });
 
+  it.each([
+    ['IDLE', 'connected'], ['RUNNING', 'connected'], ['ERROR', 'connected'],
+    ['IDLE', 'unresponsive'], ['IDLE', 'recovering'],
+  ])('reports controller communication independently of job %s (%s)', async (jobState, controllerState) => {
+    const { port, env } = await startServer();
+    env.runner.status.state = jobState;
+    env.runner.controllerState = controllerState;
+    const client = await createTestWsClient(port);
+    try {
+      client.sendJson({ protocolVersion: 1, type: 'hello', seq: 1, ack: 0 });
+      const snapshot = await client.waitNextMessage();
+      expect(snapshot.state.job.state).toBe(jobState);
+      expect(snapshot.state.controller.state).toBe(controllerState);
+      expect(snapshot.state.controller.connected).toBe(controllerState === 'connected');
+      expect(snapshot.state.controller.communication.state).toBe(controllerState);
+    } finally {
+      client.close();
+    }
+  });
+
   it('4. Independent contiguous sequences for two clients', async () => {
     const { port } = await startServer();
     const client1 = await createTestWsClient(port, '/');

@@ -1189,6 +1189,18 @@ export async function createMockServer(options = {}) {
   const wsClients = new Set();
   let mockStateRevision = 1;
 
+  function mockMachineSlice() {
+    return {
+      position: {
+        work: { ...env.marlin.position },
+        machine: { ...env.marlin.machinePosition },
+      },
+      frame: { ...env.frame },
+      homedAxes: { ...env.frame.homedAxes },
+      homingEpoch: env.frame.homingEpoch,
+    };
+  }
+
   function mockNormalizedAuthoritativeState() {
     return {
       system: {
@@ -1211,10 +1223,8 @@ export async function createMockServer(options = {}) {
         },
       },
       controller: {
+        ...env.runner.controllerSlice(),
         type: 'marlin',
-        identity: 'MockMarlin 2.1.1',
-        connected: true,
-        state: env.runner.status.state.toLowerCase(),
         lastError: env.runner.status.lastError || null,
         capabilities: {
           homing: true, absoluteMachineMove: true, positionReports: true,
@@ -1222,15 +1232,7 @@ export async function createMockServer(options = {}) {
           arcs: true, toolChange: true,
         },
       },
-      machine: {
-        position: {
-          work: { ...env.marlin.position },
-          machine: { ...env.marlin.machinePosition },
-        },
-        frame: { ...env.frame },
-        homedAxes: { ...env.frame.homedAxes },
-        homingEpoch: env.frame.homingEpoch,
-      },
+      machine: mockMachineSlice(),
       job: env.runner.snapshot(),
       jog: { ...env.jog },
       control: operatorControlSlice(),
@@ -1515,7 +1517,7 @@ export async function createMockServer(options = {}) {
     // sequenced patch after the unsequenced commandResult, exactly like the
     // firmware engine's stageTelemetryUpdates on the next telemetry tick.
     if (machineActionNames.includes(entry.action) && result.ok) {
-      triggerStateSliceChange('machine', env.frame);
+      triggerStateSliceChange('machine', mockMachineSlice());
     }
   }
 

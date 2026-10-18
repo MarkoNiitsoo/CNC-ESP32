@@ -1673,7 +1673,7 @@ describe('WS machine commands (Phase 3C)', () => {
   });
 
   it('publishes an unsequenced result followed by a sequenced authoritative machine patch', async () => {
-    const { base } = await start();
+    const { base, env } = await start();
     const claim = await claimController(base);
 
     const ws = await connectWs(base);
@@ -1691,8 +1691,13 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(patch.type).toBe('patch');
     expect(patch.seq).toBe(2);
     expect(patch.patch?.machine).toBeDefined();
-    expect(patch.patch?.machine?.trusted).toBe(true);
-    expect(patch.patch?.machine?.workZeroValid).toBe(true);
+    expect(patch.patch?.machine?.frame?.trusted).toBe(true);
+    expect(patch.patch?.machine?.frame?.workZeroValid).toBe(true);
+    expect(patch.patch?.machine?.position).toEqual({
+      work: env.marlin.position, machine: env.marlin.machinePosition,
+    });
+    expect(patch.patch?.machine?.homedAxes).toEqual({ x: true, y: true, z: true });
+    expect(patch.patch?.machine?.homingEpoch).toBe(patch.patch.machine.frame.homingEpoch);
     ws.close();
   });
 

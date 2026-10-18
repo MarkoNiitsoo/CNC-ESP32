@@ -1,5 +1,24 @@
 # Handoff
 
+## 2026-10-18 - Restart audit: local simulator communication repaired
+
+- Current branch: `feature/phase1-websocket-transport`; September work continued through
+  `b897e9f`. Older entries below are historical, not the current implementation checklist.
+- Baseline: 76 Vitest files / 886 tests passed. Local socket tests require execution outside
+  the restricted sandbox on this Windows host.
+- Fixed mock snapshots reporting job `idle` as controller communication state (which locked
+  ordinary UI controls). They now use the runner's actual communication state and diagnostics.
+- Fixed Home/Work Zero/Z Zero WS patches replacing the complete machine slice with a bare
+  frame. Snapshots and patches now share the same slice builder.
+- Validation: mock-server + raw WebSocket suites, 96/96 passed including five new communication
+  cases. No UI assets copied into mock SD, no real machine commands or firmware deployment.
+- Physical connection remains unresolved: user says ESP32 is on a router but not the local
+  network. Asked for a working browser address and whether SKR/Marlin is powered.
+- Remaining audit findings: mock HTTP/asynchronous changes do not publish all live slices;
+  cooperative firmware operation error detection misses mixed-case `Error:`/`Alarm:`;
+  September Stop latch has guards but no transition into a stopped state. Hardware F1-F5
+  acceptance is still pending; a passing simulator suite does not verify machine behavior.
+
 ## 2026-09-15 - NEW FIELD FAILURE: stop-during-Home-All hangs Marlin (docs only, unfixed)
 
 - Session 0F4DC42C: operator Stop (x4) during an active Home All G28 -> priority M410 ack
