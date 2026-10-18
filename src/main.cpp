@@ -20,6 +20,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include "controller_comm.h"
+#include "marlin_response.h"
 #include "ws_command_protocol.h"
 
 extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
@@ -3972,9 +3973,7 @@ MarlinCommandResult readMarlinResponseFor(const String &cmd, uint32_t timeoutMs,
   updatePositionFromMarlinResponse(result.response);
 
   if (result.terminalReceived) {
-    String upper = result.response;
-    upper.toUpperCase();
-    bool isErr = upper.indexOf("ERROR:") >= 0 || upper.indexOf("ALARM:") >= 0 || upper.indexOf("!!") >= 0;
+    const bool isErr = marlinResponseHasError(result.response.c_str());
     if (isErr) {
       result.controllerError = true;
       result.success = false;
@@ -10263,9 +10262,7 @@ bool processMachineOperation() {
   }
   updatePositionFromMarlinResponse(machineOp.responseBuffer);
 
-  const String upper = machineOp.responseBuffer;
-  const bool isError = upper.indexOf("ERROR:") >= 0 || upper.indexOf("ALARM:") >= 0 ||
-                       upper.indexOf("!!") >= 0;
+  const bool isError = marlinResponseHasError(machineOp.responseBuffer.c_str());
   if (isError) {
     addMarlinLog("rx", false, machineOp.responseBuffer, "error");
     logJobEvent(machineOpStepLogPrefix() + " error=\"" +

@@ -1,5 +1,18 @@
 # Handoff
 
+## 2026-10-18 - Firmware error replies no longer advance Home/Zero
+
+- Cooperative operations checked uppercase error tokens against an unnormalized response.
+  `Error:` or `Alarm:` could therefore be accepted as a successful terminal response and
+  advance to G92 or finalization. Both synchronous and cooperative paths now use the same
+  allocation-free case-insensitive error predicate; error handling runs before step advance.
+- Validation: 891/891 Vitest, 22/22 native C++ tests, ESP32-CAM build SUCCESS (RAM 29.8%,
+  flash 78.0%). Native cases include mixed casing, error plus `ok`, and partial input.
+- Firmware was built locally only, NOT installed on ESP32. Hardware behavior remains untested.
+- Browser smoke check: file launcher opens `safe-square.gc`, ONLINE and CONNECTED appear,
+  Home All is enabled. Full Home/Zero UI completion not yet verified: browser automation
+  timed out while trying to handle the native Home confirmation dialog.
+
 ## 2026-10-18 - Restart audit: local simulator communication repaired
 
 - Current branch: `feature/phase1-websocket-transport`; September work continued through

@@ -1,5 +1,13 @@
 # Progress
 
+## 2026-10-18 - Reject mixed-case Marlin errors in cooperative operations
+
+- Replaced inconsistent response checks with a shared case-insensitive predicate, so a
+  terminal `Error:`/`Alarm:` cannot advance Home, Work Zero, or Z Zero as a success.
+- Added executable C++ regression coverage (including `ok` plus error and partial replies)
+  and a guard that the engine checks errors before terminal-success advancement.
+- Validation: 891/891 Vitest, 22/22 native, ESP32-CAM build SUCCESS. No device deployment.
+
 ## 2026-10-18 - Simulator snapshot and machine patch contract repaired
 
 - Resumed from clean `b897e9f`; baseline 886/886 Vitest tests passed.

@@ -1,11 +1,26 @@
 #include <unity.h>
 #include <ArduinoJson.h>
 #include "controller_comm.h"
+#include "marlin_response.h"
 #include "../../src/controller_comm.cpp"
 #include "../../src/ws_command_protocol.cpp"
 
 void setUp(void) {}
 void tearDown(void) {}
+
+void test_marlin_errors_are_case_insensitive_and_override_ok(void) {
+  for (const char *response : {"Error:Printer halted\n", "error: failed\n",
+                               "ERROR: failed\n", "Alarm: homing failed\n",
+                               "aLaRm: failed\n", "!!\n", "ok\nError: failed\n",
+                               "echo:busy: processing\nError: failed\nok\n"}) {
+    TEST_ASSERT_TRUE_MESSAGE(marlinResponseHasError(response), response);
+  }
+  for (const char *response : {"", "ok\n", "ok N42 P15 B3\n", "echo:busy: processing\n",
+                               "X:1.0 Y:2.0 Z:3.0\nok\n", "Err", "Ala", "!"}) {
+    TEST_ASSERT_FALSE_MESSAGE(marlinResponseHasError(response), response);
+  }
+  TEST_ASSERT_FALSE(marlinResponseHasError(nullptr));
+}
 
 void test_1_connected_reserve_ordinary_sync_transitions_to_waiting(void) {
   ControllerCommManager mgr;
@@ -348,6 +363,7 @@ void test_21_healthy_sync_round_trip_logs_nothing(void) {
 
 int main(int argc, char **argv) {
   UNITY_BEGIN();
+  RUN_TEST(test_marlin_errors_are_case_insensitive_and_override_ok);
   RUN_TEST(test_1_connected_reserve_ordinary_sync_transitions_to_waiting);
   RUN_TEST(test_2_reserved_transaction_allowed_to_write);
   RUN_TEST(test_3_unrelated_transaction_rejected_while_waiting);

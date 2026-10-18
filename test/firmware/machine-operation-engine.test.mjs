@@ -72,6 +72,8 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
 
   it('classifies one step per tick with per-step timeouts and terminal detection', () => {
     const pump = blockBetween('// One cooperative tick:', 'MachineOperationResult admitMachineOperation(');
+    expect(pump).toContain('marlinResponseHasError(machineOp.responseBuffer.c_str())');
+    expect(pump.indexOf('if (isError)')).toBeLessThan(pump.indexOf('if (marlinResponseIsTerminal('));
     expect(pump).toContain('while (Serial.available() > 0)');
     expect(pump).toContain('marlinResponseIsTerminal(machineOp.responseBuffer)');
     expect(pump).toContain('millis() - machineOp.stepStartedAtMs >= step.timeoutMs');
