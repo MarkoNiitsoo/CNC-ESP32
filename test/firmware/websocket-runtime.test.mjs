@@ -216,6 +216,44 @@ describe('Executable Raw TCP WebSocket Runtime Tests', () => {
     }
   });
 
+  it('publishes HTTP Home and asynchronous job/controller changes without reloading', async () => {
+    const { port, env } = await startServer({ allowHoming: true });
+    const client = await createTestWsClient(port);
+    try {
+      client.sendJson({ protocolVersion: 1, type: 'hello', seq: 1, ack: 0 });
+      await client.waitNextMessage();
+      const response = await fetch(`http://127.0.0.1:${port}/api/machine/home`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ axes: 'all' }),
+      });
+      expect(response.ok).toBe(true);
+      await expect.poll(() => client.messages.find((msg) => msg.patch?.machine?.frame?.trusted),
+        { timeout: 2500 }).toBeTruthy();
+      env.runner.status.state = 'COMPLETED';
+      env.runner.controllerState = 'unresponsive';
+      await expect.poll(() => client.messages.find((msg) =>
+        msg.patch?.job?.state === 'COMPLETED' && msg.patch?.controller?.state === 'unresponsive'),
+      { timeout: 2500 }).toBeTruthy();
+    } finally {
+      client.close();
+    }
+  });
+
+  it('does not publish idle patches just because diagnostic clocks advance', async () => {
+    const { port } = await startServer();
+    const client = await createTestWsClient(port);
+    try {
+      client.sendJson({ protocolVersion: 1, type: 'hello', seq: 1, ack: 0 });
+      const snapshot = await client.waitNextMessage();
+      const heartbeat = await client.waitNextMessage(4500);
+      expect(heartbeat.type).toBe('sync');
+      expect(heartbeat.stateRevision).toBe(snapshot.stateRevision);
+      expect(client.messages.filter((msg) => msg.type === 'patch')).toEqual([]);
+    } finally {
+      client.close();
+    }
+  });
+
   it('4. Independent contiguous sequences for two clients', async () => {
     const { port } = await startServer();
     const client1 = await createTestWsClient(port, '/');

@@ -1,5 +1,28 @@
 # Current Task
 
+## Active restart point - 2026-10-18
+
+Read `docs/restart-review-2026-10-18.md` and the newest `work/handoff.md` entries first.
+The older sections below are accumulated historical scope, not a current to-do list.
+
+Completed locally: mock controller/machine slice repair, mixed-case Marlin error rejection,
+mock live updates and `/preview` route. Baseline was 886 Vitest cases; added regression coverage.
+Firmware compiles, but no new build has been installed on ESP32.
+
+Next:
+1. Establish the ESP32 browser address and SKR power/connection state with the operator.
+   User said ESP32 is on a router but not connected to the local network; interpretation and IP
+   are still unconfirmed. Use read-only device/health/controller status first.
+2. Complete and test operator Stop latch transitions before treating September's safety commit
+   as finished. Current guards exist, but no code sets Stopped/EmergencyStopped/HomeRequired.
+3. Fix zero target capture timing (after M400/M114, not at admission) with transaction tests.
+4. Drain final motion before marking a job Completed and clearing its checkpoint.
+5. Then run hardware acceptance at `/test.html`, with the operator present. F1-F5 remain unverified.
+6. UX: surface Safe Z in Prepare, accurate pause transitions, one visible next action, clearer
+   distinction between machine work zero and job association. See the review for details.
+
+## Historical scope
+
 ## Home-relative coordinate frame and recovery bounds
 
 - Anchor machine coordinates to Home All M114 counts and M92 steps/mm.

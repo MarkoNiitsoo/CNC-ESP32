@@ -81,6 +81,15 @@ afterEach(async () => {
 });
 
 describe('mock HTTP API', () => {
+  it('serves the firmware preview route directly from the canonical www file', async () => {
+    const { base } = await start();
+    const alias = await fetch(`${base}/preview?path=%2Fgcode%2Fsafe-square.gc`);
+    const direct = await fetch(`${base}/preview.html`);
+    expect(alias.status).toBe(200);
+    expect(alias.headers.get('content-type')).toContain('text/html');
+    expect(await alias.text()).toBe(await direct.text());
+  });
+
   it('rejects standalone M5 for active and recovery-required jobs', async () => {
     const { base, env } = await start();
     env.runner.status.state = 'RUNNING';

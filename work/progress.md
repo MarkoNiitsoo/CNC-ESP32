@@ -1,5 +1,14 @@
 # Progress
 
+## 2026-10-18 - Keep simulator live state current
+
+- Added change-filtered publication for HTTP and background runner state; ignored diagnostic
+  clock-only changes to preserve idle revision stability. Added `/preview` route parity.
+- Focused runtime/API tests: 99/99 passed. Recorded current blockers, UX proposals, and a
+  reconnection sequence in `docs/restart-review-2026-10-18.md`.
+- Final full-suite validation: 894/894 Vitest tests across 76 files passed.
+- No physical machine test, deployment, or full browser acceptance claimed.
+
 ## 2026-10-18 - Reject mixed-case Marlin errors in cooperative operations
 
 - Replaced inconsistent response checks with a shared case-insensitive predicate, so a

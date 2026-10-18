@@ -111,7 +111,8 @@ function syncMockFrame(env) {
 }
 
 async function staticFile(wwwRoot, pathname) {
-  const route = pathname === '/' ? '/index.html' : pathname === '/files' ? '/files.html' : pathname;
+  const routes = { '/': '/index.html', '/files': '/files.html', '/preview': '/preview.html' };
+  const route = routes[pathname] || pathname;
   const decoded = decodeURIComponent(route);
   if (decoded.includes('..') || decoded.includes('\\') || !decoded.startsWith('/')) throw new Error('unsafe static path');
   const target = path.resolve(wwwRoot, `.${decoded}`);
@@ -1526,6 +1527,9 @@ export async function createMockServer(options = {}) {
   }
 
   function broadcastMockPatch(patchData) {
+    for (const [name, slice] of Object.entries(patchData)) {
+      lastLiveSliceJson[name] = liveSliceSignature(name, slice);
+    }
     mockStateRevision += 1;
     for (const socket of wsClients) {
       const cs = wsClientStates.get(socket);
@@ -1748,15 +1752,35 @@ export async function createMockServer(options = {}) {
     });
   });
 
-  let lastMockControlJson = JSON.stringify(operatorControlSlice());
+  // HTTP commands and the asynchronous runner change the same state as WS
+  // commands. Publish those changes even while the browser skips HTTP polling.
+  // Diagnostic clocks alone must not create a new authoritative revision.
+  function liveSliceSignature(name, slice) {
+    if (name === 'job') {
+      const { uptimeMs, ...stable } = slice;
+      return JSON.stringify(stable);
+    }
+    if (name === 'controller') {
+      const { lastSuccessfulResponseMs, ...communication } = slice.communication || {};
+      return JSON.stringify({ ...slice, communication });
+    }
+    return JSON.stringify(slice);
+  }
+
+  const liveSliceNames = ['controller', 'machine', 'job', 'jog', 'control'];
+  const initialState = mockNormalizedAuthoritativeState();
+  const lastLiveSliceJson = Object.fromEntries(liveSliceNames.map((name) =>
+    [name, liveSliceSignature(name, initialState[name])]));
   const mockSyncTimer = setInterval(() => {
     const now = Date.now();
-    const control = operatorControlSlice();
-    const controlJson = JSON.stringify(control);
-    if (controlJson !== lastMockControlJson) {
-      lastMockControlJson = controlJson;
-      triggerStateSliceChange('control', control);
+    const state = mockNormalizedAuthoritativeState();
+    const patch = {};
+    for (const name of liveSliceNames) {
+      if (liveSliceSignature(name, state[name]) !== lastLiveSliceJson[name]) {
+        patch[name] = state[name];
+      }
     }
+    if (Object.keys(patch).length) broadcastMockPatch(patch);
     for (const socket of wsClients) {
       const cs = wsClientStates.get(socket);
       if (cs && cs.handshakeComplete && now - cs.lastOutboundAtMs >= 3000) {
@@ -1768,13 +1792,7 @@ export async function createMockServer(options = {}) {
   server.on('close', () => clearInterval(mockSyncTimer));
 
   function triggerStateSliceChange(sliceName, sliceData) {
-    mockStateRevision += 1;
-    for (const socket of wsClients) {
-      const cs = wsClientStates.get(socket);
-      if (cs && cs.handshakeComplete && !socket.destroyed) {
-        sendMockWsPacket(socket, 'patch', { patch: { [sliceName]: sliceData } });
-      }
-    }
+    broadcastMockPatch({ [sliceName]: sliceData });
   }
 
   function appendMockLog(entryData = {}) {

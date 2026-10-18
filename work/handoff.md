@@ -1,5 +1,20 @@
 # Handoff
 
+## 2026-10-18 - Mock live updates and restart checklist
+
+- Mock telemetry now publishes changes made by HTTP handlers and the asynchronous runner
+  (controller, machine, job, jog, control). Diagnostic clock changes alone do not generate
+  patches. Immediate WS command patches update the same comparison cache.
+- `/preview` now serves canonical `www/preview.html`, matching the firmware route.
+- Focused socket/API tests: 99/99 passed, including HTTP Home updates, job/controller changes,
+  idle revision stability, and preview routing. No hardware commands or deployment.
+- Final full-suite validation: 76 files, 894/894 Vitest tests passed; firmware/native results
+  from the preceding step remain 22/22 native and ESP32-CAM build SUCCESS.
+- Current prioritized findings and operator reconnection steps are in
+  `docs/restart-review-2026-10-18.md`; `work/current-task.md` now starts with the actual next work.
+- Browser smoke testing was limited by a native confirm dialog automation timeout. The local
+  test server was stopped. Do not report the full Home -> Zero -> Start browser flow as verified.
+
 ## 2026-10-18 - Firmware error replies no longer advance Home/Zero
 
 - Cooperative operations checked uppercase error tokens against an unnormalized response.
