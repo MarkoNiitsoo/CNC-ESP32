@@ -1,5 +1,13 @@
 # Progress
 
+## 2026-10-20 - Prepared current firmware on CNC SD card
+
+- Verified the ESP32-CAM build, then staged current firmware at `E:\firmware.bin` on the
+  user's removable SD card. Source and destination SHA-256 match.
+- Verified all 46 UI files already match repository `www`; preserved user data and extra files.
+- Saved prior UI and firmware under `.pio-build/sd-backups/2026-10-20-e2a91241/`.
+- Card is ready for device boot installation. No physical device boot or acceptance test was run.
+
 ## 2026-10-18 - Keep simulator live state current
 
 - Added change-filtered publication for HTTP and background runner state; ignored diagnostic

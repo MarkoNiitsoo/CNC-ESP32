@@ -1,5 +1,23 @@
 # Handoff
 
+## 2026-10-20 - SD card updated; firmware installation pending
+
+- User requested updating the SD card. Verified removable FAT32 card at `E:\`.
+- Rechecked current ESP32-CAM build: SUCCESS. Copied the verified image to
+  `E:\firmware.bin` using a staging file, flushed it, and verified SHA-256 after rename.
+- Image: 1,539,328 bytes; SHA-256
+  `11BB1CC9387B880A269D7320E1C282642884203288A37095051F453F518E1BC0`.
+- All 46 canonical `www` files already matched the repository byte-for-byte; none needed
+  replacement. Existing extra skin copies were preserved. G-code, jobs, logs and settings
+  were not changed.
+- Backed up the prior `www` tree and `firmware.done.bin` to
+  `.pio-build/sd-backups/2026-10-20-e2a91241/` on this computer.
+- Next: safely eject the card, insert it into the powered-off ESP32, then boot and allow
+  installation/reboot. Confirm the update log and `firmware.done.bin` afterward.
+  Only SD staging is verified; device installation and hardware acceptance are NOT verified.
+- The outstanding Stop latch, zero capture timing, and job completion issues in the October 18
+  review remain open. This deployment does not claim to fix them.
+
 ## 2026-10-18 - Mock live updates and restart checklist
 
 - Mock telemetry now publishes changes made by HTTP handlers and the asynchronous runner
