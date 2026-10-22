@@ -1,5 +1,12 @@
 # Handoff
 
+## 2026-10-22 handoff: Cut start update deployed
+
+- The final 47-file package `.pio-build/sd-release/2026-10-22-cut-start/` is deployed to verified E: (removable FAT32, 8,011,120,640 bytes; card ID `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`). Current source, staged package, and card payload hashes matched. Firmware: 1,541,632 bytes, SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`; `www/` has 46 canonical payload files plus one preserved extra.
+- The prior card state differed from the older snapshot: root `firmware.bin` was 1,327,872 bytes / SHA-256 `da9c348e8b33ebb2c8e7623f6eab4fb3b47a2694bf69e9ed06daf85f22abeb5f`; `firmware.done.bin` was absent; G-code/jobs/logs/UI contents had changed. Fresh full user-file backup (52 files, 2,075,714 bytes; excludes only protected system metadata) is `.pio-build/sd-backups/2026-10-22-cut-start-202340`, with its hash list in `card-files.json`. All 16 existing non-payload files verified unchanged after deployment.
+- `E:\firmware\INSTALL.NOW` was absent. No hardware boot was performed and the SD card was not ejected. Full validation passed: 918/918 Vitest across 77 files, 33/33 native tests, ESP32-CAM build SUCCESS; `admitJobStart` narrowing warning remains at `src/main.cpp:9238`.
+- User preference remains: for a tested update ready for hardware acceptance, deploy matching firmware and canonical `www/` to the verified attached CNC SD without another confirmation, after backing up the current card and checking source/staged/card hashes. Preserve all other user files.
+
 ## 2026-10-22 - Cut start fix validated; SD deployment next
 
 - Final readiness feedback includes Bounds firmware-rejection details and running percentages for both verification actions. Full Vitest rerun passed 918/918 after this UI-only follow-up; firmware unchanged. Current E: has an older/different payload but the exact KAR source fingerprint matches the project. Deploy only after backing up that current state; the earlier card snapshot is not the deployment baseline.

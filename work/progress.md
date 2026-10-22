@@ -1,5 +1,12 @@
 # Progress
 
+## 2026-10-22 - Cut start update deployed to CNC SD
+
+- This completed deployment supersedes the pre-deployment status and older card snapshot entries below. Final validation passed: 918/918 Vitest tests across 77 files, 33/33 PlatformIO native tests, and ESP32-CAM build SUCCESS. Existing warning: narrowing `MotionAdmissionResult::httpStatus` from `int` to `uint16_t` at `src/main.cpp:9238`.
+- Package `.pio-build/sd-release/2026-10-22-cut-start/` contains firmware plus all 46 canonical `www/` files. All 47 manifest hashes matched current source and staged files before deployment and matched the E: card afterward. Firmware is 1,541,632 bytes, SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`.
+- Verified E: is the removable CNC FAT32 card (8,011,120,640 bytes; `.cnc-sd-id` `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`). Its state differed from the earlier snapshot: prior root `firmware.bin` was 1,327,872 bytes (SHA-256 `da9c348e8b33ebb2c8e7623f6eab4fb3b47a2694bf69e9ed06daf85f22abeb5f`), `firmware.done.bin` was absent, and its `www/`, `jobs/`, and `logs/` counts had changed. A fresh verified local backup of all 52 existing user files (2,075,714 bytes) is `.pio-build/sd-backups/2026-10-22-cut-start-202340/card/`; system metadata folders were excluded. It includes `.cnc-sd-id`, old firmware, G-code including `bobikuaken.gc`, jobs, logs, and prior UI files.
+- Final card check: firmware and 46 web payload files matched the manifest; all 16 pre-existing non-payload files remained hash-identical, including jobs, G-code, logs, card ID, and the existing `www/` extra. `E:\firmware\INSTALL.NOW` is absent. No hardware boot was performed and the card was not ejected.
+
 ## 2026-10-22 - Cut start: settled zero capture and final confirmation
 
 - Final UI review also exposed Bounds stream-rejection details in readiness and added live percentage feedback for both Bounds/Aircut. Full Vitest rerun passed 918/918 (`vitest-full-feedback-final-2026-10-22.json`); firmware unchanged. SD baseline differs from the prior run but the exact KAR source fingerprint and removable FAT32 geometry identify the CNC card. A fresh complete local backup is required before replacing its payload.
