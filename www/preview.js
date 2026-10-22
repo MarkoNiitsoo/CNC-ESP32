@@ -190,6 +190,8 @@ let aircutCommands = [];
 let aircutSafety = { ok: false, messages: [] };
 let aircutOptimization = { skippedPasses: 0, skippedSegments: 0, keptPasses: 0 };
 let dryRunStatus = 'idle';
+let readinessActionFeedback = '';
+let dryRunActionBusy = false;
 let activeTestMotion = null;
 let gcodeText = '';
 let gcodeHashSha256 = '';
@@ -478,13 +480,22 @@ function workflowHardBlockers() {
 }
 
 function guidedWorkflowStatus() {
-  return evaluateWorkflow(ensureJobState(), {
+  const status = evaluateWorkflow(ensureJobState(), {
     machineFrame: currentMachineFrame || {},
     bootSessionId: currentMachineFrame?.bootSessionId || '',
     hardBlockers: workflowHardBlockers(),
     // Recovery evidence stays visible without becoming a preparation or start gate.
     blockPreparation: false,
   });
+  if (status.frame.mode === 'homed' && status.workZero.ok && !workZeroMatchesMachineFrame()) {
+    status.workZero = {
+      ...status.workZero,
+      ok: false,
+      label: 'Saved Work Zero does not match the current Home All frame',
+    };
+    status.gate = 'work-zero';
+  }
+  return status;
 }
 
 function openFirmwareRecoveryOptions() {
@@ -616,8 +627,9 @@ function renderReadiness() {
     readinessRunAircutButton,
   ].filter(Boolean);
   persistentButtons.forEach((button) => {
-    button.disabled = homeBusy;
-    button.title = homeBusy ? 'This setup action is available when the machine is idle.' : '';
+    button.disabled = homeBusy || (dryRunActionBusy && button !== readinessSetZZeroButton);
+    button.title = homeBusy ? 'This setup action is available when the machine is idle.' :
+      (dryRunActionBusy && button !== readinessSetZZeroButton ? 'A physical verification is already running.' : '');
   });
   if (readinessSetZZeroButton) {
     readinessSetZZeroButton.textContent = activeZero('zZero') ? 'Set Z Zero Again' : 'Set Z Zero';
@@ -648,6 +660,7 @@ function renderReadiness() {
     <div class="operator-readiness-progress"><strong>${completedSteps} / 3</strong><span>preparation decisions ready</span></div>
     <h3>${html(copy[0])}</h3>
     <p>${html(copy[1])}</p>
+    ${readinessActionFeedback ? `<p class="warning" role="status" aria-live="polite">${html(readinessActionFeedback)}</p>` : ''}
     ${status.warnings.length ? `<p class="warning">${html(status.warnings.join(' · '))}</p>` : ''}
     <details class="operator-diagnostics">
       <summary>Preparation details</summary>
@@ -1260,10 +1273,10 @@ function computePreflight() {
   else addCheck(checks, 'spindle', 'pass', 'No spindle/laser enable command detected');
 
   const workZero = jobState?.workZero;
-  if (hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92) && workZeroMatchesMachineFrame()) {
+  if (hasWorkZero() && workZeroMatchesMachineFrame()) {
     addCheck(checks, 'workZero', 'pass', 'Saved work zero matches the active homed machine frame');
-  } else if (hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92)) {
-    addCheck(checks, 'workZero', 'fail', 'Saved work zero is not active in the current homing session');
+  } else if (hasWorkZero()) {
+    addCheck(checks, 'workZero', 'fail', 'Saved Work Zero does not match the current Home All frame. Set Work Zero again.');
   } else if (hasRawCapture(workZero?.beforeG92)) {
     addCheck(checks, 'workZero', 'warning', 'Current position was captured, but G92 work zero has not been set');
   } else {
@@ -3703,7 +3716,24 @@ function fmtMm(value) {
 
 function hasWorkZero() {
   const workZero = jobState?.workZero;
-  return hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92);
+  if (hasRawCapture(workZero?.beforeG92) && hasRawCapture(workZero?.afterG92)) return true;
+  const frame = currentMachineFrame;
+  const reference = activeWorkZeroReference();
+  return Boolean(frame?.trusted === true && frame.absoluteFromHome === true &&
+    frame.workZeroValid === true && frame.workZeroMachine &&
+    ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(frame.workZeroMachine[axis]))) &&
+    reference.id && jobState?.workZeroDecision?.mode === 'homed' &&
+    jobState?.workZeroDecision?.token === reference.id &&
+    reference.position && ['x', 'y', 'z'].every((axis) => Number.isFinite(Number(reference.position[axis]))) &&
+    workZeroMatchesMachineFrame());
+}
+
+function workZeroValidationMessage(action) {
+  if (currentMachineFrame?.absoluteFromHome === true &&
+      jobState?.activeWorkZeroId && !workZeroMatchesMachineFrame()) {
+    return `Saved Work Zero does not match the current Home All frame. Set Work Zero again before sending ${action}.`;
+  }
+  return `Work zero is missing. Capture + Set Work Zero before sending ${action}.`;
 }
 
 function ensureToolZeroState() {
@@ -3795,12 +3825,19 @@ function dryRunStatusMessage() {
 }
 
 function setDryRunRunning(isRunning) {
+  renderReadiness();
   const safety = selectedDryRunSafety();
   const commands = selectedDryRunCommands();
   if (sendDryRunButton) {
     sendDryRunButton.textContent = dryRunPrimaryLabel();
     sendDryRunButton.disabled = isRunning || !safety.ok || commands.length === 0;
   }
+}
+
+function reportReadinessAction(message, isError = false) {
+  readinessActionFeedback = message;
+  setJobResult(message, isError);
+  renderReadiness();
 }
 
 function showCommandPreview(label, commands) {
@@ -3862,7 +3899,9 @@ function validateDryRun(bounds, safeZ) {
       bounds.yMin < MACHINE.yMin || bounds.yMax > MACHINE.yMax)) {
     messages.push(`Generated X/Y bounds exceed machine limits X ${MACHINE.xMin}..${MACHINE.xMax}, Y ${MACHINE.yMin}..${MACHINE.yMax}.`);
   }
-  if (!hasWorkZero()) messages.push('Work zero is missing. Capture + Set Work Zero before sending a trace.');
+  if (!hasWorkZero() || (currentMachineFrame?.absoluteFromHome === true && !workZeroMatchesMachineFrame())) {
+    messages.push(workZeroValidationMessage('a trace'));
+  }
   messages.push(...activeRunBlockers());
   const hardBlockers = messages.filter((msg) => !msg.startsWith('Cut bounds could not be identified'));
   return { ok: hardBlockers.length === 0, messages };
@@ -3878,7 +3917,9 @@ function validateAircut(safeZ, commandCount) {
       b.yMin < MACHINE.yMin || b.yMax > MACHINE.yMax)) {
     messages.push(`Generated X/Y bounds exceed machine limits X ${MACHINE.xMin}..${MACHINE.xMax}, Y ${MACHINE.yMin}..${MACHINE.yMax}.`);
   }
-  if (!hasWorkZero()) messages.push('Work zero is missing. Capture + Set Work Zero before sending an aircut.');
+  if (!hasWorkZero() || (currentMachineFrame?.absoluteFromHome === true && !workZeroMatchesMachineFrame())) {
+    messages.push(workZeroValidationMessage('an aircut'));
+  }
   messages.push(...activeRunBlockers());
   if (commandCount > 5000) messages.push('Large aircut. This may take a long time.');
   return { ok: messages.length === 0 || messages.every((message) => message.startsWith('Large aircut')), messages };
@@ -5124,6 +5165,18 @@ function disarmJob() {
 }
 
 async function sendBoundingBoxTrace() {
+  if (dryRunActionBusy) return;
+  dryRunActionBusy = true;
+  reportReadinessAction('Preparing Bounds Check…');
+  try {
+    await runBoundingBoxTrace();
+  } finally {
+    dryRunActionBusy = false;
+    renderReadiness();
+  }
+}
+
+async function runBoundingBoxTrace() {
   console.log('[Cut Bounds] Click received');
   const bounds = generatedBounds();
   const safeZ = projectSafeZValue();
@@ -5133,6 +5186,7 @@ async function sendBoundingBoxTrace() {
     console.log('[Cut Bounds] Blocked:', blocker);
     appendDryRunLog(`Blocked: ${blocker}`);
     setJobResult(`Cut Bounds blocked: ${blocker}`, true);
+    reportReadinessAction(`Bounds Check blocked: ${blocker}`, true);
     return;
   }
 
@@ -5170,6 +5224,7 @@ async function sendBoundingBoxTrace() {
     console.error('[Cut Bounds] Position capture failed:', err.message);
     appendDryRunLog(unconfirmedMsg);
     setJobResult(unconfirmedMsg, true);
+    reportReadinessAction(unconfirmedMsg, true);
     return;
   }
 
@@ -5182,6 +5237,7 @@ async function sendBoundingBoxTrace() {
     console.error('[Cut Bounds] Position capture returned invalid coordinates:', returnCapture);
     appendDryRunLog(unconfirmedMsg);
     setJobResult(unconfirmedMsg, true);
+    reportReadinessAction(unconfirmedMsg, true);
     return;
   }
 
@@ -5213,6 +5269,7 @@ async function sendBoundingBoxTrace() {
     }
     appendDryRunLog('Cut Bounds complete. Starting X/Y/Z restored.');
     setJobResult('Cut Bounds complete. Starting X/Y/Z restored.');
+    reportReadinessAction('Bounds Check complete. Starting X/Y/Z restored.');
     console.log('[Cut Bounds] Complete. Starting X/Y/Z restored.');
   } catch (err) {
     dryRunStatus = 'failed';
@@ -5232,9 +5289,23 @@ async function sendBoundingBoxTrace() {
 }
 
 async function sendAircutToolpath() {
+  if (dryRunActionBusy) return;
+  dryRunActionBusy = true;
+  reportReadinessAction('Preparing Aircut…');
+  try {
+    await runAircutToolpath();
+  } finally {
+    dryRunActionBusy = false;
+    renderReadiness();
+  }
+}
+
+async function runAircutToolpath() {
   generateAircutCommands();
   if (!aircutSafety.ok) {
-    appendDryRunLog(`Blocked: ${aircutSafety.messages.join(' ')}`);
+    const blocker = aircutSafety.messages.join(' ');
+    appendDryRunLog(`Blocked: ${blocker}`);
+    reportReadinessAction(`Aircut blocked: ${blocker}`, true);
     return;
   }
 
@@ -5269,6 +5340,7 @@ async function sendAircutToolpath() {
       });
     }
     appendDryRunLog('Aircut complete');
+    reportReadinessAction('Aircut complete.');
   } catch (err) {
     dryRunStatus = 'aircut failed';
     if (jobState) {
@@ -5277,6 +5349,7 @@ async function sendAircutToolpath() {
       jobState.dryRun.lastAircutCommandCount = aircutCommands.length;
     }
     appendDryRunLog(`Stopped: ${err.message}`);
+    reportReadinessAction(`Aircut failed: ${err.message}`, true);
   } finally {
     setDryRunRunning(false);
     renderDryRunPanel();
@@ -5345,7 +5418,8 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
     });
     data = await readJsonOrThrow(res);
     if (!res.ok || data.ok === false) throw new Error(data.error || 'Set Z Zero failed');
-    const { frame } = await waitForMachineFrame(machineBaseline, previousRevision, 'new Z Zero frame');
+    const { frame } = await waitForMachineFrame(machineBaseline, previousRevision, 'new Z Zero frame',
+      (candidate) => Number(candidate.zeroRevision) > previousRevision);
     data = { ...data, frame, confirmedBySocket: true };
   }
   if (data.confirmedBySocket !== true) throw new Error('Z Zero was accepted but has no authoritative socket confirmation.');
@@ -5359,7 +5433,14 @@ async function setZZeroWithCapture(transaction = null, options = {}) {
   toolZero.beforeG92Z = before;
   toolZero.afterG92Z = after;
   const machineZ = Number(frame?.workZeroMachine?.z);
-  if (Number.isFinite(machineZ) && jobState?.workZero?.machineReference?.position) {
+  const savedWork = activeWorkZeroReference();
+  const liveWork = frame?.workZeroMachine;
+  const xyStillMatches = savedWork.position && liveWork && ['x', 'y'].every((axis) =>
+    Number.isFinite(Number(savedWork.position[axis])) && Number.isFinite(Number(liveWork[axis])) &&
+    Math.abs(Number(savedWork.position[axis]) - Number(liveWork[axis])) <= 0.05);
+  const sameHome = savedWork.homingEpoch === Number(frame?.homingEpoch) &&
+    savedWork.homingSessionId === String(frame?.homingSessionId || '');
+  if (Number.isFinite(machineZ) && xyStillMatches && sameHome && jobState?.workZero?.machineReference?.position) {
     jobState.workZero.machineReference.position.z = machineZ;
     jobState.workZero.frame = {
       homingEpoch: Number(frame.homingEpoch),
@@ -5414,7 +5495,8 @@ async function probeTouchPlateZZero() {
   });
   const data = await readJsonOrThrow(res);
   if (!res.ok || data.ok === false) throw new Error(data.error || 'Touch-plate Z zero failed');
-  const { frame } = await waitForMachineFrame(machineBaseline, previousRevision, 'touch-plate Z Zero frame');
+  const { frame } = await waitForMachineFrame(machineBaseline, previousRevision, 'touch-plate Z Zero frame',
+    (candidate) => Number(candidate.zeroRevision) > previousRevision);
   await setZZeroWithCapture(
     { ...data, frame, confirmedBySocket: true },
     { method: `Touch plate ${settings.touchPlateThickness.toFixed(3)} mm` },

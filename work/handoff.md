@@ -3504,3 +3504,10 @@ No firmware upload is required.
 - Focused validation passed: 19/19 tests across `test/ui/work-zero-ownership.test.mjs` and `test/ui/zero-origin-ui.test.mjs`.
 - The `job-workflow.test.mjs` readiness assertion now reflects the canonical Zero / Origin control and navigation path. Prepare is the tab containing the Zero / Origin panel.
 - Hardware validation and SD deployment were not performed.
+
+## 2026-10-22 handoff: Work Zero field validation and feedback
+
+- Fresh session 14E5FF74 logs showed Work Zero history `(0,0,38.28)` while the active Home All frame was `(283.802,431.449,38.28)`. The firmware rejection was correct; the earlier WS capture raced and retained stale coordinates.
+- `www/preview.js` now requires `zeroRevision > previousRevision` for direct and touch-plate Z Zero frame confirmation. It accepts raw-capture-free WS Work Zero only when the trusted active frame, active homed decision, finite machine reference, and home session all match. A stale saved Work Zero blocks readiness and dry-run validation with “Set Work Zero again”; Z Zero does not rewrite stale XY evidence.
+- Bounds/Aircut readiness actions show live status for blocked, running, complete, or failed outcomes and reject repeated concurrent invocations. `dev/mock-server.mjs` stamps `zeroRevision` after successful Work Zero and Z Zero transactions so browser tests match firmware semantics.
+- Validation: UI focused suite 105/105 passed; mock-server suite 75/75 passed with loopback access. Hardware retest after Home All + fresh Work Zero and SD deployment remain outstanding.

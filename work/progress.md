@@ -3733,3 +3733,11 @@ The following legacy endpoints and assumptions are retained temporarily during P
 - Kept X/Y per-axis zero actions under Advanced zero options. The canonical XYZ button shows an in-progress label, disables repeat activation, and reports transport errors beside the control.
 - Updated focused UI regression coverage. `npx vitest run test/ui/work-zero-ownership.test.mjs test/ui/zero-origin-ui.test.mjs`: 19/19 passed.
 - Updated the job-workflow regression that still expected the removed persistent duplicate; it now checks navigation to the canonical Prepare control.
+
+## 2026-10-22: Work Zero frame validation and verification feedback
+
+- Field logs showed saved XYZ Work Zero `(0,0,38.28)` disagreeing with the current homed frame `(283.802,431.449,38.28)`. Readiness, Preflight, Bounds Check, and Aircut now identify the stale zero and direct the operator to set Work Zero again. WS-confirmed Work Zero can use trusted finite frame evidence when raw M114 strings are absent, but only for the active homed decision and matching current frame.
+- Z Zero HTTP and touch-plate confirmation now wait for `zeroRevision` newer than the previous frame revision. Saving Z Zero no longer advances the saved Work Zero reference when home session or XY differ.
+- Bounds Check/Aircut now show accessible readiness feedback and serialize repeated attempts. The mock server defaults `zeroRevision` to zero and stamps it after successful Work Zero/Z Zero operations.
+- Focused UI tests: 105/105 passed across Work Zero validation, ownership, job workflow, machine controls, and Phase 2 end-to-end. Mock-server suite: 75/75 passed (requires local loopback access).
+- Hardware validation and SD deployment were not performed.

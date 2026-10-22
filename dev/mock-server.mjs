@@ -133,7 +133,7 @@ export async function createMockEnvironment(options = {}) {
     machine: null, work: { ...marlin.position }, positionValid: true, workZeroMachine: null,
     homedAxes: { x: false, y: false, z: false }, homingEpoch: 0, homingSessionId: '',
     bootSessionId: `mock-boot-${Date.now()}`, absoluteFromHome: false, manualWorkFrameValid: false,
-    workZeroValid: false, frameMode: 'untrusted', homeReference: null, revision: 0, trusted: false,
+    workZeroValid: false, frameMode: 'untrusted', homeReference: null, revision: 0, zeroRevision: 0, trusted: false,
   };
   const toolChangeSettings = { ...DEFAULT_TOOL_CHANGE_SETTINGS };
   const bootstrapEnv = { frame, marlin, toolChangeSettings };
@@ -344,6 +344,7 @@ export async function createMockServer(options = {}) {
         env.frame.workZeroValid = true;
         updateMockSafeZ(env);
         env.frame.revision += 1;
+        env.frame.zeroRevision = env.frame.revision;
         body = { ok: true, axes, before, after, frame: env.frame };
       } else if (action === 'machine.setZZero') {
         const toolChangeWindow = env.runner.status.state === 'PAUSED' && env.runner.status.toolChangePending && env.runner.status.toolChangeReady;
@@ -357,6 +358,7 @@ export async function createMockServer(options = {}) {
         syncMockFrame(env);
         if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
         updateMockSafeZ(env);
+        env.frame.zeroRevision = env.frame.revision;
         if (toolChangeWindow) {
           env.runner.markToolChangeZZero('manual');
         }
@@ -874,6 +876,7 @@ export async function createMockServer(options = {}) {
         env.frame.workZeroValid = true;
         updateMockSafeZ(env);
         env.frame.revision += 1;
+        env.frame.zeroRevision = env.frame.revision;
         return json(res, 200, { ok: true, axes, before, after, frame: env.frame });
       }
       if (req.method === 'POST' && pathname === '/api/work-zero/set-z') {
@@ -888,6 +891,7 @@ export async function createMockServer(options = {}) {
         syncMockFrame(env);
         if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = env.marlin.machinePosition.z;
         updateMockSafeZ(env);
+        env.frame.zeroRevision = env.frame.revision;
         env.runner.markToolChangeZZero('manual');
         return json(res, 200, { ok: true, before, after, frame: env.frame });
       }
@@ -920,6 +924,7 @@ export async function createMockServer(options = {}) {
         syncMockFrame(env);
         if (env.frame.workZeroMachine) env.frame.workZeroMachine.z = contactMachineZ - settings.touchPlateThickness;
         updateMockSafeZ(env);
+        env.frame.zeroRevision = env.frame.revision;
         env.runner.markToolChangeZZero('touchplate');
         return json(res, 200, { ok: true, method: 'touchplate', probeCommand, before, contact, after: result.response, frame: env.frame });
       }

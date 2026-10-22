@@ -1453,6 +1453,7 @@ describe('WS machine commands (Phase 3C)', () => {
 
     expect(env.frame.workZeroValid).toBe(true);
     expect(env.frame.workZeroMachine).toBeDefined();
+    expect(env.frame.zeroRevision).toBe(env.frame.revision);
     ws.close();
   });
 
@@ -1842,6 +1843,7 @@ describe('WS machine commands (Phase 3C)', () => {
     expect(typeof data.after).toBe('string');
     expect(data.frame).toBeDefined();
     expect(data.frame.workZeroValid).toBe(true);
+    expect(data.frame.zeroRevision).toBe(data.frame.revision);
   });
 });
 
