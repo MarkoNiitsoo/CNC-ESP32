@@ -3710,3 +3710,4 @@ The following legacy endpoints and assumptions are retained temporarily during P
 - Removed the duplicate persistent readiness Set Work Zero button. The guided readiness action now opens Prepare > Zero / Origin and focuses the canonical control (or its homing gate if disabled).
 - Kept X/Y per-axis zero actions under Advanced zero options. The canonical XYZ button shows an in-progress label, disables repeat activation, and reports transport errors beside the control.
 - Updated focused UI regression coverage. `npx vitest run test/ui/work-zero-ownership.test.mjs test/ui/zero-origin-ui.test.mjs`: 19/19 passed.
+- Updated the job-workflow regression that still expected the removed persistent duplicate; it now checks navigation to the canonical Prepare control.

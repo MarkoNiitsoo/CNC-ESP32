@@ -107,10 +107,9 @@ describe('Job JSON v3 workflow gates', () => {
     expect(current.startAuthorization.state).toBe('pending');
   });
 
-  it('keeps repeatable setup actions in one persistent readiness location', async () => {
+  it('keeps repeatable readiness tools persistent and routes Work Zero to its canonical control', async () => {
     const previewHtml = await readFile(new URL('../../www/preview.html', import.meta.url), 'utf8');
     for (const id of [
-      'readiness-set-work-zero',
       'readiness-set-z-zero',
       'readiness-run-bounds',
       'readiness-run-aircut',
@@ -119,7 +118,11 @@ describe('Job JSON v3 workflow gates', () => {
     ]) {
       expect(previewHtml).toContain(`id="${id}"`);
     }
-    expect(preview).toContain("'Set Work Zero Again'");
+    expect(previewHtml).not.toContain('id="readiness-set-work-zero"');
+    expect(previewHtml).toContain('id="set-work-zero"');
+    expect(preview).toContain("focusZero.textContent = 'Go to Work Zero control'");
+    expect(preview).toContain("showPreviewTab('preflight')");
+    expect(preview).toContain('setWorkZeroButton?.focus({ preventScroll: true })');
     expect(preview).toContain("'Run Bounding Box Again'");
     expect(preview).toContain("'Run Aircut Again'");
   });

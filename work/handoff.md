@@ -3473,4 +3473,5 @@ No firmware upload is required.
 - `www/preview.html` and `www/preview.js` now expose one primary XYZ Set Work Zero action in Zero / Origin. Readiness guidance navigates to and focuses it; it does not send a second command.
 - The canonical control displays “Setting Work Zero…” and disables itself while the operation runs. Success continues through the existing confirmed-frame capture flow; errors remain shown in the Zero / Origin result area. Advanced X/Y controls and separate Tool Z zero remain available.
 - Focused validation passed: 19/19 tests across `test/ui/work-zero-ownership.test.mjs` and `test/ui/zero-origin-ui.test.mjs`.
+- The `job-workflow.test.mjs` readiness assertion now reflects the canonical Zero / Origin control and navigation path. Prepare is the tab containing the Zero / Origin panel.
 - Hardware validation and SD deployment were not performed.
