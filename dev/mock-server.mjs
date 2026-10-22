@@ -1028,6 +1028,9 @@ export async function createMockServer(options = {}) {
         return json(res, 200, { ...env.jog, heartbeatAgeMs: age, uptimeMs: Date.now() - env.startedAt });
       }
       if (req.method === 'POST' && pathname === '/api/jog/start') {
+        if (['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'].includes(env.jog.state)) {
+          return json(res, 409, { ok: false, error: 'previous jog is active or stopping; wait for confirmed Idle' });
+        }
         if (env.runner.status.state === 'PAUSED_INTACT') {
           env.runner.interruptForManualMotion();
           return json(res, 409, { ok: false, error: 'direct Resume invalidated; wait for RECOVERY_REQUIRED before jogging' });

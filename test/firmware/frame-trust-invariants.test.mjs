@@ -65,8 +65,8 @@ describe('frame-trust invalidation anchors (F-1 audit evidence)', () => {
     expect(stopJogInternal).toContain('sendJogCommand("G90")');
     const processJogRunner = extractFunction(source, 'processJogRunner');
     expect(processJogRunner).not.toBeNull();
-    expect(processJogRunner).toContain('Marlin jog acknowledgement timed out');
-    expect(processJogRunner).toContain('Marlin graceful jog stop acknowledgement timed out');
+    expect(processJogRunner).toContain('jog acknowledgement delayed; stopping new moves without quickstop');
+    expect(processJogRunner).toContain('jogStatus.drain.phase == JogDrain::Phase::Complete');
   });
 
   it('invalidates the machine frame through the canonical policy on job-side quickstops', () => {
@@ -102,20 +102,22 @@ describe('frame-trust invariants (F-1, promoted after canonical invalidation)', 
     expect(countMatches(stopJogInternal, FULL_JOG_QUICKSTOP)).toBe(1);
   });
 
-  it('jog move-ack timeout escalation (M410) fully invalidates the machine frame', () => {
+  it('automatic jog draining never issues a quickstop or clears a confirmed frame', () => {
     const processJogRunner = extractFunction(source, 'processJogRunner');
-    const lines = processJogRunner.split('\n');
-    const escalationEnd = lines.findIndex((line) => line.includes('Marlin jog acknowledgement timed out'));
-    const escalation = lines.slice(Math.max(0, escalationEnd - 12), escalationEnd + 1).join('\n');
-    expect(escalation).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop)');
+    expect(processJogRunner).not.toContain('M410');
+    expect(processJogRunner).not.toContain('invalidateMachineFrame(');
+    expect(processJogRunner).toContain('stopJogInternal(false)');
+    expect(processJogRunner).toContain('failJogCompletion(');
+    const finish = extractFunction(source, 'finishGracefulJogStop');
+    expect(finish).not.toContain('invalidateMachineFrame(');
   });
 
-  it('graceful jog stop ack-timeout escalation (M410) fully invalidates the machine frame', () => {
-    const processJogRunner = extractFunction(source, 'processJogRunner');
-    const lines = processJogRunner.split('\n');
-    const escalationEnd = lines.findIndex((line) => line.includes('Marlin graceful jog stop acknowledgement timed out'));
-    const escalation = lines.slice(Math.max(0, escalationEnd - 12), escalationEnd + 1).join('\n');
-    expect(escalation).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop)');
+  it('unconfirmed jog completion blocks communication and clears trust without sending M410', () => {
+    const failure = extractFunction(source, 'failJogCompletion');
+    expect(failure).toContain('markControllerUnresponsive(');
+    expect(failure).toContain('invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogUnconfirmed)');
+    expect(failure).not.toMatch(/(?:sendJogCommand|writeControllerLine)\("M410"/);
+    expect(failure).toContain('setJogError(message)');
   });
 
   it('ordinary jog release keeps the frame trusted when position certainty survives', () => {

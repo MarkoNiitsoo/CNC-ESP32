@@ -123,9 +123,11 @@ describe('canonical admission single-policy guards (F-3)', () => {
     expect(countMatches(source, /admitMotionStream\(MotionStreamKind::/)).toBe(5);
   });
 
-  it('active jog blocks job/test/production but never the deliberate pause interruption', () => {
+  it('active or stopping jog blocks every new stream, including a second jog', () => {
     const canonical = extractFunction(source, 'admitMotionStream');
-    expect(canonical).toMatch(/jogIsActive\(\) && kind != MotionStreamKind::Jog/);
+    expect(canonical).toMatch(/if \(jogIsActive\(\)\)/);
+    expect(canonical).not.toContain('kind != MotionStreamKind::Jog');
+    expect(canonical).toContain('wait for confirmed Idle');
     expect(canonical).toContain('JobRunnerState::PausedIntact');
     expect(canonical).toContain('jobStatus.directResumeValid');
   });

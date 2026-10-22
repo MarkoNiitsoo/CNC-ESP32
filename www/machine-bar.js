@@ -1387,17 +1387,18 @@
   }
 
   async function startJog(safeJog) {
-    if (jogStartPending || jogTimer || STATE.jog?.state === 'JOGGING') return;
-    await invalidatePausedResumeBeforeManualMotion();
+    if (jogStartPending || jogTimer || jogIsUiActive()) return;
     const sessionId = ++jogSessionId;
-    await refreshProjectSafeZ();
-    const settings = jogSettings(safeJog);
     jogStartPending = true;
     try {
+      await invalidatePausedResumeBeforeManualMotion();
+      await refreshProjectSafeZ();
+      if (sessionId !== jogSessionId) return;
+      const settings = jogSettings(safeJog);
       const baseline = socketSliceToken('jog');
       await apiPost('/api/jog/start', settings);
       if (sessionId !== jogSessionId) {
-        apiPost('/api/jog/stop').catch(() => {});
+        apiPost('/api/jog/stop', { emergency: false }).catch(() => {});
         return;
       }
       await waitForSocketSlice(
@@ -1409,7 +1410,7 @@
       jogTimer = setInterval(() => {
         sendJogUpdate().catch((err) => {
           setMessage(`Jog stopped: ${err.message}`);
-          stopJog(false, true).catch(() => {});
+          stopJog(false, false).catch(() => {});
         });
       }, 150);
       await sendJogUpdate();
@@ -1430,11 +1431,12 @@
     try {
       const baseline = socketSliceToken('jog');
       await apiPost('/api/jog/stop', { emergency });
-      await waitForSocketSlice(
+      const stoppedJog = await waitForSocketSlice(
         'jog',
         (jog) => !['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'].includes(String(jog?.state || '').toUpperCase()),
-        { afterSequence: baseline, description: 'Jog stop' },
+        { afterSequence: baseline, description: 'Jog stop', timeoutMs: 35000 },
       );
+      if (stoppedJog?.state === 'ERROR') throw new Error(stoppedJog.lastError || 'Jog completion could not be confirmed.');
     } finally {
       render();
     }
@@ -1537,7 +1539,7 @@
         setMessage(`Jog unavailable: ${err.message}`);
         centerPointerId = null;
         jogPointerId = null;
-        stopJog(false, true).catch(() => {});
+        stopJog(false, false).catch(() => {});
       });
     });
     pad?.addEventListener('pointermove', (event) => {
@@ -1551,7 +1553,7 @@
       centerPointerId = null;
       jogPointerId = null;
       resetJoystickVisual();
-      stopJog(false, event.type !== 'pointerup').catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+      stopJog(false, false).catch((err) => setMessage(`Jog stop failed: ${err.message}`));
     };
     window.addEventListener('pointerup', end, true);
     window.addEventListener('pointercancel', end, true);
@@ -1571,7 +1573,7 @@
           pointerId = null;
           jogPointerId = null;
           setMessage(`Directional jog unavailable: ${err.message}`);
-          stopJog(false, true).catch(() => {});
+          stopJog(false, false).catch(() => {});
         });
       });
       item.addEventListener('pointermove', (event) => {
@@ -1585,7 +1587,7 @@
         pointerId = null;
         jogPointerId = null;
         resetJoystickVisual();
-        stopJog(false, event.type !== 'pointerup').catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+        stopJog(false, false).catch((err) => setMessage(`Jog stop failed: ${err.message}`));
       };
       item.addEventListener('pointerup', stopDirection);
       item.addEventListener('pointercancel', stopDirection);
@@ -1606,7 +1608,7 @@
         zPointerId = null;
         jogPointerId = null;
         setMessage(`Z jog unavailable: ${err.message}`);
-        stopJog(false, true).catch(() => {});
+        stopJog(false, false).catch(() => {});
       });
     });
     zSlider?.addEventListener('pointermove', (event) => {
@@ -1620,7 +1622,7 @@
       zPointerId = null;
       jogPointerId = null;
       resetJoystickVisual();
-      stopJog(false, event.type !== 'pointerup').catch((err) => setMessage(`Jog stop failed: ${err.message}`));
+      stopJog(false, false).catch((err) => setMessage(`Jog stop failed: ${err.message}`));
     };
     zSlider?.addEventListener('pointerup', stopZSlider);
     zSlider?.addEventListener('pointercancel', stopZSlider);
@@ -2472,10 +2474,10 @@
       noteSocketSlice('machine', data);
       renderPositionReadouts();
     });
-    window.addEventListener('blur', () => stopJog(false, true).catch(() => {}));
+    window.addEventListener('blur', () => stopJog(false, false).catch(() => {}));
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
-        stopJog(false, true).catch(() => {});
+        stopJog(false, false).catch(() => {});
         revokeLocalOperatorControl('Page is hidden; controller authorization will be re-established on return.');
         renderOperatorLock();
         return;

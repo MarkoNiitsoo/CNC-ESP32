@@ -21,6 +21,7 @@
 #include <freertos/task.h>
 #include "controller_comm.h"
 #include "marlin_response.h"
+#include "jog_drain.h"
 #include "ws_command_protocol.h"
 
 extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
@@ -111,8 +112,8 @@ constexpr uint32_t kJogMaxHorizonMs = 80;
 // (a retained vector alone never re-licenses motion), so a vanished client
 // cannot cause runaway jogging and a network hiccup cannot trigger M410.
 constexpr uint32_t kJogMotionGrantMs = 400;
-// A jog session silent this long is torn down without M410 - motion paused
-// long before via the grant; the spindle is stopped and G90 restored.
+// A silent jog session enters the confirmed drain without M410. Jog stays
+// absolute throughout; M5 is queued before the completion barrier.
 constexpr uint32_t kJogSessionResetMs = 10000;
 constexpr uint8_t kJogPlannerLookahead = 6;
 constexpr float kJogVectorRampPerTick = 0.125f;
@@ -262,6 +263,9 @@ struct JogStatus {
   float commandedWorkY = 0.0f;
   float commandedWorkZ = 0.0f;
   uint8_t pendingMoveAcks = 0;
+  JogDrain drain;
+  uint32_t lastResponseAtMs = 0;
+  String lastResponseLine;
   String responseLine;
   String lastCommand;
   String lastError;
@@ -489,11 +493,12 @@ enum class FrameInvalidationScope : uint8_t {
 
 enum class FrameInvalidationReason : uint8_t {
   JobQuickstop,             // job/safety stop quickstop (M410)
-  JogQuickstop,             // jog emergency stop or move-ack timeout quickstop (M410)
+  JogQuickstop,             // explicitly requested jog emergency stop (M410)
   PausedManualInterruption, // manual motion during a pause invalidated direct resume
   MachineOperationFailure,  // machine-operation baseline step failed or timed out
   ControllerReset,          // Marlin restart detected during a recovery probe
   BootInterruptedJob,       // active-job marker found at boot
+  JogUnconfirmed,           // jog completion/position could not be verified
 };
 
 void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReason reason);
@@ -2351,8 +2356,8 @@ MotionAdmissionResult admitMotionStream(MotionStreamKind kind) {
     }
     return {false, 409, "MACHINE_OPERATION_ACTIVE", "a machine operation is in progress"};
   }
-  if (jogIsActive() && kind != MotionStreamKind::Jog) {
-    return {false, 409, "JOG_ACTIVE", "jog motion is active; release it before starting"};
+  if (jogIsActive()) {
+    return {false, 409, "JOG_ACTIVE", "previous jog is active or stopping; wait for confirmed Idle"};
   }
   if (jobIsActive()) {
     if (kind == MotionStreamKind::Jog) {
@@ -4824,7 +4829,7 @@ void invalidateMachineFrame(FrameInvalidationScope scope, FrameInvalidationReaso
   touchPositionStatus();
   static const char *const kFrameInvalidationReasonLabels[] = {
       "job-quickstop", "jog-quickstop", "paused-manual-interruption",
-      "machine-operation-failure", "controller-reset", "boot-interrupted-job",
+      "machine-operation-failure", "controller-reset", "boot-interrupted-job", "jog-unconfirmed",
   };
   logJobEvent(String("machine frame invalidated: scope=") +
               (scope == FrameInvalidationScope::Full ? "full" : "baseline") +
@@ -5408,12 +5413,13 @@ void finishGracefulJogStop() {
   jogStatus.queuedMotionHorizonMs = 0;
   jogStatus.lastHorizonUpdateMs = 0;
   jogStatus.state = JogState::Idle;
+  logJobEvent("jog stop confirmed: M400 complete; fresh M114 position received");
   offerJogZRestore();
   touchJogStatus();
 }
 
 void stopJogInternal(bool emergencyStop) {
-  if (!emergencyStop && !jogIsActive() && jogStatus.state != JogState::Error) {
+  if (!emergencyStop && (!jogIsActive() || jogStatus.state == JogState::Stopping)) {
     return;
   }
 
@@ -5443,7 +5449,11 @@ void stopJogInternal(bool emergencyStop) {
   }
 
   // Normal pointer release: stop adding absolute targets and let the short
-  // planner horizon drain naturally without inserting a hard stop.
+  // planner horizon drain naturally. Confirm M400/M114 before releasing UART.
+  jogStatus.drain.begin(millis());
+  logJobEvent("jog draining: pending=" + String(jogStatus.pendingMoveAcks) +
+              " lastTx=" + jogStatus.lastCommand +
+              " txAgeMs=" + String(millis() - jogStatus.lastMoveSentAtMs));
   touchJogStatus();
 }
 
@@ -5457,6 +5467,23 @@ void setJogError(const String &message) {
   jogStatus.speed = 0;
   logJobEvent("jog error: " + message);
   touchJogStatus();
+}
+
+void failJogCompletion(const String &message) {
+  // No M410 on an automatic timeout: stop feeding moves and leave the finite
+  // queue to decelerate normally. Do not report Idle/trusted position without proof.
+  logJobEvent("jog completion unconfirmed: phase=" + String(static_cast<int>(jogStatus.drain.phase)) +
+              " pending=" + String(jogStatus.pendingMoveAcks) +
+              " tx=" + jogStatus.lastCommand +
+              " rxAgeMs=" + String(millis() - jogStatus.lastResponseAtMs) +
+              " rx=" + jogStatus.lastResponseLine);
+  String error;
+  writeControllerLine("M5", ControllerCommandClass::SafetyStop, true, error);
+  markControllerUnresponsive(jogStatus.lastCommand, message);
+  invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogUnconfirmed);
+  jogStatus.zRestoreAvailable = false;
+  jogStatus.drain.phase = JogDrain::Phase::Failed;
+  setJogError(message);
 }
 
 bool prepareSafeJogLift() {
@@ -5509,17 +5536,21 @@ void processJogResponses() {
       jogStatus.responseLine = "";
       line.trim();
       if (line.length() == 0) continue;
+      jogStatus.lastResponseAtMs = millis();
+      jogStatus.lastResponseLine = line;
       updatePositionFromMarlinResponse(line);
+      float x, y, z;
+      if (parseAxisFromM114(line, 'X', x) && parseAxisFromM114(line, 'Y', y) &&
+          parseAxisFromM114(line, 'Z', z) && isfinite(x) && isfinite(y) && isfinite(z)) {
+        jogStatus.drain.notePosition();
+      }
       String upper = line;
       upper.toUpperCase();
       if (upper == "OK" || upper.startsWith("OK ")) {
-        if (jogStatus.pendingMoveAcks > 0) --jogStatus.pendingMoveAcks;
+        jogStatus.drain.acknowledge(jogStatus.pendingMoveAcks);
       } else if (upper.startsWith("ERROR:") || upper.startsWith("ALARM:") || upper == "!!") {
         addMarlinLog("rx", true, line, "error");
-        setJogError("Marlin rejected jog movement: " + line);
-        sendJogCommand("G90");
-        jogStatus.commandedPositionCaptured = false;
-        jogStatus.pendingMoveAcks = 0;
+        failJogCompletion("Marlin rejected jog movement: " + line);
         return;
       }
     } else if (c != '\r' && jogStatus.responseLine.length() < 256) {
@@ -5533,34 +5564,35 @@ void processJogRunner() {
     return;
   }
 
-  const uint32_t now = millis();
   processJogResponses();
+  const uint32_t now = millis();
   updateJogMotionHorizon(now);
   if (jogStatus.state == JogState::Stopping) {
-    if (jogStatus.pendingMoveAcks > 0 && now - jogStatus.lastMoveSentAtMs > 1000) {
-      sendJogCommand("M410");
-      sendJogCommand("M5");
-      sendJogCommand("G90");
-      invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop);
-      jogStatus.commandedPositionCaptured = false;
-      jogStatus.pendingMoveAcks = 0;
-      setJogError("Marlin graceful jog stop acknowledgement timed out");
+    if (jogStatus.drain.timedOut(now) || jogStatus.drain.phase == JogDrain::Phase::Failed) {
+      failJogCompletion("Jog stop could not be confirmed. Controller recovery and Home All required.");
       return;
     }
-    if (jogStatus.pendingMoveAcks == 0 && jogStatus.queuedMotionHorizonMs == 0) {
+    if (jogStatus.drain.phase == JogDrain::Phase::Complete) {
       finishGracefulJogStop();
+      return;
+    }
+    const char *command = jogStatus.drain.nextCommand(jogStatus.pendingMoveAcks);
+    if (command != nullptr) {
+      String error;
+      if (!writeControllerLine(command, ControllerCommandClass::ManagedJogStream, true, error)) {
+        failJogCompletion(error);
+        return;
+      }
+      jogStatus.lastCommand = command;
+      jogStatus.drain.commandSent(now);
+      logJobEvent("jog drain tx=" + String(command));
     }
     return;
   }
   if (jogStatus.state != JogState::Jogging) return;
   if (jogStatus.pendingMoveAcks > 0 && now - jogStatus.lastMoveSentAtMs > 1000) {
-    sendJogCommand("M410");
-    sendJogCommand("M5");
-    sendJogCommand("G90");
-    invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::JogQuickstop);
-    jogStatus.commandedPositionCaptured = false;
-    jogStatus.pendingMoveAcks = 0;
-    setJogError("Marlin jog acknowledgement timed out");
+    logJobEvent("jog acknowledgement delayed; stopping new moves without quickstop");
+    stopJogInternal(false);
     return;
   }
   // Motion grant: stream new moves only while updates are fresh. An expired
@@ -5580,26 +5612,23 @@ void processJogRunner() {
   }
 
   if (jogStatus.lastUpdateMs == 0 || now - jogStatus.lastUpdateMs > kJogSessionResetMs) {
-    // Vanished client: motion paused long ago via the grant; tear the session
-    // down gently - spindle off, absolute mode restored, no M410 needed.
+    // Vanished client: stop feeding and confirm completion through the same drain.
     String resetDetail = "jog session reset: no updates for ";
     resetDetail += jogStatus.lastUpdateMs == 0
         ? String("never")
         : String(now - jogStatus.lastUpdateMs);
-    resetDetail += " ms; spindle stopped, absolute mode restored";
-    sendJogCommand("M5");
-    sendJogCommand("G90");
-    jogStatus.commandedPositionCaptured = false;
-    jogStatus.pendingMoveAcks = 0;
-    jogStatus.responseLine = "";
-    jogStatus.queuedMotionHorizonMs = 0;
-    jogStatus.lastHorizonUpdateMs = 0;
+    resetDetail += " ms; confirming motion completion";
+    String error;
+    if (!writeControllerLine("M5", ControllerCommandClass::ManagedJogStream, true, error)) {
+      failJogCompletion(error);
+      return;
+    }
+    ++jogStatus.pendingMoveAcks; // M5 reply belongs to the drain, not a new reader.
     jogStatus.zRestoreAvailable = false;
     jogStatus.motionGrantExpired = false;
-    jogStatus.state = JogState::Idle;
     jogStatus.lastError = resetDetail;
     logJobEvent(resetDetail);
-    touchJogStatus();
+    stopJogInternal(false);
     return;
   }
 
@@ -5673,9 +5702,7 @@ void processJogRunner() {
   cmd += String(feed, 0);
   String writeErr;
   if (!writeControllerLine(cmd, ControllerCommandClass::ManagedJogStream, true, writeErr)) {
-    setJogError(writeErr);
-    jogStatus.state = JogState::Idle;
-    touchJogStatus();
+    failJogCompletion(writeErr);
     return;
   }
   jogStatus.lastCommand = cmd;

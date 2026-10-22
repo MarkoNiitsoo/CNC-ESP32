@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-10-22 - Graceful jog completion and validated local update package
+
+- Replaced automatic one-second jog quickstop escalation with a cooperative drain: pending move
+  replies, M400, then fresh XYZ/M114 acknowledgement before Idle. Confirmed stops preserve Home.
+- Browser release/cancel/blur/hidden/error cleanup now requests normal stop. Fixed pending-start
+  cancellation and rejected replacement starts while a jog is active/stopping.
+- Unconfirmed completion has bounded deadlines and diagnostics, marks communication unresponsive
+  and frame untrusted without M410. Explicit operator Stop remains unchanged.
+- Luna consolidated Work Zero controls (`c8abe8e`, regression follow-up `79735e0`), ran full tests,
+  and built/copied the local package. Primary agent reviewed results and source/package hashes.
+- Validation: 905/905 Vitest tests (76 files), 30/30 native C++ cases, ESP32-CAM build SUCCESS.
+  Existing `admitJobStart` narrowing warning remains. No machine acceptance or SD deployment.
+- Verified local package: `.pio-build/sd-release/2026-10-22-jog-drain/` (firmware + 46 UI files).
+  Remaining hardware test and original missing-ACK uncertainty: `docs/jog-drain-fix-2026-10-22.md`.
+
 ## 2026-10-22 - Diagnose SD field run and publish Work Zero validity
 
 - Verified the October 20 image installed successfully and all 46 SD UI assets match.

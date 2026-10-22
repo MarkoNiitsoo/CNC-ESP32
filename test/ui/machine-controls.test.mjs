@@ -160,11 +160,12 @@ describe('compact machine drawer', () => {
     expect(machineBar).toContain("window.addEventListener('pointerup', end, true)");
     expect(machineBar).toContain("window.addEventListener('pointercancel', end, true)");
     expect(machineBar).toContain("pad?.addEventListener('lostpointercapture', end)");
-    expect(machineBar).toContain("window.addEventListener('blur', () => stopJog(false, true)");
-    expect(machineBar).toMatch(/document\.hidden[\s\S]*stopJog\(false, true\)/);
+    expect(machineBar).toContain("window.addEventListener('blur', () => stopJog(false, false)");
+    expect(machineBar).toMatch(/document\.hidden[\s\S]*stopJog\(false, false\)/);
     expect(machineBar).toMatch(/async function stopJog[\s\S]*resetJoystickVisual\(\)[\s\S]*if \(!shouldStop\) return/);
     expect(machineBar).toContain("apiPost('/api/jog/stop', { emergency })");
-    expect(machineBar).toContain("stopJog(false, event.type !== 'pointerup')");
+    expect(machineBar).not.toContain("stopJog(false, true)");
+    expect(machineBar).not.toContain("stopJog(false, event.type !== 'pointerup')");
     expect(machineBar).toMatch(/async function stopJog[\s\S]*waitForSocketSlice\([\s\S]*'jog'[\s\S]*'Jog stop'/);
     expect(machineBar).not.toMatch(/apiPost\('\/api\/jog\/stop'[\s\S]{0,100}STATE\.jog\s*=/);
     expect(styles).toMatch(/\.machine-jog-dock\s*\{[\s\S]*?z-index:\s*120;[\s\S]*?pointer-events:\s*none;/);
@@ -351,19 +352,15 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(stop).toContain('jogStatus.commandedPositionCaptured = false');
     // Motion grant: fresh updates license streamed motion; a stalled link
     // pauses jogging (the <=80 ms horizon drains) instead of firing M410, and
-    // a vanished client is torn down gently after 10 s - spindle off, G90,
-    // no quickstop - so a network hiccup can no longer invalidate homing.
+    // a vanished client enters a confirmed drain after 10 s, without quickstop.
     expect(runner).toContain('kJogMotionGrantMs');
     expect(runner).toContain('jog motion paused: no updates for ');
     expect(runner).toContain('kJogSessionResetMs');
     expect(runner).toContain('jog session reset: no updates for ');
-    expect(runner).toContain('spindle stopped, absolute mode restored');
-    expect(runner).toContain('Marlin jog acknowledgement timed out');
-    expect(runner).toContain('sendJogCommand("G90")');
-    // Two M410 escalations remain: the graceful-stop acknowledgement timeout
-    // and the Marlin-acknowledgement timeout. The grant pause and the session
-    // reset must never quickstop.
-    expect(runner.split('sendJogCommand("M410")').length - 1).toBe(2);
+    expect(runner).toContain('confirming motion completion');
+    expect(runner).toContain('jog acknowledgement delayed; stopping new moves without quickstop');
+    expect(runner).toContain('jogStatus.drain.nextCommand(jogStatus.pendingMoveAcks)');
+    expect(runner).not.toContain('M410');
     const resetBlock = firmware.slice(firmware.indexOf('jog session reset: no updates for '), firmware.indexOf('bool restoreJogZNow'));
     expect(resetBlock).not.toContain('sendJogCommand("M410")');
   });

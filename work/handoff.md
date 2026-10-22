@@ -1,5 +1,28 @@
 # Handoff
 
+## 2026-10-22 - Jog drain fix complete locally; hardware acceptance pending
+
+- Normal release and browser cancellation/focus loss no longer request M410. A one-second delayed
+  jog reply also stops new targets without quickstop. STOPPING owns UART until all pending replies,
+  M400, then fresh XYZ and M114 acknowledgement confirm completion; only then is Idle published.
+- Each drain phase times out after 10 s. Failure attempts M5, reports unresponsive/Error and full
+  `jog-unconfirmed` frame invalidation; no automatic M410. Explicit Stop still quickstops and
+  invalidates Home. Original missing UART acknowledgement is not yet reproduced or explained.
+- New jogs cannot replace active/stopping state, and the browser start guard/cancellation check
+  precedes async setup. Duplicate normal stops do not reset the confirmation deadline.
+- Diagnostics log phase, pending replies, last command and bounded last RX/age. See
+  `docs/jog-drain-fix-2026-10-22.md` for hardware steps and `docs/protocol.md` for current semantics.
+- Luna UI commits `c8abe8e` + `79735e0` leave one Work Zero primary action with readiness navigation.
+- Full validation: 905/905 Vitest (76 files), 30/30 native C++ tests, ESP32-CAM build SUCCESS.
+  Existing narrowing warning in `admitJobStart` remains. Final source hashes match agent build.
+- Local package `.pio-build/sd-release/2026-10-22-jog-drain/` contains firmware + all 46 canonical
+  UI assets; manifest verifies source/destination bytes and SHA-256 for all 47 payload files.
+  Firmware: 1,540,640 bytes; SHA-256
+  `FE1071AA6D72715C33F1DF0A28B0B2BF79DE245905E75FB96FD4DB5D8AB879DF`.
+- NOT copied to SD/ESP32. Next deployment must install matching firmware AND UI, then Home,
+  short jog/release on XY/Z, cancellation/focus-loss, and single Work Zero capture test.
+  Existing Stop-latch, zero capture timing and EOF completion findings remain outside this fix.
+
 ## 2026-10-22 - Field diagnosis; Work Zero serializer fixed locally
 
 - Supersedes the October 20 pending-install status: SD logs and image hash confirm installation.

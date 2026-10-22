@@ -86,6 +86,7 @@ function createMachineBarEnv(options = {}) {
   const telemetrySubscribers = new Map();
   const dispatched = [];
   const fetchCalls = [];
+  const fetchRequests = [];
   let created = 0;
 
   const ensure = (id, className = '') => {
@@ -176,6 +177,7 @@ function createMachineBarEnv(options = {}) {
   });
   const fetchImpl = async (...args) => {
     fetchCalls.push(String(args[0]));
+    fetchRequests.push({ url: String(args[0]), options: args[1] });
     return (options.fetch || defaultFetch)(...args);
   };
   fetchImpl.bind = () => fetchImpl;
@@ -231,6 +233,7 @@ function createMachineBarEnv(options = {}) {
     telemetrySubscribers,
     dispatched,
     fetchCalls,
+    fetchRequests,
     emitTelemetry(topic, data) {
       telemetrySubscribers.get(topic)?.(data);
     },
@@ -245,6 +248,58 @@ function createMachineBarEnv(options = {}) {
     },
   };
 }
+
+describe('Jog release and cancellation', () => {
+  it.each(['pointerup', 'pointercancel', 'lostpointercapture', 'blur', 'hidden'])(
+    '%s requests graceful stop and preserves authoritative homing', async (eventType) => {
+      vi.useFakeTimers();
+      try {
+        const env = createMachineBarEnv();
+        env.emitTelemetry('controller', { state: 'connected' });
+        env.emitTelemetry('jog', { state: 'JOGGING' });
+        env.emitTelemetry('machine', {
+          frame: { trusted: true, positionValid: true, homedAxes: { x: true, y: true, z: true }, revision: 1 },
+          position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 0, y: 0, z: 0 } },
+        });
+        if (eventType === 'blur') env.window.dispatchEvent({ type: 'blur' });
+        else if (eventType === 'hidden') env.setHidden(true);
+        else {
+          const direction = env.elements.get('jog-direction');
+          direction.dispatch('pointerdown', { pointerId: 7, clientX: 150, clientY: 24, preventDefault() {} });
+          direction.dispatch(eventType, { type: eventType, pointerId: 7 });
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        const requests = env.fetchRequests.filter(({ url }) => url === '/api/jog/stop');
+        expect(requests).toHaveLength(1);
+        expect(JSON.parse(requests[0].options.body)).toEqual({ emergency: false });
+        env.emitTelemetry('jog', { state: 'STOPPING' });
+        expect(env.api.liveState().jog.state).toBe('STOPPING');
+        env.emitTelemetry('jog', { state: 'IDLE' });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(env.api.liveState().frame.trusted).toBe(true);
+        expect(env.fetchCalls).not.toContain('/api/jog/start');
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    });
+
+  it('reports an unconfirmed firmware stop as an error rather than success', async () => {
+    vi.useFakeTimers();
+    try {
+      const env = createMachineBarEnv();
+      env.emitTelemetry('jog', { state: 'JOGGING' });
+      const stopping = env.api.stopJog();
+      const assertion = expect(stopping).rejects.toThrow('Jog stop could not be confirmed');
+      await vi.advanceTimersByTimeAsync(0);
+      env.emitTelemetry('jog', { state: 'ERROR', lastError: 'Jog stop could not be confirmed' });
+      await assertion;
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('Phase 2 end-to-end UI correctness', () => {
   it('fails closed without CncTelemetry', () => {

@@ -170,9 +170,19 @@ implies cutter shutdown; the operator UI must say that the cutter remains runnin
   - Motion grant: each accepted jog update licenses 400 ms of streamed motion; when updates stall
     the horizon drains and the machine stands still (a retained joystick vector never re-licenses
     motion), so a network hiccup pauses jogging instead of triggering a quickstop.
-  - A jog session silent for 10 s is torn down without M410 (spindle off, G90, Idle). M410 remains
-    only as escalation when Marlin stops acknowledging, and any quickstop invalidates the trusted
-    machine frame until the next Home All.
+  - Normal jog release, pointer cancellation, focus loss and hidden-page cleanup all request a
+    graceful stop. Jog stays in absolute mode and stops adding targets immediately. The cooperative
+    drain retains UART ownership while it consumes outstanding move replies, waits for M400, then
+    confirms a fresh XYZ report and M114 acknowledgement before publishing Idle. Homing survives
+    a confirmed drain; the nominal motion horizon alone is not proof of physical completion.
+  - A move acknowledgement delayed for 1 s stops new targets and enters the same drain, without
+    M410. A client silent for 10 s queues M5 and enters that drain. Each drain phase has a 10 s
+    confirmation deadline; a missing reply/position or rejected command records bounded diagnostics,
+    attempts M5, marks communication unresponsive and invalidates frame trust as `jog-unconfirmed`.
+    It never substitutes an automatic quickstop for a missing acknowledgement.
+  - New jog starts are rejected throughout Jogging/Stopping, so they cannot reset pending replies.
+    Explicit operator Stop and the legacy emergency jog endpoint retain M410 and full frame
+    invalidation. They remain software controls, not a physical emergency stop.
   - Every active project derives one work-coordinate Safe Z from stock geometry:
     `stockTopWorkZ + safeZClearanceMm`. Top-referenced stock has a top at Z0, bottom-referenced
     stock has a top at its workpiece height, and custom reference stores the explicit stock-top Z.

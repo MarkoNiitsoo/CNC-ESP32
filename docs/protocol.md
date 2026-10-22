@@ -833,7 +833,7 @@ controls such as realtime Pause/Resume, Stop, M220, and safety/jog commands. `le
 ## Safe Jog API
 
 The browser does not stream G-code jog moves. It sends joystick vectors and heartbeat updates; the
-ESP32 emits short relative movement ticks and stops automatically when updates stop.
+ESP32 emits short absolute G1 targets. An expired motion grant stops new targets.
 
 ### `POST /api/jog/start`
 
@@ -846,8 +846,6 @@ Request body:
   "safeWorkZ": 29,
   "jobPath": "/jobs/example.job.json",
   "projectSafeZ": 29,
-  "restoreZAfterJog": true,
-  "restoreDelayMs": 5000,
   "xyFeedMax": 3000,
   "zFeedMax": 400
 }
@@ -861,10 +859,9 @@ When a current project exists, `safeWorkZ` must equal its effective Project Safe
 outside physical Z limits. Without a current project, the existing machine-level manual-jog
 fallback remains available and is not persisted into Job JSON.
 Firmware reads M114 again after the lift and stores the resulting work-coordinate Z for restore
-validation. If
-`restoreZAfterJog` is true, firmware schedules an automatic return to the captured Z after
-`restoreDelayMs` when jogging stops, unless Z was jogged or the current Z no longer matches the
-safe target. Jog start is rejected while a job is `RUNNING`.
+validation. Z restore is an explicit `/api/jog/restore-z` action; no timed return is scheduled.
+Jog start is rejected while another motion owner, including an existing jog or its stopping
+sequence, is active. A second start cannot reset outstanding acknowledgements or the stop deadline.
 
 ### `POST /api/jog/update`
 
@@ -879,20 +876,36 @@ Request body:
 }
 ```
 
-Values are clamped to safe ranges. Firmware converts them into small relative `G91`/`G0`/`G90`
-movement ticks about every 150 ms. For X/Y, the joystick distance from center controls the movement
-step length and the firmware scales feedrate to that distance so partial joystick movement lasts
-firmware independently emits 50 ms movement ticks, ramps toward the newest vector, and keeps no
-more than three acknowledged/planned ticks of lookahead. Each tick is one `G0` command in a jog
-session that enters `G91` once and restores `G90` on stop. This avoids making browser/HTTP timing
-part of the movement cadence. `xyFeedMax` from jog
-start controls the maximum feedrate. The SD UI maps the XY slider from 10 to 100 mm/s into
-`xyFeedMax` 600 to 6000 mm/min. If no update arrives for 500 ms, firmware stops sending jog
-movement, sends `M400`, and may schedule Z restore.
+Values are clamped to safe ranges. The browser updates intent every 150 ms; firmware independently
+checks 25 ms ticks, ramps the vector, and sends absolute G1 targets representing nominal 40 ms
+segments. It limits outstanding acknowledgements to six and the estimated motion horizon to 80 ms.
+The estimate is a pacing aid, not proof that Marlin's planner has finished. `xyFeedMax` controls
+the maximum feedrate; the UI maps 10–100 mm/s into 600–6000 mm/min. Updates grant 400 ms of motion.
+An expired grant stops new targets; after 10 s without updates the session queues M5 and enters
+the confirmed drain described below.
 
 ### `POST /api/jog/stop`
 
-Stops jogging and sends `M410`, `M5`, and `G90`. This is not a physical emergency stop.
+The UI sends `{ "emergency": false }` for release, pointer cancellation, blur, visibility loss,
+and failed/cancelled starts. It stops sending intent immediately. Firmware publishes `STOPPING`
+and cooperatively consumes outstanding move acknowledgements, then sends M400 and waits for its
+acknowledgement, then sends M114 and requires fresh XYZ plus its acknowledgement. Only then does
+it publish `IDLE`; the existing Home reference is preserved. Duplicate normal stops are idempotent.
+
+A move acknowledgement older than 1 s stops further streaming and enters this drain, never M410.
+Each phase has a 10 s deadline. Missing confirmation or a controller error enters `ERROR`, attempts
+M5, marks communication unresponsive and clears frame trust (`jog-unconfirmed`). Recovery and
+Home All are required when the position cannot be verified. Diagnostics retain the phase, pending
+reply count, last command, and last received line/age. HTTP returns current state; the UI awaits
+authoritative telemetry for up to 35 s and reports a terminal ERROR rather than claiming success.
+
+Explicit `{ "emergency": true }` retains the M410/M5/G90 quickstop and invalidates homing.
+For legacy compatibility an omitted body or omitted `emergency` field still selects this emergency
+path in firmware. The global operator Stop remains separate. These are not physical emergency stops.
+
+Marlin documents [M400](https://marlinfw.org/docs/gcode/M400.html) as a motion-completion barrier;
+[M410](https://marlinfw.org/docs/gcode/M410.html) stops immediately without normal deceleration and
+can leave stepper position uncertain. Normal release therefore uses the former.
 
 ### `GET /api/jog/status`
 

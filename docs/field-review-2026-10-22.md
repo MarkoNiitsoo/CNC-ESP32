@@ -1,5 +1,8 @@
 # SD field review: Home, Work Zero and jog
 
+Follow-up implementation: `jog-drain-fix-2026-10-22.md` describes the subsequent jog and UI
+changes. The log observations below describe the original card contents, before those fixes.
+
 Reviewed on 2026-10-22. Read-only copies of `job.log`, `system.log`,
 `system.previous.log` and `update.log` are retained locally under
 `.pio-build/field-logs/2026-10-22-2ba84e75/`. These raw logs are not committed.

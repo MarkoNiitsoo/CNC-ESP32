@@ -265,6 +265,6 @@ describe('cooperative machine-operation engine (Phase 3C)', () => {
     expect(firmware).toContain('jog motion paused: no updates for ');
     expect(firmware).toContain('jog session reset: no updates for ');
     expect(firmware).toContain('"never"');
-    expect(firmware).toContain('spindle stopped, absolute mode restored');
+    expect(firmware).toContain('confirming motion completion');
   });
 });

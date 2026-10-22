@@ -691,6 +691,21 @@ describe('mock HTTP API', () => {
     expect(commands.indexOf('G53 G0 Z12.000 F400')).toBeLessThan(commands.indexOf('G92 X0 Y0 Z0'));
   });
 
+  it.each(['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'])('does not reset an existing %s jog with another start', async (state) => {
+    const { base, env } = await start();
+    env.jog.state = state;
+    env.jog.commandedWorkX = 123;
+    const txBefore = env.marlin.log.length;
+    const response = await fetch(`${base}/api/jog/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ safeJog: false }),
+    });
+    expect(response.status).toBe(409);
+    expect(env.jog.state).toBe(state);
+    expect(env.jog.commandedWorkX).toBe(123);
+    expect(env.marlin.log.length).toBe(txBefore);
+  });
+
   it('rejects an invalid Safe Jog Z and uses a valid machine-coordinate target after G92', async () => {
     const { base, env } = await start();
     env.marlin.machine.zMax = 70;
