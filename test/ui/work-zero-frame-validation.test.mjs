@@ -67,6 +67,9 @@ describe('physical verification feedback', () => {
     expect(preview).toContain('if (dryRunActionBusy) return;');
     expect(preview).toContain('reportReadinessAction(`Aircut blocked: ${blocker}`, true)');
     expect(preview).toContain('reportReadinessAction(`Aircut failed: ${err.message}`, true)');
+    expect(preview).toContain('reportReadinessAction(`Bounds Check failed: ${err.message}. ${stopMsg}`, true)');
+    expect(preview).toContain('reportReadinessAction(`Bounds Check running:');
+    expect(preview).toContain('reportReadinessAction(`Aircut running:');
   });
 
   it('replaces the preparing status when an operator cancels either confirmation', () => {

@@ -2,6 +2,7 @@
 
 ## 2026-10-22 - Cut start fix validated; SD deployment next
 
+- Final readiness feedback includes Bounds firmware-rejection details and running percentages for both verification actions. Full Vitest rerun passed 918/918 after this UI-only follow-up; firmware unchanged. Current E: has an older/different payload but the exact KAR source fingerprint matches the project. Deploy only after backing up that current state; the earlier card snapshot is not the deployment baseline.
 - Latest field boot confirmed Home/zero completion but all three Cut attempts stopped at line zero due to stale saved Work Zero XY; no Bounds/Aircut start requests reached firmware. See `docs/cut-start-review-2026-10-22.md`.
 - Matching source changes add settled pre-G92 counts capture, a successful-zero `zeroRevision` marker, WS/HTTP confirmation fixes, frame-based verification validation, stale-zero readiness gating, and visible Bounds/Aircut feedback. Preserve the firmware Start coordinate check.
 - Final validation: 918/918 Vitest, 33/33 native, ESP32-CAM build SUCCESS (existing narrowing warning in `admitJobStart`). Firmware 1,541,632 bytes, SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`; relevant source hashes stayed unchanged during final validation.

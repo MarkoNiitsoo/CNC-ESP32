@@ -5246,6 +5246,7 @@ async function runBoundingBoxTrace() {
   generateTraceCommands({ x: startX, y: startY, z: startZ });
 
   dryRunStatus = 'running';
+  reportReadinessAction('Bounds Check starting…');
   setDryRunRunning(true);
   dryRunLogEl.textContent = '';
   renderDryRunPanel();
@@ -5256,6 +5257,7 @@ async function runBoundingBoxTrace() {
   try {
     const finalStatus = await startTestMotionStream('bounds', traceCommands, safeZ, (status) => {
       appendDryRunLog(`Cut Bounds stream ${Number(status.acknowledgedLineCount || 0)}/${traceCommands.length} (${Number(status.progressPercent || 0).toFixed(1)}%)`);
+      reportReadinessAction(`Bounds Check running: ${Number(status.progressPercent || 0).toFixed(1)}%`);
     }, {
       startPosition: { x: startX, y: startY, z: startZ },
     });
@@ -5282,6 +5284,7 @@ async function runBoundingBoxTrace() {
     const stopMsg = 'Cut Bounds stopped before the starting position was restored. Automatic Z descent was not performed because the current X/Y position is not confirmed.';
     appendDryRunLog(`${stopMsg} (${err.message})`);
     setJobResult(stopMsg, true);
+    reportReadinessAction(`Bounds Check failed: ${err.message}. ${stopMsg}`, true);
     console.error('[Cut Bounds] Stopped/Failed:', err.message, '| Starting XYZ restored:', false);
   } finally {
     setDryRunRunning(false);
@@ -5329,6 +5332,7 @@ async function runAircutToolpath() {
   }
 
   dryRunStatus = 'aircut running';
+  reportReadinessAction('Aircut starting…');
   setDryRunRunning(true);
   dryRunLogEl.textContent = '';
   renderDryRunPanel();
@@ -5336,6 +5340,7 @@ async function runAircutToolpath() {
   try {
     const finalStatus = await startTestMotionStream('aircut', aircutCommands, projectSafeZValue(), (status) => {
       appendDryRunLog(`Aircut stream ${Number(status.acknowledgedLineCount || 0)}/${aircutCommands.length} (${Number(status.progressPercent || 0).toFixed(1)}%)`);
+      reportReadinessAction(`Aircut running: ${Number(status.progressPercent || 0).toFixed(1)}%`);
     });
     dryRunStatus = 'aircut complete';
     if (jobState) {

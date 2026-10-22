@@ -2,6 +2,7 @@
 
 ## 2026-10-22 - Cut start: settled zero capture and final confirmation
 
+- Final UI review also exposed Bounds stream-rejection details in readiness and added live percentage feedback for both Bounds/Aircut. Full Vitest rerun passed 918/918 (`vitest-full-feedback-final-2026-10-22.json`); firmware unchanged. SD baseline differs from the prior run but the exact KAR source fingerprint and removable FAT32 geometry identify the CNC card. A fresh complete local backup is required before replacing its payload.
 - Fresh SD logs and KAR sidecar identify three Start rejections before line one: saved Work Zero XY was stale; Bounds/Aircut never reached firmware because the browser required raw M114 text absent from WS captures.
 - Firmware captures Work/Z Zero from settled M114 counts before G92 and rejects missing evidence. `zeroRevision` marks successful zero finalization; browser confirmation ignores intermediate position revisions and reconciles HTTP frames with the correct shape, without redispatch.
 - Added native coordinate conversion cases and browser regressions for cached intermediate state, disconnect timing, and the observed empty-raw/stale-XY job. Final validation: 918/918 Vitest, 33/33 native, ESP32-CAM build SUCCESS. Existing `admitJobStart` narrowing warning remains. Firmware 1,541,632 bytes; SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`. Source fingerprints unchanged across final validation; SD deployment follows.
