@@ -1,5 +1,12 @@
 # Progress
 
+## 2026-10-22 - Cut start: settled zero capture and final confirmation
+
+- Fresh SD logs and KAR sidecar identify three Start rejections before line one: saved Work Zero XY was stale; Bounds/Aircut never reached firmware because the browser required raw M114 text absent from WS captures.
+- Firmware captures Work/Z Zero from settled M114 counts before G92 and rejects missing evidence. `zeroRevision` marks successful zero finalization; browser confirmation ignores intermediate position revisions and reconciles HTTP frames with the correct shape, without redispatch.
+- Added native coordinate conversion cases and browser regressions for cached intermediate state, disconnect timing, and the observed empty-raw/stale-XY job. Final validation: 918/918 Vitest, 33/33 native, ESP32-CAM build SUCCESS. Existing `admitJobStart` narrowing warning remains. Firmware 1,541,632 bytes; SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`. Source fingerprints unchanged across final validation; SD deployment follows.
+- Field evidence, scope, and acceptance steps: `docs/cut-start-review-2026-10-22.md`. Jog smoothness is deferred per user request. Preserve old SD job history and set a fresh Work Zero after Home.
+
 ## 2026-10-22 - Work Zero verification feedback follow-up
 
 - Reviewed the KAR field job against the current Home All frame; its stored `(0,0,38.28)` correctly fails against `(283.802,431.449,38.28)`. Behavior probes confirm empty-raw WS evidence is accepted only for a matching active homed reference, stale Work Zero is rejected, and existing manual raw-capture evidence remains usable.

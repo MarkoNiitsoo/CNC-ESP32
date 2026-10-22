@@ -22,6 +22,7 @@
 #include "controller_comm.h"
 #include "marlin_response.h"
 #include "jog_drain.h"
+#include "zero_capture.h"
 #include "ws_command_protocol.h"
 
 extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
@@ -477,6 +478,7 @@ struct MachineFrameState {
   String homingSessionId;
   uint32_t homingEpoch = 0;
   uint32_t revision = 0;
+  uint32_t zeroRevision = 0; // revision of the last successfully completed zero transaction
   uint32_t updatedAtMs = 0;
 };
 
@@ -5208,6 +5210,7 @@ String machineFrameJson() {
                 ",\"z\":" + String(marlinPosition.z, 3);
   json += ",\"positionValid\":" + String(marlinPosition.valid ? "true" : "false");
   json += ",\"workZeroValid\":" + String(machineFrame.workZeroValid ? "true" : "false");
+  json += ",\"zeroRevision\":" + String(machineFrame.zeroRevision);
   json += ",\"work\":{\"x\":" + String(marlinPosition.x, 3) +
           ",\"y\":" + String(marlinPosition.y, 3) +
           ",\"z\":" + String(marlinPosition.z, 3) + "}";
@@ -9966,7 +9969,7 @@ struct MachineOperation {
   // Per-step runtime state.
   String responseBuffer;
   uint32_t stepStartedAtMs = 0;
-  // Pre-state captured at admission (the frame may not change mid-operation).
+  // Frame mode captured at admission; zero targets come from the settled Before M114.
   bool homedFrame = false;
   bool toolChangeZZero = false;
   float targetMachineX = 0;
@@ -10230,9 +10233,6 @@ MachineOperationResult finalizeMachineOperation() {
 
   if (machineOp.kind == MachineOpKind::SetWorkZero) {
     if (machineOp.homedFrame) {
-      machineFrame.machineX = machineOp.targetMachineX;
-      machineFrame.machineY = machineOp.targetMachineY;
-      machineFrame.machineZ = machineOp.targetMachineZ;
       if (axes == "x" || axes == "xyz") machineFrame.workZeroMachineX = machineOp.targetMachineX;
       if (axes == "y" || axes == "xyz") machineFrame.workZeroMachineY = machineOp.targetMachineY;
       if (axes == "xyz") machineFrame.workZeroMachineZ = machineOp.targetMachineZ;
@@ -10244,13 +10244,13 @@ MachineOperationResult finalizeMachineOperation() {
     if (axes == "xyz") marlinPosition.z = 0;
     machineFrame.updatedAtMs = millis();
     ++machineFrame.revision;
+    machineFrame.zeroRevision = machineFrame.revision;
     touchPositionStatus();
     return {true, true, true, 200, "OK", "Work zero set successfully for axes: " + axes};
   }
 
   // SetZZero
   if (machineFrame.absoluteFromHome) {
-    machineFrame.machineZ = machineOp.targetMachineZ;
     machineFrame.workZeroMachineZ = machineOp.targetMachineZ;
   }
   marlinPosition.z = 0;
@@ -10266,6 +10266,7 @@ MachineOperationResult finalizeMachineOperation() {
     }
     logJobEvent("tool change Z zero completed manually");
   }
+  machineFrame.zeroRevision = machineFrame.revision;
   touchPositionStatus();
   return {true, true, true, 200, "OK", "Z zero set successfully"};
 }
@@ -10309,7 +10310,36 @@ bool processMachineOperation() {
     logJobEvent(machineOpStepLogPrefix() + " rx-terminal=\"" +
                 boundedMachineOpResponse(machineOp.responseBuffer) + "\"");
     switch (step.capture) {
-      case MachineOpCapture::Before: machineOp.before = machineOp.responseBuffer; break;
+      case MachineOpCapture::Before: {
+        machineOp.before = machineOp.responseBuffer;
+        float x = 0, y = 0, z = 0;
+        int32_t cx = 0, cy = 0, cz = 0;
+        // M400 has completed. Require a complete fresh position before issuing
+        // G92, including counts in the absolute frame (a joystick may have moved).
+        const int countOffset = machineOp.before.indexOf("Count X:");
+        const String workPosition = countOffset >= 0
+            ? machineOp.before.substring(0, countOffset) : machineOp.before;
+        const bool positionReady = parseAxisFromM114(workPosition, 'X', x) &&
+            parseAxisFromM114(workPosition, 'Y', y) &&
+            parseAxisFromM114(workPosition, 'Z', z) &&
+            isfinite(x) && isfinite(y) && isfinite(z);
+        const bool absoluteReady = !machineOp.homedFrame ||
+            (parseM114Counts(machineOp.before, cx, cy, cz) &&
+             zeroAxisFromCounts(cx, machineFrame.homeCountX, machineFrame.stepsX,
+                                machineProfile.fullXMin, machineOp.targetMachineX) &&
+             zeroAxisFromCounts(cy, machineFrame.homeCountY, machineFrame.stepsY,
+                                machineProfile.fullYMin, machineOp.targetMachineY) &&
+             zeroAxisFromCounts(cz, machineFrame.homeCountZ, machineFrame.stepsZ,
+                                machineProfile.fullZMax, machineOp.targetMachineZ));
+        if (!positionReady || !absoluteReady) {
+          completeMachineOperation(
+              {false, true, true, 502, "POSITION_CAPTURE_FAILED",
+               "Zero was not changed: fresh M114 position/counts are missing or invalid"},
+              MachineOpCompletion::ControllerError);
+          return false;
+        }
+        break;
+      }
       case MachineOpCapture::After: machineOp.after = machineOp.responseBuffer; break;
       case MachineOpCapture::Counts: machineOp.countsResponse = machineOp.responseBuffer; break;
       case MachineOpCapture::Steps: machineOp.stepsResponse = machineOp.responseBuffer; break;
@@ -10417,9 +10447,6 @@ MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &a
       return {false, false, true, 400, "INVALID_PAYLOAD", "axes must be x, y, or xyz"};
     }
     machineOp.homedFrame = homedFrame;
-    machineOp.targetMachineX = machineFrame.machineX;
-    machineOp.targetMachineY = machineFrame.machineY;
-    machineOp.targetMachineZ = machineFrame.machineZ;
     appendMachineOpStep("M400", 120000, "Marlin work-zero capture failed: ");
     appendMachineOpStep("M114", 3000, "Marlin work-zero capture failed: ", MachineOpCapture::Before);
     String zeroCommand = "G92";
@@ -10438,7 +10465,7 @@ MachineOperationResult admitMachineOperation(MachineOpKind kind, const String &a
       return {false, false, true, 409, "FRAME_STATE_CONFLICT",
               "an active homed or manually confirmed work frame is required before setting Z zero"};
     }
-    machineOp.targetMachineZ = machineFrame.machineZ;
+    machineOp.homedFrame = machineFrame.absoluteFromHome;
     appendMachineOpStep("M400", 120000, "Marlin Z-zero capture failed: ");
     appendMachineOpStep("M114", 3000, "Marlin Z-zero capture failed: ", MachineOpCapture::Before);
     appendMachineOpStep("G92 Z0", 3000, "Marlin Z-zero transaction failed: ");
@@ -10712,6 +10739,7 @@ void handleTouchPlateZZero() {
     }
     logJobEvent("tool change Z zero completed with touch plate");
   }
+  machineFrame.zeroRevision = machineFrame.revision;
   touchPositionStatus();
   String json = "{\"ok\":true,\"method\":\"touchplate\",\"probeCommand\":\"" +
                 jsonEscape(probeCommand) + "\",\"before\":\"" + jsonEscape(before) +

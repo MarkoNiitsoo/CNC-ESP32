@@ -133,6 +133,7 @@
       }
       if (!matched) return;
       clearTimeout(waiter.timer);
+      clearInterval(waiter.httpPoll);
       waiters.delete(waiter);
       waiter.resolve(data);
     });
@@ -146,13 +147,17 @@
     const attempt = () => fetch('/api/machine/frame', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((frame) => {
-        if (frame && frameRevision(frame) > -1 && predicate(frame)) {
-          return {
+        if (frame && frameRevision(frame) > -1) {
+          const machineSlice = {
             frame,
             position: { work: frame.work || null, machine: frame.machine || null },
             homedAxes: frame.homedAxes || { x: false, y: false, z: false },
             homingEpoch: frame.homingEpoch || 0,
           };
+          if (predicate(machineSlice)) {
+            applyMachineSlice(machineSlice);
+            return machineSlice;
+          }
         }
         return Promise.reject(new Error('retry'));
       });
@@ -190,6 +195,7 @@
         resolve,
         timer: setTimeout(() => {
           waiters.delete(waiter);
+          clearInterval(waiter.httpPoll);
           reject(new Error(`Command accepted, but live-state confirmation timed out while waiting for ${description}.`));
         }, timeoutMs),
       };
@@ -211,9 +217,10 @@
                 homingEpoch: frame.homingEpoch || 0,
               };
               applyMachineSlice(machineSlice);
-              if (frameRevision(frame) > afterSequence && predicate(frame)) {
+              if (predicate(machineSlice)) {
                 waiters.delete(waiter);
                 clearTimeout(waiter.timer);
+                clearInterval(waiter.httpPoll);
                 waiter.resolve(machineSlice);
               }
             }).catch(() => {});
@@ -1646,7 +1653,7 @@
         'machine',
         (slice) => {
           const frame = machineFrameFromSlice(slice);
-          return frame.workZeroValid === true && frameRevision(frame) > previousRevision;
+          return frame.workZeroValid === true && Number(frame.zeroRevision) > previousRevision;
         },
         { afterSequence: baseline, description: 'new Work Zero frame' },
       );
@@ -1686,7 +1693,7 @@
     const confirmZZero = async (data) => {
       const machine = await waitForSocketSlice(
         'machine',
-        (slice) => frameRevision(machineFrameFromSlice(slice)) > previousRevision,
+        (slice) => Number(machineFrameFromSlice(slice).zeroRevision) > previousRevision,
         { afterSequence: baseline, description: 'new Z Zero frame' },
       );
       dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z' });
@@ -1720,7 +1727,7 @@
     const data = await apiPost('/api/work-zero/touch-plate', {});
     const machine = await waitForSocketSlice(
       'machine',
-      (slice) => frameRevision(machineFrameFromSlice(slice)) > previousRevision,
+      (slice) => Number(machineFrameFromSlice(slice).zeroRevision) > previousRevision,
       { afterSequence: baseline, description: 'touch-plate tool Z Zero frame' },
     );
     dispatchConfirmedMachineEvent('cnc-z-zero-set', data, machine, { axes: 'z', method: 'touchplate' });

@@ -1,5 +1,12 @@
 # Handoff
 
+## 2026-10-22 - Cut start fix validated; SD deployment next
+
+- Latest field boot confirmed Home/zero completion but all three Cut attempts stopped at line zero due to stale saved Work Zero XY; no Bounds/Aircut start requests reached firmware. See `docs/cut-start-review-2026-10-22.md`.
+- Matching source changes add settled pre-G92 counts capture, a successful-zero `zeroRevision` marker, WS/HTTP confirmation fixes, frame-based verification validation, stale-zero readiness gating, and visible Bounds/Aircut feedback. Preserve the firmware Start coordinate check.
+- Final validation: 918/918 Vitest, 33/33 native, ESP32-CAM build SUCCESS (existing narrowing warning in `admitJobStart`). Firmware 1,541,632 bytes, SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`; relevant source hashes stayed unchanged during final validation.
+- Next: deploy matching firmware + canonical www to verified CNC SD with backup/hash checks under standing user authorization. Preserve jobs/logs/G-code/config/extras. User acceptance: Home -> physical joystick -> fresh Work Zero/Z Zero -> Bounds -> Aircut -> Cut. Jog smoothness remains out of scope.
+
 ## 2026-10-22 - Work Zero feedback review
 
 - KAR field job’s saved Work Zero `(0,0,38.28)` does not match active homed frame `(283.802,431.449,38.28)`; stale-zero rejection is correct. Targeted behavior probes cover matching WS evidence with empty M114 text, mismatched saved reference, and manual raw-capture evidence.

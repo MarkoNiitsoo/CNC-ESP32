@@ -552,7 +552,13 @@ homing epoch immediately.
 ### Coordinate frame API
 
 - `GET /api/machine/frame` returns `machine`, `work`, `workZeroMachine`, homed axes,
-  `homingEpoch`, `homingSessionId`, `bootSessionId`, `frameMode`, revision, and trust state.
+  `homingEpoch`, `homingSessionId`, `bootSessionId`, `frameMode`, revision, `zeroRevision`, and trust state.
+  `zeroRevision` is the frame revision at the last successful Work Zero, Z Zero, or touch-plate
+  completion. Position reports may advance `revision` while a zero transaction is still running;
+  zero confirmation therefore requires `zeroRevision` newer than the pre-command frame revision.
+  Both HTTP and WebSocket expose the same marker. Deploy matching firmware and UI together.
+  Homed Work/Z Zero derives its machine-space origin from fresh M114 counts after M400,
+  before G92; missing position/count evidence rejects the operation before changing the zero.
 - `POST /api/machine/home` accepts `{ "axes": "x|y|z|xy|all" }`. Home All establishes a new
   trusted epoch and deterministic temporary baseline at physical home.
 - `POST /api/machine/manual-frame` accepts `{ "mode": "confirm|preserve|set-zero" }`. `confirm`

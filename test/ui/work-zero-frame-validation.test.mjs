@@ -3,7 +3,37 @@ import { describe, expect, it } from 'vitest';
 
 const preview = await readFile(new URL('../../www/preview.js', import.meta.url), 'utf8');
 
+function evaluateCapturedZero(savedPosition, livePosition, raw = '') {
+  const extract = (start, end) => preview.slice(preview.indexOf(start), preview.indexOf(end, preview.indexOf(start)));
+  const functions = extract('function hasRawCapture(', 'function addCheck(') +
+    extract('function hasWorkZero()', 'function workZeroValidationMessage');
+  const jobState = {
+    activeWorkZeroId: 'field-zero', workZeroDecision: { mode: 'homed', token: 'field-zero' },
+    workZero: { beforeG92: { rawM114: raw }, afterG92: { rawM114: raw } },
+    zeroHistory: [{ type: 'workZero', id: 'field-zero', machineReference: { position: savedPosition },
+      frame: { homingEpoch: 1, homingSessionId: 'field-home' } }],
+  };
+  const currentMachineFrame = { trusted: true, absoluteFromHome: true, workZeroValid: true,
+    homingEpoch: 1, homingSessionId: 'field-home', workZeroMachine: livePosition };
+  return new Function('jobState', 'currentMachineFrame', `${functions}; return {
+    captured: hasWorkZero(), matches: workZeroMatchesMachineFrame()
+  };`)(jobState, currentMachineFrame);
+}
+
 describe('fresh Work Zero frame validation', () => {
+  it('accepts actual empty-raw WS capture evidence with matching saved and live coordinates', () => {
+    const position = { x: 283.802, y: 431.449, z: 38.28 };
+    expect(evaluateCapturedZero(position, position)).toEqual({ captured: true, matches: true });
+  });
+
+  it('reproduces the field job mismatch and rejects stale XY even when Z agrees', () => {
+    const stale = { x: 0, y: 0, z: 38.28 };
+    const live = { x: 283.802, y: 431.449, z: 38.28 };
+    expect(evaluateCapturedZero(stale, live)).toEqual({ captured: false, matches: false });
+    // Legacy raw text remains capture evidence, but the separate live-frame guard must reject it.
+    expect(evaluateCapturedZero(stale, live, 'X:0 Y:0 Z:0')).toEqual({ captured: true, matches: false });
+  });
+
   it('accepts socket-confirmed Work Zero only when it belongs to the active homed decision and live frame', () => {
     const hasWorkZero = preview.slice(preview.indexOf('function hasWorkZero()'), preview.indexOf('function workZeroValidationMessage'));
     expect(hasWorkZero).toContain('frame?.trusted === true');

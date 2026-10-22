@@ -594,7 +594,7 @@ describe('Phase 2 end-to-end UI correctness', () => {
       await Promise.resolve();
       const confirmed = {
         frame: {
-          revision: 2, positionValid: true, workZeroValid: true,
+          revision: 2, zeroRevision: 2, positionValid: true, workZeroValid: true,
           workZeroMachine: { x: 2, y: 3, z: 4 },
         },
         position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 2, y: 3, z: 4 } },
@@ -694,9 +694,80 @@ describe('Phase 2 end-to-end UI correctness', () => {
 });
 
 describe('Phase 3C machine command fallback policy', () => {
+  it.each(['setWorkZero', 'setZZero'])('%s ignores intermediate position revisions after a successful result', async (method) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('confirm', () => true);
+    try {
+      let complete;
+      const env = createMachineBarEnv({ telemetryBeginCommand: () => ({
+        accepted: Promise.resolve({}), result: new Promise((resolve) => { complete = resolve; }),
+      }) });
+      env.api.applyLocalOperatorAuthorization({ controller: true, owner: 'Alice', controlSessionEpoch: 1 });
+      env.emitTelemetry('controller', { state: 'connected' });
+      env.emitTelemetry('job', { state: 'IDLE' });
+      const slice = (revision, zeroRevision, x) => ({
+        frame: { revision, zeroRevision, positionValid: true, workZeroValid: true,
+          trusted: true, workZeroMachine: { x, y: 431.449, z: 38.28 } },
+        position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 283.802, y: 431.449, z: 38.28 } },
+      });
+      env.emitTelemetry('machine', slice(50, 40, 0));
+      const pending = env.api[method]();
+      // M114 reports movement before G92 finalization. Its higher revision is not a new zero.
+      env.emitTelemetry('machine', slice(51, 40, 0));
+      complete({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      const eventType = method === 'setWorkZero' ? 'cnc-work-zero-set' : 'cnc-z-zero-set';
+      expect(env.dispatched.filter((event) => event.type === eventType)).toHaveLength(0);
+      env.emitTelemetry('machine', slice(53, 53, 283.802));
+      await pending;
+      const events = env.dispatched.filter((event) => event.type === eventType);
+      expect(events).toHaveLength(1);
+      expect(events[0].detail.frame.workZeroMachine.x).toBe(283.802);
+    } finally {
+      vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['before-result', 'during-wait'])('confirms zero with an HTTP frame when WS disconnects %s', async (disconnect) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('confirm', () => true);
+    try {
+      let complete;
+      const frame = { revision: 53, zeroRevision: 53, positionValid: true, workZeroValid: true,
+        trusted: true, workZeroMachine: { x: 283.802, y: 431.449, z: 38.28 },
+        work: { x: 0, y: 0, z: 0 }, machine: { x: 283.802, y: 431.449, z: 38.28 } };
+      const env = createMachineBarEnv({
+        telemetryBeginCommand: () => ({ accepted: Promise.resolve({}),
+          result: new Promise((resolve) => { complete = resolve; }) }),
+        fetch: async (url) => ({ ok: true, json: async () => String(url) === '/api/machine/frame' ? frame : {} }),
+      });
+      env.api.applyLocalOperatorAuthorization({ controller: true, owner: 'Alice', controlSessionEpoch: 1 });
+      env.emitTelemetry('controller', { state: 'connected' });
+      env.emitTelemetry('job', { state: 'IDLE' });
+      // Slice sequence and frame revision are different counters; lots of repeated slices are valid.
+      for (let n = 0; n < 100; n += 1) env.emitTelemetry('machine', { frame: { ...frame, revision: 50, zeroRevision: 40 } });
+      const pending = env.api.setWorkZero();
+      if (disconnect === 'before-result') env.emitTransport('disconnected');
+      complete({ ok: true });
+      await vi.advanceTimersByTimeAsync(0);
+      if (disconnect === 'during-wait') env.emitTransport('disconnected');
+      await vi.advanceTimersByTimeAsync(500);
+      await pending;
+      const events = env.dispatched.filter((event) => event.type === 'cnc-work-zero-set');
+      expect(events).toHaveLength(1);
+      expect(events[0].detail.frame.zeroRevision).toBe(53);
+      const pollCount = env.fetchCalls.filter((url) => url === '/api/machine/frame').length;
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(env.fetchCalls.filter((url) => url === '/api/machine/frame')).toHaveLength(pollCount);
+      expect(env.fetchCalls.filter((url) => url.includes('/api/work-zero/set'))).toHaveLength(0);
+    } finally {
+      vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals();
+    }
+  });
+
   const confirmedMachineSlice = () => ({
     frame: {
-      revision: 2, positionValid: true, workZeroValid: true, trusted: true, homingEpoch: 1,
+      revision: 2, zeroRevision: 2, positionValid: true, workZeroValid: true, trusted: true, homingEpoch: 1,
       workZeroMachine: { x: 2, y: 3, z: 4 },
     },
     position: { work: { x: 0, y: 0, z: 0 }, machine: { x: 2, y: 3, z: 4 } },

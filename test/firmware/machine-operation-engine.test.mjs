@@ -12,6 +12,23 @@ function blockBetween(startMarker, endMarker) {
 }
 
 describe('cooperative machine-operation engine (Phase 3C)', () => {
+  it('captures settled zero coordinates before G92 and marks only finalized zeros', () => {
+    const admit = blockBetween('MachineOperationResult admitMachineOperation(', 'MachineOperationResult runMachineOperationToCompletion(');
+    expect(admit).not.toContain('machineOp.targetMachineX = machineFrame.machineX');
+    expect(admit).not.toContain('machineOp.targetMachineZ = machineFrame.machineZ');
+    const pump = blockBetween('// One cooperative tick:', 'MachineOperationResult admitMachineOperation(');
+    const capture = pump.slice(pump.indexOf('case MachineOpCapture::Before:'), pump.indexOf('case MachineOpCapture::After:'));
+    expect(capture).toContain('parseM114Counts(machineOp.before');
+    expect(capture.match(/zeroAxisFromCounts\(/g)).toHaveLength(3);
+    expect(capture).toContain('if (!positionReady || !absoluteReady)');
+    expect(capture).toContain('"POSITION_CAPTURE_FAILED"');
+    expect(capture).toContain('return false;');
+    expect(pump).not.toContain('machineFrame.zeroRevision =');
+    const finalize = blockBetween('MachineOperationResult finalizeMachineOperation()', '// One cooperative tick:');
+    expect(finalize.match(/machineFrame.zeroRevision = machineFrame.revision/g)).toHaveLength(2);
+    expect(finalize.lastIndexOf('machineFrame.zeroRevision =')).toBeGreaterThan(finalize.indexOf('persistToolChangeTransition()'));
+  });
+
   it('advances the operation from loop() instead of blocking the WS command queue', () => {
     const loop = blockBetween('void loop() {', '}').slice(0, 400);
     expect(loop).toContain('processWsCommandQueue();');
