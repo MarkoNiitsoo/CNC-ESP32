@@ -52,7 +52,6 @@ const effectiveSafeZOutput = document.querySelector('#effective-safe-z');
 const projectSafeZStatusEl = document.querySelector('#project-safe-z-status');
 const readinessSummaryEl = document.querySelector('#readiness-summary');
 const readinessHomeAllButton = document.querySelector('#readiness-home-all');
-const readinessSetWorkZeroButton = document.querySelector('#readiness-set-work-zero');
 const readinessSetZZeroButton = document.querySelector('#readiness-set-z-zero');
 const readinessRunBoundsButton = document.querySelector('#readiness-run-bounds');
 const readinessRunAircutButton = document.querySelector('#readiness-run-aircut');
@@ -67,6 +66,7 @@ const saveJobButton = document.querySelector('#save-job');
 const capturePositionButton = document.querySelector('#capture-position');
 const setWorkZeroButton = document.querySelector('#set-work-zero');
 const zeroGateEl = document.querySelector('#set-work-zero-gate');
+let workZeroBusy = false;
 const setZeroXButton = document.querySelector('#set-zero-x');
 const setZeroYButton = document.querySelector('#set-zero-y');
 const captureSetZeroButton = document.querySelector('#capture-set-zero');
@@ -611,7 +611,6 @@ function renderReadiness() {
     readinessHomeAllButton.title = homeBusy ? 'Home All is available when the machine is idle.' : 'Re-home every axis';
   }
   const persistentButtons = [
-    readinessSetWorkZeroButton,
     readinessSetZZeroButton,
     readinessRunBoundsButton,
     readinessRunAircutButton,
@@ -620,9 +619,6 @@ function renderReadiness() {
     button.disabled = homeBusy;
     button.title = homeBusy ? 'This setup action is available when the machine is idle.' : '';
   });
-  if (readinessSetWorkZeroButton) {
-    readinessSetWorkZeroButton.textContent = status.workZero.ok ? 'Set Work Zero Again' : 'Set Work Zero';
-  }
   if (readinessSetZZeroButton) {
     readinessSetZZeroButton.textContent = activeZero('zZero') ? 'Set Z Zero Again' : 'Set Z Zero';
   }
@@ -671,7 +667,20 @@ function renderReadiness() {
     readinessSecondaryEl.append(workflowButton('Continue Without Homing', continueWithoutHoming, 'machine-danger'));
   } else if (status.gate === 'work-zero') {
     if (status.frame.mode === 'homed') {
-      readinessPrimaryEl.append(workflowButton('Set Work Zero Here', () => window.LowRiderMachineBar?.setWorkZero('xyz'), 'primary-action'));
+      const focusZero = document.createElement('button');
+      focusZero.type = 'button';
+      focusZero.className = 'primary-action';
+      focusZero.textContent = 'Go to Work Zero control';
+      focusZero.addEventListener('click', () => {
+        showPreviewTab('preflight');
+        workbenchController?.openForTab('preflight');
+        requestAnimationFrame(() => {
+          setWorkZeroButton?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          if (setWorkZeroButton?.disabled) zeroGateEl?.focus({ preventScroll: true });
+          else setWorkZeroButton?.focus({ preventScroll: true });
+        });
+      });
+      readinessPrimaryEl.append(focusZero);
     } else {
       readinessPrimaryEl.append(workflowButton('Set Current Position as Zero', () => acceptManualWorkZero('set-zero'), 'primary-action'));
       readinessSecondaryEl.append(workflowButton('Use Existing G54 Coordinates', () => acceptManualWorkZero('preserve')));
@@ -6820,13 +6829,17 @@ capturePositionButton?.addEventListener('click', () => captureCurrentPosition().
 setWorkZeroButton?.addEventListener('click', () => {
   const transport = window.LowRiderMachineBar?.setWorkZero;
   if (!transport) { setJobResult('Machine controls are unavailable; reload the page.', true); return; }
-  transport('xyz').catch((err) => setJobResult(operatorZeroError(err), true));
+  if (workZeroBusy) return;
+  workZeroBusy = true;
+  renderZeroGate();
+  setJobResult('Setting Work Zero…');
+  transport('xyz').catch((err) => setJobResult(operatorZeroError(err), true)).finally(() => {
+    workZeroBusy = false;
+    renderZeroGate();
+  });
 });
 readinessHomeAllButton?.addEventListener('click', () => {
   window.dispatchEvent(new CustomEvent('cnc-home-machine-request'));
-});
-readinessSetWorkZeroButton?.addEventListener('click', () => {
-  window.LowRiderMachineBar?.setWorkZero('xyz');
 });
 readinessSetZZeroButton?.addEventListener('click', () => setZZeroWithCapture(null, { confirm: false }));
 readinessRunBoundsButton?.addEventListener('click', sendBoundingBoxTrace);
@@ -7142,7 +7155,10 @@ function renderZeroGate() {
   const trusted = currentMachineFrame?.trusted === true;
   const manual = currentMachineFrame?.manualWorkFrameValid === true;
   const canZero = trusted || manual;
-  if (setWorkZeroButton) setWorkZeroButton.disabled = !canZero;
+  if (setWorkZeroButton) {
+    setWorkZeroButton.disabled = !canZero || workZeroBusy;
+    setWorkZeroButton.textContent = workZeroBusy ? 'Setting Work Zero…' : 'Set Work Zero';
+  }
   if (setZeroXButton) setZeroXButton.disabled = !canZero;
   if (setZeroYButton) setZeroYButton.disabled = !canZero;
   if (zeroGateEl) {

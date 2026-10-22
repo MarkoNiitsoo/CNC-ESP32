@@ -3468,3 +3468,9 @@ No firmware upload is required.
 - Left for later (not part of this hotfix): dev-mock long-running-Home phase simulation
   (delayed ACK / fragmented / busy / no-terminal). The mock still executes machine ops
   synchronously; Home regression coverage lives in firmware source-audit + UI DOM tests.
+## 2026-10-22 handoff: Work Zero UI consolidation
+
+- `www/preview.html` and `www/preview.js` now expose one primary XYZ Set Work Zero action in Zero / Origin. Readiness guidance navigates to and focuses it; it does not send a second command.
+- The canonical control displays “Setting Work Zero…” and disables itself while the operation runs. Success continues through the existing confirmed-frame capture flow; errors remain shown in the Zero / Origin result area. Advanced X/Y controls and separate Tool Z zero remain available.
+- Focused validation passed: 19/19 tests across `test/ui/work-zero-ownership.test.mjs` and `test/ui/zero-origin-ui.test.mjs`.
+- Hardware validation and SD deployment were not performed.

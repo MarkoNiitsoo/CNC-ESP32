@@ -3705,3 +3705,8 @@ The following legacy endpoints and assumptions are retained temporarily during P
   plus a missing drain-before-write in startMachineOperationStep that let stale bytes desync
   step responses. Fixed both; added bounded machine-op + WS connect/disconnect SD diagnostics.
   Full suite 756/756; pio native 18/18; esp32cam SUCCESS (RAM 29.6%, Flash 77.1%).
+## 2026-10-22: Work Zero UI consolidation
+
+- Removed the duplicate persistent readiness Set Work Zero button. The guided readiness action now opens Prepare > Zero / Origin and focuses the canonical control (or its homing gate if disabled).
+- Kept X/Y per-axis zero actions under Advanced zero options. The canonical XYZ button shows an in-progress label, disables repeat activation, and reports transport errors beside the control.
+- Updated focused UI regression coverage. `npx vitest run test/ui/work-zero-ownership.test.mjs test/ui/zero-origin-ui.test.mjs`: 19/19 passed.

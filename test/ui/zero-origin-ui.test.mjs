@@ -54,7 +54,7 @@ describe('operator Zero / Origin workflow', () => {
   });
 
   it('automatically saves verified XYZ/X/Y/Z zero transactions', () => {
-    expect(preview).toContain("setWorkZero('xyz')");
+    expect(preview).toContain("transport('xyz')");
     expect(preview).toContain("setWorkZero('x')");
     expect(preview).toContain("setWorkZero('y')");
     expect(preview).toContain("setZZeroWithCapture(null, { confirm: false })");

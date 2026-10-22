@@ -65,7 +65,14 @@ describe('single browser frame mirror with WS + HTTP reconciliation', () => {
 describe('single operator-facing Work Zero control (consolidation)', () => {
   it('keeps exactly one primary Set Work Zero control in the Preview Zero panel', () => {
     expect(countMatches(previewHtml, /id="set-work-zero"/)).toBe(1);
+    expect(previewHtml).not.toContain('id="readiness-set-work-zero"');
     expect(previewHtml).toContain('Set Work Zero</button>');
+    expect(preview).not.toContain("workflowButton('Set Work Zero Here'");
+    expect(preview).toContain("focusZero.textContent = 'Go to Work Zero control'");
+    expect(preview).toContain("showPreviewTab('preflight')");
+    expect(preview).toContain('setWorkZeroButton?.focus({ preventScroll: true })');
+    expect(preview).toContain('if (setWorkZeroButton?.disabled) zeroGateEl?.focus({ preventScroll: true })');
+    expect(previewHtml).toContain('id="set-work-zero-gate" class="form-hint" style="display:none" tabindex="-1"');
   });
 
   it('hides per-axis zeroing behind advanced options', () => {
@@ -102,12 +109,18 @@ describe('single operator-facing Work Zero control (consolidation)', () => {
       "setWorkZeroButton?.addEventListener",
       "setZeroXButton?.addEventListener",
       "setZeroYButton?.addEventListener",
-      "readinessSetWorkZeroButton?.addEventListener",
       "window.LowRiderMachineBar?.setWorkZero(",
     ]) {
       expect(preview).toContain(marker);
     }
     expect(countMatches(preview, /setWorkZeroWithCapture\(null/)).toBe(0);
+  });
+
+  it('shows progress on the canonical control and restores its gated state on completion', () => {
+    expect(preview).toContain("setJobResult('Setting Work Zero…')");
+    expect(preview).toContain("setWorkZeroButton.textContent = workZeroBusy ? 'Setting Work Zero…' : 'Set Work Zero'");
+    expect(preview).toContain('setWorkZeroButton.disabled = !canZero || workZeroBusy');
+    expect(preview).toContain(".catch((err) => setJobResult(operatorZeroError(err), true)).finally(() => {");
   });
 
   it('keeps the dashboard free of zero establishment controls', () => {

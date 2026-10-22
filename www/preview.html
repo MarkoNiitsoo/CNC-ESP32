@@ -49,7 +49,6 @@
           <button id="readiness-home-all" class="primary-action machine-danger" type="button" data-requires-live-control>Home All</button>
         </div>
         <div class="job-actions compact-actions readiness-persistent-tools" aria-label="Persistent setup tools">
-          <button id="readiness-set-work-zero" type="button" data-requires-live-control>Set Work Zero</button>
           <button id="readiness-set-z-zero" type="button" data-requires-live-control>Set Z Zero</button>
           <button id="readiness-run-bounds" type="button" data-requires-live-control>Run Bounding Box</button>
           <button id="readiness-run-aircut" type="button" data-requires-live-control>Run Aircut</button>
@@ -173,7 +172,7 @@
         </div>
         <div class="zero-origin-actions">
           <button id="home-machine-zero" type="button" data-requires-live-control>Home Machine</button>
-          <div id="set-work-zero-gate" class="form-hint" style="display:none">Home All is required before setting Work Zero.</div>
+          <div id="set-work-zero-gate" class="form-hint" style="display:none" tabindex="-1">Home All is required before setting Work Zero.</div>
           <button id="set-work-zero" type="button" data-icon="workZero" data-requires-live-control>Set Work Zero</button>
           <details class="advanced-zero-options">
             <summary>Advanced zero options</summary>
