@@ -3726,3 +3726,10 @@ The following legacy endpoints and assumptions are retained temporarily during P
 - Kept X/Y per-axis zero actions under Advanced zero options. The canonical XYZ button shows an in-progress label, disables repeat activation, and reports transport errors beside the control.
 - Updated focused UI regression coverage. `npx vitest run test/ui/work-zero-ownership.test.mjs test/ui/zero-origin-ui.test.mjs`: 19/19 passed.
 - Updated the job-workflow regression that still expected the removed persistent duplicate; it now checks navigation to the canonical Prepare control.
+
+## 2026-10-22 - Jog drain SD deployment
+
+- Native PlatformIO tests passed 30/30 (22 controller communication, 8 jog drain). ESP32-CAM build succeeded; memory use was 29.8% RAM and 78.0% flash. The build emitted one narrowing warning at `src/main.cpp:9235` (`httpStatus` int to `uint16_t`).
+- Deployed the tested `.pio-build/sd-release/2026-10-22-jog-drain` package to the verified removable E: CNC card (FAT32, 8,011,120,640 bytes). Current source hashes matched the tested build, and all 47 manifest payload files matched the local package and current repository sources before copying.
+- Backed up the prior 58 files under SD `www/` and the existing root `firmware.done.bin` to `.pio-build/sd-backups/2026-10-22-110309` before replacement. The new root `firmware.bin` is 1,540,640 bytes, SHA-256 `fe1071aa6d72715c33f1df0a28b0b2bf79de245905e75fb96fd4db5d8ab879df`; all 46 canonical web files and firmware verified against the manifest on-card. The old `firmware.done.bin` remains intact.
+- Confirmed `E:\firmware\INSTALL.NOW` is absent. Existing `gcode/`, `jobs/`, `logs/`, and other files were hash-checked unchanged (13 files). The card was not ejected, and no hardware boot was performed.
