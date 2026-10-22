@@ -1,5 +1,17 @@
 # Progress
 
+## 2026-10-22 - Diagnose SD field run and publish Work Zero validity
+
+- Verified the October 20 image installed successfully and all 46 SD UI assets match.
+- Logs show six successful XYZ Work Zero commands, but production frame JSON omitted
+  `workZeroValid`, blocking browser confirmation and job capture. Added the missing boolean
+  to the shared HTTP/WS serializer and a production contract regression.
+- Confirmed normal jog release escalated to a quickstop after an acknowledgement timeout,
+  invalidating the homing reference. The underlying missing acknowledgement remains unexplained.
+- Recorded evidence and the three duplicate XYZ buttons in `docs/field-review-2026-10-22.md`.
+- Validation: 55/55 focused tests, 895/895 full Vitest tests, ESP32-CAM build SUCCESS.
+  Fix is local only; SD contents and machine firmware were not changed in this review.
+
 ## 2026-10-20 - Prepared current firmware on CNC SD card
 
 - Verified the ESP32-CAM build, then staged current firmware at `E:\firmware.bin` on the

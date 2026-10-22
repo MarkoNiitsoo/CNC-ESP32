@@ -14,6 +14,18 @@ function functionBody(marker, endMarker) {
 }
 
 describe('HTTP machine-route contract (Phase 3C)', () => {
+  it('publishes explicit work-zero validity in the real frame serializer used by HTTP and WS', () => {
+    // Field regression: commands completed OK, but the omitted boolean made
+    // the browser confirmation predicate time out and prevented job capture.
+    // Check the production serializer: the mock already had this field.
+    const frame = functionBody('String machineFrameJson() {', 'bool applyMarlinAutoreportInterval(');
+    expect(frame).toContain('json += ",\\"workZeroValid\\":" + String(machineFrame.workZeroValid ? "true" : "false");');
+    const slice = functionBody('String buildMachineSliceJson() {', 'String buildControlSliceJson()');
+    expect(slice).toContain('patchJson += machineFrameJson();');
+    const endpoint = functionBody('void handleMachineFrame() {', 'bool toolChangeZZeroWindowOpen()');
+    expect(endpoint).toContain('machineFrameJson()');
+  });
+
   it('keeps the work-zero request body optional with an XYZ default', () => {
     const handler = functionBody('void handleSetWorkZero()', 'MachineOperationResult performSetWorkZero(');
     expect(handler).toMatch(

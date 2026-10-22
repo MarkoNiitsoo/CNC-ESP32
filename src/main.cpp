@@ -5202,6 +5202,7 @@ String machineFrameJson() {
                 ",\"y\":" + String(marlinPosition.y, 3) +
                 ",\"z\":" + String(marlinPosition.z, 3);
   json += ",\"positionValid\":" + String(marlinPosition.valid ? "true" : "false");
+  json += ",\"workZeroValid\":" + String(machineFrame.workZeroValid ? "true" : "false");
   json += ",\"work\":{\"x\":" + String(marlinPosition.x, 3) +
           ",\"y\":" + String(marlinPosition.y, 3) +
           ",\"z\":" + String(marlinPosition.z, 3) + "}";

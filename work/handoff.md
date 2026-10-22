@@ -1,5 +1,24 @@
 # Handoff
 
+## 2026-10-22 - Field diagnosis; Work Zero serializer fixed locally
+
+- Supersedes the October 20 pending-install status: SD logs and image hash confirm installation.
+  Latest reviewed session `59AD0D54-52DDC697` ran build Oct 18 2026 20:21:22.
+- Home succeeded. Six Work Zero operations succeeded in Marlin, but `machineFrameJson()`
+  omitted `workZeroValid`. UI predicates therefore timed out and job captures were not saved.
+  Added the flag to the shared HTTP/WS frame serializer; mock had already supplied it.
+- Full validation: 76 files / 895 Vitest tests passed; ESP32-CAM build SUCCESS. Existing
+  `admitJobStart()` narrowing warning remains. New binary is local, NOT on SD or ESP32.
+- Normal jog stop at 102325 ms escalated to `jog-quickstop` at 103442 ms after a pending-ack
+  timeout. Homing loss is real frame invalidation; do not preserve trust after quickstop.
+  Add bounded jog/UART diagnostics and reproduce to establish the pending-ack root cause.
+- Three visible XYZ zero entry points remain. Consolidate into one primary Zero/Origin
+  action with readiness navigation and clear progress/result feedback.
+- Detailed evidence and deployment boundary: `docs/field-review-2026-10-22.md`.
+  Local raw logs: `.pio-build/field-logs/2026-10-22-2ba84e75/` (not committed).
+- No SD writes, machine commands, or hardware acceptance in this review. Earlier Stop latch,
+  zero capture timing and EOF completion issues remain open.
+
 ## 2026-10-20 - SD card updated; firmware installation pending
 
 - User requested updating the SD card. Verified removable FAT32 card at `E:\`.
