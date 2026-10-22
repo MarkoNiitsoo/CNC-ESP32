@@ -1,5 +1,11 @@
 # Handoff
 
+## 2026-10-22 handoff: Jog drain hardware acceptance package
+
+- Tested package is staged at `.pio-build/sd-release/2026-10-22-jog-drain` and was copied to the verified removable CNC SD card on E:. Before deployment, current source and staged package hashes matched the build manifest for all 47 files. After deployment, all 46 canonical `www/` files and root `firmware.bin` matched the same manifest.
+- Local backup of the prior card `www/` tree (58 files) and existing root `firmware.done.bin` is `.pio-build/sd-backups/2026-10-22-110309`. Existing jobs, G-code, and logs were preserved. `E:\firmware\INSTALL.NOW` was absent; no hardware boot was performed and the card was not ejected.
+- User preference: when a tested update is ready for hardware acceptance, deploy the matching firmware and canonical `www/` payload to the verified attached CNC SD card without another confirmation. Verify card identity and current sources, back up existing `www/` and firmware markers locally, hash-check every payload before and after copying, preserve jobs/G-code/logs/config/extras, and leave safe removal to the user.
+
 ## 2026-10-22 - Jog drain fix complete locally; hardware acceptance pending
 
 - Normal release and browser cancellation/focus loss no longer request M410. A one-second delayed
@@ -3498,9 +3504,3 @@ No firmware upload is required.
 - Focused validation passed: 19/19 tests across `test/ui/work-zero-ownership.test.mjs` and `test/ui/zero-origin-ui.test.mjs`.
 - The `job-workflow.test.mjs` readiness assertion now reflects the canonical Zero / Origin control and navigation path. Prepare is the tab containing the Zero / Origin panel.
 - Hardware validation and SD deployment were not performed.
-
-## 2026-10-22 handoff: Jog drain hardware acceptance package
-
-- Tested package is staged at `.pio-build/sd-release/2026-10-22-jog-drain` and was copied to the verified removable CNC SD card on E:. Before deployment, current source and staged package hashes matched the build manifest for all 47 files. After deployment, all 46 canonical `www/` files and root `firmware.bin` matched the same manifest.
-- Local backup of the prior card `www/` tree (58 files) and existing root `firmware.done.bin` is `.pio-build/sd-backups/2026-10-22-110309`. Existing jobs, G-code, and logs were preserved. `E:\firmware\INSTALL.NOW` was absent; no hardware boot was performed and the card was not ejected.
-- User preference: when a tested update is ready for hardware acceptance, deploy the matching firmware and canonical `www/` payload to the verified attached CNC SD card without another confirmation. Verify card identity and current sources, back up existing `www/` and firmware markers locally, hash-check every payload before and after copying, preserve jobs/G-code/logs/config/extras, and leave safe removal to the user.
