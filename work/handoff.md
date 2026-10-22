@@ -1,5 +1,11 @@
 # Handoff
 
+## 2026-10-22 - Work Zero feedback review
+
+- KAR field job’s saved Work Zero `(0,0,38.28)` does not match active homed frame `(283.802,431.449,38.28)`; stale-zero rejection is correct. Targeted behavior probes cover matching WS evidence with empty M114 text, mismatched saved reference, and manual raw-capture evidence.
+- Bounds/Aircut release their shared busy state after failures. Confirmation-dialog cancellation now reports that no motion was sent instead of leaving a stale “Preparing” status.
+- Follow-up focused validation passed 71/71; full suite and firmware validation are handled with the matching zero-confirmation firmware update.
+
 ## 2026-10-22 handoff: Jog drain hardware acceptance package
 
 - Tested package is staged at `.pio-build/sd-release/2026-10-22-jog-drain` and was copied to the verified removable CNC SD card on E:. Before deployment, current source and staged package hashes matched the build manifest for all 47 files. After deployment, all 46 canonical `www/` files and root `firmware.bin` matched the same manifest.

@@ -1,5 +1,11 @@
 # Progress
 
+## 2026-10-22 - Work Zero verification feedback follow-up
+
+- Reviewed the KAR field job against the current Home All frame; its stored `(0,0,38.28)` correctly fails against `(283.802,431.449,38.28)`. Behavior probes confirm empty-raw WS evidence is accepted only for a matching active homed reference, stale Work Zero is rejected, and existing manual raw-capture evidence remains usable.
+- Bounds/Aircut failure wrappers release their busy state. Confirmation cancellations now replace the “Preparing” message with a visible canceled/no-motion status.
+- Focused validation passed: 71/71 tests across Work Zero frame validation, machine-operation engine, and Phase 2/3 browser behavior.
+
 ## 2026-10-22 - Jog drain SD deployment
 
 - Native PlatformIO tests passed 30/30 (22 controller communication, 8 jog drain). ESP32-CAM build succeeded; memory use was 29.8% RAM and 78.0% flash. The build emitted one narrowing warning at `src/main.cpp:9235` (`httpStatus` int to `uint16_t`).

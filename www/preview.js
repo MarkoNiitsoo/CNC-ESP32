@@ -5200,10 +5200,12 @@ async function runBoundingBoxTrace() {
   }
   if (!confirm(confirmText)) {
     console.log('[Cut Bounds] User cancelled trace confirmation dialog.');
+    reportReadinessAction('Bounds Check cancelled. No motion was sent.');
     return;
   }
   if (hasPreflightFail && !confirm('Preflight has failed checks. Continue with bounding box trace anyway?')) {
     console.log('[Cut Bounds] User cancelled preflight warning dialog.');
+    reportReadinessAction('Bounds Check cancelled at the preflight warning. No motion was sent.');
     return;
   }
 
@@ -5317,8 +5319,14 @@ async function runAircutToolpath() {
   if (aircutCommands.length > 5000) {
     confirmText += '\n\nLarge aircut. This may take a long time.';
   }
-  if (!confirm(confirmText)) return;
-  if (hasPreflightFail && !confirm('Preflight has failed checks. Continue with aircut anyway?')) return;
+  if (!confirm(confirmText)) {
+    reportReadinessAction('Aircut cancelled. No motion was sent.');
+    return;
+  }
+  if (hasPreflightFail && !confirm('Preflight has failed checks. Continue with aircut anyway?')) {
+    reportReadinessAction('Aircut cancelled at the preflight warning. No motion was sent.');
+    return;
+  }
 
   dryRunStatus = 'aircut running';
   setDryRunRunning(true);

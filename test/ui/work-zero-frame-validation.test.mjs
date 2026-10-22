@@ -38,4 +38,11 @@ describe('physical verification feedback', () => {
     expect(preview).toContain('reportReadinessAction(`Aircut blocked: ${blocker}`, true)');
     expect(preview).toContain('reportReadinessAction(`Aircut failed: ${err.message}`, true)');
   });
+
+  it('replaces the preparing status when an operator cancels either confirmation', () => {
+    expect(preview).toContain("reportReadinessAction('Bounds Check cancelled. No motion was sent.')");
+    expect(preview).toContain("reportReadinessAction('Bounds Check cancelled at the preflight warning. No motion was sent.')");
+    expect(preview).toContain("reportReadinessAction('Aircut cancelled. No motion was sent.')");
+    expect(preview).toContain("reportReadinessAction('Aircut cancelled at the preflight warning. No motion was sent.')");
+  });
 });
