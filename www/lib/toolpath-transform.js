@@ -157,7 +157,12 @@ export function resolveAutoPlacement(model, placement = {}, machine = {}) {
   const outside = machineValid && hasBounds(bounds) &&
     (bounds.xMin < machine.xMin || bounds.xMax > machine.xMax ||
      bounds.yMin < machine.yMin || bounds.yMax > machine.yMax);
-  next.autoShiftToWorkZero = Math.abs(next.rotationDeg) < 0.0001 && fits && outside;
+  // Keep the established material-origin policy: normalize to Work Zero only
+  // when that translated placement actually fits the available physical travel.
+  const fitsAtZero = fits && machine.xMin <= 0 && machine.yMin <= 0 &&
+    bounds.xMax - bounds.xMin <= machine.xMax &&
+    bounds.yMax - bounds.yMin <= machine.yMax;
+  next.autoShiftToWorkZero = Math.abs(next.rotationDeg) < 0.0001 && fitsAtZero && outside;
   return next;
 }
 

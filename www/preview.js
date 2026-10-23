@@ -1014,7 +1014,7 @@ function renderProjectSafeZ() {
   if (effectiveSafeZOutput) effectiveSafeZOutput.textContent = Number.isFinite(safeZ?.effectiveSafeZ) ? safeZ.effectiveSafeZ.toFixed(1) : '-';
   if (projectSafeZStatusEl) {
     projectSafeZStatusEl.textContent = safeZ?.resolved
-      ? `All generated safety movement uses Z${safeZ.effectiveSafeZ.toFixed(1)} in project work coordinates.`
+      ? `All generated safety movement uses Z${safeZ.effectiveSafeZ.toFixed(1)} in project work coordinates. ${safeZ.adjustmentMessage || ''}`.trim()
       : (safeZ?.errors?.join(' ') || 'Project Safe Z is unresolved.');
     projectSafeZStatusEl.classList.toggle('warning', safeZ?.resolved !== true);
   }
@@ -1236,11 +1236,15 @@ function computePreflight() {
   }
 
   const b = parsed.bounds;
-  if (b.xMin >= MACHINE.xMin && b.xMax <= MACHINE.xMax && b.yMin >= MACHINE.yMin && b.yMax <= MACHINE.yMax) {
+  const available = availableWorkBounds();
+  if (b.xMin >= available.xMin && b.xMax <= available.xMax && b.yMin >= available.yMin && b.yMax <= available.yMax) {
     addCheck(checks, 'machineBounds', 'pass', 'Fits default G-code CNC work area');
   } else {
-    addCheck(checks, 'machineBounds', 'fail', 'Toolpath exceeds discovered machine work area');
+    addCheck(checks, 'machineBounds', 'fail', `Toolpath does not fit at this Work Zero. Available X ${available.xMin.toFixed(1)}..${available.xMax.toFixed(1)}, Y ${available.yMin.toFixed(1)}..${available.yMax.toFixed(1)} mm. Move Work Zero or change placement.`);
   }
+
+  const zFitError = originalZEnvelopeError(b);
+  if (zFitError) addCheck(checks, 'machineZBounds', 'fail', zFitError);
 
   if (parsed.analysis.hasZ) {
     if (b.zMin >= -30) addCheck(checks, 'zRange', 'pass', 'Z minimum is within expected range');
@@ -2330,8 +2334,29 @@ function ensureHistoryShape(job) {
   return job;
 }
 
+function originalZEnvelopeError(bounds) {
+  const frame = currentMachineFrame;
+  const zeroZ = frame?.workZeroMachine?.z;
+  const limits = frame?.limits;
+  if (frame?.trusted !== true || frame?.absoluteFromHome !== true || frame?.workZeroValid !== true ||
+      ![zeroZ, limits?.zMin, limits?.zMax, bounds?.zMin, bounds?.zMax].every(Number.isFinite)) return null;
+  const min = limits.zMin - zeroZ;
+  const max = limits.zMax - zeroZ;
+  if (bounds.zMin >= min - 0.001 && bounds.zMax <= max + 0.001) return null;
+  return `Original run Z ${bounds.zMin.toFixed(2)}..${bounds.zMax.toFixed(2)} exceeds available work Z ${min.toFixed(2)}..${max.toFixed(2)} mm. Change Work Zero or the G-code. Automatic Safe Z adjustment applies only to generated safety moves.`;
+}
+
+function availableWorkBounds() {
+  const frame = currentMachineFrame;
+  const zero = frame?.workZeroMachine;
+  if (frame?.absoluteFromHome !== true || frame?.workZeroValid !== true ||
+      !Number.isFinite(zero?.x) || !Number.isFinite(zero?.y)) return MACHINE;
+  return { xMin: MACHINE.xMin - zero.x, xMax: MACHINE.xMax - zero.x,
+    yMin: MACHINE.yMin - zero.y, yMax: MACHINE.yMax - zero.y };
+}
+
 function resolvedPlacement(transform, model) {
-  return transform.resolveAutoPlacement(model, currentPlacementState(), MACHINE);
+  return transform.resolveAutoPlacement(model, currentPlacementState(), availableWorkBounds());
 }
 
 function stopMotionAnimation() {
@@ -3888,6 +3913,7 @@ function generatedBounds() {
 
 function validateDryRun(bounds, safeZ) {
   const messages = [];
+  const available = availableWorkBounds();
   if (!parsed) messages.push('Preview bounds are not available.');
   const safeZError = safeZValidationMessage(safeZ);
   if (safeZError) messages.push(safeZError);
@@ -3895,9 +3921,9 @@ function validateDryRun(bounds, safeZ) {
   if (bounds?.isRawFallback) {
     messages.push('Cut bounds could not be identified. This trace includes the complete G-code travel extents, including possible parking or lead-in movement.');
   }
-  if (bounds && (bounds.xMin < MACHINE.xMin || bounds.xMax > MACHINE.xMax ||
-      bounds.yMin < MACHINE.yMin || bounds.yMax > MACHINE.yMax)) {
-    messages.push(`Generated X/Y bounds exceed machine limits X ${MACHINE.xMin}..${MACHINE.xMax}, Y ${MACHINE.yMin}..${MACHINE.yMax}.`);
+  if (bounds && (bounds.xMin < available.xMin || bounds.xMax > available.xMax ||
+      bounds.yMin < available.yMin || bounds.yMax > available.yMax)) {
+    messages.push(`Generated X/Y bounds exceed machine limits X ${available.xMin}..${available.xMax}, Y ${available.yMin}..${available.yMax}.`);
   }
   if (!hasWorkZero() || (currentMachineFrame?.absoluteFromHome === true && !workZeroMatchesMachineFrame())) {
     messages.push(workZeroValidationMessage('a trace'));
@@ -3909,13 +3935,14 @@ function validateDryRun(bounds, safeZ) {
 
 function validateAircut(safeZ, commandCount) {
   const messages = [];
+  const available = availableWorkBounds();
   const b = parsed?.bounds;
   if (!parsed || !b) messages.push('Preview bounds are not available.');
   const safeZError = safeZValidationMessage(safeZ);
   if (safeZError) messages.push(safeZError);
-  if (b && (b.xMin < MACHINE.xMin || b.xMax > MACHINE.xMax ||
-      b.yMin < MACHINE.yMin || b.yMax > MACHINE.yMax)) {
-    messages.push(`Generated X/Y bounds exceed machine limits X ${MACHINE.xMin}..${MACHINE.xMax}, Y ${MACHINE.yMin}..${MACHINE.yMax}.`);
+  if (b && (b.xMin < available.xMin || b.xMax > available.xMax ||
+      b.yMin < available.yMin || b.yMax > available.yMax)) {
+    messages.push(`Generated X/Y bounds exceed machine limits X ${available.xMin}..${available.xMax}, Y ${available.yMin}..${available.yMax}.`);
   }
   if (!hasWorkZero() || (currentMachineFrame?.absoluteFromHome === true && !workZeroMatchesMachineFrame())) {
     messages.push(workZeroValidationMessage('an aircut'));
@@ -6709,9 +6736,16 @@ async function reconcilePlacementIntentOnLoad(options = {}) {
     return;
   }
 
-  if (jobState.generatedValidation?.status === 'valid' && (jobState.placement?.generatedRunPath || jobState.generatedRunPath)) {
+  if (jobState.generatedValidation?.status === 'valid' &&
+      Boolean(jobState.placement?.autoShiftToWorkZero) === Boolean(placement.autoShiftToWorkZero) &&
+      (jobState.placement?.generatedRunPath || jobState.generatedRunPath)) {
     active.selectGeneratedRun(jobState, jobState.generatedValidation);
     return;
+  }
+  if (placement.autoShiftToWorkZero) {
+    const message = 'Placement adjusted: cut lower-left moved to Work Zero to fit the available travel. Updating run file; verify the new placement before cutting.';
+    appendPlacementResult(message);
+    setJobResult(message);
   }
   await markPlacementChangedAndScheduleUpdate();
 }
@@ -7118,7 +7152,7 @@ addEventListener('cnc-machine-frame', (event) => {
 addEventListener('cnc-work-zero-set', (event) => {
   if (!event.detail?.frame || !jobState) return;
   currentMachineFrame = event.detail.frame;
-  setWorkZeroWithCapture(event.detail).catch((err) => setJobResult(err.message, true));
+  setWorkZeroWithCapture(event.detail).then(() => reconcilePlacementIntentOnLoad()).then(() => updatePlacementPreview()).catch((err) => setJobResult(err.message, true));
 });
 addEventListener('cnc-z-zero-set', (event) => {
   if (!event.detail?.frame || !jobState) return;

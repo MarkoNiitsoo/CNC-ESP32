@@ -105,6 +105,19 @@ describe('toolpath origin normalization and bounds mode', () => {
     expect(result.selectedTransformedBounds).toMatchObject({ xMin: 100, xMax: 110, yMin: 200, yMax: 210 });
   });
 
+  it('normalizes an offset source when the remaining travel at Work Zero permits it', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 X100 Y200\nG1 Z-1\nG1 X110 Y210\n');
+    const placement = resolveAutoPlacement(model, {}, { xMin: -1600, xMax: 25, yMin: -5700, yMax: 100 });
+    expect(placement.autoShiftToWorkZero).toBe(true);
+    expect(transformToolpath(model, placement).selectedTransformedBounds).toMatchObject({ xMin: 0, xMax: 10, yMin: 0, yMax: 10 });
+  });
+
+  it('does not claim normalization fits when Work Zero leaves insufficient travel', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 X100 Y200\nG1 Z-1\nG1 X110 Y210\n');
+    const placement = resolveAutoPlacement(model, {}, { xMin: -1620, xMax: 5, yMin: -5700, yMax: 100 });
+    expect(placement.autoShiftToWorkZero).toBe(false);
+  });
+
   it('does not auto-fit a cut that is larger than the machine', () => {
     const model = parseGCodeToToolpath('G21\nG90\nG0 X-10 Y0\nG1 Z-1\nG1 X2000 Y10\n');
     const placement = resolveAutoPlacement(model, {}, { xMin: 0, xMax: 1625, yMin: 0, yMax: 5800 });

@@ -1,5 +1,11 @@
 # Handoff
 
+## 2026-10-23 - Work-frame placement and early envelope checks
+
+- UI preflight, Bounds and Aircut now evaluate XY against machine limits translated by active Work Zero. Automatic cut-origin normalization uses remaining travel, regenerates after Work Zero changes, invalidates prior verification through active-run handling, and reports changed placement visibly. It never scales geometry.
+- Original run Z envelope is checked early against trusted physical limits and Work Zero. Generated Safe Z adjustment is displayed but cannot hide an out-of-range original G-code height.
+- Validation: transform, original-Z envelope and phase-2 suites passed 65/65. SD deployment remains root-owned and pending.
+
 ## 2026-10-23 - Bounds start-Z restoration fix
 
 - Fresh field evidence is in `.pio-build/field-logs/2026-10-23-bounds/logs/job.log`: the KAR bounds XY rectangle completed, then firmware rejected the expected restore from Z 5.000 mm to captured start Z 0.000 mm at uptime 412503. Generated sequence: `/jobs/generated/KAR.gc.bounds.gc`.
