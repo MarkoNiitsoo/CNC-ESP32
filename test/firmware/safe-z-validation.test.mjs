@@ -54,6 +54,23 @@ describe('dynamic Safe Z validation', () => {
   });
 
   it('enforces stateful sequence validation for mode: "bounds" test motion', () => {
+    const commandValidation = source.slice(
+      source.indexOf('bool validateTestMotionCommand'),
+      source.indexOf('bool validateBoundsSequence'),
+    );
+    expect(commandValidation).toContain('validateSafeWorkZ(z, mode != "bounds", safeZError)');
+    expect(commandValidation).toContain('mode != "bounds"');
+
+    const sequenceValidation = source.slice(
+      source.indexOf('bool validateBoundsSequence'),
+      source.indexOf('bool validateTestMotionFile'),
+    );
+    expect(sequenceValidation).toContain('m400BeforeZRestorationSeen');
+    expect(sequenceValidation).toContain('!trimmed.startsWith("G0 ") || !hasZ || hasX || hasY');
+    expect(sequenceValidation).toContain('fabsf(valZ - startZ) > 0.001f');
+    expect(sequenceValidation).toContain('returnXySeen = hasX && hasY');
+    expect(sequenceValidation).toContain('bounds motion Z descends below Safe Z before start position restoration');
+
     expect(source).toContain('bool validateBoundsSequence(');
     expect(source).toContain('extractJsonObjectFloat(body, "startPosition", "x", NAN)');
     expect(source).toContain('bounds motion requires G21, G90, and G54 established before motion');

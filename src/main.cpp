@@ -5900,7 +5900,10 @@ bool validateTestMotionCommand(const String &line, const String &mode, float saf
     float z = 0.0f;
     if (extractGcodeWordValue(upper, 'Z', z)) {
       String safeZError;
-      if (!validateSafeWorkZ(z, true, safeZError)) {
+      // Bounds sequences validate their one intentional descent separately: the
+      // exact captured start Z, after return XY and M400. Keep work-frame and
+      // machine limits here, but do not compare that restore with the lifted Z.
+      if (!validateSafeWorkZ(z, mode != "bounds", safeZError)) {
         error = "bounds Z command exceeds safe work range: " + safeZError;
         return false;
       }
@@ -5990,7 +5993,7 @@ bool validateBoundsSequence(const String &path, float safeZ, float startX, float
       }
 
       if (m400BeforeZRestorationSeen) {
-        if (!hasZ || hasX || hasY || fabsf(valZ - startZ) > 0.001f) {
+        if (!trimmed.startsWith("G0 ") || !hasZ || hasX || hasY || fabsf(valZ - startZ) > 0.001f) {
           file.close();
           error = "bounds Z restoration command must be G0 Z" + String(startZ, 3) + " without XY movement";
           return false;
@@ -6005,8 +6008,9 @@ bool validateBoundsSequence(const String &path, float safeZ, float startX, float
         return false;
       }
 
-      if (hasX && hasY && fabsf(valX - startX) <= 0.001f && fabsf(valY - startY) <= 0.001f) {
-        returnXySeen = true;
+      if (hasX || hasY) {
+        returnXySeen = hasX && hasY && fabsf(valX - startX) <= 0.001f &&
+                       fabsf(valY - startY) <= 0.001f;
       }
     } else if (trimmed == "M400") {
       if (startZRestored) {

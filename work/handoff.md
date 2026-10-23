@@ -1,5 +1,12 @@
 # Handoff
 
+## 2026-10-23 - Bounds start-Z restoration fix
+
+- Fresh field evidence is in `.pio-build/field-logs/2026-10-23-bounds/logs/job.log`: the KAR bounds XY rectangle completed, then firmware rejected the expected restore from Z 5.000 mm to captured start Z 0.000 mm at uptime 412503. Generated sequence: `/jobs/generated/KAR.gc.bounds.gc`.
+- Firmware now retains work-frame/machine Z bounds for every bounds Z command, while the live “cannot move downward from current Z” gate applies to the initial Safe Z admission. The bounds validator permits only exact captured start-Z restoration after return to exact start X/Y and M400; any subsequent XY departure clears that state. Start Safe Z still requires a valid lift.
+- The HTTP handler validates and opens the generated path synchronously before returning; once active, the path is covered by active-job mutation locks. No deployment or hardware boot was performed for this fix.
+- Regression coverage added. Focused tests and full build validation pending; root review and coordinated validation are next.
+
 ## 2026-10-22 handoff: Cut start update deployed
 
 - The final 47-file package `.pio-build/sd-release/2026-10-22-cut-start/` is deployed to verified E: (removable FAT32, 8,011,120,640 bytes; card ID `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`). Current source, staged package, and card payload hashes matched. Firmware: 1,541,632 bytes, SHA-256 `da23b705634eb5120ab982e412635e127d9b97dbf8baf1d74d70e5efc1c9a894`; `www/` has 46 canonical payload files plus one preserved extra.

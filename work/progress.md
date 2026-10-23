@@ -1,5 +1,12 @@
 # Progress
 
+## 2026-10-23 - Bounds start-Z restoration fix
+
+- Field logs at `.pio-build/field-logs/2026-10-23-bounds/logs/job.log` show the generated KAR bounds rectangle completed its XY path, then rejected the intended return from Safe Z 5.000 mm to captured start Z 0.000 mm (`uptime 412503`). The generated file was `/jobs/generated/KAR.gc.bounds.gc`.
+- Bounds Z words still pass active work-frame and mapped machine limits. The live-current-Z “must lift” check is bypassed only for `bounds`; the stateful sequence validator permits descent only to the exact captured start Z after exact return X/Y and M400. Leaving start X/Y clears the return confirmation. Start Safe Z itself still uses the live lift check.
+- Validation and opening run synchronously in the HTTP handler; after the handler sets the active generated path and opens it, active-file mutation checks lock that path. This binds execution to the sequence validated before motion.
+- Added regression assertions for the bounds-only lift exception, preserved range/sequence checks, exact restore target, and return-XY state. Focused Vitest and firmware/native validation: pending.
+
 ## 2026-10-22 - Cut start update deployed to CNC SD
 
 - This completed deployment supersedes the pre-deployment status and older card snapshot entries below. Final validation passed: 918/918 Vitest tests across 77 files, 33/33 PlatformIO native tests, and ESP32-CAM build SUCCESS. Existing warning: narrowing `MotionAdmissionResult::httpStatus` from `int` to `uint16_t` at `src/main.cpp:9238`.
