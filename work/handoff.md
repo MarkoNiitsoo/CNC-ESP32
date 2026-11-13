@@ -1,4 +1,17 @@
 # Handoff
+## 2026-11-13 - Mobile-first guided workflow & live-cut monitor
+
+- Implemented the 5-step guided workflow stepper (`#workflow-stepper`), inline read-only claim banner (`#readiness-claim-banner`), side-by-side live Work/Machine XYZ + `Open Jog` in `.zero-origin-panel`, visible live `Feed Override` with quick-step buttons during cutting, live progress bar + `data-live-cutting` mobile focus, state-aware Pause/Resume/Stop guidance, and `#job-view` empty-state guidance (`www/app.js`, `www/machine-bar.js`, `www/preview.html`, `www/preview.js`, `www/preview.css`).
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests).
+- Pre-existing uncommitted `job-safe-z` edits in `www/lib/job-safe-z.js` and `test/ui/job-safe-z.test.mjs` were left untouched.
+
+## 2026-10-23 - Generated Safe Z fits the machine ceiling
+
+- Generated clearance now caps at machine Z maximum minus active Work Zero Z when the frame is trusted and valid. Requested/program heights and extra clearance remain recorded; cappedToMachineMax and adjustmentMessage explain the effective value in the UI.
+- Original G-code heights and cutting geometry are unchanged and remain subject to envelope validation. Zero or negative available clearance is rejected explicitly. Recalculating after Z Zero changes restores the original requested height when space permits.
+- Focused validation: 27/27 job-safe-z tests passed, covering trusted-frame gating, requested value preservation, unchanged parsed toolpath, unavailable clearance and recalculation. Three-decimal command rounding differs by at most 0.0005 mm, within the existing 0.001 mm limit tolerance.
+- Hardware confirmation and coordinated package deployment remain pending.
+
 
 ## 2026-10-23 - Work-frame placement and early envelope checks
 

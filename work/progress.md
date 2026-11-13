@@ -1,4 +1,19 @@
 # Progress
+## 2026-11-13 - Mobile-first guided workflow, live feed override, and Pause/Stop clarity
+
+- Added a 5-step visual workflow stepper (`#workflow-stepper`: Home, Place & Safe Z, Zero XY/Z, Check, Cut) and an inline read-only control claim banner (`#readiness-claim-banner`) in `www/preview.html` + `www/preview.js`.
+- Added live Work XYZ / Machine XYZ coordinates and a direct `Open Jog` trigger (`#zero-live-coords`, `#zero-open-jog`) inside `.zero-origin-panel`, backed by `openJogDock()` and `openOperatorPanel()` helpers in `www/machine-bar.js`.
+- Promoted `#feed-live-control` out of `<details>` into the main `#run-panel` with mobile-friendly `-10%/-5%/100%/+5%/+10%` quick-step controls, added a live progress bar + `data-live-cutting` focus mode, and made `#run-pause-stop-hint` state-aware for `RUNNING`, `PAUSED_INTACT`, and `RECOVERY_REQUIRED`.
+- Added empty-state guidance in `www/app.js` when `#job-view` has no active job, plus mobile-first responsive CSS in `www/preview.css`.
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 test files (627/627 tests).
+
+## 2026-10-23 - Generated Safe Z fits the machine ceiling
+
+- Generated clearance now caps at machine Z maximum minus active Work Zero Z when the frame is trusted and valid. Requested/program heights and extra clearance remain recorded; cappedToMachineMax and adjustmentMessage explain the effective value in the UI.
+- Original G-code heights and cutting geometry are unchanged and remain subject to envelope validation. Zero or negative available clearance is rejected explicitly. Recalculating after Z Zero changes restores the original requested height when space permits.
+- Focused validation: 27/27 job-safe-z tests passed, covering trusted-frame gating, requested value preservation, unchanged parsed toolpath, unavailable clearance and recalculation. Three-decimal command rounding differs by at most 0.0005 mm, within the existing 0.001 mm limit tolerance.
+- Hardware confirmation and coordinated package deployment remain pending.
+
 
 ## 2026-10-23 - Work-frame placement and early envelope checks
 

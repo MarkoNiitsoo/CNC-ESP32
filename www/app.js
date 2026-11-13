@@ -768,7 +768,14 @@ function renderCurrentJob() {
   if (!currentJobCard || !nextActionCard) return;
 
   if (!currentJob) {
-    currentJobCard.textContent = '';
+    currentJobCard.innerHTML = `
+      <h2>No active job</h2>
+      <p class="form-hint">Choose a G-code file to open the guided workflow: Home, Place &amp; Safe Z, Zero XY/Z, Bounds/Aircut, and Cut.</p>
+      <div class="job-actions">
+        <a class="maintenance-link primary-action" href="#files" data-nav-target="files">Choose G-code File</a>
+        <a class="maintenance-link" href="/files">Full File Manager</a>
+      </div>
+    `;
     nextActionCard.textContent = '';
     return;
   }

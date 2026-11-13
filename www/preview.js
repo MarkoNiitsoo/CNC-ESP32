@@ -51,6 +51,15 @@ const safeZClearanceOutput = document.querySelector('#safe-z-clearance-output');
 const effectiveSafeZOutput = document.querySelector('#effective-safe-z');
 const projectSafeZStatusEl = document.querySelector('#project-safe-z-status');
 const readinessSummaryEl = document.querySelector('#readiness-summary');
+const workflowStepperEl = document.querySelector('#workflow-stepper');
+const readinessClaimBannerEl = document.querySelector('#readiness-claim-banner');
+const readinessClaimControlButton = document.querySelector('#readiness-claim-control');
+const zeroLiveWorkEl = document.querySelector('#zero-live-work');
+const zeroLiveMachineEl = document.querySelector('#zero-live-machine');
+const zeroOpenJogButton = document.querySelector('#zero-open-jog');
+const runPauseStopHintEl = document.querySelector('#run-pause-stop-hint');
+const feedLiveControlSection = document.querySelector('#feed-live-control');
+const workbenchRootEl = document.querySelector('#workbench');
 const readinessHomeAllButton = document.querySelector('#readiness-home-all');
 const readinessSetZZeroButton = document.querySelector('#readiness-set-z-zero');
 const readinessRunBoundsButton = document.querySelector('#readiness-run-bounds');
@@ -611,6 +620,48 @@ function workflowButton(label, action, className = '') {
   return button;
 }
 
+function formatCoordTuple(coords = null) {
+  if (!coords) return 'X - · Y - · Z -';
+  const fmt = (value) => (value === null || value === undefined || Number.isNaN(Number(value)) ? '-' : Number(value).toFixed(2));
+  return `X ${fmt(coords.x)} · Y ${fmt(coords.y)} · Z ${fmt(coords.z)}`;
+}
+
+function renderZeroLiveCoords() {
+  const live = window.LowRiderMachineBar?.liveState?.();
+  if (zeroLiveWorkEl) {
+    zeroLiveWorkEl.textContent = formatCoordTuple(live?.position || live?.frame?.work || null);
+  }
+  if (zeroLiveMachineEl) {
+    zeroLiveMachineEl.textContent = formatCoordTuple(live?.frame?.machine || null);
+  }
+}
+
+function renderClaimBanner() {
+  if (!readinessClaimBannerEl) return;
+  readinessClaimBannerEl.hidden = !document.body.classList.contains('operator-read-only');
+}
+
+function renderWorkflowStepper(status, machineState) {
+  renderClaimBanner();
+  if (!workflowStepperEl) return;
+  const activeRun = ['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING'].includes(machineState);
+  const placeOk = activeRunBlockers().length === 0;
+  const stepStates = {
+    frame: status.frame.ok ? (status.frame.warning ? 'warn' : 'done') : (status.gate === 'frame' ? 'active' : 'pending'),
+    place: !placeOk ? 'blocked' : (status.gate === 'frame' ? 'pending' : 'done'),
+    zero: status.workZero.ok ? 'done' : (status.gate === 'work-zero' ? 'active' : 'pending'),
+    verify: status.verification.ok ? (status.verification.warning ? 'warn' : 'done') : (status.gate === 'verification' ? 'active' : 'pending'),
+    cut: activeRun ? 'active' : (status.gate === 'cut' ? 'active' : (status.gate === 'blocked' ? 'blocked' : 'pending')),
+  };
+  workflowStepperEl.querySelectorAll('[data-workflow-step]').forEach((button) => {
+    const step = button.dataset.workflowStep;
+    const state = stepStates[step] || 'pending';
+    button.dataset.stepState = state;
+    if (state === 'active') button.setAttribute('aria-current', 'step');
+    else button.removeAttribute('aria-current');
+  });
+}
+
 function renderReadiness() {
   if (!readinessSummaryEl || !readinessPrimaryEl || !readinessSecondaryEl) return;
   const status = guidedWorkflowStatus();
@@ -726,6 +777,8 @@ function renderReadiness() {
       workbenchController?.openForTab('run');
     }, 'primary-action'));
   }
+  renderWorkflowStepper(status, machineState);
+  renderZeroLiveCoords();
   renderWorkbenchStatus();
   applyMachineControlGuard();
 }
@@ -1604,6 +1657,20 @@ function renderRunPanel() {
     pauseJobButton.disabled = !(running || statusUnknown);
     resumeJobButton.disabled = !(pausedIntact || recoveryRequired) || toolChangePending;
     stopJobButton.disabled = safetyStopDisabled;
+    renderClaimBanner();
+    workbenchRootEl?.toggleAttribute('data-live-cutting', active);
+    feedLiveControlSection?.classList.toggle('is-live-cutting', active);
+    if (runPauseStopHintEl) {
+      if (pausedIntact) {
+        runPauseStopHintEl.innerHTML = '<strong>Paused:</strong> Motion is held at current Z (cutter may still be running). Hold <strong>Resume</strong> to continue or <strong>Stop</strong> to end the job.';
+      } else if (running) {
+        runPauseStopHintEl.innerHTML = '<strong>Cutting:</strong> <strong>Pause</strong> holds motion without lifting Z. <strong>Stop</strong> halts motion (M410), sends M5, and opens Recovery.';
+      } else if (recoveryRequired) {
+        runPauseStopHintEl.innerHTML = '<strong>Recovery required:</strong> Review the interrupted run in Recovery before starting again.';
+      } else {
+        runPauseStopHintEl.innerHTML = '<strong>Pause</strong> holds motion without lifting Z and keeps the cutter running. <strong>Stop</strong> stops motion first, then sends M5 and requires Recovery.';
+      }
+    }
 
     if (runOperatorSummaryEl) {
       const visibleState = jobRunStatus?.errorCode === 'COMMUNICATION_LOST' ? 'COMMUNICATION LOST' : state;
@@ -1621,8 +1688,10 @@ function renderRunPanel() {
         `;
         runOperatorSummaryEl.querySelector('[data-run-resolution="steps"]')?.addEventListener('click', openRequiredSteps);
       } else if (active || state === 'COMPLETED' || state === 'STOPPED') {
+        const pct = Math.max(0, Math.min(100, Number(jobRunStatus?.progressPercent || 0)));
         runOperatorSummaryEl.innerHTML = `
-          <div class="operator-run-state"><strong>${html(visibleState)}</strong><span>${Number(jobRunStatus?.progressPercent || 0).toFixed(1)}%</span></div>
+          <div class="operator-run-state"><strong>${html(visibleState)}</strong><span>${pct.toFixed(1)}%</span></div>
+          <div class="run-live-progress" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${pct.toFixed(1)}%"></span></div>
           <p>${html(basename(currentRunPath()) || 'Active job')} · Feed ${feedStatusPercent()}%</p>
         `;
       } else if (preparationBlockers.length) {
@@ -7298,6 +7367,8 @@ function renderZeroGate() {
   }
 }
 window.CncTelemetry?.subscribe('machine', applyMachineFrameSlice);
+window.CncTelemetry?.subscribe('machine', () => renderZeroLiveCoords());
+window.CncTelemetry?.subscribe('jog', () => renderZeroLiveCoords());
 window.CncTelemetry?.setDemand('job', 'preview-page', true);
 window.CncTelemetry?.setDemand('health', 'preview-page', true);
 window.CncTelemetry?.start();
@@ -7306,6 +7377,35 @@ window.CncTelemetry?.start();
 addEventListener('cnc-telemetry-transport', () => {
   renderWorkbenchStatus();
   renderRunPanel();
+});
+addEventListener('cnc-operator-lock-changed', () => {
+  renderClaimBanner();
+});
+readinessClaimControlButton?.addEventListener('click', () => {
+  window.LowRiderMachineBar?.openOperatorPanel?.();
+});
+zeroOpenJogButton?.addEventListener('click', () => {
+  window.LowRiderMachineBar?.openJogDock?.();
+});
+workflowStepperEl?.addEventListener('click', (event) => {
+  const stepButton = event.target.closest('[data-workflow-step]');
+  if (!stepButton) return;
+  const step = stepButton.dataset.workflowStep;
+  if (step === 'frame') {
+    readinessHomeAllButton?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    readinessHomeAllButton?.focus({ preventScroll: true });
+    return;
+  }
+  const tabMap = { place: 'preview', zero: 'preflight', verify: 'dry-run', cut: 'run' };
+  const targetTab = tabMap[step] || 'preview';
+  showPreviewTab(targetTab);
+  workbenchController?.openForTab(targetTab);
+  history.replaceState(null, '', `#${targetTab}`);
+  if (step === 'zero') {
+    requestAnimationFrame(() => {
+      document.querySelector('.zero-origin-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 });
 jobStatusHttpPollTimer = setInterval(() => {
   void pollJobStatusHttp();

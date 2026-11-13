@@ -44,6 +44,17 @@
 
       <section class="panel readiness-panel">
         <h2>Job Readiness</h2>
+        <nav id="workflow-stepper" class="workflow-stepper" aria-label="Job workflow steps">
+          <button type="button" class="workflow-step" data-workflow-step="frame"><span>1. Home</span></button>
+          <button type="button" class="workflow-step" data-workflow-step="place"><span>2. Place &amp; Safe Z</span></button>
+          <button type="button" class="workflow-step" data-workflow-step="zero"><span>3. Zero XY/Z</span></button>
+          <button type="button" class="workflow-step" data-workflow-step="verify"><span>4. Check</span></button>
+          <button type="button" class="workflow-step" data-workflow-step="cut"><span>5. Cut</span></button>
+        </nav>
+        <div id="readiness-claim-banner" class="readiness-claim-banner" hidden>
+          <span>Read-only mode: claim control to move the machine.</span>
+          <button id="readiness-claim-control" type="button">Claim Control (PIN)</button>
+        </div>
         <div id="readiness-summary" class="job-summary"></div>
         <div class="job-actions readiness-primary readiness-machine-actions">
           <button id="readiness-home-all" class="primary-action machine-danger" type="button" data-requires-live-control>Home All</button>
@@ -163,6 +174,11 @@
 
       <section class="panel zero-origin-panel preview-tab-panel" data-preview-tab="preflight">
         <h2>Zero / Origin</h2>
+        <div id="zero-live-coords" class="zero-live-coords" aria-live="polite">
+          <div class="zero-coord-box"><span>Work XYZ</span><strong id="zero-live-work">X - · Y - · Z -</strong></div>
+          <div class="zero-coord-box"><span>Machine XYZ</span><strong id="zero-live-machine">X - · Y - · Z -</strong></div>
+          <button id="zero-open-jog" type="button" data-requires-live-control>Open Jog</button>
+        </div>
         <div id="zero-origin-summary" class="zero-origin-summary"></div>
         <div class="prepare-zero-history">
           <label for="prepare-work-zero-history">Saved work zeros</label>
@@ -344,37 +360,41 @@
           <label><input type="checkbox" data-run-check="toolAndZZeroVerified"> The correct tool is installed and Z zero is checked.</label>
           <label><input type="checkbox" data-run-check="spindleStateReady"> Router/spindle is in the intended start state.</label>
         </fieldset>
-        <div class="job-actions">
+        <div class="job-actions run-primary-actions">
           <button id="start-job" class="hold-to-confirm" type="button" aria-label="Hold to Start Cut" data-icon="start" data-requires-live-control>Hold to Start Cut</button>
           <button id="pause-job" class="hold-to-confirm" type="button" aria-label="Hold to Pause" title="Hold motion; cutter remains running" data-icon="pause" data-requires-live-control>Pause</button>
           <button id="resume-job" class="hold-to-confirm" type="button" data-requires-live-control>Resume</button>
           <button id="stop-job" class="hold-to-confirm" type="button" aria-label="Hold to Stop with M410" title="Stop motion first, then stop the cutter" data-icon="stop" data-safety-exception>Stop</button>
         </div>
-        <p class="form-hint"><strong>Pause</strong> holds motion without lifting Z and keeps the cutter running. <strong>Stop</strong> stops motion first, then sends M5 and requires Recovery.</p>
+        <p id="run-pause-stop-hint" class="form-hint"><strong>Pause</strong> holds motion without lifting Z and keeps the cutter running. <strong>Stop</strong> stops motion first, then sends M5 and requires Recovery.</p>
+        <section id="feed-live-control" class="feed-live-control">
+          <h3>Live Feed Override</h3>
+          <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
+          <div id="feed-live-summary" class="job-summary"></div>
+          <div class="job-actions feed-actions feed-quick-row">
+            <button type="button" data-feed-delta="-10" data-requires-live-control>-10%</button>
+            <button type="button" data-feed-delta="-5" data-requires-live-control>-5%</button>
+            <button type="button" data-feed-live="100" data-requires-live-control>100%</button>
+            <button type="button" data-feed-delta="5" data-requires-live-control>+5%</button>
+            <button type="button" data-feed-delta="10" data-requires-live-control>+10%</button>
+          </div>
+          <div class="job-actions feed-actions">
+            <button type="button" data-feed-live="50" data-requires-live-control>50%</button>
+            <button type="button" data-feed-live="75" data-requires-live-control>75%</button>
+            <button type="button" data-feed-live="125" data-requires-live-control>125%</button>
+            <button type="button" data-feed-live="150" class="caution" data-requires-live-control>150%</button>
+          </div>
+          <div class="dry-run-inputs">
+            <label for="feed-live-percent">Set percent</label>
+            <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100" data-requires-live-control>
+            <button id="feed-live-set" type="button" data-requires-live-control>Set Feed Override</button>
+          </div>
+          <div id="feed-live-result" class="job-result"></div>
+        </section>
         <details class="operator-diagnostics">
           <summary>Advanced run details</summary>
           <p>Start uses the saved active work zero and lifts to Safe start Z before streaming.</p>
           <div id="run-summary" class="job-summary"></div>
-          <section class="feed-live-control">
-            <h3>Live Feed Override</h3>
-            <p class="warning">Feed override changes movement speed only. It does not change router RPM.</p>
-            <div id="feed-live-summary" class="job-summary"></div>
-            <div class="job-actions feed-actions">
-              <button type="button" data-feed-live="50" data-requires-live-control>50%</button>
-              <button type="button" data-feed-live="75" data-requires-live-control>75%</button>
-              <button type="button" data-feed-live="100" data-requires-live-control>100%</button>
-              <button type="button" data-feed-live="125" data-requires-live-control>125%</button>
-              <button type="button" data-feed-live="150" class="caution" data-requires-live-control>150%</button>
-              <button type="button" data-feed-delta="-10" data-requires-live-control>-10%</button>
-              <button type="button" data-feed-delta="10" data-requires-live-control>+10%</button>
-            </div>
-            <div class="dry-run-inputs">
-              <label for="feed-live-percent">Set percent</label>
-              <input id="feed-live-percent" type="number" inputmode="numeric" min="10" max="200" step="1" value="100" data-requires-live-control>
-              <button id="feed-live-set" type="button" data-requires-live-control>Set Feed Override</button>
-            </div>
-            <div id="feed-live-result" class="job-result"></div>
-          </section>
           <div class="dry-run-inputs">
             <input id="start-mode" type="hidden" value="use_active_work_zero">
             <p class="form-hint">Start uses the effective Project Safe Z shown in preparation.</p>

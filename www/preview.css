@@ -1297,3 +1297,173 @@ body.workbench-page {
     border-radius: 8px 8px 0 0;
   }
 }
+
+
+/* 5-step guided workflow stepper & mobile-first live cut monitor */
+.workflow-stepper {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+
+.workflow-step {
+  appearance: none;
+  border: 1px solid rgba(159, 177, 191, 0.28);
+  border-radius: 8px;
+  background: rgba(15, 23, 30, 0.55);
+  color: inherit;
+  padding: 8px 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.workflow-step[data-step-state="done"] {
+  border-color: rgba(63, 185, 118, 0.65);
+  background: rgba(63, 185, 118, 0.14);
+}
+
+.workflow-step[data-step-state="active"] {
+  border-color: rgba(77, 163, 255, 0.9);
+  background: rgba(77, 163, 255, 0.2);
+  box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.35);
+}
+
+.workflow-step[data-step-state="warn"] {
+  border-color: rgba(245, 180, 65, 0.75);
+  background: rgba(245, 180, 65, 0.16);
+}
+
+.workflow-step[data-step-state="blocked"] {
+  border-color: rgba(232, 89, 89, 0.8);
+  background: rgba(232, 89, 89, 0.16);
+}
+
+.readiness-claim-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 180, 65, 0.7);
+  background: rgba(245, 180, 65, 0.14);
+}
+
+.readiness-claim-banner button {
+  min-height: 40px;
+  font-weight: 700;
+}
+
+.zero-live-coords {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 30, 0.55);
+  border: 1px solid rgba(159, 177, 191, 0.22);
+}
+
+.zero-coord-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.zero-coord-box span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+.zero-coord-box strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#zero-open-jog {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.run-live-progress {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(159, 177, 191, 0.2);
+  overflow: hidden;
+  margin: 8px 0;
+}
+
+.run-live-progress > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #3fb976, #4da3ff);
+  transition: width 180ms ease-out;
+}
+
+.feed-live-control {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(159, 177, 191, 0.22);
+  background: rgba(15, 23, 30, 0.45);
+}
+
+.feed-live-control.is-live-cutting {
+  border-color: rgba(77, 163, 255, 0.7);
+  background: rgba(77, 163, 255, 0.1);
+}
+
+.feed-quick-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.run-primary-actions button,
+.feed-actions button,
+.zero-origin-actions button {
+  min-height: 44px;
+}
+
+@media (max-width: 680px) {
+  .workflow-stepper {
+    grid-template-columns: repeat(5, minmax(68px, 1fr));
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .zero-live-coords {
+    grid-template-columns: 1fr;
+  }
+
+  .run-primary-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .run-primary-actions #start-job {
+    grid-column: 1 / -1;
+  }
+
+  #workbench[data-live-cutting] .readiness-persistent-tools,
+  #workbench[data-live-cutting] .readiness-machine-actions {
+    display: none;
+  }
+}

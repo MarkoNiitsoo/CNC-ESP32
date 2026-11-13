@@ -424,6 +424,16 @@
     setZZero,
     startJog,
     stopJog,
+    openJogDock: () => {
+      STATE.jogDockOpen = true;
+      syncJogDock();
+      render();
+    },
+    openOperatorPanel: () => {
+      STATE.operatorPanelOpen = true;
+      renderOperatorLock();
+      el('mb-operator-pin')?.focus?.();
+    },
     renderControllerStatus,
     render,
   };
@@ -1279,6 +1289,9 @@
     const controller = operator.controller === true;
     const open = machineControlOpen();
     document.body.classList.toggle('operator-read-only', !controller && !open);
+    window.dispatchEvent(new CustomEvent('cnc-operator-lock-changed', {
+      detail: { controller, open, readOnly: !controller && !open, owner: operator.owner || '' },
+    }));
     const strip = el('mb-operator-strip');
     const button = el('mb-operator-toggle');
     const panel = el('mb-operator-panel');
