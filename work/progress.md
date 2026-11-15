@@ -3,7 +3,8 @@
 
 - Confirmed `claimRequired` already defaults to `false` (open control) in firmware (`src/main.cpp`), mock (`dev/mock-server.mjs`), and UI. Added an explicit **Control Claim & PIN Lock** panel (`#settings-claim-required`, `#settings-claim-status`, `#settings-open-operator-panel`) in `www/index.html` Settings synced with `#mb-operator-claim-required` in `www/machine-bar.js`.
 - Added `provisionOperatorFromSdConfig()` in `src/main.cpp` (and mock parity in `dev/mock-server.mjs`) so `operator.pin` (6–12 digits) in `/esp32-cnc/config.json` is hashed into ESP32 NVS (`Preferences`), resets PIN attempt lockout and remembered browser, and is atomically removed from `/esp32-cnc/config.json` immediately after loading. Optional `operator.claimRequired` boolean in `config.json` is also supported.
-- Validation: `npx vitest run test/ui/claim-required-setting.test.mjs test/ui/live-control-dom-audit.test.mjs test/mock/mock-server.test.mjs` passed 93/93 tests; `pio run` build in progress/verified.
+- Validation: `npx vitest run test/ui/claim-required-setting.test.mjs test/ui/live-control-dom-audit.test.mjs test/mock/mock-server.test.mjs` passed 93/93 tests; `pio run -e esp32cam` succeeded (`1545104` bytes, SHA-256 `d94f2f3bcaf695becf763e17855bd451c7713396493ecf388b519a02e41581d1`).
+- Deployed `E:\firmware.bin` and updated `E:\www` (`index.html`, `machine-bar.js`) to verified CNC SD card `E:` (`.cnc-sd-id` `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`) after backing up to `.pio-build/sd-backups/2026-11-15-claim-settings-fw`. All 46 canonical `www/` files and `firmware.bin` verified SHA-256 identical (`0` mismatches).
 
 ## 2026-11-13 - Mobile-first guided workflow, live feed override, and Pause/Stop clarity
 

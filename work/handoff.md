@@ -3,7 +3,7 @@
 
 - Added **Control Claim & PIN Lock** to `www/index.html` Settings (`#settings-claim-required`, `#settings-open-operator-panel`), wired in `www/machine-bar.js`. `claimRequired` remains `false` (disabled) by default.
 - Added `provisionOperatorFromSdConfig()` in `src/main.cpp` and `dev/mock-server.mjs`: setting `"operator": { "pin": "123456" }` in `/esp32-cnc/config.json` provisions/resets the PIN into ESP32 NVS on boot (clearing lockout/remembered browser) and removes `operator.pin` from the SD config file.
-- Note: SD card `E:` was already ejected before this firmware/Settings change, so `firmware.bin` and updated `www/index.html` + `www/machine-bar.js` have not been copied to `E:` yet.
+- Deployed `firmware.bin` (`1545104` bytes, SHA-256 `d94f2f3bcaf695becf763e17855bd451c7713396493ecf388b519a02e41581d1`) and updated `www/` (`index.html`, `machine-bar.js`) to verified CNC SD card `E:` (`.cnc-sd-id` `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`) after backing up to `.pio-build/sd-backups/2026-11-15-claim-settings-fw`. Verified all 46 canonical `www/` files and `firmware.bin` (`0` mismatches). Card was not ejected.
 
 ## 2026-11-13 - Mobile-first guided workflow & live-cut monitor
 
