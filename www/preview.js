@@ -824,6 +824,29 @@ function renderReadiness() {
     readinessSecondaryEl.append(workflowButton('Continue Without Check', skipPhysicalVerification, 'caution'));
   } else if (status.gate === 'blocked') {
     const runFileProblem = activeRunBlockers().length > 0;
+    const safeZLimits = activeSafeZLimits();
+    const safeZBlocker = safeZValidationMessage(projectSafeZValue());
+    if (safeZBlocker && safeZLimits.mappedToMachine && safeZLimits.zMax > 0.001) {
+      readinessSecondaryEl.append(workflowButton(
+        `Set Safe Z to Max (Z${safeZLimits.zMax.toFixed(1)})`,
+        async () => {
+          if (!jobState) jobState = newJobState();
+          const currentProg = Number(jobState?.projectSafeZ?.programSafeZ);
+          const nextProg = Number.isFinite(currentProg) ? Math.min(currentProg, safeZLimits.zMax) : safeZLimits.zMax;
+          updateProjectSafeZ(jobState, {
+            programSafeZ: nextProg,
+            extraClearanceMm: 0,
+          }, { now: nowIso(), frame: currentMachineFrame || {} });
+          applyProjectSafeZToInputs();
+          refreshDryRunCommands();
+          refreshRecoveryPlan();
+          renderPreflight();
+          renderArmPanel();
+          if (jobExists) await saveJobQuietly();
+          reportReadinessAction(`Safe Z set to maximum available height Z${activeSafeZLimits().zMax.toFixed(1)}.`);
+        },
+      ));
+    }
     readinessPrimaryEl.append(workflowButton(
       runFileProblem ? 'Update Run File' : 'Review Placement & Preflight',
       async () => {
@@ -2597,9 +2620,24 @@ async function loadMachineLimits() {
     const info = await res.json();
     const full = info?.full;
     if (!info?.available || !full || !['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'].every((key) => Number.isFinite(Number(full[key])))) return;
-    MACHINE = { xMin: Number(full.xMin), xMax: Number(full.xMax), yMin: Number(full.yMin), yMax: Number(full.yMax) };
-    RECOVERY_LIMITS = { ...MACHINE, zMin: Math.max(0, Number(full.zMin)), zMax: Number(full.zMax) };
-    TOOLLESS_LIMITS = { ...MACHINE, zMin: Number(full.zMin), zMax: Number(full.zMax) };
+    const zero = currentMachineFrame?.workZeroValid === true ? currentMachineFrame?.workZeroMachine : null;
+    const xShift = Number.isFinite(Number(zero?.x)) ? Number(zero.x) : 0;
+    const yShift = Number.isFinite(Number(zero?.y)) ? Number(zero.y) : 0;
+    const zShift = Number.isFinite(Number(zero?.z)) ? Number(zero.z) : 0;
+    const mZMin = Number.isFinite(Number(currentMachineFrame?.safeZ?.machineMin))
+      ? Number(currentMachineFrame.safeZ.machineMin)
+      : Number(full.zMin) + zShift;
+    const mZMax = Number.isFinite(Number(currentMachineFrame?.safeZ?.machineMax))
+      ? Number(currentMachineFrame.safeZ.machineMax)
+      : Number(full.zMax) + zShift;
+    MACHINE = {
+      xMin: Number(full.xMin) + xShift,
+      xMax: Number(full.xMax) + xShift,
+      yMin: Number(full.yMin) + yShift,
+      yMax: Number(full.yMax) + yShift,
+    };
+    RECOVERY_LIMITS = { ...MACHINE, zMin: Math.max(0, mZMin), zMax: mZMax };
+    TOOLLESS_LIMITS = { ...MACHINE, zMin: mZMin, zMax: mZMax };
   } catch (err) {
     // Cached firmware defaults remain valid when machine discovery is unavailable.
   }
@@ -5146,11 +5184,23 @@ function safeZValidationMessage(value) {
   const limits = activeSafeZLimits();
   if (!Number.isFinite(value)) return 'Safe Z must be a number.';
   if (value < limits.zMin || value > limits.zMax) {
+    if (limits.mappedToMachine && limits.zMax <= 0.001) {
+      return 'Work Zero Z is too high: 0.0 mm lift room left below machine Z max. Lower Work Zero Z or re-home.';
+    }
+    if (limits.mappedToMachine && value > limits.zMax) {
+      return `Work Zero Z is too high for Safe Z Z${value.toFixed(1)} (max available lift is Z${limits.zMax.toFixed(1)}). Lower Work Zero Z or set Safe Z to max.`;
+    }
     return `Project Safe Z ${value.toFixed(3)} is unreachable; available work-coordinate lift range is ${limits.zMin.toFixed(3)}..${limits.zMax.toFixed(3)} mm.`;
   }
+  const machineZMin = Number.isFinite(Number(currentMachineFrame?.safeZ?.machineMin))
+    ? Number(currentMachineFrame.safeZ.machineMin)
+    : TOOLLESS_LIMITS.zMin;
+  const machineZMax = Number.isFinite(Number(currentMachineFrame?.safeZ?.machineMax))
+    ? Number(currentMachineFrame.safeZ.machineMax)
+    : TOOLLESS_LIMITS.zMax;
   const frameValidation = validateProjectSafeZForFrame(projectSafeZ, currentMachineFrame, {
-    zMin: TOOLLESS_LIMITS.zMin,
-    zMax: TOOLLESS_LIMITS.zMax,
+    zMin: machineZMin,
+    zMax: machineZMax,
   });
   if (!frameValidation.ok) {
     return frameValidation.error;

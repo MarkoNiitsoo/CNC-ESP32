@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Fix Safe Z machine-vs-work limit comparison & max Safe Z offer
+
+- `www/preview.js`: Fixed `refreshMachineInfo()` and `safeZValidationMessage()` so machine Z limits (`currentMachineFrame.safeZ.machineMin/machineMax`, e.g. `0..70`) are never overwritten with work-relative `/api/machine/info` `full.zMax`, added explicit Z-Zero height blocker messages, and added a **Set Safe Z to Max** button in `renderReadiness()`.
+- Deployed `www/preview.js` over WiFi to `http://cnc.local/api/upload?path=/www&overwrite=true` (SHA-256 verified).
+
 ## 2026-11-15 - Add 15s HTTP timeout to sendCmd() in preview.js
 
 - `www/preview.js`: Added a 15 s `AbortController` timeout to `sendCmd()` so a dropped `/api/cmd` HTTP response no longer leaves `dryRunActionBusy` stuck on `Preparing Bounds Check…`.

@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Fix Safe Z machine-vs-work limit comparison and offer max Safe Z when Z Zero is too high
+
+- Fixed `refreshMachineInfo()` and `safeZValidationMessage()` in `www/preview.js`: `/api/machine/info` reports `full` shifted by active `G92` (`workZeroMachine`), which had overwritten `TOOLLESS_LIMITS.zMax` (`70.0`) with work-relative `19.162`, causing `validateProjectSafeZForFrame()` to compare machine `Z55.8` against `19.2`. Now `refreshMachineInfo()` restores machine coordinates and `safeZValidationMessage()` uses `currentMachineFrame.safeZ.machineMin/machineMax`.
+- Added clear Z-Zero height blocker messages in `safeZValidationMessage()` and a one-click **Set Safe Z to Max** button in `renderReadiness()` when Z Zero leaves positive lift room below machine Z max.
+- Validation: `npx vitest run test/ui test/mock` passed 53/54 files in parallel (626/627) and `npx vitest run test/mock/mock-server.test.mjs` passed 75/75; uploaded `www/preview.js` to `http://cnc.local/api/upload?path=/www&overwrite=true` and verified SHA-256 (`3283EA3A950B52130A8F046393179A28492D9DC3FACC28487DAB499009552AB0`, `MATCH=true`).
+
 ## 2026-11-15 - Add 15s HTTP timeout to sendCmd() in preview.js
 
 - Added a 15 s `AbortController` timeout to `fetch('/api/cmd')` inside `sendCmd()` (`www/preview.js`) after live `cnc.local` logs (`system.log` at `72019` ms) showed `POST /api/cmd` (`M400`) leaving `Preparing Bounds Check…` stuck when the HTTP response never returned to the browser.
