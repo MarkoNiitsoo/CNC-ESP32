@@ -52,14 +52,24 @@ export function calculateProjectSafeZ(input = {}) {
   let effectiveSafeZ = (programSafeZ !== null && errors.length === 0)
     ? programSafeZ + extraClearanceMm
     : null;
+  const requestedSafeZ = effectiveSafeZ;
+  let ceilingWorkZ = null;
+  let cappedToMachineMax = false;
+  let adjustmentMessage = null;
 
   if (effectiveSafeZ !== null && frame.trusted === true && frame.workZeroValid === true) {
     const zeroMachineZ = finiteOrNull(frame.workZeroMachine?.z ?? frame.workZeroMachineZ);
     if (zeroMachineZ !== null && zMax !== null) {
+      ceilingWorkZ = zMax - zeroMachineZ;
       const effectiveMachineZ = zeroMachineZ + effectiveSafeZ;
-      if (effectiveMachineZ > zMax + 0.001) {
-        errors.push(`Requested Safe Z Z${effectiveSafeZ.toFixed(1)} maps to machine Z${effectiveMachineZ.toFixed(1)}, but the machine maximum is Z${zMax.toFixed(1)}.`);
+      if (ceilingWorkZ <= 0.001) {
+        errors.push('No positive Z clearance remains above Work Zero. Lower the work setup or set Z Zero again.');
         effectiveSafeZ = null;
+      } else if (effectiveMachineZ > zMax) {
+        // Adapt generated clearance only; source G-code still needs its own envelope check.
+        effectiveSafeZ = ceilingWorkZ;
+        cappedToMachineMax = true;
+        adjustmentMessage = `Safe Z adjusted from Z${requestedSafeZ.toFixed(1)} to Z${effectiveSafeZ.toFixed(1)} (machine Z maximum ${zMax.toFixed(1)}). Original G-code heights are unchanged.`;
       }
     }
   }
@@ -70,6 +80,10 @@ export function calculateProjectSafeZ(input = {}) {
     programSafeZ,
     extraClearanceMm,
     effectiveSafeZ,
+    requestedSafeZ,
+    ceilingWorkZ,
+    cappedToMachineMax,
+    adjustmentMessage,
     confidence,
     evidence,
     resolved: Number.isFinite(effectiveSafeZ) && errors.length === 0,

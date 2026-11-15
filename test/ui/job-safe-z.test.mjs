@@ -111,7 +111,7 @@ describe('Project Safe Z Version 2', () => {
     });
   });
 
-  it('Unreachable extra clearance is rejected without clamping', () => {
+  it('Caps generated clearance to the trusted machine ceiling and preserves the request', () => {
     const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 55 } };
     const safeZ = calculateProjectSafeZ({
       programZ: { selectedSafeZ: 10, confidence: 'high' },
@@ -119,9 +119,45 @@ describe('Project Safe Z Version 2', () => {
       frame,
       limits: { zMax: 70 },
     });
-    expect(safeZ.resolved).toBe(false);
-    expect(safeZ.effectiveSafeZ).toBeNull();
-    expect(safeZ.errors.join(' ')).toMatch(/machine Z75\.0.*machine maximum is Z70\.0/);
+    expect(safeZ).toMatchObject({ resolved: true, effectiveSafeZ: 15,
+      programSafeZ: 10, extraClearanceMm: 10, requestedSafeZ: 20,
+      ceilingWorkZ: 15, cappedToMachineMax: true, errors: [] });
+    expect(safeZ.adjustmentMessage).toMatch(/adjusted from Z20\.0 to Z15\.0/);
+    expect(validateProjectSafeZForFrame(safeZ, frame, { zMax: 70 })).toMatchObject({ ok: true, machineZ: 70 });
+  });
+
+  it('Does not rewrite parsed G-code heights when the generated clearance is capped', () => {
+    const model = parseGCodeToToolpath('G21\nG90\nG0 Z20\nG0 X10 Y10\nG1 Z-2 F100\n');
+    const before = structuredClone(model);
+    const safeZ = calculateProjectSafeZ({ programZ: model.programZ,
+      frame: { trusted: true, workZeroValid: true, workZeroMachine: { z: 60 } }, limits: { zMax: 70 } });
+    expect(safeZ).toMatchObject({ programSafeZ: 20, effectiveSafeZ: 10, cappedToMachineMax: true });
+    expect(model).toEqual(before);
+  });
+
+  it.each([70, 71])('Rejects zero or negative available clearance at Work Zero Z%s', (z) => {
+    const safeZ = calculateProjectSafeZ({ programZ: { selectedSafeZ: 5 },
+      frame: { trusted: true, workZeroValid: true, workZeroMachine: { z } }, limits: { zMax: 70 } });
+    expect(safeZ).toMatchObject({ resolved: false, effectiveSafeZ: null, cappedToMachineMax: false });
+    expect(safeZ.errors[0]).toMatch(/No positive Z clearance/);
+  });
+
+  it('Recalculates the cap after Z Zero changes instead of preserving the old capped height', () => {
+    const job = { programZ: { selectedSafeZ: 20 }, projectSafeZ: { version: 2, extraClearanceMm: 5 } };
+    const frame = { trusted: true, workZeroValid: true, workZeroMachine: { z: 60 } };
+    expect(effectiveProjectSafeZ(job, { frame, limits: { zMax: 70 } })).toBe(10);
+    frame.workZeroMachine.z = 30;
+    expect(effectiveProjectSafeZ(job, { frame, limits: { zMax: 70 } })).toBe(25);
+    expect(job.projectSafeZ.cappedToMachineMax).toBe(false);
+  });
+
+  it('Never uses untrusted or missing frame values to cap a program clearance', () => {
+    for (const frame of [{ trusted: false, workZeroValid: true, workZeroMachine: { z: 60 } },
+      { trusted: true, workZeroValid: false, workZeroMachine: { z: 60 } },
+      { trusted: true, workZeroValid: true, workZeroMachine: { z: null } }]) {
+      const safeZ = calculateProjectSafeZ({ programZ: { selectedSafeZ: 20 }, frame, limits: { zMax: 70 } });
+      expect(safeZ).toMatchObject({ effectiveSafeZ: 20, cappedToMachineMax: false });
+    }
   });
 
   it('Version-1 migration is idempotent and old stock fields are no longer required', () => {
