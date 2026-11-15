@@ -1365,6 +1365,32 @@ body.workbench-page {
   font-weight: 700;
 }
 
+.readiness-recovery-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 180, 65, 0.8);
+  background: rgba(245, 180, 65, 0.14);
+}
+
+.readiness-recovery-banner[hidden] {
+  display: none;
+}
+
+.readiness-recovery-copy strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.readiness-recovery-copy p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .zero-live-coords {
   display: grid;
   grid-template-columns: 1fr 1fr auto;

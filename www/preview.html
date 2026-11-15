@@ -55,6 +55,16 @@
           <span>Read-only mode: claim control to move the machine.</span>
           <button id="readiness-claim-control" type="button">Claim Control (PIN)</button>
         </div>
+        <div id="readiness-recovery-banner" class="readiness-recovery-banner" hidden>
+          <div class="readiness-recovery-copy">
+            <strong id="readiness-recovery-title">Interrupted cut available</strong>
+            <p id="readiness-recovery-detail"></p>
+          </div>
+          <div class="job-actions compact-actions">
+            <button id="readiness-resume-recovery" type="button" class="primary-action">Resume Interrupted Cut</button>
+            <button id="readiness-continue-new-job" type="button">Continue With New Job (Keep Saved)</button>
+          </div>
+        </div>
         <div id="readiness-summary" class="job-summary"></div>
         <div id="readiness-primary" class="job-actions readiness-primary"></div>
         <div id="readiness-secondary" class="job-actions compact-actions"></div>

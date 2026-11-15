@@ -2128,10 +2128,12 @@ String jobStatusJson(bool authoritativeState = false) {
   json += ",\"directResumeValid\":";
   json += jobStatus.directResumeValid ? "true" : "false";
   json += ",\"recoveryRequired\":";
-  // Derived from the canonical enum (state-ownership audit F-12): only a job that
-  // ended Stopped or RecoveryRequired keeps asking the operator for a recovery review.
-  json += (jobStatus.state == JobRunnerState::Stopped ||
-            jobStatus.state == JobRunnerState::RecoveryRequired) ? "true" : "false";
+  // Derived from the canonical enum (state-ownership audit F-12): only a cutting
+  // job (never Bounds/Aircut test motion) that ended Stopped or RecoveryRequired
+  // keeps asking the operator for a recovery review.
+  json += (jobStatus.startMode != "validated_test_motion" &&
+            (jobStatus.state == JobRunnerState::Stopped ||
+             jobStatus.state == JobRunnerState::RecoveryRequired)) ? "true" : "false";
   json += ",\"cutterState\":\"";
   json += (jobStatus.state == JobRunnerState::PausedIntact || jobStatus.state == JobRunnerState::Pausing)
               ? "running_assumed"
@@ -4929,18 +4931,20 @@ void finishPrioritySequence() {
     }
     jobWaitingForOk = false;
     jobResponseBuffer = "";
-    jobStatus.state = jobStatus.pauseInterruptedForManualMotion
+    const bool recoveryInterruption =
+        jobStatus.pauseInterruptedForManualMotion && jobStatus.startMode != "validated_test_motion";
+    jobStatus.state = recoveryInterruption
                           ? JobRunnerState::RecoveryRequired
                           : JobRunnerState::Stopped;
     resetJobSubstates(JobSubstateResetScope::Terminal);
     jobStatus.streamingPausedReason =
         jobStatus.stopDuringHomingLeg
             ? "Homing interrupted by Stop. Home All is required before further motion."
-            : jobStatus.pauseInterruptedForManualMotion
+            : recoveryInterruption
                 ? "Manual movement invalidated direct Resume. Review Recovery before continuing."
                 : "Stopped now with M410 quickstop. Home All and verify recovery before further motion.";
     jobStatus.stopDuringHomingLeg = false;
-    if (jobStatus.pauseInterruptedForManualMotion) {
+    if (recoveryInterruption) {
       setPersistentActiveJobMarker(false);
     }
     resetFeedOverrideAfterJobIfNeeded();
@@ -9733,24 +9737,30 @@ bool beginPausedManualInterruption() {
   jobWaitingForOk = false;
   jobResponseBuffer = "";
   jobStatus.directResumeValid = false;
-  jobStatus.pauseInterruptedForManualMotion = true;
+  const bool isTestMotion = jobStatus.startMode == "validated_test_motion";
+  jobStatus.pauseInterruptedForManualMotion = !isTestMotion;
   jobStatus.state = JobRunnerState::Stopping;
   jobStatus.stopEmergencyParserDetected = machineProfile.capEmergencyParser;
   jobStatus.stopWarning = machineProfile.capEmergencyParser
                               ? ""
                               : "Marlin EMERGENCY_PARSER was not detected. Held motion cancellation may not be immediate.";
   jobStatus.streamingPausedReason =
-      "Manual movement requested. Cancelling direct Resume with M410; M5 follows only after motion stops.";
+      isTestMotion
+          ? "Manual movement requested during test motion. Stopping test motion cleanly."
+          : "Manual movement requested. Cancelling direct Resume with M410; M5 follows only after motion stops.";
   startImmediateStopPrioritySequence();
-  if (writePersistentJobCheckpoint(false, true, "manual movement invalidated intact pause")) {
-    jobCheckpointTracking = false;
-  } else {
-    logJobEvent("warning: could not persist paused manual-movement evidence");
+  if (!isTestMotion) {
+    if (writePersistentJobCheckpoint(false, true, "manual movement invalidated intact pause")) {
+      jobCheckpointTracking = false;
+    } else {
+      logJobEvent("warning: could not persist paused manual-movement evidence");
+    }
   }
   resetJobSubstates(JobSubstateResetScope::StopInitiated);
   invalidateMachineFrame(FrameInvalidationScope::Full, FrameInvalidationReason::PausedManualInterruption);
   touchJobStatus();
-  logJobEvent("paused direct Resume invalidated for manual movement");
+  logJobEvent(isTestMotion ? "paused test motion stopped for manual movement"
+                           : "paused direct Resume invalidated for manual movement");
   return true;
 }
 

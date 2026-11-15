@@ -1,4 +1,10 @@
 # Handoff
+## 2026-11-15 - Cutting-only recovery tracking & interrupted-cut first choice in Readiness
+
+- `src/main.cpp`: Excluded `startMode == "validated_test_motion"` from `recoveryRequired`, `JobRunnerState::RecoveryRequired` on manual pause interruption, and persistent checkpoints in `beginPausedManualInterruption()`.
+- `www/preview.html`, `www/preview.js`, `www/preview.css`: Guarded `stopJobRun()` / `syncRunHistoryFromStatus()` against test-motion runs, and added `#readiness-recovery-banner` at the top of Readiness offering **Resume Interrupted Cut** or **Continue With New Job (Keep Saved)** when an interrupted cut is available.
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests); `pio run -e esp32cam` succeeded (`1546544` bytes). Deployed `firmware.bin` and `preview.html`, `preview.js`, `preview.css` to `E:` (SHA-256 verified).
+
 ## 2026-11-15 - Compact Readiness ordering & Bounds error visibility
 
 - `www/preview.html`, `www/preview.js`, `www/preview.css`: Placed `#readiness-primary`/`#readiness-secondary` directly under `#readiness-summary`, tucked repeatable tools into `<details id="readiness-quick-tools">` (auto-open on `frame` gate, collapsed on later gates to avoid duplicate Bounds/Aircut/Z-zero buttons), added `.readiness-action-feedback.is-error` + explicit `M400` failure context in `captureM114()`, added `.readiness-claim-banner[hidden] { display: none; }`, and restored full mobile `.preview-stage` height.

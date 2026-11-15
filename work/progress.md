@@ -1,4 +1,11 @@
 # Progress
+## 2026-11-15 - Cutting-only recovery tracking & interrupted-cut first choice in Readiness
+
+- Excluded `validated_test_motion` (Bounds Check / Aircut / toolless test motion) from recovery states and checkpoints in `src/main.cpp` (`jobStatusJson()` `recoveryRequired` flag, `Stopping` -> `Stopped` transition, and `beginPausedManualInterruption()`) and guarded `stopJobRun()` / `syncRunHistoryFromStatus()` in `www/preview.js` so stopping Bounds Check or Aircut never creates an interrupted cutting recovery.
+- Added `#readiness-recovery-banner` to `www/preview.html`, `www/preview.css`, and `www/preview.js` (`renderReadiness()`): when an interrupted cut exists (`activeRecoveries > 0`, `RECOVERY_REQUIRED`, or pending firmware checkpoint), opening Readiness presents **Resume Interrupted Cut** vs **Continue With New Job (Keep Saved)** first, keeping saved recoveries intact for later resumption while allowing quick moves or another job in between.
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests); `pio run -e esp32cam` succeeded (`1546544` bytes).
+- Deployed `E:\firmware.bin` (SHA-256 `B94CE940090C1770B5E699EEA59E2669C1F9B2A0433F8E82E1558E4FBEE7A8DD`) and updated `www/` (`preview.html`, `preview.js`, `preview.css`) to verified CNC SD card `E:` (`.cnc-sd-id` `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`) after backing up to `.pio-build/sd-backups/2026-11-15-recovery-prompt`.
+
 ## 2026-11-15 - Compact Readiness ordering, deduplicated step tools, and M400/Bounds error visibility
 
 - Reordered `.readiness-panel` in `www/preview.html` so the active step's primary/secondary actions appear directly beneath `#readiness-summary`, and grouped the repeatable tools (`#readiness-home-all`, `#readiness-set-z-zero`, `#readiness-run-bounds`, `#readiness-run-aircut`, `#readiness-inspect-preflight`, `#readiness-inspect-recoveries`) into `<details id="readiness-quick-tools">` that auto-opens only on the `frame` gate.

@@ -55,6 +55,11 @@ const readinessQuickToolsEl = document.querySelector('#readiness-quick-tools');
 const workflowStepperEl = document.querySelector('#workflow-stepper');
 const readinessClaimBannerEl = document.querySelector('#readiness-claim-banner');
 const readinessClaimControlButton = document.querySelector('#readiness-claim-control');
+const readinessRecoveryBannerEl = document.querySelector('#readiness-recovery-banner');
+const readinessRecoveryTitleEl = document.querySelector('#readiness-recovery-title');
+const readinessRecoveryDetailEl = document.querySelector('#readiness-recovery-detail');
+const readinessResumeRecoveryButton = document.querySelector('#readiness-resume-recovery');
+const readinessContinueNewJobButton = document.querySelector('#readiness-continue-new-job');
 const zeroLiveWorkEl = document.querySelector('#zero-live-work');
 const zeroLiveMachineEl = document.querySelector('#zero-live-machine');
 const zeroOpenJogButton = document.querySelector('#zero-open-jog');
@@ -203,6 +208,7 @@ let dryRunStatus = 'idle';
 let readinessActionFeedback = '';
 let readinessActionIsError = false;
 let lastReadinessGate = '';
+let interruptedPromptDeferredForPath = '';
 let dryRunActionBusy = false;
 let activeTestMotion = null;
 let gcodeText = '';
@@ -644,6 +650,29 @@ function renderClaimBanner() {
   readinessClaimBannerEl.hidden = !document.body.classList.contains('operator-read-only');
 }
 
+readinessResumeRecoveryButton?.addEventListener('click', () => {
+  showPreviewTab('recovery');
+  workbenchController?.openForTab('recovery');
+  history.replaceState(null, '', '#recovery');
+});
+
+readinessContinueNewJobButton?.addEventListener('click', async () => {
+  interruptedPromptDeferredForPath = filePath || '__none__';
+  if (firmwareRecoveryCheckpoint?.requiresReview &&
+      firmwareRecoveryCheckpoint?.checkpoint &&
+      firmwareRecoveryCheckpoint.checkpoint.startMode !== 'validated_test_motion') {
+    try {
+      await importFirmwareRecoveryCheckpoint(firmwareRecoveryCheckpoint, firmwareRecoveryCheckpoint.checkpoint);
+    } catch (err) {
+      readinessActionFeedback = err?.message || 'Could not archive firmware checkpoint.';
+      readinessActionIsError = true;
+    }
+  }
+  readinessActionFeedback = 'Interrupted cut kept saved in Recovery. You can prepare a new job or quick move now.';
+  readinessActionIsError = false;
+  renderReadiness();
+});
+
 function renderWorkflowStepper(status, machineState) {
   renderClaimBanner();
   if (!workflowStepperEl) return;
@@ -700,7 +729,40 @@ function renderReadiness() {
     if (readinessQuickToolsEl) readinessQuickToolsEl.open = status.gate === 'frame';
   }
   const completedSteps = [status.frame.ok, status.workZero.ok, status.verification.ok].filter(Boolean).length;
-  const savedRecoveries = jobRecoveryModule?.activeRecoveries(jobState || {}).length || 0;
+  const activeRecoveries = jobRecoveryModule?.activeRecoveries(jobState || {}) || [];
+  const savedRecoveries = activeRecoveries.length;
+  const firmwareReviewActive = Boolean(
+    firmwareRecoveryCheckpoint?.requiresReview &&
+    firmwareRecoveryCheckpoint?.checkpoint?.startMode !== 'validated_test_motion'
+  );
+  const hasInterruptedCut = !homeBusy && (savedRecoveries > 0 || machineState === 'RECOVERY_REQUIRED' || firmwareReviewActive);
+  const promptKey = filePath || '__none__';
+  const showInterruptedFirst = hasInterruptedCut && interruptedPromptDeferredForPath !== promptKey;
+  if (readinessRecoveryBannerEl) {
+    readinessRecoveryBannerEl.hidden = !showInterruptedFirst;
+    if (showInterruptedFirst) {
+      const latestRecovery = activeRecoveries[activeRecoveries.length - 1] || null;
+      if (readinessRecoveryTitleEl) {
+        readinessRecoveryTitleEl.textContent = savedRecoveries > 1
+          ? `${savedRecoveries} interrupted cuts saved`
+          : 'Interrupted cut available';
+      }
+      if (readinessRecoveryDetailEl) {
+        if (latestRecovery) {
+          const lineInfo = latestRecovery.lastAckedCommandNumber
+            ? `line ${latestRecovery.lastAckedCommandNumber}`
+            : 'saved checkpoint';
+          readinessRecoveryDetailEl.textContent = `Saved cut for ${basename(latestRecovery.sourceGcodePath || filePath) || 'current job'} (${lineInfo}). Resume it now, or continue with a new job while keeping this cut saved for later.`;
+        } else {
+          readinessRecoveryDetailEl.textContent = 'An interrupted cut requires review. Open Recovery to resume, or continue with a new job while keeping recovery data saved.';
+        }
+      }
+    }
+  }
+  readinessSummaryEl.hidden = showInterruptedFirst;
+  readinessPrimaryEl.hidden = showInterruptedFirst;
+  readinessSecondaryEl.hidden = showInterruptedFirst;
+  if (readinessQuickToolsEl) readinessQuickToolsEl.hidden = showInterruptedFirst;
   const copy = {
     blocked: ['Job needs attention', status.hardBlockers[0] || 'Resolve the job file problem before moving the machine.'],
     frame: ['Establish machine position', 'Home All is recommended. You may deliberately continue without homing when recovering material or a job.'],
@@ -2233,7 +2295,9 @@ async function stopJobRun() {
       { afterSequence: baseline, timeoutMs: 5000, description: 'stopped job state' },
     );
     appendRunLog(data.message || 'Stop command accepted and confirmed by live state.');
-    if (['STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(confirmed.state || '').toUpperCase())) {
+    if (['STOPPED', 'RECOVERY_REQUIRED', 'ERROR'].includes(String(confirmed.state || '').toUpperCase()) &&
+        (!confirmed.streamMode || confirmed.streamMode === 'job') &&
+        confirmed.startMode !== 'validated_test_motion') {
       await markLatestRunStopped(confirmed, data.message || 'Operator stop requested');
     }
   } catch (err) {
@@ -2257,6 +2321,8 @@ async function markLatestRunStopped(status = null, reason = '') {
 
 async function syncRunHistoryFromStatus(status) {
   if (!jobState || !status?.state) return;
+  if (status.streamMode && status.streamMode !== 'job') return;
+  if (status.startMode === 'validated_test_motion') return;
   const terminal = status.state === 'COMPLETED' || status.state === 'STOPPED' ||
     status.state === 'RECOVERY_REQUIRED' || status.state === 'ERROR';
   if (!terminal) return;
