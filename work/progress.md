@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-15 - Replace stale arming wording in active-run and placement messages
+
+- Replaced legacy `"Review and re-arm before cutting"` / `"Repeat dry run before arming"` messages in `www/lib/job-active-run.js` and `www/preview.js` with clear fit-check / Update Run File wording matching the current `Job Readiness` flow.
+- Validation: `npx vitest run test/ui/job-active-run.test.mjs test/ui/job-readiness.test.mjs test/ui/preview-active-run-canvas.test.mjs test/ui/ui-version-sync.test.mjs` passed 4/4 files; copied `job-active-run.js` and `preview.js` to `E:\www\`.
+
 ## 2026-11-15 - Automated UI version badge and cache-buster sync across all HTML entrypoints
 
 - Added `#ui-version-badge` and synchronized `?v=20261115-8` asset query strings across `www/index.html`, `www/files.html`, and `www/preview.html`.

@@ -147,7 +147,7 @@ export function isGeneratedRunUsable(job = {}) {
   }
   if (active.generatedFingerprint && validation.generatedFingerprint &&
       !fingerprintsMatch(active.generatedFingerprint, validation.generatedFingerprint)) {
-    return { ok: false, reason: 'generated_stale', message: 'Generated run fingerprint changed. Review and re-arm before cutting.' };
+    return { ok: false, reason: 'generated_stale', message: 'Generated run fingerprint changed. Update Run File and re-check fit before cutting.' };
   }
   if (active.transformFingerprint && validation.transformFingerprint && active.transformFingerprint !== validation.transformFingerprint) {
     return { ok: false, reason: 'generated_stale', message: 'Placement transform changed. Update Run File before dry run or cutting.' };
@@ -199,9 +199,9 @@ export function assertCanUseActiveRunForExecution(job = {}, options = {}) {
     if (!dryRunOk) {
       reasons.push({ reason: 'dry_run_stale', message: 'Dry run has not been completed for the active run file.' });
     } else if (dryRunPath && dryRunPath !== active.path) {
-      reasons.push({ reason: 'dry_run_stale', message: 'Dry run was completed for another run file. Repeat dry run before arming.' });
+      reasons.push({ reason: 'dry_run_stale', message: 'Dry run was completed for another run file. Repeat fit check before cutting.' });
     } else if (dryRunFingerprint && currentFingerprint && !fingerprintsMatch(dryRunFingerprint, currentFingerprint)) {
-      reasons.push({ reason: 'dry_run_stale', message: 'Dry run fingerprint is stale. Repeat dry run before arming.' });
+      reasons.push({ reason: 'dry_run_stale', message: 'Dry run fingerprint is stale. Repeat fit check before cutting.' });
     }
   }
 
@@ -214,7 +214,7 @@ export function markExecutionStateStaleIfPathChanged(job = {}, previousActiveRun
   const previous = previousActiveRun || {};
   const active = getActiveRun(job);
   if (!previous.path || (previous.path === active.path && previous.mode === active.mode)) return false;
-  invalidateArmAndDryRun(job, 'Active run file changed. Review, dry run, and re-arm before cutting.');
+  invalidateArmAndDryRun(job, 'Active run file changed. Re-check fit before cutting.');
   return true;
 }
 

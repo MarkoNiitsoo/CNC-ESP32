@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Replace stale arming wording in active-run and placement messages
+
+- `www/lib/job-active-run.js`, `www/preview.js`: Replaced legacy `re-arm` / `before arming` messages with `Update Run File and re-check fit before cutting` / `Check fit before cutting`.
+- Validation: `npx vitest run test/ui/job-active-run.test.mjs test/ui/job-readiness.test.mjs test/ui/preview-active-run-canvas.test.mjs test/ui/ui-version-sync.test.mjs` passed 4/4 files.
+
 ## 2026-11-15 - Automated UI version badge and cache-buster sync across all HTML entrypoints
 
 - `scripts/sync-ui-version.mjs`, `package.json` (`npm run ui:version`): Single-command sync for `#ui-version-badge` (`UI YYYY.MM.DD-N`) and `?v=YYYYMMDD-N` query strings across `www/index.html`, `www/files.html`, and `www/preview.html`.

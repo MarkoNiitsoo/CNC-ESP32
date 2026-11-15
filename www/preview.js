@@ -5102,7 +5102,7 @@ async function selectGeneratedRunInUi() {
     return;
   }
   await saveJobQuietly();
-  appendPlacementResult(`Active run file is now ${generatedPath}. Review and re-arm before cutting.`);
+  appendPlacementResult(`Active run file is now ${generatedPath}. Check fit before cutting.`);
   await refreshActiveRunUi();
 }
 
@@ -5123,7 +5123,7 @@ async function selectSourceRunInUi() {
   };
   active.selectSourceRun(job, filePath);
   await saveJobQuietly();
-  appendPlacementResult('Active run file is now the original source G-code. Review and re-arm before cutting.');
+  appendPlacementResult('Active run file is now the original source G-code. Check fit before cutting.');
   await refreshActiveRunUi();
 }
 
