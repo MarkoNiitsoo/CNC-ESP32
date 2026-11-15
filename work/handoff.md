@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Automatic run-file regeneration before Bounds/Aircut/Start Cut
+
+- `www/preview.js`: Added `ensureGeneratedRunCurrent()` and `generateRunInFlight` so any pending or stale transformed `.run.gc` file is automatically regenerated and uploaded before Bounds Check, Aircut, or Start Cut (`350 ms` debounce, no redundant `/api/download` preflight when `overwrite: true`).
+- Validation: `npx vitest run test/ui` passed **46/46 files (524/524 tests)**; deployed `preview.js` to `E:\www\preview.js`.
+
 ## 2026-11-15 - Replace stale arming wording in active-run and placement messages
 
 - `www/lib/job-active-run.js`, `www/preview.js`: Replaced legacy `re-arm` / `before arming` messages with `Update Run File and re-check fit before cutting` / `Check fit before cutting`.

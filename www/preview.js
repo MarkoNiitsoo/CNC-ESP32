@@ -232,6 +232,7 @@ let activeRunText = '';
 let activeRunPath = filePath;
 let activeRunMode = 'source';
 let placementUpdateTimer = null;
+let generateRunInFlight = null;
 let suppressPlacementChange = false;
 let workbenchUiModule = null;
 let workbenchController = null;
@@ -2148,6 +2149,7 @@ async function dispatchJobStart(payload) {
 }
 
 async function startJobRun() {
+  await ensureGeneratedRunCurrent().catch((err) => appendRunLog(`Run file update failed: ${err.message}`));
   const runPath = currentRunPath();
   const runMode = currentRunMode();
   const runCheck = jobActiveRunModule?.assertCanUseActiveRunForExecution
@@ -5407,6 +5409,7 @@ async function sendBoundingBoxTrace() {
   dryRunActionBusy = true;
   reportReadinessAction('Preparing Bounds Check…');
   try {
+    await ensureGeneratedRunCurrent();
     await runBoundingBoxTrace();
   } catch (err) {
     const msg = err?.message || String(err || 'Unknown Bounds Check error');
@@ -5540,6 +5543,7 @@ async function sendAircutToolpath() {
   dryRunActionBusy = true;
   reportReadinessAction('Preparing Aircut…');
   try {
+    await ensureGeneratedRunCurrent();
     await runAircutToolpath();
   } catch (err) {
     const msg = err?.message || String(err || 'Unknown Aircut error');
@@ -6933,7 +6937,7 @@ async function markPlacementChangedAndScheduleUpdate() {
         renderPreflight();
         renderArmPanel();
       });
-  }, 800);
+  }, 350);
   renderPlacementPanel();
   renderJobPanel();
   renderPreflight();
@@ -6970,13 +6974,39 @@ async function reconcilePlacementIntentOnLoad(options = {}) {
   await markPlacementChangedAndScheduleUpdate();
 }
 
+async function ensureGeneratedRunCurrent() {
+  if (!sourceToolpathModel) return;
+  if (placementUpdateTimer) {
+    clearTimeout(placementUpdateTimer);
+    placementUpdateTimer = null;
+    await generateRunFile({ auto: true, overwrite: true });
+    return;
+  }
+  if (generateRunInFlight) {
+    await generateRunInFlight;
+  }
+  const active = await jobActiveRunPromise;
+  const job = ensureJobState();
+  if (!active.requiresGeneratedRun(job)) return;
+  const match = active.validateActiveRunMatchesPlacement(job);
+  if (!match.ok) {
+    await generateRunFile({ auto: true, overwrite: true });
+  }
+}
+
 async function generateRunFile(options = {}) {
   const placementModel = sourceToolpathModel || toolpathModel;
   if (!placementModel) return;
+  if (generateRunInFlight) {
+    await generateRunInFlight.catch(() => {});
+  }
+  const task = (async () => {
   const transform = await toolpathTransformPromise;
   const placement = resolvedPlacement(transform, placementModel);
   const generatedRunPath = transform.generatedRunPathFor(filePath);
-  const existing = await fetch(`/api/download?path=${encodeURIComponent(generatedRunPath)}`).catch(() => null);
+  const existing = (options.overwrite === false || options.confirmOverwrite)
+    ? await fetch(`/api/download?path=${encodeURIComponent(generatedRunPath)}`).catch(() => null)
+    : null;
   if (existing?.ok && options.overwrite === false) return;
   if (existing?.ok && options.confirmOverwrite && !confirm(`${generatedRunPath} already exists. Overwrite run file?`)) return;
 
@@ -7012,6 +7042,13 @@ async function generateRunFile(options = {}) {
   transformedPreview = generated.transformed;
   appendPlacementResult(`${options.auto ? 'Auto-updated' : 'Updated'} ${generatedRunPath}`);
   await refreshActiveRunUi();
+  })();
+  generateRunInFlight = task;
+  try {
+    await task;
+  } finally {
+    if (generateRunInFlight === task) generateRunInFlight = null;
+  }
 }
 
 async function loadPreview() {
