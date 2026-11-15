@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Add 15s HTTP timeout to sendCmd() in preview.js
+
+- `www/preview.js`: Added a 15 s `AbortController` timeout to `sendCmd()` so a dropped `/api/cmd` HTTP response no longer leaves `dryRunActionBusy` stuck on `Preparing Bounds Check…`.
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests).
+
 ## 2026-11-15 - Cutting-only recovery tracking & interrupted-cut first choice in Readiness
 
 - `src/main.cpp`: Excluded `startMode == "validated_test_motion"` from `recoveryRequired`, `JobRunnerState::RecoveryRequired` on manual pause interruption, and persistent checkpoints in `beginPausedManualInterruption()`.

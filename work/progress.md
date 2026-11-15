@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-15 - Add 15s HTTP timeout to sendCmd() in preview.js
+
+- Added a 15 s `AbortController` timeout to `fetch('/api/cmd')` inside `sendCmd()` (`www/preview.js`) after live `cnc.local` logs (`system.log` at `72019` ms) showed `POST /api/cmd` (`M400`) leaving `Preparing Bounds Check…` stuck when the HTTP response never returned to the browser.
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests).
+
 ## 2026-11-15 - Cutting-only recovery tracking & interrupted-cut first choice in Readiness
 
 - Excluded `validated_test_motion` (Bounds Check / Aircut / toolless test motion) from recovery states and checkpoints in `src/main.cpp` (`jobStatusJson()` `recoveryRequired` flag, `Stopping` -> `Stopped` transition, and `beginPausedManualInterruption()`) and guarded `stopJobRun()` / `syncRunHistoryFromStatus()` in `www/preview.js` so stopping Bounds Check or Aircut never creates an interrupted cutting recovery.

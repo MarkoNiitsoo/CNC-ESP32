@@ -4687,17 +4687,27 @@ async function sendCmd(cmd) {
   const machineBaseline = normalized === 'M114' ? socketSliceToken('machine') : 0;
   const previousRevision = normalized === 'M114' ? machineFrameRevision(currentMachineFrame) : -1;
   let res;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 15000) : null;
   try {
     res = await fetch('/api/cmd', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cmd }),
+      ...(controller ? { signal: controller.signal } : {}),
     });
   } catch (netErr) {
-    const err = new Error("Marlin did not respond. Machine commands are blocked until controller communication is restored.");
+    const timedOut = netErr?.name === 'AbortError';
+    const err = new Error(
+      timedOut
+        ? `${cmd} timed out waiting for ESP32 HTTP response.`
+        : "Marlin did not respond. Machine commands are blocked until controller communication is restored.",
+    );
     err.isTimeout = true;
     renderControllerStatus();
     throw err;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
   const data = await res.json();
   if (res.status === 409) {
