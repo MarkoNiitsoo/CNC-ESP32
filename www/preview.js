@@ -4763,14 +4763,20 @@ async function sendCmd(cmd) {
     throw err;
   }
   if (normalized === 'M114') {
-    await waitForSocketSlice(
-      'machine',
-      (slice) => {
-        const frame = machineFrameFromSlice(slice);
-        return machineFrameRevision(frame) >= previousRevision && Boolean(frame.work || slice?.position?.work);
-      },
-      { afterSequence: machineBaseline, timeoutMs: 5000, description: 'new M114 machine position' },
-    );
+    const parsedM114 = parseM114(data.response || '');
+    const hasCoords = Number.isFinite(parsedM114?.position?.x) &&
+      Number.isFinite(parsedM114?.position?.y) &&
+      Number.isFinite(parsedM114?.position?.z);
+    if (!hasCoords) {
+      await waitForSocketSlice(
+        'machine',
+        (slice) => {
+          const frame = machineFrameFromSlice(slice);
+          return machineFrameRevision(frame) >= previousRevision && Boolean(frame.work || slice?.position?.work);
+        },
+        { afterSequence: machineBaseline, timeoutMs: 5000, description: 'new M114 machine position' },
+      );
+    }
   }
   return data.response || '';
 }

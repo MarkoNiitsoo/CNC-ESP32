@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Skip redundant M114 WebSocket wait when /api/cmd returns valid XYZ
+
+- Fixed `sendCmd('M114')` in `www/preview.js`: when `POST /api/cmd` already returns parseable `X/Y/Z` coordinates in `data.response`, return immediately instead of waiting 5 s on `waitForSocketSlice('machine', ...)` (firmware only broadcasts `machine` WS slices when `M114` changes XYZ, so idle `M114` captures at `0,0,0` timed out).
+- Bumped `www/preview.html` to `UI 2026.11.15-7` (`?v=20261115-7`).
+- Validation: `npx vitest run test/ui/live-control-dom-audit.test.mjs test/ui/preview-first-open.test.mjs test/ui/workbench-ui.test.mjs test/ui/machine-controls.test.mjs test/ui/phase2-end-to-end.test.mjs` passed 125/125 tests; uploaded `preview.js` and `preview.html` to `http://192.168.8.13/api/upload?path=/www&overwrite=true` (`MATCH=True`).
+
 ## 2026-11-15 - Fix ReferenceError (controllerCommState) in runBoundingBoxTrace
 
 - Fixed `controllerCommState` -> `getControllerCommState()` in `runBoundingBoxTrace()` (`www/preview.js`), which had been throwing `ReferenceError: controllerCommState is not defined` whenever `captureM114()` failed and previously left `"Preparing Bounds Check…"` stuck on screen.
