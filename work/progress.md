@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Fix ReferenceError (controllerCommState) in runBoundingBoxTrace
+
+- Fixed `controllerCommState` -> `getControllerCommState()` in `runBoundingBoxTrace()` (`www/preview.js`), which had been throwing `ReferenceError: controllerCommState is not defined` whenever `captureM114()` failed and previously left `"Preparing Bounds Check…"` stuck on screen.
+- Bumped `www/preview.html` version badge and cache-buster to `UI 2026.11.15-6` (`?v=20261115-6`).
+- Validation: `npx vitest run test/ui/live-control-dom-audit.test.mjs test/ui/preview-first-open.test.mjs test/ui/workbench-ui.test.mjs test/ui/machine-controls.test.mjs` passed 80/80 tests; uploaded `preview.js` and `preview.html` to `http://192.168.8.13/api/upload?path=/www&overwrite=true` (`MATCH=True`).
+
 ## 2026-11-15 - Fix 3D bounds box drawing, catch unhandled Bounds/Aircut errors, and show M400/M114 sub-step status
 
 - Fixed 3D preview `layers.bounds` drawing in `www/preview.js` (`draw()`): read `boundsModel?.toolpathBounds || boundsModel?.bounds` so `rawTravelBounds` and `cutBounds` are rendered around the cut object.

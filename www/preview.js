@@ -5454,7 +5454,7 @@ async function runBoundingBoxTrace() {
       unconfirmedMsg = `UART owner busy: ${err.message}`;
     } else if (err.isMalformed) {
       unconfirmedMsg = 'Marlin responded, but a complete X/Y/Z position could not be read. Cut Bounds was not started.';
-    } else if (err.isTimeout || controllerCommState === 'unresponsive') {
+    } else if (err.isTimeout || getControllerCommState() === 'unresponsive') {
       unconfirmedMsg = 'Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.';
     } else if (err.message) {
       unconfirmedMsg = err.message;
