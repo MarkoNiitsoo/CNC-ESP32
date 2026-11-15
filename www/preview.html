@@ -56,18 +56,21 @@
           <button id="readiness-claim-control" type="button">Claim Control (PIN)</button>
         </div>
         <div id="readiness-summary" class="job-summary"></div>
-        <div class="job-actions readiness-primary readiness-machine-actions">
-          <button id="readiness-home-all" class="primary-action machine-danger" type="button" data-requires-live-control>Home All</button>
-        </div>
-        <div class="job-actions compact-actions readiness-persistent-tools" aria-label="Persistent setup tools">
-          <button id="readiness-set-z-zero" type="button" data-requires-live-control>Set Z Zero</button>
-          <button id="readiness-run-bounds" type="button" data-requires-live-control>Run Bounding Box</button>
-          <button id="readiness-run-aircut" type="button" data-requires-live-control>Run Aircut</button>
-          <button id="readiness-inspect-preflight" type="button">Inspect Preflight</button>
-          <button id="readiness-inspect-recoveries" type="button">Recoveries / History</button>
-        </div>
         <div id="readiness-primary" class="job-actions readiness-primary"></div>
         <div id="readiness-secondary" class="job-actions compact-actions"></div>
+        <details id="readiness-quick-tools" class="readiness-quick-tools">
+          <summary>Quick Setup &amp; Recovery Tools</summary>
+          <div class="job-actions readiness-primary readiness-machine-actions">
+            <button id="readiness-home-all" class="primary-action machine-danger" type="button" data-requires-live-control>Home All</button>
+          </div>
+          <div class="job-actions compact-actions readiness-persistent-tools" aria-label="Persistent setup tools">
+            <button id="readiness-set-z-zero" type="button" data-requires-live-control>Set Z Zero</button>
+            <button id="readiness-run-bounds" type="button" data-requires-live-control>Run Bounding Box</button>
+            <button id="readiness-run-aircut" type="button" data-requires-live-control>Run Aircut</button>
+            <button id="readiness-inspect-preflight" type="button">Inspect Preflight</button>
+            <button id="readiness-inspect-recoveries" type="button">Recoveries / History</button>
+          </div>
+        </details>
       </section>
 
       <section class="panel preview-stage" aria-label="Live toolpath preview">

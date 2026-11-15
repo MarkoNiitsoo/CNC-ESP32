@@ -1467,3 +1467,60 @@ body.workbench-page {
     display: none;
   }
 }
+
+
+/* Compact ordered Readiness panel & mobile layout polish */
+.readiness-quick-tools {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(159, 177, 191, 0.2);
+}
+
+.readiness-quick-tools > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.85;
+  padding: 4px 0;
+}
+
+.readiness-action-feedback {
+  margin: 8px 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(77, 163, 255, 0.55);
+  background: rgba(77, 163, 255, 0.14);
+  font-size: 0.9rem;
+}
+
+.readiness-action-feedback.is-error {
+  border-color: rgba(232, 89, 89, 0.85);
+  background: rgba(232, 89, 89, 0.18);
+  font-weight: 600;
+}
+
+@media (max-width: 680px) {
+  .status-header {
+    padding: 8px 12px;
+  }
+
+  .status-header .eyebrow,
+  .file-toolbar .maintenance-link {
+    display: none;
+  }
+
+  .status-header h1 {
+    font-size: 1.15rem;
+    margin: 0;
+  }
+
+  .file-toolbar {
+    padding: 6px 10px;
+    gap: 6px;
+  }
+
+  .preview-stage {
+    min-height: 200px;
+    max-height: 36vh;
+  }
+}

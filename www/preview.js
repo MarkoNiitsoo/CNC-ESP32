@@ -51,6 +51,7 @@ const safeZClearanceOutput = document.querySelector('#safe-z-clearance-output');
 const effectiveSafeZOutput = document.querySelector('#effective-safe-z');
 const projectSafeZStatusEl = document.querySelector('#project-safe-z-status');
 const readinessSummaryEl = document.querySelector('#readiness-summary');
+const readinessQuickToolsEl = document.querySelector('#readiness-quick-tools');
 const workflowStepperEl = document.querySelector('#workflow-stepper');
 const readinessClaimBannerEl = document.querySelector('#readiness-claim-banner');
 const readinessClaimControlButton = document.querySelector('#readiness-claim-control');
@@ -200,6 +201,8 @@ let aircutSafety = { ok: false, messages: [] };
 let aircutOptimization = { skippedPasses: 0, skippedSegments: 0, keptPasses: 0 };
 let dryRunStatus = 'idle';
 let readinessActionFeedback = '';
+let readinessActionIsError = false;
+let lastReadinessGate = '';
 let dryRunActionBusy = false;
 let activeTestMotion = null;
 let gcodeText = '';
@@ -692,6 +695,10 @@ function renderReadiness() {
   if (readinessRunAircutButton) {
     readinessRunAircutButton.textContent = verificationType === 'aircut' ? 'Run Aircut Again' : 'Run Aircut';
   }
+  if (status.gate !== lastReadinessGate) {
+    lastReadinessGate = status.gate;
+    if (readinessQuickToolsEl) readinessQuickToolsEl.open = status.gate === 'frame';
+  }
   const completedSteps = [status.frame.ok, status.workZero.ok, status.verification.ok].filter(Boolean).length;
   const savedRecoveries = jobRecoveryModule?.activeRecoveries(jobState || {}).length || 0;
   const copy = {
@@ -711,7 +718,7 @@ function renderReadiness() {
     <div class="operator-readiness-progress"><strong>${completedSteps} / 3</strong><span>preparation decisions ready</span></div>
     <h3>${html(copy[0])}</h3>
     <p>${html(copy[1])}</p>
-    ${readinessActionFeedback ? `<p class="warning" role="status" aria-live="polite">${html(readinessActionFeedback)}</p>` : ''}
+    ${readinessActionFeedback ? `<div class="readiness-action-feedback${readinessActionIsError ? ' is-error' : ''}" role="status" aria-live="polite">${html(readinessActionFeedback)}</div>` : ''}
     ${status.warnings.length ? `<p class="warning">${html(status.warnings.join(' · '))}</p>` : ''}
     <details class="operator-diagnostics">
       <summary>Preparation details</summary>
@@ -3930,6 +3937,7 @@ function setDryRunRunning(isRunning) {
 
 function reportReadinessAction(message, isError = false) {
   readinessActionFeedback = message;
+  readinessActionIsError = Boolean(isError);
   setJobResult(message, isError);
   renderReadiness();
 }
@@ -4662,9 +4670,9 @@ async function captureM114() {
       throw err;
     }
     if (err.isTimeout || getControllerCommState() === 'unresponsive') {
-      throw new Error('Marlin did not respond. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
+      throw new Error('Marlin did not respond to M400. Cut Bounds was not started. Machine commands are blocked until controller communication is restored.');
     }
-    throw err;
+    throw new Error(`M400 before Cut Bounds failed: ${err.message || 'unknown error'}`);
   }
 
   appendDryRunLog('Waiting for Marlin to report the current position. No movement has been started.');

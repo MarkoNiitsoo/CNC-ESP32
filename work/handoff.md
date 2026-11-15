@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Compact Readiness ordering & Bounds error visibility
+
+- `www/preview.html`, `www/preview.js`, `www/preview.css`: Placed `#readiness-primary`/`#readiness-secondary` directly under `#readiness-summary`, tucked repeatable tools into `<details id="readiness-quick-tools">` (auto-open on `frame` gate, collapsed on later gates to avoid duplicate Bounds/Aircut/Z-zero buttons), added `.readiness-action-feedback.is-error` + explicit `M400` failure context in `captureM114()`, and compacted mobile header/canvas spacing.
+- Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests); deployed updated `preview.html`, `preview.js`, `preview.css` to `E:\www` (SHA-256 verified).
+
 ## 2026-11-15 - HTTP ETag / 304 caching and 16 KB buffered SD streaming
 
 - `src/main.cpp`: Added `If-None-Match` header collection, `ETag` + `304 Not Modified` revalidation (`Cache-Control: no-cache` for `.html`/`.js`/`.css`, `public, max-age=3600` for other static assets), and `streamSdFileBuffered()` (16 KB buffer) in `serveSdWwwFile()`.
