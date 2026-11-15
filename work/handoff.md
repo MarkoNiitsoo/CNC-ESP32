@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Fix 3D bounds box drawing & unhandled Bounds/Aircut error reporting
+
+- `www/preview.js`, `www/preview.html`: Fixed `draw()` `layers.bounds` to read `toolpathBounds || bounds`, added `catch` error reporting to `sendBoundingBoxTrace()`/`sendAircutToolpath()` + `M400`/`M114` sub-step status in `captureM114()`, and bumped to `UI 2026.11.15-5`.
+- Deployed `preview.js` and `preview.html` over WiFi to `http://192.168.8.13` (SHA-256 verified).
+
 ## 2026-11-15 - Visible UI version badge and cache-busting query string in preview.html
 
 - `www/preview.html`: Added `#ui-version-badge` (`UI 2026.11.15-4`) and `?v=20261115-4` query strings to CSS/JS asset references to force mobile cache refresh and provide visual version confirmation.

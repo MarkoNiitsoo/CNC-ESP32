@@ -1,4 +1,11 @@
 # Progress
+## 2026-11-15 - Fix 3D bounds box drawing, catch unhandled Bounds/Aircut errors, and show M400/M114 sub-step status
+
+- Fixed 3D preview `layers.bounds` drawing in `www/preview.js` (`draw()`): read `boundsModel?.toolpathBounds || boundsModel?.bounds` so `rawTravelBounds` and `cutBounds` are rendered around the cut object.
+- Added `catch` handlers to `sendBoundingBoxTrace()` and `sendAircutToolpath()` and explicit `Confirming motion (M400)…` / `Reading current XYZ (M114)…` readiness feedback in `captureM114()` (`www/preview.js`) so any unhandled error or sub-step stall is immediately visible on screen instead of staying on `Preparing Bounds Check…`.
+- Bumped UI version badge and cache-buster query string in `www/preview.html` to `UI 2026.11.15-5` (`?v=20261115-5`).
+- Validation: `npx vitest run test/ui/live-control-dom-audit.test.mjs test/ui/preview-first-open.test.mjs test/ui/workbench-ui.test.mjs test/ui/machine-controls.test.mjs` passed 80/80 tests; uploaded `preview.js` and `preview.html` to `http://192.168.8.13/api/upload?path=/www&overwrite=true` (`MATCH=True`).
+
 ## 2026-11-15 - Visible UI version badge and cache-busting query string in preview.html
 
 - Added `#ui-version-badge` (`UI 2026.11.15-4`) in `www/preview.html` `.status-header` so the active UI version is immediately visible on mobile and desktop.

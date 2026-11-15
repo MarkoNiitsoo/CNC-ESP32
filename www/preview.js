@@ -4777,6 +4777,7 @@ async function sendCmd(cmd) {
 
 async function captureM114() {
   appendDryRunLog('Waiting for the machine to finish current motion…');
+  reportReadinessAction('Confirming motion (M400)…');
   try {
     await sendCmd('M400');
   } catch (err) {
@@ -4790,6 +4791,7 @@ async function captureM114() {
   }
 
   appendDryRunLog('Waiting for Marlin to report the current position. No movement has been started.');
+  reportReadinessAction('Reading current XYZ (M114)…');
   let raw1;
   try {
     raw1 = await sendCmd('M114');
@@ -5400,6 +5402,10 @@ async function sendBoundingBoxTrace() {
   reportReadinessAction('Preparing Bounds Check…');
   try {
     await runBoundingBoxTrace();
+  } catch (err) {
+    const msg = err?.message || String(err || 'Unknown Bounds Check error');
+    console.error('[Cut Bounds] Unhandled error:', err);
+    reportReadinessAction(`Bounds Check error: ${msg}`, true);
   } finally {
     dryRunActionBusy = false;
     renderReadiness();
@@ -5529,6 +5535,10 @@ async function sendAircutToolpath() {
   reportReadinessAction('Preparing Aircut…');
   try {
     await runAircutToolpath();
+  } catch (err) {
+    const msg = err?.message || String(err || 'Unknown Aircut error');
+    console.error('[Aircut] Unhandled error:', err);
+    reportReadinessAction(`Aircut error: ${msg}`, true);
   } finally {
     dryRunActionBusy = false;
     renderReadiness();
@@ -6507,9 +6517,10 @@ function draw() {
   if (layers.bounds) {
     // Bounds follow the ONE displayed geometry.
     const boundsModel = drawPlan.mode === 'placement-preview' ? transformedPreview : parsed;
-    if (boundsModel?.bounds) {
-      strokeBounds(ctx, boundsModel.bounds.rawTravelBounds, jobProject, colors.rawBounds, [7, 5]);
-      strokeBounds(ctx, boundsModel.bounds.cutBounds, jobProject, colors.cutBounds, [3, 3]);
+    const tb = boundsModel?.toolpathBounds || boundsModel?.bounds;
+    if (tb) {
+      strokeBounds(ctx, tb.rawTravelBounds, jobProject, colors.rawBounds, [7, 5]);
+      strokeBounds(ctx, tb.cutBounds || boundsModel?.bounds, jobProject, colors.cutBounds, [3, 3]);
     }
     if (drawPlan.mode === 'active-run') {
       const verification = jobState?.verificationDecision || {};
