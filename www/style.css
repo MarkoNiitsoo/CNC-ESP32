@@ -227,8 +227,47 @@ button.machine-danger-dark {
 }
 
 .machine-drawer[hidden],
-.machine-drawer-overlay[hidden] {
+.machine-drawer-overlay[hidden],
+.machine-wifi-banner[hidden] {
   display: none;
+}
+
+.machine-wifi-banner {
+  position: fixed;
+  top: var(--machine-bar-height, 58px);
+  left: 12px;
+  right: 12px;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #35845d;
+  border-radius: 8px;
+  background: rgba(15, 42, 30, 0.96);
+  color: #e6fff2;
+  font-size: 0.9rem;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.machine-wifi-banner a {
+  color: #7ee8b2;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.machine-wifi-banner-dismiss {
+  flex: 0 0 auto;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 1px solid rgba(126, 232, 178, 0.45);
+  border-radius: 6px;
+  background: transparent;
+  color: #e6fff2;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .machine-drawer-head,

@@ -18,6 +18,7 @@
     operatorPanelOpen: false,
     controller: { connected: true, state: 'connected', communication: { state: 'connected', lastError: '', lastFailedCommand: '' } },
     machineOperation: null,
+    wifiStaBannerDismissedIp: '',
   };
   let jogTimer = null;
   let jogUpdatePending = false;
@@ -1984,7 +1985,38 @@
     setDisabled('mb-jog-restore-z', !available || BUSY_STATES.has(visibleJobState()) || jogIsUiActive());
   }
 
+  function renderWifiStaBanner() {
+    const banner = el('mb-wifi-sta-banner');
+    const textEl = el('mb-wifi-sta-text');
+    if (!banner || !textEl) return;
+    const health = STATE.health || {};
+    const staConnected = health.staConnected === true;
+    const staIp = String(health.staIp || '').trim();
+    const onApHost = typeof window !== 'undefined' && window.location?.hostname === '192.168.4.1';
+    const show = staConnected && staIp && (onApHost || health.wifiMode === 'ap+sta') &&
+      STATE.wifiStaBannerDismissedIp !== staIp;
+    banner.hidden = !show;
+    if (!show) return;
+    const ssid = String(health.ssid || 'local Wi-Fi').trim();
+    const hostname = String(health.hostname || '').trim();
+    const parts = [
+      document.createTextNode(`Local Wi-Fi "${ssid}" connected (${staIp}). Switch to `),
+    ];
+    if (hostname) {
+      const mdnsLink = document.createElement('a');
+      mdnsLink.href = `http://${hostname}.local/`;
+      mdnsLink.textContent = `http://${hostname}.local`;
+      parts.push(mdnsLink, document.createTextNode(' or '));
+    }
+    const ipLink = document.createElement('a');
+    ipLink.href = `http://${staIp}/`;
+    ipLink.textContent = `http://${staIp}`;
+    parts.push(ipLink, document.createTextNode('.'));
+    textEl.replaceChildren(...parts);
+  }
+
   function render() {
+    renderWifiStaBanner();
     syncSafeZControl();
     const state = visibleJobState();
     const recoveryPending = STATE.job?.recoveryCheckpoint?.requiresReview === true;
@@ -2166,6 +2198,10 @@
         </div>
         <p id="mb-live-marlin" class="machine-live-message" hidden></p>
       </div>
+      <div id="mb-wifi-sta-banner" class="machine-wifi-banner" role="status" aria-live="polite" hidden>
+        <span id="mb-wifi-sta-text"></span>
+        <button id="mb-wifi-sta-dismiss" class="machine-wifi-banner-dismiss" type="button" aria-label="Dismiss Wi-Fi notice">×</button>
+      </div>
       <section id="mb-operator-panel" class="machine-operator-panel" aria-live="polite" hidden>
         <h2 id="mb-operator-title">Claim machine control</h2>
         <p id="mb-operator-hint">Enter the device PIN. Only one browser can control the machine at a time.</p>
@@ -2341,6 +2377,10 @@
     else globalThis.addEventListener?.('resize', syncMachineBarHeight);
 
     button('mb-toggle', () => toggleDrawer());
+    button('mb-wifi-sta-dismiss', () => {
+      STATE.wifiStaBannerDismissedIp = String(STATE.health?.staIp || '').trim();
+      renderWifiStaBanner();
+    });
     button('mb-operator-toggle', () => {
       STATE.operatorPanelOpen = !STATE.operatorPanelOpen;
       renderOperatorLock();

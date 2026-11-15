@@ -1,4 +1,10 @@
 # Handoff
+## 2026-11-15 - Keep AP+STA alive during background router retry and notify UI on STA connect
+
+- `src/main.cpp`: `tryWifiSta()` now stays in `WIFI_AP_STA` on timeout and schedules `processWifiStaReconnect()` in `loop()` (paused during active job/jog) to retry STA every 20 s, refresh mDNS + `system` telemetry on connect, and turn off the soft AP after 12 s (or 3 s with 0 AP stations). `healthStatusJson()` and `/api/health` now include `staConnected`, `staIp`, and `hostname`.
+- `www/machine-bar.js`, `www/style.css`: Added `#mb-wifi-sta-banner` toast/banner notifying connected AP users when local Wi-Fi connects, with clickable `http://<hostname>.local` and `http://<staIp>` links.
+- Validation: `pio run -e esp32cam` succeeded; deployed `firmware.bin`, `machine-bar.js`, and `style.css` to `E:` (SHA-256 verified).
+
 ## 2026-11-15 - Cumulative planner drain deadline for Marlin ACK watchdog
 
 - `src/main.cpp`: Added `marlinPlannerDrainDeadlineMs` in `noteAcknowledgedPlannerTiming()` so short queued commands no longer overwrite `marlinPlannerWaitAllowanceMs` while a long rapid move is still executing in Marlin's planner.

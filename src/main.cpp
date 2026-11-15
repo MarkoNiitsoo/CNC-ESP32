@@ -630,6 +630,13 @@ DeviceIdentity deviceIdentity;
 ToolChangeSettings toolChangeSettings;
 String activeWifiMode = "ap";
 String activeWifiSsid = kSetupApSsid;
+String configuredStaSsid;
+String configuredStaPass;
+bool wifiStaReconnectPending = false;
+bool wifiApShutdownPending = false;
+bool wifiSystemSliceDirty = false;
+uint32_t lastWifiStaRetryAtMs = 0;
+uint32_t wifiStaConnectedAtMs = 0;
 bool otaActive = false;
 bool otaUploadSeen = false;
 bool otaUploadOk = false;
@@ -2461,6 +2468,12 @@ String healthStatusJson(bool quantizedForAuthoritativeState) {
   json += currentIpAddress();
   json += "\",\"ssid\":\"";
   json += jsonEscape(activeWifiSsid);
+  json += "\",\"staConnected\":";
+  json += wifiStaConnected() ? "true" : "false";
+  json += ",\"staIp\":\"";
+  json += wifiStaConnected() ? WiFi.localIP().toString() : "";
+  json += "\",\"hostname\":\"";
+  json += jsonEscape(deviceIdentity.hostname);
   json += "\"";
   if (!quantizedForAuthoritativeState && wifiStaConnected()) {
     json += ",\"rssi\":";
@@ -2865,7 +2878,8 @@ void stageTelemetryUpdates() {
   static uint32_t lastSystemCheckMs = 0;
   const uint32_t now = millis();
   String sysBaseStr = cachedSlices.systemBaseJson;
-  if (now - lastSystemCheckMs >= 10000 || cachedSlices.systemBaseJson.length() == 0) {
+  if (wifiSystemSliceDirty || now - lastSystemCheckMs >= 10000 || cachedSlices.systemBaseJson.length() == 0) {
+    wifiSystemSliceDirty = false;
     lastSystemCheckMs = now;
     String sysBaseCandidate = buildSystemBaseJson();
     if (sysBaseCandidate != cachedSlices.systemBaseJson) {
@@ -6785,6 +6799,12 @@ void handleHealth() {
   json += currentIpAddress();
   json += "\",\"ssid\":\"";
   json += jsonEscape(activeWifiSsid);
+  json += "\",\"staConnected\":";
+  json += wifiStaConnected() ? "true" : "false";
+  json += ",\"staIp\":\"";
+  json += wifiStaConnected() ? WiFi.localIP().toString() : "";
+  json += "\",\"hostname\":\"";
+  json += jsonEscape(deviceIdentity.hostname);
   json += "\"";
   if (wifiStaConnected()) {
     json += ",\"rssi\":";
@@ -11354,6 +11374,8 @@ void startWifiAp(wifi_mode_t mode = WIFI_AP) {
 }
 
 bool tryWifiSta(const String &ssid, const String &pass) {
+  configuredStaSsid = ssid;
+  configuredStaPass = pass;
   startWifiAp(WIFI_AP_STA);
   WiFi.begin(ssid.c_str(), pass.c_str());
 
@@ -11362,17 +11384,22 @@ bool tryWifiSta(const String &ssid, const String &pass) {
     if (WiFi.status() == WL_CONNECTED) {
       activeWifiMode = "ap+sta";
       activeWifiSsid = ssid;
+      wifiStaReconnectPending = false;
+      wifiStaConnectedAtMs = millis();
+      wifiApShutdownPending = true;
       logSystemEvent("WiFi STA connected ssid=" + ssid + " ip=" + WiFi.localIP().toString());
       return true;
     }
     delay(250);
   }
 
-  WiFi.disconnect(true);
-  activeWifiMode = "ap";
+  activeWifiMode = "ap+sta";
   activeWifiSsid = kSetupApSsid;
-  logSystemEvent("WiFi STA timeout ssid=" + ssid + "; continuing with AP");
-  return false;
+  wifiStaReconnectPending = true;
+  wifiApShutdownPending = false;
+  lastWifiStaRetryAtMs = millis();
+  logSystemEvent("WiFi STA timeout ssid=" + ssid + "; keeping AP+STA and retrying in background");
+  return true;
 }
 
 void startWifi() {
@@ -11723,11 +11750,55 @@ void flushWsConnectionLog() {
   }
 }
 
+void processWifiStaReconnect() {
+  if (jobIsActive() || jogIsActive()) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if (wifiStaReconnectPending) {
+    if (WiFi.status() == WL_CONNECTED) {
+      wifiStaReconnectPending = false;
+      activeWifiMode = "ap+sta";
+      activeWifiSsid = configuredStaSsid;
+      wifiStaConnectedAtMs = now;
+      wifiApShutdownPending = true;
+      wifiSystemSliceDirty = true;
+      MDNS.end();
+      startMdns();
+      logSystemEvent("WiFi STA connected in background ssid=" + configuredStaSsid + " ip=" + WiFi.localIP().toString());
+      stageTelemetryUpdates();
+      return;
+    }
+    if (now - lastWifiStaRetryAtMs >= 20000) {
+      lastWifiStaRetryAtMs = now;
+      logSystemEvent("WiFi STA background retry ssid=" + configuredStaSsid);
+      WiFi.begin(configuredStaSsid.c_str(), configuredStaPass.c_str());
+    }
+    return;
+  }
+
+  if (wifiApShutdownPending) {
+    const uint32_t elapsed = now - wifiStaConnectedAtMs;
+    const uint8_t stations = WiFi.softAPgetStationNum();
+    if (elapsed >= 12000 || (stations == 0 && elapsed >= 3000)) {
+      wifiApShutdownPending = false;
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      activeWifiMode = "sta";
+      wifiSystemSliceDirty = true;
+      logSystemEvent("WiFi AP stopped after STA connection ssid=" + activeWifiSsid + " ip=" + WiFi.localIP().toString());
+      stageTelemetryUpdates();
+    }
+  }
+}
+
 void loop() {
   server.handleClient();
   processWsCommandQueue();
   processMachineOperation();
   stageTelemetryUpdates();
+  processWifiStaReconnect();
   processMachineDiscovery();
   processControllerAutoRecovery();
   processJobRunner();

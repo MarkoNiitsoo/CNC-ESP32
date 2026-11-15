@@ -1,4 +1,13 @@
 # Progress
+## 2026-11-15 - Keep AP+STA alive during background router retry and notify UI on STA connect
+
+- Updated `src/main.cpp`:
+  - `tryWifiSta()` keeps `WIFI_AP_STA` (`G-code-CNC-Setup`, `192.168.4.1`) running when the initial 15 s STA connection times out instead of dropping back to `WIFI_AP`.
+  - Added `processWifiStaReconnect()` in `loop()` (skipped during active job/jog) to retry STA every 20 s; once STA connects, refreshes mDNS (`MDNS.end(); startMdns();`), triggers an immediate `system` telemetry slice update (`wifiSystemSliceDirty`), and shuts down the soft AP (`WiFi.softAPdisconnect(true); WiFi.mode(WIFI_STA);`) after a 12 s grace period (or 3 s when 0 AP stations remain).
+  - Exposed `staConnected`, `staIp`, and `hostname` in both `healthStatusJson()` and `/api/health`.
+- Updated `www/machine-bar.js` and `www/style.css`: added a dismissible `#mb-wifi-sta-banner` notification when `health.staConnected` becomes true while on the AP / `ap+sta` mode, linking directly to `http://<hostname>.local` and `http://<staIp>`.
+- Validation: `pio run -e esp32cam` succeeded (`1541581` bytes); `npx vitest run test/ui test/mock test/firmware` passed 75/78 files (925/928 tests; `test/ui/machine-controls.test.mjs`, `test/mock/mock-sd.test.mjs`, and all `test/firmware/` suites passed; 3 pre-existing string-assertion failures in `files-view.test.mjs` and `preview-active-run-canvas.test.mjs`).
+
 ## 2026-11-15 - Cumulative planner drain deadline for Marlin ACK watchdog
 
 - Fixed `noteAcknowledgedPlannerTiming()` in `src/main.cpp`: added cumulative `marlinPlannerDrainDeadlineMs` so short queued commands (`G0 Z3`, small `G3` segments) no longer overwrite `marlinPlannerWaitAllowanceMs` and erase the remaining execution time of an earlier long rapid move (`G0 X526.939 Y61.342`, `10609 ms`), which had caused `communication_lost` (`hardTimeoutMs=10000`) at line 9 of `/gcode/KAK.gc` when Marlin's planner buffer was still full.
