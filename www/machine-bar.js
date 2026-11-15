@@ -1212,26 +1212,29 @@
   // Toggles the firmware's persisted claimRequired setting. Open mode: anyone
   // may enable it; claimed mode: only the controller may change it (viewers
   // receive 423 and see the error). A failure reverts the checkbox.
-  async function updateOperatorClaimRequired() {
-    const box = el('mb-operator-claim-required');
+  async function updateOperatorClaimRequired(eventOrBox) {
+    const targetBox = eventOrBox?.target || (eventOrBox?.nodeType ? eventOrBox : el('mb-operator-claim-required'));
     const status = el('mb-operator-result');
-    if (!box) return;
+    const settingsStatus = el('settings-claim-status');
+    if (!targetBox) return;
+    const nextValue = targetBox.checked === true;
     try {
       const data = await readOperatorResponse(await fetch('/api/operator/settings', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ claimRequired: box.checked === true }),
+        body: JSON.stringify({ claimRequired: nextValue }),
       }));
       applyLocalOperatorAuthorization(data);
       renderOperatorLock();
-      if (status) {
-        status.textContent = data.claimRequired === false
-          ? 'Machine control is now open; claiming is optional.'
-          : 'Machine control now requires a claim (PIN).';
-      }
+      const msg = data.claimRequired === false
+        ? 'Machine control is now open; claiming is optional.'
+        : 'Machine control now requires a claim (PIN).';
+      if (status) status.textContent = msg;
+      if (settingsStatus) settingsStatus.textContent = msg;
     } catch (err) {
-      box.checked = !box.checked;
+      targetBox.checked = !nextValue;
       if (err.data) STATE.operator = { ...STATE.operator, ...err.data };
       if (status) status.textContent = err.message;
+      if (settingsStatus) settingsStatus.textContent = err.message;
       renderOperatorLock();
     }
   }
@@ -1336,6 +1339,16 @@
     if (change) change.hidden = !controller;
     const claimRequiredBox = el('mb-operator-claim-required');
     if (claimRequiredBox) claimRequiredBox.checked = operator.claimRequired !== false;
+    const settingsClaimBox = el('settings-claim-required');
+    if (settingsClaimBox) settingsClaimBox.checked = operator.claimRequired !== false;
+    const settingsClaimStatus = el('settings-claim-status');
+    if (settingsClaimStatus) {
+      settingsClaimStatus.textContent = operator.claimRequired === false
+        ? 'Disabled (open control). Anyone on the network can control the machine without claiming.'
+        : (operator.configured
+          ? 'Enabled. Only one browser can control the machine at a time using the device PIN.'
+          : 'Enabled, but no PIN is configured yet. Open the PIN panel or set operator.pin in /esp32-cnc/config.json.');
+    }
     document.querySelectorAll('[data-operator-claim-field]').forEach((item) => { item.hidden = controller; });
     document.querySelectorAll('[data-operator-pin-field]').forEach((item) => { item.hidden = !controller; });
   }
@@ -2340,6 +2353,12 @@
     });
     button('mb-operator-pin-save', updateOperatorPin);
     el('mb-operator-claim-required')?.addEventListener('change', updateOperatorClaimRequired);
+    el('settings-claim-required')?.addEventListener('change', updateOperatorClaimRequired);
+    el('settings-open-operator-panel')?.addEventListener('click', () => {
+      STATE.operatorPanelOpen = true;
+      renderOperatorLock();
+      el('mb-operator-pin')?.focus?.();
+    });
     document.addEventListener('click', (event) => {
       const control = event.target?.closest?.('button, input[type="submit"], input[type="button"], [role="button"]');
       if (!control || control.closest('#mb-operator-panel') || control.id === 'mb-operator-toggle') return;

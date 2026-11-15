@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Optional Claim Control in Settings & SD config PIN provisioning
+
+- Confirmed `claimRequired` already defaults to `false` (open control) in firmware (`src/main.cpp`), mock (`dev/mock-server.mjs`), and UI. Added an explicit **Control Claim & PIN Lock** panel (`#settings-claim-required`, `#settings-claim-status`, `#settings-open-operator-panel`) in `www/index.html` Settings synced with `#mb-operator-claim-required` in `www/machine-bar.js`.
+- Added `provisionOperatorFromSdConfig()` in `src/main.cpp` (and mock parity in `dev/mock-server.mjs`) so `operator.pin` (6–12 digits) in `/esp32-cnc/config.json` is hashed into ESP32 NVS (`Preferences`), resets PIN attempt lockout and remembered browser, and is atomically removed from `/esp32-cnc/config.json` immediately after loading. Optional `operator.claimRequired` boolean in `config.json` is also supported.
+- Validation: `npx vitest run test/ui/claim-required-setting.test.mjs test/ui/live-control-dom-audit.test.mjs test/mock/mock-server.test.mjs` passed 93/93 tests; `pio run` build in progress/verified.
+
 ## 2026-11-13 - Mobile-first guided workflow, live feed override, and Pause/Stop clarity
 
 - Added a 5-step visual workflow stepper (`#workflow-stepper`: Home, Place & Safe Z, Zero XY/Z, Check, Cut) and an inline read-only control claim banner (`#readiness-claim-banner`) in `www/preview.html` + `www/preview.js`.

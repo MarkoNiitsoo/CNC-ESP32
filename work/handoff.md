@@ -1,4 +1,10 @@
 # Handoff
+## 2026-11-15 - Optional Claim Control in Settings & SD config PIN provisioning
+
+- Added **Control Claim & PIN Lock** to `www/index.html` Settings (`#settings-claim-required`, `#settings-open-operator-panel`), wired in `www/machine-bar.js`. `claimRequired` remains `false` (disabled) by default.
+- Added `provisionOperatorFromSdConfig()` in `src/main.cpp` and `dev/mock-server.mjs`: setting `"operator": { "pin": "123456" }` in `/esp32-cnc/config.json` provisions/resets the PIN into ESP32 NVS on boot (clearing lockout/remembered browser) and removes `operator.pin` from the SD config file.
+- Note: SD card `E:` was already ejected before this firmware/Settings change, so `firmware.bin` and updated `www/index.html` + `www/machine-bar.js` have not been copied to `E:` yet.
+
 ## 2026-11-13 - Mobile-first guided workflow & live-cut monitor
 
 - Implemented the 5-step guided workflow stepper (`#workflow-stepper`), inline read-only claim banner (`#readiness-claim-banner`), side-by-side live Work/Machine XYZ + `Open Jog` in `.zero-origin-panel`, visible live `Feed Override` with quick-step buttons during cutting, live progress bar + `data-live-cutting` mobile focus, state-aware Pause/Resume/Stop guidance, and `#job-view` empty-state guidance (`www/app.js`, `www/machine-bar.js`, `www/preview.html`, `www/preview.js`, `www/preview.css`).

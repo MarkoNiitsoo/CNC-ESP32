@@ -7324,6 +7324,78 @@ void forgetOperatorBrowser() {
   operatorPrefs.end();
 }
 
+void provisionOperatorFromSdConfig() {
+  if (!sdMounted || !SD_MMC.exists(kPrimaryDeviceConfigPath)) return;
+  File file = SD_MMC.open(kPrimaryDeviceConfigPath, FILE_READ);
+  if (!file || file.isDirectory() || file.size() == 0 || file.size() > kMaxDeviceConfigBytes) {
+    if (file) file.close();
+    return;
+  }
+  String json;
+  json.reserve(file.size());
+  while (file.available()) json += static_cast<char>(file.read());
+  file.close();
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok || !doc["operator"].is<JsonObject>()) {
+    return;
+  }
+
+  JsonObject op = doc["operator"].as<JsonObject>();
+  bool configModified = false;
+
+  if (op["claimRequired"].is<bool>()) {
+    saveOperatorClaimRequired(op["claimRequired"].as<bool>());
+  }
+
+  if (op["pin"].is<const char *>()) {
+    String pin = op["pin"].as<const char *>();
+    pin.trim();
+    if (validOperatorPin(pin)) {
+      saveOperatorPin(pin);
+      forgetOperatorBrowser();
+      operatorFailedPinAttempts = 0;
+      operatorFailedPinWindowStartedAtMs = 0;
+      op.remove("pin");
+      if (op.size() == 0) doc.remove("operator");
+      configModified = true;
+      logSystemEvent("Operator PIN provisioned from SD config and removed from config file");
+    } else {
+      logSystemEvent("Ignored invalid operator.pin in SD config (must be 6-12 digits)");
+    }
+  }
+
+  if (!configModified) return;
+
+  String updatedJson;
+  serializeJsonPretty(doc, updatedJson);
+  updatedJson += "\n";
+
+  const String tempPath = "/esp32-cnc/config.tmp";
+  const String backupPath = "/esp32-cnc/config.bak";
+  SD_MMC.remove(tempPath);
+  File out = SD_MMC.open(tempPath, FILE_WRITE);
+  if (!out) return;
+  const size_t written = out.print(updatedJson);
+  out.flush();
+  out.close();
+  if (written != updatedJson.length()) {
+    SD_MMC.remove(tempPath);
+    return;
+  }
+  SD_MMC.remove(backupPath);
+  if (!SD_MMC.rename(kPrimaryDeviceConfigPath, backupPath)) {
+    SD_MMC.remove(tempPath);
+    return;
+  }
+  if (!SD_MMC.rename(tempPath, kPrimaryDeviceConfigPath)) {
+    SD_MMC.remove(tempPath);
+    SD_MMC.rename(backupPath, kPrimaryDeviceConfigPath);
+    return;
+  }
+  SD_MMC.remove(backupPath);
+}
+
 void loadOperatorSettings() {
   operatorPrefs.begin(kOperatorPrefsNamespace, true);
   operatorPinHash = operatorPrefs.getString(kOperatorPrefsPinHashKey, "");
@@ -7331,6 +7403,7 @@ void loadOperatorSettings() {
   operatorRememberedOwner = operatorPrefs.getString(kOperatorPrefsOwnerKey, "");
   operatorClaimRequiredSetting = operatorPrefs.getBool(kOperatorPrefsClaimRequiredKey, false);
   operatorPrefs.end();
+  provisionOperatorFromSdConfig();
 }
 
 void handleOperatorStatus() {

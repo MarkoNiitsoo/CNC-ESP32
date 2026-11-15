@@ -89,6 +89,16 @@
           </form>
           <p id="device-settings-result" class="form-hint">Device address can be changed only when the machine is idle.</p>
         </section>
+        <section class="panel operator-settings-panel">
+          <h2>Control Claim &amp; PIN Lock</h2>
+          <label class="recovery-overlay-toggle" for="settings-claim-required">
+            <input id="settings-claim-required" type="checkbox">
+            Require control claim (PIN)
+          </label>
+          <p id="settings-claim-status" class="form-hint">Disabled by default. When enabled, only one browser can control the machine at a time using the device PIN.</p>
+          <p class="form-hint">Forgot your PIN? Add <code>"operator": { "pin": "123456" }</code> to <code>/esp32-cnc/config.json</code> on the SD card and reboot; the firmware saves it to persistent memory and removes it from the SD file.</p>
+          <button id="settings-open-operator-panel" type="button">Manage PIN &amp; Control Session</button>
+        </section>
         <section class="panel hardware-info-panel">
           <div class="panel-title-row">
             <div><h2>Hardware Info</h2><p class="form-hint">Cached immediately, refreshed from Marlin M115 while idle.</p></div>

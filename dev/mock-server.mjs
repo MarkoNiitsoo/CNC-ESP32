@@ -181,6 +181,26 @@ export async function createMockServer(options = {}) {
   // Optional claim gate; the dev default mirrors the firmware default (OFF =
   // control is open). Tests of the locked contract opt in via config.
   env.operator.claimRequired = env.config.operatorClaimRequired === true;
+  try {
+    const sdConfigPath = path.join(env.sd.root, 'esp32-cnc', 'config.json');
+    if (fs.existsSync(sdConfigPath)) {
+      const parsed = JSON.parse(fs.readFileSync(sdConfigPath, 'utf8'));
+      const op = parsed && typeof parsed.operator === 'object' ? parsed.operator : null;
+      if (op) {
+        if (typeof op.claimRequired === 'boolean') env.operator.claimRequired = op.claimRequired;
+        const pin = typeof op.pin === 'string' ? op.pin.trim() : '';
+        if (/^\d{6,12}$/.test(pin)) {
+          env.operator.pin = pin;
+          env.operator.configured = true;
+          env.operator.rememberedBrowserId = '';
+          env.operator.rememberedOwner = '';
+          delete op.pin;
+          if (Object.keys(op).length === 0) delete parsed.operator;
+          fs.writeFileSync(sdConfigPath, `${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+        }
+      }
+    }
+  } catch {}
   const requestToken = (req) => String(req.headers.cookie || '').split(';')
     .map((part) => part.trim()).find((part) => part.startsWith('cnc_operator='))?.slice(13) || '';
   const operatorActive = () => {
