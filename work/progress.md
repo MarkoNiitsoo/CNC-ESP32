@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Automated UI version badge and cache-buster sync across all HTML entrypoints
+
+- Added `#ui-version-badge` and synchronized `?v=20261115-8` asset query strings across `www/index.html`, `www/files.html`, and `www/preview.html`.
+- Added `scripts/sync-ui-version.mjs` (`npm run ui:version`) to bump or set `UI YYYY.MM.DD-N` and update all CSS/JS `?v=` query strings in one command, plus `test/ui/ui-version-sync.test.mjs` to enforce parity across all entrypoints.
+- Validation: `npx vitest run test/ui test/mock test/firmware` passed **79/79 files (929/929 tests)**; deployed `index.html`, `files.html`, and `preview.html` to `E:\www\` (SHA-256 verified).
+
 ## 2026-11-15 - Align stale UI/firmware string-match tests and commit Safe Z ceiling cap
 
 - Updated `test/ui/files-view.test.mjs` (`?v=...` cache-buster regex), `test/ui/preview-active-run-canvas.test.mjs` (`tb.rawTravelBounds` / `tb.cutBounds`), and `test/firmware/system-log.test.mjs` (`Cookie=|password=|operatorPinHash|wifiPass`) + `src/main.cpp` Wi-Fi timeout log wording (`leaving AP+STA active`).

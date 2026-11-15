@@ -6,7 +6,8 @@
     "dev:mock": "node dev/mock-server.mjs",
     "dev:mock:reset": "node dev/reset-mock-sd.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "ui:version": "node scripts/sync-ui-version.mjs"
   },
   "devDependencies": {
     "vitest": "^3.2.4"

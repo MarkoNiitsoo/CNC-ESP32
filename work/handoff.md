@@ -1,4 +1,10 @@
 # Handoff
+## 2026-11-15 - Automated UI version badge and cache-buster sync across all HTML entrypoints
+
+- `scripts/sync-ui-version.mjs`, `package.json` (`npm run ui:version`): Single-command sync for `#ui-version-badge` (`UI YYYY.MM.DD-N`) and `?v=YYYYMMDD-N` query strings across `www/index.html`, `www/files.html`, and `www/preview.html`.
+- `test/ui/ui-version-sync.test.mjs`: Enforces that all HTML entrypoints share the exact same version badge and matching `?v=` cache-busters on all local CSS/JS references.
+- Validation: `npx vitest run test/ui test/mock test/firmware` passed **79/79 files (929/929 tests)**; deployed `index.html`, `files.html`, `preview.html` to `E:\www\` (SHA-256 verified).
+
 ## 2026-11-15 - Align stale UI/firmware string-match tests and commit Safe Z ceiling cap
 
 - `test/ui/files-view.test.mjs`, `test/ui/preview-active-run-canvas.test.mjs`, `test/firmware/system-log.test.mjs`, `src/main.cpp`: Fixed the 3 remaining test-suite string/regex mismatches so the entire test suite is green.
