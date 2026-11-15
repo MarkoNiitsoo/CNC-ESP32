@@ -1356,6 +1356,10 @@ body.workbench-page {
   background: rgba(245, 180, 65, 0.14);
 }
 
+.readiness-claim-banner[hidden] {
+  display: none;
+}
+
 .readiness-claim-banner button {
   min-height: 40px;
   font-weight: 700;

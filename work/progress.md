@@ -3,7 +3,7 @@
 
 - Reordered `.readiness-panel` in `www/preview.html` so the active step's primary/secondary actions appear directly beneath `#readiness-summary`, and grouped the repeatable tools (`#readiness-home-all`, `#readiness-set-z-zero`, `#readiness-run-bounds`, `#readiness-run-aircut`, `#readiness-inspect-preflight`, `#readiness-inspect-recoveries`) into `<details id="readiness-quick-tools">` that auto-opens only on the `frame` gate.
 - Added prominent `.readiness-action-feedback.is-error` styling and clarified `M400` vs `M114` failure messages in `captureM114()` (`www/preview.js`) after `E:\logs\system.log` showed `POST /api/cmd` (`M400`) stopping before `M114` / `/api/test-motion/start`.
-- Compacted mobile `.status-header`, `.file-toolbar`, and `.preview-stage` in `www/preview.css`.
+- Compacted mobile `.status-header`, `.file-toolbar`, and `.preview-stage` in `www/preview.css`, and added `.readiness-claim-banner[hidden] { display: none; }` so the read-only claim banner stays hidden unless `operator-read-only` is active.
 - Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests); updated `preview.html`, `preview.js`, `preview.css` on `E:\www` with SHA-256 verification (`0` mismatches).
 
 ## 2026-11-15 - HTTP ETag / 304 caching and 16 KB buffered SD streaming
