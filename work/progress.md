@@ -2,7 +2,7 @@
 ## 2026-11-15 - Automatic run-file regeneration before Bounds/Aircut/Start Cut
 
 - Updated `www/preview.js`:
-  - Added `ensureGeneratedRunCurrent()` + `generateRunInFlight` single-flight promise, called automatically before `runBoundingBoxTrace()`, `runAircutToolpath()`, and `startJobRun()` so users never get blocked by a stale `.run.gc` file after rotating/shifting placement.
+  - Added `ensureGeneratedRunCurrent()` (`isGeneratedRunUsable(job)` + `job.placement?.dirty`) + `generateRunInFlight` single-flight promise, called automatically before `runBoundingBoxTrace()`, `runAircutToolpath()`, and `startJobRun()` so users never get blocked by a stale `.run.gc` file after rotating/shifting placement.
   - Reduced placement auto-update debounce from `800 ms` to `350 ms` and skipped the redundant pre-upload `/api/download` check when `overwrite: true && !confirmOverwrite`.
 - Validation: `npx vitest run test/ui` passed **46/46 files (524/524 tests)**; copied `preview.js` to `E:\www\preview.js`.
 

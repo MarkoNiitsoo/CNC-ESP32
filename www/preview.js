@@ -6988,8 +6988,8 @@ async function ensureGeneratedRunCurrent() {
   const active = await jobActiveRunPromise;
   const job = ensureJobState();
   if (!active.requiresGeneratedRun(job)) return;
-  const match = active.validateActiveRunMatchesPlacement(job);
-  if (!match.ok) {
+  const match = active.isGeneratedRunUsable(job);
+  if (job.placement?.dirty || !match.ok) {
     await generateRunFile({ auto: true, overwrite: true });
   }
 }
