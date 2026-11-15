@@ -179,8 +179,9 @@ describe('Active Run is the single primary preview toolpath', () => {
   it('bounds follow the ONE displayed geometry; verification margin is executable-mode only', () => {
     const block = boundsBlock();
     expect(block).toContain("const boundsModel = drawPlan.mode === 'placement-preview' ? transformedPreview : parsed;");
-    expect(block).toContain('boundsModel.bounds.rawTravelBounds');
-    expect(block).toContain('boundsModel.bounds.cutBounds');
+    expect(block).toContain('const tb = boundsModel?.toolpathBounds || boundsModel?.bounds;');
+    expect(block).toContain('tb.rawTravelBounds');
+    expect(block).toContain('tb.cutBounds');
     expect(block).not.toContain('sourceToolpathModel');
     // The verification margin rectangle exists only inside the active-run guard.
     const guardIndex = block.indexOf("if (drawPlan.mode === 'active-run')");

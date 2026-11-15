@@ -1,4 +1,10 @@
 # Handoff
+## 2026-11-15 - Align stale UI/firmware string-match tests and commit Safe Z ceiling cap
+
+- `test/ui/files-view.test.mjs`, `test/ui/preview-active-run-canvas.test.mjs`, `test/firmware/system-log.test.mjs`, `src/main.cpp`: Fixed the 3 remaining test-suite string/regex mismatches so the entire test suite is green.
+- `www/lib/job-safe-z.js`, `test/ui/job-safe-z.test.mjs`: Committed Safe Z machine-ceiling cap (`ceilingWorkZ`, `cappedToMachineMax`, `adjustmentMessage`) and deployed `job-safe-z.js` to `E:`.
+- Validation: `npx vitest run test/ui test/mock test/firmware` passed **78/78 files (928/928 tests)**; `pio run -e esp32cam` succeeded.
+
 ## 2026-11-15 - Keep AP+STA alive during background router retry and notify UI on STA connect
 
 - `src/main.cpp`: `tryWifiSta()` now stays in `WIFI_AP_STA` on timeout and schedules `processWifiStaReconnect()` in `loop()` (paused during active job/jog) to retry STA every 20 s, refresh mDNS + `system` telemetry on connect, and turn off the soft AP after 12 s (or 3 s with 0 AP stations). `healthStatusJson()` and `/api/health` now include `staConnected`, `staIp`, and `hostname`.

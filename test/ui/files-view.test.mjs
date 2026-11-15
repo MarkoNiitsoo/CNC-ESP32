@@ -16,7 +16,7 @@ describe('files icon view interactions', () => {
     expect(files).not.toContain("textContent = item.type === 'file' ? 'Select' : 'Open'");
     expect(app).not.toContain('class="select-file"');
     expect(app).not.toContain('>Open Job</button>');
-    expect(previewHtml).toContain('<script type="module" src="/preview.js"></script>');
+    expect(previewHtml).toMatch(/<script type="module" src="\/preview\.js(\?v=[^"]+)?"><\/script>/);
   });
 
   it('opens maintenance actions on context menu and long press', () => {

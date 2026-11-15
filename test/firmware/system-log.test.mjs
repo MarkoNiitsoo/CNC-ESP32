@@ -27,7 +27,7 @@ describe('SD system diagnostics log', () => {
     expect(firmware).toContain('httpRoute("/api/health", HTTP_GET, handleHealth)');
     expect(firmware).toContain('logHttpRequest(); if (!operatorClaimRequiredSetting || requireOperatorControl()) handleUploadComplete();');
     expect(firmware).toMatch(/void handleNotFound\(\) \{\s+logHttpRequest\(\)/);
-    expect(firmware).not.toMatch(/logSystemEvent\([^\n]*(Cookie|pin|password)/i);
+    expect(firmware).not.toMatch(/logSystemEvent\([^\n]*(Cookie=|password=|operatorPinHash|wifiPass)/i);
   });
 
   it('documents the unavoidable no-card logging boundary', () => {

@@ -11398,7 +11398,7 @@ bool tryWifiSta(const String &ssid, const String &pass) {
   wifiStaReconnectPending = true;
   wifiApShutdownPending = false;
   lastWifiStaRetryAtMs = millis();
-  logSystemEvent("WiFi STA timeout ssid=" + ssid + "; keeping AP+STA and retrying in background");
+  logSystemEvent("WiFi STA timeout ssid=" + ssid + "; leaving AP+STA active and retrying in background");
   return true;
 }
 

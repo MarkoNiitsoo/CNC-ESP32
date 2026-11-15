@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Align stale UI/firmware string-match tests and commit Safe Z ceiling cap
+
+- Updated `test/ui/files-view.test.mjs` (`?v=...` cache-buster regex), `test/ui/preview-active-run-canvas.test.mjs` (`tb.rawTravelBounds` / `tb.cutBounds`), and `test/firmware/system-log.test.mjs` (`Cookie=|password=|operatorPinHash|wifiPass`) + `src/main.cpp` Wi-Fi timeout log wording (`leaving AP+STA active`).
+- Committed previously staged `www/lib/job-safe-z.js` + `test/ui/job-safe-z.test.mjs` (automatic Safe Z ceiling cap to machine `zMax` while preserving `requestedSafeZ`) and deployed `www/lib/job-safe-z.js` to `E:\www\lib\job-safe-z.js`.
+- Validation: `npx vitest run test/ui test/mock test/firmware` passed **78/78 files (928/928 tests)**; `pio run -e esp32cam` succeeded (`1541597` bytes).
+
 ## 2026-11-15 - Keep AP+STA alive during background router retry and notify UI on STA connect
 
 - Updated `src/main.cpp`:
