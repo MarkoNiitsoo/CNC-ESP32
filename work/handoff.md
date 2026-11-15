@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Accept cappedToMachineMax Safe Z in firmware and mock-job-runner
+
+- `dev/mock-job-runner.mjs`, `src/main.cpp`: Accepted `cappedToMachineMax: true` Safe Z values (`0 < effectiveSafeZ <= programSafeZ + extraClearanceMm`) so Bounds Check, Aircut, and Job Start match `www/lib/job-safe-z.js`.
+- Validation: `npx vitest run test/mock test/firmware/safe-z-validation.test.mjs test/ui/job-safe-z.test.mjs` passed 9/9 files (159/159 tests).
+
 ## 2026-11-15 - Fix generatedFingerprint SHA-256 vs FNV-1a mismatch in secure localhost context
 
 - `www/lib/job-active-run.js`, `www/preview.js`: Exported `safeFingerprint()` and used it in `applyActiveRunParse()` for `jobState.activeRun.generatedFingerprint` so `http://localhost` (`crypto.subtle` SHA-256) no longer mismatches `validateGeneratedRun()`'s `size:...:fnv1a:...` fingerprint.

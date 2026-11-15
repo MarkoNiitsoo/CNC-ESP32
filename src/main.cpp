@@ -8446,13 +8446,21 @@ bool loadProjectSafeZ(const String &jobPath, float &effectiveSafeZ, String &erro
       return false;
     }
 
+    const bool cappedToMachineMax = safeZ["cappedToMachineMax"] | false;
     const float expectedEffective = programSafeZ + extraClearanceMm;
-    if (fabsf(storedEffective - expectedEffective) > 0.001f) {
-      error = "Project Safe Z effectiveSafeZ does not match programSafeZ + extraClearanceMm";
-      return false;
+    if (cappedToMachineMax) {
+      if (storedEffective <= 0.0f || storedEffective > expectedEffective + 0.001f) {
+        error = "Project Safe Z capped effectiveSafeZ is out of range";
+        return false;
+      }
+      effectiveSafeZ = storedEffective;
+    } else {
+      if (fabsf(storedEffective - expectedEffective) > 0.001f) {
+        error = "Project Safe Z effectiveSafeZ does not match programSafeZ + extraClearanceMm";
+        return false;
+      }
+      effectiveSafeZ = expectedEffective;
     }
-
-    effectiveSafeZ = expectedEffective;
     return true;
   }
 

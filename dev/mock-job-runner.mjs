@@ -195,7 +195,13 @@ export class MockJobRunner {
       if (!Number.isFinite(programSafeZ)) throw new Error('programSafeZ is missing or invalid');
       if (!Number.isFinite(extraClearanceMm) || extraClearanceMm < 0) throw new Error('extraClearanceMm must be non-negative');
       if (!Number.isFinite(effectiveSafeZ)) throw new Error('effectiveSafeZ is missing or invalid');
-      if (Math.abs(effectiveSafeZ - (programSafeZ + extraClearanceMm)) > 0.001) {
+      const cappedToMachineMax = safeZ.cappedToMachineMax === true;
+      const expectedUncapped = programSafeZ + extraClearanceMm;
+      if (cappedToMachineMax) {
+        if (effectiveSafeZ <= 0 || effectiveSafeZ > expectedUncapped + 0.001) {
+          throw new Error('Project Safe Z capped effectiveSafeZ is out of range');
+        }
+      } else if (Math.abs(effectiveSafeZ - expectedUncapped) > 0.001) {
         throw new Error('Project Safe Z effectiveSafeZ does not match programSafeZ + extraClearanceMm');
       }
       const requested = Number(requestedValue);

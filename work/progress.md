@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-15 - Accept cappedToMachineMax Safe Z in firmware and mock-job-runner
+
+- Updated `dev/mock-job-runner.mjs` (`assertProjectSafeZ`) and `src/main.cpp` (`readProjectSafeZ`) to accept `projectSafeZ.cappedToMachineMax === true` when `0 < effectiveSafeZ <= programSafeZ + extraClearanceMm`, matching `www/lib/job-safe-z.js` instead of rejecting with `Project Safe Z effectiveSafeZ does not match programSafeZ + extraClearanceMm`.
+- Validation: `npx vitest run test/mock test/firmware/safe-z-validation.test.mjs test/ui/job-safe-z.test.mjs` passed 9/9 files (159/159 tests); `pio run -e esp32cam` building.
+
 ## 2026-11-15 - Fix generatedFingerprint SHA-256 vs FNV-1a mismatch in secure localhost context
 
 - Exported `safeFingerprint()` from `www/lib/job-active-run.js` and updated `applyActiveRunParse()` in `www/preview.js` to store `safeFingerprint(run.text)` in `jobState.activeRun.generatedFingerprint` instead of overwriting it with `sha256:...` on `http://localhost` (where WebCrypto `crypto.subtle` is available), which previously caused `fingerprintsMatch()` in `isGeneratedRunUsable()` to return `false`.
