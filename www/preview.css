@@ -1522,9 +1522,4 @@ body.workbench-page {
     padding: 6px 10px;
     gap: 6px;
   }
-
-  .preview-stage {
-    min-height: 200px;
-    max-height: 36vh;
-  }
 }
