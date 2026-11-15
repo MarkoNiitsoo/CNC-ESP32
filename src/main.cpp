@@ -7619,7 +7619,40 @@ bool shouldDisableCache(const String &path) {
 
 void sendCacheHeadersFor(const String &path) {
   if (shouldDisableCache(path)) {
-    server.sendHeader("Cache-Control", "no-store");
+    // Revalidate via ETag on every navigation so SD UI updates take effect
+    // immediately while unchanged assets return 304 Not Modified in ~2 ms.
+    server.sendHeader("Cache-Control", "no-cache");
+  } else {
+    server.sendHeader("Cache-Control", "public, max-age=3600");
+  }
+}
+
+void streamSdFileBuffered(File &file, const String &contentType, size_t totalBytes) {
+  constexpr size_t kStreamBufSize = 16384;
+  std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[kStreamBufSize]);
+  if (!buf) {
+    server.streamFile(file, contentType);
+    return;
+  }
+  server.setContentLength(totalBytes);
+  server.send(200, contentType, "");
+  WiFiClient client = server.client();
+  size_t remaining = totalBytes;
+  while (remaining > 0 && client.connected()) {
+    const size_t toRead = remaining < kStreamBufSize ? remaining : kStreamBufSize;
+    const size_t bytesRead = file.read(buf.get(), toRead);
+    if (bytesRead == 0) break;
+    size_t offset = 0;
+    while (offset < bytesRead && client.connected()) {
+      const size_t written = client.write(buf.get() + offset, bytesRead - offset);
+      if (written == 0) {
+        delay(1);
+        continue;
+      }
+      offset += written;
+    }
+    remaining -= bytesRead;
+    yield();
   }
 }
 
@@ -7646,9 +7679,17 @@ bool serveSdWwwFile(const String &uri) {
     return false;
   }
 
-  sendCacheHeadersFor(sdPath);
   const size_t servedBytes = file.size();
-  server.streamFile(file, contentTypeForPath(sdPath));
+  const String etag = "\"" + String(servedBytes) + "-" +
+                      String(static_cast<unsigned long>(file.getLastWrite())) + "\"";
+  sendCacheHeadersFor(sdPath);
+  server.sendHeader("ETag", etag);
+  if (server.hasHeader("If-None-Match") && server.header("If-None-Match") == etag) {
+    file.close();
+    server.send(304, "text/plain", "");
+    return true;
+  }
+  streamSdFileBuffered(file, contentTypeForPath(sdPath), servedBytes);
   file.close();
   // Field diagnostics: fingerprint which UI build the browser receives. First
   // serve of a file logs its size; a size change (new deploy) logs again.
@@ -11452,8 +11493,8 @@ void processControllerAutoRecovery() {
 
 void startHttpServer() {
   logSystemEvent("HTTP setup starting port=80");
-  const char *collectedHeaders[] = {"Cookie"};
-  server.collectHeaders(collectedHeaders, 1);
+  const char *collectedHeaders[] = {"Cookie", "If-None-Match"};
+  server.collectHeaders(collectedHeaders, 2);
   httpRoute("/", HTTP_GET, handleIndex);
   httpRoute("/index.html", HTTP_GET, handleIndex);
   httpRoute("/files", HTTP_GET, handleFilesPage);

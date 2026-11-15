@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - HTTP ETag / 304 caching and 16 KB buffered SD streaming
+
+- `src/main.cpp`: Added `If-None-Match` header collection, `ETag` + `304 Not Modified` revalidation (`Cache-Control: no-cache` for `.html`/`.js`/`.css`, `public, max-age=3600` for other static assets), and `streamSdFileBuffered()` (16 KB buffer) in `serveSdWwwFile()`.
+- Deploy updated `firmware.bin` to `E:` if attached.
+
 ## 2026-11-15 - Optional Claim Control in Settings & SD config PIN provisioning
 
 - Added **Control Claim & PIN Lock** to `www/index.html` Settings (`#settings-claim-required`, `#settings-open-operator-panel`), wired in `www/machine-bar.js`. `claimRequired` remains `false` (disabled) by default.

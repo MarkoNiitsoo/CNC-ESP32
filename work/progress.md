@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-15 - HTTP ETag / 304 caching and 16 KB buffered SD streaming
+
+- Replaced `Cache-Control: no-store` on static UI assets (`.html`, `.js`, `.css`) with `Cache-Control: no-cache` + `ETag` (`"<size>-<mtime>"`) and `304 Not Modified` handling via `If-None-Match` (`server.collectHeaders`) in `src/main.cpp`. Non-code static assets (`.json`, `.svg`, `.png`, etc.) use `Cache-Control: public, max-age=3600` + `ETag`.
+- Replaced Arduino `WebServer::streamFile` in `serveSdWwwFile()` with `streamSdFileBuffered()` using a 16 KB (`16384` B) heap buffer (with `streamFile` fallback on allocation failure) to eliminate the ~16.7 s per-file SD streaming bottleneck.
+
 ## 2026-11-15 - Optional Claim Control in Settings & SD config PIN provisioning
 
 - Confirmed `claimRequired` already defaults to `false` (open control) in firmware (`src/main.cpp`), mock (`dev/mock-server.mjs`), and UI. Added an explicit **Control Claim & PIN Lock** panel (`#settings-claim-required`, `#settings-claim-status`, `#settings-open-operator-panel`) in `www/index.html` Settings synced with `#mb-operator-claim-required` in `www/machine-bar.js`.
