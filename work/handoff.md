@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Cumulative planner drain deadline for Marlin ACK watchdog
+
+- `src/main.cpp`: Added `marlinPlannerDrainDeadlineMs` in `noteAcknowledgedPlannerTiming()` so short queued commands no longer overwrite `marlinPlannerWaitAllowanceMs` while a long rapid move is still executing in Marlin's planner.
+- Validation: `npx vitest run test/firmware/marlin-transport.test.mjs` passed 35/35; `pio run -e esp32cam` succeeded; deploying `firmware.bin` to `E:`.
+
 ## 2026-11-15 - Fix 3D bounds box drawing & unhandled Bounds/Aircut error reporting
 
 - `www/preview.js`, `www/preview.html`: Fixed `draw()` `layers.bounds` to read `toolpathBounds || bounds`, added `catch` error reporting to `sendBoundingBoxTrace()`/`sendAircutToolpath()` + `M400`/`M114` sub-step status in `captureM114()`, and bumped to `UI 2026.11.15-5`.

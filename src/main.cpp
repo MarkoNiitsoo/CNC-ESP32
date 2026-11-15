@@ -927,6 +927,7 @@ uint8_t marlinAutoreportSeconds = 0;
 String marlinAsyncLine;
 String streamMotionMode = "G0";
 MotionTimingState motionTimingState;
+uint32_t marlinPlannerDrainDeadlineMs = 0;
 uint32_t marlinPlannerWaitAllowanceMs = 0;
 PositionTelemetry marlinPosition;
 MachineFrameState machineFrame;
@@ -4500,6 +4501,7 @@ uint32_t marlinAckTimeoutForCommand(const String &command, bool toolChangeSequen
 
 void resetMotionTimingState() {
   motionTimingState = MotionTimingState();
+  marlinPlannerDrainDeadlineMs = 0;
   marlinPlannerWaitAllowanceMs = 0;
   if (marlinPosition.valid) {
     motionTimingState.xValid = true;
@@ -4707,12 +4709,20 @@ void noteAcknowledgedPlannerTiming(const String &command, uint32_t estimatedDura
   upper.toUpperCase();
   upper.trim();
   if (commandHasToken(upper, "M400")) {
+    marlinPlannerDrainDeadlineMs = 0;
     marlinPlannerWaitAllowanceMs = 0;
     return;
   }
+  const uint32_t now = millis();
   if (estimatedDurationMs > 0) {
-    marlinPlannerWaitAllowanceMs = min(estimatedDurationMs, kMarlinMaxMotionHardAckTimeoutMs);
+    const uint32_t base = (marlinPlannerDrainDeadlineMs > now) ? marlinPlannerDrainDeadlineMs : now;
+    const uint32_t cappedAdd = min(estimatedDurationMs, kMarlinMaxMotionHardAckTimeoutMs);
+    marlinPlannerDrainDeadlineMs = base + cappedAdd;
   }
+  marlinPlannerWaitAllowanceMs =
+      (marlinPlannerDrainDeadlineMs > now)
+          ? min(marlinPlannerDrainDeadlineMs - now, kMarlinMaxMotionHardAckTimeoutMs)
+          : 0;
 }
 
 bool marlinAckWatchdogExpired(uint32_t startedAtMs, uint32_t livenessAtMs,

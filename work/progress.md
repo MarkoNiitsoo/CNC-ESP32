@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-15 - Cumulative planner drain deadline for Marlin ACK watchdog
+
+- Fixed `noteAcknowledgedPlannerTiming()` in `src/main.cpp`: added cumulative `marlinPlannerDrainDeadlineMs` so short queued commands (`G0 Z3`, small `G3` segments) no longer overwrite `marlinPlannerWaitAllowanceMs` and erase the remaining execution time of an earlier long rapid move (`G0 X526.939 Y61.342`, `10609 ms`), which had caused `communication_lost` (`hardTimeoutMs=10000`) at line 9 of `/gcode/KAK.gc` when Marlin's planner buffer was still full.
+- Validation: `npx vitest run test/firmware/marlin-transport.test.mjs` passed 35/35 tests; `pio run -e esp32cam` building.
+
 ## 2026-11-15 - Skip redundant M114 WebSocket wait when /api/cmd returns valid XYZ
 
 - Fixed `sendCmd('M114')` in `www/preview.js`: when `POST /api/cmd` already returns parseable `X/Y/Z` coordinates in `data.response`, return immediately instead of waiting 5 s on `waitForSocketSlice('machine', ...)` (firmware only broadcasts `machine` WS slices when `M114` changes XYZ, so idle `M114` captures at `0,0,0` timed out).
