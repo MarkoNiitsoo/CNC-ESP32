@@ -3,6 +3,7 @@
 
 - Implemented the 5-step guided workflow stepper (`#workflow-stepper`), inline read-only claim banner (`#readiness-claim-banner`), side-by-side live Work/Machine XYZ + `Open Jog` in `.zero-origin-panel`, visible live `Feed Override` with quick-step buttons during cutting, live progress bar + `data-live-cutting` mobile focus, state-aware Pause/Resume/Stop guidance, and `#job-view` empty-state guidance (`www/app.js`, `www/machine-bar.js`, `www/preview.html`, `www/preview.js`, `www/preview.css`).
 - Validation: `npx vitest run test/ui test/mock` passed 54/54 files (627/627 tests).
+- Deployed the 5 updated `www/` files to verified CNC SD card `E:` (`.cnc-sd-id` `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`), backed up prior `E:\www` to `.pio-build/sd-backups/2026-11-15-ui-update/www`, and verified SHA-256 hashes for all 46 canonical `www/` files (`0` mismatches). Card was not ejected.
 - Pre-existing uncommitted `job-safe-z` edits in `www/lib/job-safe-z.js` and `test/ui/job-safe-z.test.mjs` were left untouched.
 
 ## 2026-10-23 - Generated Safe Z fits the machine ceiling

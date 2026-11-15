@@ -6,6 +6,7 @@
 - Promoted `#feed-live-control` out of `<details>` into the main `#run-panel` with mobile-friendly `-10%/-5%/100%/+5%/+10%` quick-step controls, added a live progress bar + `data-live-cutting` focus mode, and made `#run-pause-stop-hint` state-aware for `RUNNING`, `PAUSED_INTACT`, and `RECOVERY_REQUIRED`.
 - Added empty-state guidance in `www/app.js` when `#job-view` has no active job, plus mobile-first responsive CSS in `www/preview.css`.
 - Validation: `npx vitest run test/ui test/mock` passed 54/54 test files (627/627 tests).
+- Deployed updated `www/` UI files (`app.js`, `machine-bar.js`, `preview.css`, `preview.html`, `preview.js`) to verified CNC SD card `E:` (`.cnc-sd-id` `9e6e88bb-3d85-4cc2-a46a-5025d6ee5e2e`) after backing up `E:\www` to `.pio-build/sd-backups/2026-11-15-ui-update/www`. All 46 canonical `www/` files on `E:` verified SHA-256 identical (`0` mismatches); `gcode/`, `jobs/`, `logs/`, `esp32-cnc/`, `firmware.done.bin`, and `lib/job-core.mjs` preserved.
 
 ## 2026-10-23 - Generated Safe Z fits the machine ceiling
 
