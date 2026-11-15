@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Visible UI version badge and cache-busting query string in preview.html
+
+- `www/preview.html`: Added `#ui-version-badge` (`UI 2026.11.15-4`) and `?v=20261115-4` query strings to CSS/JS asset references to force mobile cache refresh and provide visual version confirmation.
+- Uploaded `www/preview.html` to `http://cnc.local/api/upload?path=/www&overwrite=true` (SHA-256 verified).
+
 ## 2026-11-15 - Fix Safe Z machine-vs-work limit comparison & max Safe Z offer
 
 - `www/preview.js`: Fixed `refreshMachineInfo()` and `safeZValidationMessage()` so machine Z limits (`currentMachineFrame.safeZ.machineMin/machineMax`, e.g. `0..70`) are never overwritten with work-relative `/api/machine/info` `full.zMax`, added explicit Z-Zero height blocker messages, and added a **Set Safe Z to Max** button in `renderReadiness()`.

@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-15 - Visible UI version badge and cache-busting query string in preview.html
+
+- Added `#ui-version-badge` (`UI 2026.11.15-4`) in `www/preview.html` `.status-header` so the active UI version is immediately visible on mobile and desktop.
+- Added `?v=20261115-4` cache-busting query strings to CSS/JS asset references (`style.css`, `preview.css`, `skin-init.js`, `telemetry.js`, `machine-bar.js`, `preview.js`) in `www/preview.html` so mobile browsers immediately fetch updated assets without needing manual cache clearing.
+- Validation: `npx vitest run test/ui/live-control-dom-audit.test.mjs test/ui/preview-first-open.test.mjs test/ui/workbench-ui.test.mjs test/mock/mock-sd.test.mjs` passed 48/48 tests.
+
 ## 2026-11-15 - Fix Safe Z machine-vs-work limit comparison and offer max Safe Z when Z Zero is too high
 
 - Fixed `refreshMachineInfo()` and `safeZValidationMessage()` in `www/preview.js`: `/api/machine/info` reports `full` shifted by active `G92` (`workZeroMachine`), which had overwritten `TOOLLESS_LIMITS.zMax` (`70.0`) with work-relative `19.162`, causing `validateProjectSafeZForFrame()` to compare machine `Z55.8` against `19.2`. Now `refreshMachineInfo()` restores machine coordinates and `safeZValidationMessage()` uses `currentMachineFrame.safeZ.machineMin/machineMax`.
