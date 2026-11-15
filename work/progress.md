@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-15 - Fix generatedFingerprint SHA-256 vs FNV-1a mismatch in secure localhost context
+
+- Exported `safeFingerprint()` from `www/lib/job-active-run.js` and updated `applyActiveRunParse()` in `www/preview.js` to store `safeFingerprint(run.text)` in `jobState.activeRun.generatedFingerprint` instead of overwriting it with `sha256:...` on `http://localhost` (where WebCrypto `crypto.subtle` is available), which previously caused `fingerprintsMatch()` in `isGeneratedRunUsable()` to return `false`.
+- Validation: `npx vitest run test/ui/job-active-run.test.mjs test/ui/job-readiness.test.mjs test/ui/preview-active-run-canvas.test.mjs` passed 3/3 files (44/44 tests); copied `job-active-run.js` and `preview.js` to `E:\www\`.
+
 ## 2026-11-15 - Automatic run-file regeneration before Bounds/Aircut/Start Cut
 
 - Updated `www/preview.js`:

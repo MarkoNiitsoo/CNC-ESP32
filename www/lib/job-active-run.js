@@ -6,7 +6,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function safeFingerprint(text = '') {
+export function safeFingerprint(text = '') {
   let hash = 0x811c9dc5;
   const bytes = new TextEncoder().encode(text);
   for (let i = 0; i < bytes.length; i += 1) {

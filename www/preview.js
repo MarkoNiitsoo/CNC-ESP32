@@ -4996,7 +4996,9 @@ function applyActiveRunParse(run, options = {}) {
     jobState.activeRun.mode = run.mode;
     jobState.activeRun.sizeBytes = run.sizeBytes;
     if (run.mode === 'source') jobState.activeRun.sourceFingerprint = run.fingerprint.value;
-    else jobState.activeRun.generatedFingerprint = run.fingerprint.value;
+    else jobState.activeRun.generatedFingerprint = jobActiveRunModule?.safeFingerprint
+      ? jobActiveRunModule.safeFingerprint(run.text)
+      : (jobState.generatedValidation?.generatedFingerprint || run.fingerprint.value);
   }
   if (jobState) {
     const newProgramZ = run.model?.programZ ? JSON.parse(JSON.stringify(run.model.programZ)) : null;

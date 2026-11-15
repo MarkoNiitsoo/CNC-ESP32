@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-15 - Fix generatedFingerprint SHA-256 vs FNV-1a mismatch in secure localhost context
+
+- `www/lib/job-active-run.js`, `www/preview.js`: Exported `safeFingerprint()` and used it in `applyActiveRunParse()` for `jobState.activeRun.generatedFingerprint` so `http://localhost` (`crypto.subtle` SHA-256) no longer mismatches `validateGeneratedRun()`'s `size:...:fnv1a:...` fingerprint.
+- Validation: `npx vitest run test/ui/job-active-run.test.mjs test/ui/job-readiness.test.mjs test/ui/preview-active-run-canvas.test.mjs` passed 3/3 files (44/44 tests); deployed to `E:\www\`.
+
 ## 2026-11-15 - Automatic run-file regeneration before Bounds/Aircut/Start Cut
 
 - `www/preview.js`: Added `ensureGeneratedRunCurrent()` (calling `active.isGeneratedRunUsable(job)`) and `generateRunInFlight` so any pending or stale transformed `.run.gc` file is automatically regenerated and uploaded before Bounds Check, Aircut, or Start Cut (`350 ms` debounce, no redundant `/api/download` preflight when `overwrite: true`).
