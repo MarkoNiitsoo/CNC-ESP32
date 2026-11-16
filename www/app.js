@@ -843,7 +843,9 @@ function renderCurrentJob() {
 }
 
 function fileBadges(item, meta = null) {
-  const badges = uploadThumbnailModule ? uploadThumbnailModule.fileCardBadges(meta) : [];
+  const badges = typeof uploadThumbnailModule?.fileCardBadges === 'function'
+    ? uploadThumbnailModule.fileCardBadges(meta)
+    : [];
   return badges.map((badge) => `<span class="status-badge">${html(badge)}</span>`).join('');
 }
 
@@ -906,7 +908,10 @@ async function fileMetadataFor(item) {
   const thumbnail = uploadThumbnailModule || await uploadThumbnailPromise;
   uploadThumbnailModule = thumbnail;
   try {
-    const res = await fetch(`/api/download?path=${encodeURIComponent(thumbnail.jobPathForUpload(item.path))}`);
+    const jobPath = typeof thumbnail?.jobPathForUpload === 'function'
+      ? thumbnail.jobPathForUpload(item.path)
+      : `/jobs/${basename(item.path)}.job.json`;
+    const res = await fetch(`/api/download?path=${encodeURIComponent(jobPath)}`);
     if (res.ok) {
       const loaded = await res.json();
       if (loaded?.sourceGcodePath === item.path) return loaded;
