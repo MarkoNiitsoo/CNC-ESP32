@@ -90,4 +90,19 @@ describe('upload-time PNG thumbnails', () => {
       expect(source).toMatch(/thumbnailRes\?\.ok \? \{ sourceGcodePath: item\.path, thumbnailPath \} : null/);
     }
   });
+
+  it('builds shared file-card badges with workpiece dimensions and machining duration while filtering G54 default notice', async () => {
+    const { fileCardBadges } = await import('../../www/lib/upload-thumbnail.js');
+    expect(fileCardBadges({
+      preview: {
+        bounds: { cutBounds: { xMin: 10, xMax: 550.4, yMin: 5, yMax: 131.2 } },
+        estimate: { effectiveSecondsWithOverride: 245 },
+        warnings: [
+          { code: 'default-workspace', message: 'G54 default workspace command found.' },
+          { code: 'spindle', message: 'Check spindle RPM.' },
+        ],
+      },
+    })).toEqual(['1 need attention', '540×126 mm', '4 min']);
+    expect(fileCardBadges(null)).toEqual([]);
+  });
 });

@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-16 - Show workpiece size & machining time on file cards and deduplicate badge/jobPath helpers
+
+- `www/lib/upload-thumbnail.js`, `www/files.js`, `www/app.js`: Added `fileCardBadges()` (`W×H mm` workpiece size + machining time + warnings) in `upload-thumbnail.js` and removed duplicate `fileBadges()` / `jobPathFor()` helpers from both `files.js` and `app.js`.
+- Validation: `npx vitest run test/ui/files-view.test.mjs test/ui/upload-thumbnail.test.mjs test/ui/files-race.test.mjs` passed 3/3 files (22/22 tests); deployed to `E:\www\`.
+
 ## 2026-11-16 - Animate Bounds Check / test-motion toolpath on canvas and in mock runner
 
 - `www/preview.js`, `dev/mock-job-runner.mjs`, `dev/mock-server.mjs`: Set `activeTestMotion` prior to `/api/test-motion/start` and enabled `realisticTestMotionTiming` in `startMockServer()` (`dist / (feed * override) * 60000` ms, interruptible every 50 ms) so Bounds Check and Aircut stay 1:1 synchronized with the UI animation engine.

@@ -39,10 +39,13 @@ describe('files icon view interactions', () => {
     expect(style).toMatch(/\.file-actions \{[\s\S]*position: absolute;[\s\S]*inset: 0;/);
   });
 
-  it('shows only actionable warning and estimate badges', () => {
+  it('shows only actionable warning, workpiece size, and estimate badges', async () => {
+    const uploadThumb = await readFile(new URL('../../www/lib/upload-thumbnail.js', import.meta.url), 'utf8');
     expect(files).not.toContain("badges.push('has job')");
     expect(files).not.toContain("badges.push('preview')");
     expect(app).not.toContain("const badges = [item.name.split('.').pop()");
-    expect(files).toContain('G54 default workspace|default-workspace');
+    expect(uploadThumb).toContain('G54 default workspace|default-workspace');
+    expect(uploadThumb).toContain('formatWorkpieceDimensions');
+    expect(uploadThumb).toContain('formatEstimateDuration');
   });
 });

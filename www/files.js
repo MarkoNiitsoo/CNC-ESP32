@@ -25,6 +25,8 @@ const thumbnailModulesPromise = Promise.all([
   import('/lib/toolpath-model.js'),
   import('/lib/upload-thumbnail.js'),
 ]);
+let uploadThumbnailModule = null;
+thumbnailModulesPromise.then(([, mod]) => { uploadThumbnailModule = mod; }).catch(() => {});
 let selectedThumbnail = null;
 let thumbnailGeneration = 0;
 
@@ -269,28 +271,20 @@ async function uploadThumbnailSidecars(gcodePath, selected) {
   }), true);
 }
 
-function jobPathFor(gcodePath) {
-  const normalized = String(gcodePath || '').replace(/^\/+/, '');
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  const readable = normalized.replace(/[^A-Za-z0-9._-]/g, '_').slice(-72) || 'job';
-  return `/jobs/${readable}-${(hash >>> 0).toString(16).padStart(8, '0')}.job.json`;
-}
-
-function saveCurrentJob(gcodePath) {
+async function saveCurrentJob(gcodePath) {
+  const [, thumbnail] = await thumbnailModulesPromise;
   localStorage.setItem(currentJobKey, JSON.stringify({
     gcodePath,
-    jobPath: jobPathFor(gcodePath),
+    jobPath: thumbnail.jobPathForUpload(gcodePath),
   }));
 }
 
 async function loadFileMeta(item) {
   if (!canPreview(item)) return null;
+  const [, thumbnail] = await thumbnailModulesPromise;
+  uploadThumbnailModule = uploadThumbnailModule || thumbnail;
   try {
-    const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(item.path))}`);
+    const res = await fetch(`/api/download?path=${encodeURIComponent(thumbnail.jobPathForUpload(item.path))}`);
     if (res.ok) {
       const loaded = await res.json();
       if (loaded?.sourceGcodePath === item.path) return loaded;
@@ -298,18 +292,13 @@ async function loadFileMeta(item) {
   } catch (err) {
     // A thumbnail may still exist even when this file has no current Job JSON.
   }
-  const [, thumbnail] = await thumbnailModulesPromise;
   const thumbnailPath = thumbnail.thumbnailPathFor(item.name || basename(item.path));
   const thumbnailRes = await fetch(thumbnailUrl(thumbnailPath)).catch(() => null);
   return thumbnailRes?.ok ? { sourceGcodePath: item.path, thumbnailPath } : null;
 }
 
 function fileBadges(item, meta) {
-  const badges = [];
-  const warnings = (meta?.preview?.warnings || []).filter((warning) => !/G54 default workspace|default-workspace/i.test(String(warning?.message || warning)));
-  if (warnings.length) badges.push(`${warnings.length} need attention`);
-  const estimate = formatMinutes(meta?.preview?.estimate?.effectiveSecondsWithOverride || meta?.preview?.estimate?.nominalSeconds);
-  if (estimate) badges.push(estimate);
+  const badges = uploadThumbnailModule ? uploadThumbnailModule.fileCardBadges(meta) : [];
   return badges.map((badge) => `<span class="status-badge">${html(badge)}</span>`).join('');
 }
 

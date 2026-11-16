@@ -76,6 +76,8 @@ const machineConfigPromise = import('/lib/machine-config.js').then((module) => {
 });
 const deviceSettingsPromise = import('/lib/device-settings.js');
 const uploadThumbnailPromise = import('/lib/upload-thumbnail.js');
+let uploadThumbnailModule = null;
+uploadThumbnailPromise.then((mod) => { uploadThumbnailModule = mod; }).catch(() => {});
 const toolChangeSettingsPromise = import('/lib/tool-change-settings.js');
 const thumbnailSettingsPromise = import('/lib/thumbnail-settings.js');
 const thumbnailViewMode = document.querySelector('#thumbnail-view-mode');
@@ -210,17 +212,6 @@ async function saveToolChangeSettings(event) {
 function basename(path) {
   const index = String(path || '').lastIndexOf('/');
   return index >= 0 ? path.slice(index + 1) : path;
-}
-
-function jobPathFor(gcodePath) {
-  const normalized = String(gcodePath || '').replace(/^\/+/, '');
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  const readable = normalized.replace(/[^A-Za-z0-9._-]/g, '_').slice(-72) || 'job';
-  return `/jobs/${readable}-${(hash >>> 0).toString(16).padStart(8, '0')}.job.json`;
 }
 
 function formatBytes(value) {
@@ -589,7 +580,15 @@ function applyJobStatus(data) {
   jobStatus = data;
   updateDeviceSettingsLock();
   if (!currentJob && jobStatus.gcodePath) {
-    saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: jobStatus.jobPath || jobPathFor(jobStatus.gcodePath) });
+    if (jobStatus.jobPath) {
+      saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: jobStatus.jobPath });
+    } else {
+      uploadThumbnailPromise.then((thumbnail) => {
+        if (!currentJob && jobStatus?.gcodePath) {
+          saveCurrentJob({ gcodePath: jobStatus.gcodePath, jobPath: thumbnail.jobPathForUpload(jobStatus.gcodePath) });
+        }
+      }).catch(() => {});
+    }
   }
 }
 
@@ -844,11 +843,7 @@ function renderCurrentJob() {
 }
 
 function fileBadges(item, meta = null) {
-  const badges = [];
-  const warnings = (meta?.preview?.warnings || []).filter((warning) => !/G54 default workspace|default-workspace/i.test(String(warning?.message || warning)));
-  if (warnings.length) badges.push(`${warnings.length} need attention`);
-  const estimate = formatMinutes(meta?.preview?.estimate?.effectiveSecondsWithOverride || meta?.preview?.estimate?.nominalSeconds);
-  if (estimate !== '-') badges.push(estimate);
+  const badges = uploadThumbnailModule ? uploadThumbnailModule.fileCardBadges(meta) : [];
   return badges.map((badge) => `<span class="status-badge">${html(badge)}</span>`).join('');
 }
 
@@ -908,8 +903,10 @@ function bindLauncherCard(row, actions, item) {
 
 async function fileMetadataFor(item) {
   if (!isGcodeFile(item)) return null;
+  const thumbnail = uploadThumbnailModule || await uploadThumbnailPromise;
+  uploadThumbnailModule = thumbnail;
   try {
-    const res = await fetch(`/api/download?path=${encodeURIComponent(jobPathFor(item.path))}`);
+    const res = await fetch(`/api/download?path=${encodeURIComponent(thumbnail.jobPathForUpload(item.path))}`);
     if (res.ok) {
       const loaded = await res.json();
       if (loaded?.sourceGcodePath === item.path) return loaded;
@@ -917,7 +914,6 @@ async function fileMetadataFor(item) {
   } catch (err) {
     // A thumbnail may still exist even when this file has no current Job JSON.
   }
-  const thumbnail = await uploadThumbnailPromise;
   const thumbnailPath = thumbnail.thumbnailPathFor(item.name || basename(item.path));
   const thumbnailRes = await fetch(thumbnailUrl(thumbnailPath)).catch(() => null);
   return thumbnailRes?.ok ? { sourceGcodePath: item.path, thumbnailPath } : null;
@@ -1051,7 +1047,9 @@ async function ensureJobViewData() {
 }
 
 async function openJob(gcodePath) {
-  saveCurrentJob({ gcodePath, jobPath: jobPathFor(gcodePath) });
+  const thumbnail = uploadThumbnailModule || await uploadThumbnailPromise;
+  uploadThumbnailModule = thumbnail;
+  saveCurrentJob({ gcodePath, jobPath: thumbnail.jobPathForUpload(gcodePath) });
   window.location.href = previewUrl(gcodePath);
 }
 
@@ -1113,7 +1111,7 @@ async function saveUploadPreviewMetadata(gcodePath, fileName) {
   const [mod, thumbnail] = await Promise.all([toolpathModulePromise, uploadThumbnailPromise]);
   if (!mod || !thumbnail) return;
 
-  const jobPath = jobPathFor(gcodePath);
+  const jobPath = thumbnail.jobPathForUpload(gcodePath);
   const existing = await loadExistingJob(jobPath);
   let thumbnailPath = null;
   try {

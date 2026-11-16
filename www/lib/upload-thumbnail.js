@@ -47,3 +47,41 @@ export function mergeUploadedFileMetadata(existingJob, details = {}) {
     startAuthorization: base.startAuthorization || { state: 'pending' },
   };
 }
+
+export function formatEstimateDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value < 60) return '< 1 min';
+  return `${Math.max(1, Math.round(value / 60))} min`;
+}
+
+function formatAxisSpan(span) {
+  return span < 10 ? span.toFixed(1) : String(Math.round(span));
+}
+
+export function formatWorkpieceDimensions(preview = {}) {
+  const b = preview?.bounds?.cutBounds || preview?.bounds?.placementBounds || preview?.bounds?.rawTravelBounds || preview?.bounds;
+  if (!b) return '';
+  const dx = Number(b.xMax) - Number(b.xMin);
+  const dy = Number(b.yMax) - Number(b.yMin);
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx <= 0 && dy <= 0)) return '';
+  return `${formatAxisSpan(Math.max(0, dx))}×${formatAxisSpan(Math.max(0, dy))} mm`;
+}
+
+export function fileCardBadges(meta = null) {
+  if (!meta) return [];
+  const badges = [];
+  const warnings = (meta?.preview?.warnings || []).filter(
+    (warning) => !/G54 default workspace|default-workspace/i.test(String(warning?.message || warning)),
+  );
+  if (warnings.length) badges.push(`${warnings.length} need attention`);
+  const dimensions = formatWorkpieceDimensions(meta?.preview);
+  if (dimensions) badges.push(dimensions);
+  const estimate = formatEstimateDuration(
+    meta?.preview?.estimate?.effectiveSecondsWithOverride ||
+    meta?.preview?.estimate?.nominalSeconds ||
+    meta?.preview?.estimatedTimeSeconds,
+  );
+  if (estimate) badges.push(estimate);
+  return badges;
+}
