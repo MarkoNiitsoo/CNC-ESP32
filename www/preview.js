@@ -4293,19 +4293,25 @@ async function startTestMotionStream(mode, commands, safeZ, onProgress = () => {
 
   const payload = { path, mode, safeZ, jobPath: jobPathFor(filePath), ...extraPayload };
   const jobBaseline = socketSliceToken('job');
-  const res = await fetch('/api/test-motion/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const started = await readJsonOrThrow(res);
-  if (!res.ok) throw new Error(started.error || 'Test motion start failed');
-  const confirmed = await waitForSocketSlice(
-    'job',
-    (status) => status?.streamMode === mode && status?.gcodePath === path,
-    { afterSequence: jobBaseline, timeoutMs: 5000, description: `${mode} test-motion stream state` },
-  );
   activeTestMotion = { mode, path, segments: animationModel.segments };
+  let confirmed;
+  try {
+    const res = await fetch('/api/test-motion/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const started = await readJsonOrThrow(res);
+    if (!res.ok) throw new Error(started.error || 'Test motion start failed');
+    confirmed = await waitForSocketSlice(
+      'job',
+      (status) => status?.streamMode === mode && status?.gcodePath === path,
+      { afterSequence: jobBaseline, timeoutMs: 5000, description: `${mode} test-motion stream state` },
+    );
+  } catch (err) {
+    activeTestMotion = null;
+    throw err;
+  }
 
   return new Promise((resolve, reject) => {
     let unsubscribe = null;

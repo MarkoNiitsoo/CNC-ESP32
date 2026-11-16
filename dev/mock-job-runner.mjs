@@ -704,6 +704,7 @@ export class MockJobRunner {
         this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
         continue;
       }
+      const prevPos = { ...this.marlin.position };
       const result = this.runCommand(command);
       this.status.sentLineCount += 1;
       if (!result.ok) {
@@ -714,7 +715,14 @@ export class MockJobRunner {
       this.status.lastAcknowledgedByteOffset = this.status.currentByteOffset;
       this.status.lastAcknowledgedLineNumber = this.status.currentLineNumber;
       this.status.progressPercent = this.status.fileSize ? this.status.lastAcknowledgedByteOffset * 100 / this.status.fileSize : 0;
-      if (this.lineDelayMs) await sleep(this.lineDelayMs);
+      if (this.lineDelayMs) {
+        const nextPos = this.marlin.position;
+        const dist = Math.hypot(nextPos.x - prevPos.x, nextPos.y - prevPos.y, nextPos.z - prevPos.z);
+        const stepMs = (this.status.startMode === 'validated_test_motion' && dist > 0.01)
+          ? Math.max(this.lineDelayMs, Math.min(800, Math.round(dist * 2.5)))
+          : this.lineDelayMs;
+        await sleep(stepMs);
+      }
     }
     if (token !== this.runToken) return;
     this.status.currentByteOffset = this.status.fileSize;
