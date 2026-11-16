@@ -2,8 +2,8 @@
 ## 2026-11-16 - Animate Bounds Check / test-motion toolpath on canvas and in mock runner
 
 - Updated `www/preview.js` (`startTestMotionStream()`): set `activeTestMotion` before dispatching `/api/test-motion/start` (clearing on failure) so `activeAnimationSegments()` and `handleMotionTelemetry()` animate the Bounds / Aircut toolpath using the exact same motion animation engine as normal cutting from the very first segment.
-- Updated `dev/mock-job-runner.mjs` (`stream()`): when `lineDelayMs > 0` and `startMode === 'validated_test_motion'`, pace motion steps proportionally (`min(800, dist * 2.5)` ms) so Bounds Check and Aircut visibly animate around the toolpath in the dev mock instead of finishing in ~200 ms.
-- Validation: `npx vitest run test/mock/mock-job-runner.test.mjs test/ui/job-readiness.test.mjs test/ui/preview-active-run-canvas.test.mjs` passed 3/3 files (61/61 tests).
+- Updated `dev/mock-job-runner.mjs` (`stream()`) and `dev/mock-server.mjs` (`startMockServer()` sets `realisticTestMotionTiming: true`): when enabled, `validated_test_motion` paces each motion step using `min(30000, dist / (feed * override) * 60000)` ms in interruptible 50 ms slices so Bounds Check / Aircut stay 1:1 synchronized with the UI tool animation while unit tests keep fast execution.
+- Validation: `npx vitest run test/mock/mock-job-runner.test.mjs test/mock/mock-server.test.mjs` passed 2/2 files (105/105 tests).
 
 ## 2026-11-15 - Accept cappedToMachineMax Safe Z in firmware and mock-job-runner
 

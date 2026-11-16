@@ -26,12 +26,13 @@ function sleep(ms) {
 }
 
 export class MockJobRunner {
-  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20, realtimeHold = true, controllerState = 'connected' } = {}) {
+  constructor({ sd, marlin, frame, toolChangeSettings, lineDelayMs = 20, realtimeHold = true, controllerState = 'connected', realisticTestMotionTiming = false } = {}) {
     this.sd = sd;
     this.marlin = marlin;
     this.frame = frame;
     this.toolChangeSettings = toolChangeSettings || {};
     this.lineDelayMs = Math.max(0, Number(lineDelayMs) || 0);
+    this.realisticTestMotionTiming = Boolean(realisticTestMotionTiming);
     this.realtimeHold = realtimeHold !== false;
     this.controllerState = controllerState;
     this.runToken = 0;
@@ -718,10 +719,22 @@ export class MockJobRunner {
       if (this.lineDelayMs) {
         const nextPos = this.marlin.position;
         const dist = Math.hypot(nextPos.x - prevPos.x, nextPos.y - prevPos.y, nextPos.z - prevPos.z);
-        const stepMs = (this.status.startMode === 'validated_test_motion' && dist > 0.01)
-          ? Math.max(this.lineDelayMs, Math.min(800, Math.round(dist * 2.5)))
-          : this.lineDelayMs;
-        await sleep(stepMs);
+        let stepMs = this.lineDelayMs;
+        if (this.realisticTestMotionTiming && this.status.startMode === 'validated_test_motion' && dist > 0.001) {
+          const fMatch = command.match(/\bF([0-9]+(?:\.[0-9]+)?)/i);
+          const feed = (fMatch ? Number(fMatch[1]) : Number(this.marlin.feedRate)) || 3000;
+          const override = Math.max(0.1, Number(this.status.feedOverridePercent || 100) / 100);
+          stepMs = Math.max(this.lineDelayMs, Math.min(30000, Math.round(dist / (feed * override) * 60000)));
+        }
+        const deadline = Date.now() + stepMs;
+        while (Date.now() < deadline) {
+          if (token !== this.runToken) return;
+          while (this.paused) {
+            await sleep(50);
+            if (token !== this.runToken) return;
+          }
+          await sleep(Math.min(50, Math.max(1, deadline - Date.now())));
+        }
       }
     }
     if (token !== this.runToken) return;

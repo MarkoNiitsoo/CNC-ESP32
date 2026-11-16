@@ -141,6 +141,7 @@ export async function createMockEnvironment(options = {}) {
   const runner = new MockJobRunner({
     sd, marlin, frame, toolChangeSettings, lineDelayMs: config.lineDelayMs,
     realtimeHold: config.realtimeHold !== false,
+    realisticTestMotionTiming: Boolean(options.realisticTestMotionTiming ?? config.realisticTestMotionTiming),
   });
   const jog = {
     state: 'IDLE', safeJog: true, zLiftedForJog: false, safeLiftZ: 70,
@@ -1941,7 +1942,7 @@ export async function createMockServer(options = {}) {
 }
 
 export async function startMockServer(options = {}) {
-  const instance = await createMockServer(options);
+  const instance = await createMockServer({ realisticTestMotionTiming: true, ...options });
   const port = Number(options.port ?? instance.env.config.port ?? 8080);
   const host = String(options.host ?? instance.env.config.host ?? '127.0.0.1');
   await new Promise((resolve, reject) => {
