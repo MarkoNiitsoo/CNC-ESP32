@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
+import { fileCardBadges, jobPathForUpload } from '../../www/lib/upload-thumbnail.js';
 
 const appSource = await readFile(new URL('../../www/app.js', import.meta.url), 'utf8');
 
@@ -215,7 +216,11 @@ function createFilesEnv(options = {}) {
     },
     '/lib/machine-config.js': {},
     '/lib/device-settings.js': {},
-    '/lib/upload-thumbnail.js': { thumbnailPathFor: (name) => `/thumb/${name}` },
+    '/lib/upload-thumbnail.js': {
+      thumbnailPathFor: (name) => `/thumb/${name}`,
+      jobPathForUpload,
+      fileCardBadges,
+    },
     '/lib/tool-change-settings.js': {},
     '/lib/thumbnail-settings.js': {
       loadThumbnailViewMode: () => 'grid',
