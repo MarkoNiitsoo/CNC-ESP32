@@ -1,4 +1,10 @@
 # Progress
+## 2026-11-16 - Regenerate thumbnail and file-card metadata from right-click / touch-hold menu
+
+- Added `regenerateFileThumbnailAndMetadata()` to `www/lib/upload-thumbnail.js` to re-download a G-code file, render its 128×128 PNG thumbnail, and update `.job.json` `preview` metadata (bounds, dimensions, estimate, warnings) in one shared helper.
+- Added a **Refresh preview** button to the right-click / touch-hold `.file-actions` menu in both `www/app.js` (`/`) and `www/files.js` (`/files`), refreshing the card thumbnail (`&t=...` cache-buster) and dimension/time badges immediately in place.
+- Validation: `npx vitest run test/ui/files-view.test.mjs test/ui/upload-thumbnail.test.mjs test/ui/files-race.test.mjs` passed 3/3 files (22/22 tests); deployed `upload-thumbnail.js`, `files.js`, and `app.js` to `E:\www\`.
+
 ## 2026-11-16 - Show workpiece size & machining time on file cards and deduplicate badge/jobPath helpers
 
 - Consolidated file-card badge formatting (`fileCardBadges`, `formatWorkpieceDimensions`, `formatEstimateDuration`) into `www/lib/upload-thumbnail.js` so file cards show workpiece dimensions (`W×H mm`) alongside estimated machining time and actionable warnings.

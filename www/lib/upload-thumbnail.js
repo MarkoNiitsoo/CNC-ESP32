@@ -85,3 +85,67 @@ export function fileCardBadges(meta = null) {
   if (estimate) badges.push(estimate);
   return badges;
 }
+
+export async function regenerateFileThumbnailAndMetadata(gcodePath, options = {}) {
+  const fetchImpl = options.fetch || globalThis.fetch;
+  const doc = options.document || globalThis.document;
+  const [toolpath, thumbnailSettings] = await Promise.all([
+    import('./toolpath-model.js'),
+    import('./thumbnail-settings.js'),
+  ]);
+  const res = await fetchImpl(`/api/download?path=${encodeURIComponent(gcodePath)}`);
+  if (!res.ok) throw new Error(`Could not download ${gcodePath}`);
+  const text = await res.text();
+  const model = toolpath.parseGCodeToToolpath(text);
+
+  const canvas = doc.createElement('canvas');
+  canvas.width = THUMBNAIL_SIZE;
+  canvas.height = THUMBNAIL_SIZE;
+  toolpath.renderToolpathToCanvas(model, canvas, {
+    width: THUMBNAIL_SIZE,
+    height: THUMBNAIL_SIZE,
+    viewMode: thumbnailSettings.loadThumbnailViewMode(),
+  });
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Browser could not encode PNG.'))), 'image/png');
+  });
+
+  const mkdirRes = await fetchImpl('/api/mkdir', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: '/jobs/thumbs' }),
+  });
+  if (!mkdirRes.ok && mkdirRes.status !== 409) {
+    throw new Error('Could not create /jobs/thumbs');
+  }
+
+  const thumbPath = thumbnailPathFor(gcodePath);
+  const thumbName = thumbPath.split('/').pop();
+  const thumbForm = new FormData();
+  thumbForm.append('path', '/jobs/thumbs');
+  thumbForm.append('file', new File([blob], thumbName, { type: 'image/png' }));
+  const thumbUpload = await fetchImpl('/api/upload?overwrite=true', { method: 'POST', body: thumbForm });
+  if (!thumbUpload.ok) throw new Error(`Thumbnail upload failed for ${thumbName}`);
+
+  const jobPath = jobPathForUpload(gcodePath);
+  let previous = null;
+  try {
+    const prevRes = await fetchImpl(`/api/download?path=${encodeURIComponent(jobPath)}`);
+    if (prevRes.ok) previous = await prevRes.json().catch(() => null);
+  } catch (err) {
+    previous = null;
+  }
+  const nextJob = mergeUploadedFileMetadata(previous, {
+    gcodePath,
+    jobPath,
+    thumbnailPath: thumbPath,
+    preview: toolpath.buildPreviewMetadata(model),
+  });
+  const jobName = jobPath.split('/').pop();
+  const jobForm = new FormData();
+  jobForm.append('path', '/jobs');
+  jobForm.append('file', new File([JSON.stringify(nextJob, null, 2)], jobName, { type: 'application/json' }));
+  const jobUpload = await fetchImpl('/api/upload?overwrite=true', { method: 'POST', body: jobForm });
+  if (!jobUpload.ok) throw new Error(`Job metadata upload failed for ${jobName}`);
+  return nextJob;
+}

@@ -88,8 +88,9 @@ const toolpathModulePromise = import('/lib/toolpath-model.js').catch((err) => {
   return null;
 });
 
-function thumbnailUrl(path) {
-  return `/api/download?path=${encodeURIComponent(path)}`;
+function thumbnailUrl(path, cacheBust = '') {
+  const base = `/api/download?path=${encodeURIComponent(path)}`;
+  return cacheBust ? `${base}&t=${encodeURIComponent(cacheBust)}` : base;
 }
 let activeRunModule = null;
 import('/lib/job-active-run.js')
@@ -956,7 +957,7 @@ async function renderFiles(items, generation) {
     const thumb = item.type === 'dir'
       ? '<span class="thumb-placeholder" aria-hidden="true">Folder</span>'
       : meta?.thumbnailPath
-        ? `<img class="thumb-image" src="${html(thumbnailUrl(meta.thumbnailPath))}" alt="">`
+        ? `<img class="thumb-image" src="${html(thumbnailUrl(meta.thumbnailPath, meta.updatedAt || ''))}" alt="">`
         : '<span class="thumb-placeholder" aria-hidden="true">No preview</span>';
     row.innerHTML = `
       <div class="file-name file-main">
@@ -973,11 +974,41 @@ async function renderFiles(items, generation) {
     actions.innerHTML = item.type === 'file' ? `
       <button type="button" data-rename>Rename</button>
       <a class="maintenance-link" href="/api/download?path=${encodeURIComponent(item.path)}">Download</a>
+      ${isGcodeFile(item) ? '<button type="button" data-regenerate>Refresh preview</button>' : ''}
       <button type="button" data-view-raw>Details</button>
       <button type="button" data-delete class="danger-button">Delete</button>
     ` : '';
     bindLauncherCard(row, actions, item);
     actions.querySelector('[data-rename]')?.addEventListener('click', () => renameFile(item.path));
+    actions.querySelector('[data-regenerate]')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Updating…';
+      try {
+        const thumbnail = uploadThumbnailModule || await uploadThumbnailPromise;
+        uploadThumbnailModule = thumbnail;
+        const updated = await thumbnail.regenerateFileThumbnailAndMetadata(item.path);
+        const nextUrl = thumbnailUrl(updated.thumbnailPath, updated.updatedAt || Date.now());
+        const thumbHost = row.querySelector('.file-main');
+        const oldThumb = thumbHost?.querySelector('.thumb-image, .thumb-placeholder');
+        if (oldThumb) {
+          const img = document.createElement('img');
+          img.className = 'thumb-image';
+          img.src = nextUrl;
+          img.alt = '';
+          oldThumb.replaceWith(img);
+        }
+        const badgeRow = row.querySelector('.badge-row');
+        if (badgeRow) badgeRow.innerHTML = fileBadges(item, updated);
+        row.classList.remove('expanded');
+        actions.hidden = true;
+      } catch (err) {
+        alert(`Refresh preview failed: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Refresh preview';
+      }
+    });
     actions.querySelector('[data-view-raw]')?.addEventListener('click', () => {
       const preview = meta?.preview;
       alert(`${item.path}\n${formatBytes(item.size)}\nWarnings: ${preview?.warnings?.length || 0}\nEstimate: ${formatMinutes(preview?.estimate?.effectiveSecondsWithOverride || preview?.estimate?.nominalSeconds)}\nBounds: ${formatBounds(preview?.bounds?.placementBounds || preview?.bounds)}`);

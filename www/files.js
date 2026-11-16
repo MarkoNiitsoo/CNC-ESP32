@@ -159,8 +159,9 @@ function canPreview(item) {
   return item.type === 'file' && /\.(gcode|gc|nc|tap)$/i.test(item.name);
 }
 
-function thumbnailUrl(path) {
-  return `/api/download?path=${encodeURIComponent(path)}`;
+function thumbnailUrl(path, cacheBust = '') {
+  const base = `/api/download?path=${encodeURIComponent(path)}`;
+  return cacheBust ? `${base}&t=${encodeURIComponent(cacheBust)}` : base;
 }
 
 function canvasPngBlob(canvas) {
@@ -431,7 +432,7 @@ function renderList(items) {
     const name = document.createElement('div');
     name.className = 'file-name file-main';
     name.innerHTML = `
-      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(thumbnailUrl(itemMeta.thumbnailPath))}" alt="">` : `<span class="thumb-placeholder" aria-hidden="true">${item.type === 'dir' ? 'Folder' : 'No preview'}</span>`}
+      ${itemMeta?.thumbnailPath ? `<img class="thumb-image" src="${html(thumbnailUrl(itemMeta.thumbnailPath, itemMeta.updatedAt || ''))}" alt="">` : `<span class="thumb-placeholder" aria-hidden="true">${item.type === 'dir' ? 'Folder' : 'No preview'}</span>`}
       <span>
         <strong>${html(item.type === 'dir' ? `${item.name}/` : item.name)}</strong>
         <small>${item.type === 'file' ? formatBytes(item.size) : 'folder'}</small>
@@ -451,6 +452,25 @@ function renderList(items) {
       download.textContent = 'Download';
       download.addEventListener('click', (event) => event.stopPropagation());
       actions.append(download);
+      if (canPreview(item)) {
+        const refreshBtn = rowButton('Refresh preview', async (event) => {
+          const btn = event.currentTarget;
+          btn.disabled = true;
+          btn.textContent = 'Updating…';
+          try {
+            const [, thumbnail] = await thumbnailModulesPromise;
+            const updated = await thumbnail.regenerateFileThumbnailAndMetadata(item.path);
+            fileMetaByPath.set(item.path, updated);
+            activeItemPath = '';
+            renderList(items);
+          } catch (err) {
+            alert(`Refresh preview failed: ${err.message}`);
+            btn.disabled = false;
+            btn.textContent = 'Refresh preview';
+          }
+        });
+        actions.append(refreshBtn);
+      }
     }
 
     actions.append(rowButton('Rename', () => renamePath(item.path)));

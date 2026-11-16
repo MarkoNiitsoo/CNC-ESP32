@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-16 - Regenerate thumbnail and file-card metadata from right-click / touch-hold menu
+
+- `www/lib/upload-thumbnail.js`, `www/app.js`, `www/files.js`: Added `regenerateFileThumbnailAndMetadata()` and wired **Refresh preview** into the `.file-actions` right-click/long-press menu on both `/` and `/files`, updating the thumbnail image and size/time badges immediately.
+- Validation: `npx vitest run test/ui/files-view.test.mjs test/ui/upload-thumbnail.test.mjs test/ui/files-race.test.mjs` passed 3/3 files (22/22 tests); deployed to `E:\www\`.
+
 ## 2026-11-16 - Show workpiece size & machining time on file cards and deduplicate badge/jobPath helpers
 
 - `www/lib/upload-thumbnail.js`, `www/files.js`, `www/app.js`: Added `fileCardBadges()` (`W×H mm` workpiece size + machining time + warnings) in `upload-thumbnail.js` and removed duplicate `fileBadges()` / `jobPathFor()` helpers from both `files.js` and `app.js`.
