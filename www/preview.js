@@ -2056,7 +2056,10 @@ async function reviewAndStartJobRun() {
   const recoveries = jobRecoveryModule?.recoveriesForSource(ensureJobState(), filePath) || [];
   if (recoveries.length) {
     const recovery = recoveries[0];
-    const choice = await requestInterruptedStartChoice();
+    const promptKey = filePath || '__none__';
+    const choice = interruptedPromptDeferredForPath === promptKey
+      ? 'restart'
+      : await requestInterruptedStartChoice();
     if (choice === 'review') {
       selectedRecoveryId = recovery.id;
       openFirmwareRecoveryOptions();
@@ -2064,6 +2067,7 @@ async function reviewAndStartJobRun() {
       return;
     }
     if (choice !== 'restart') return;
+    interruptedPromptDeferredForPath = promptKey;
     jobRecoveryModule.appendFreshRestartEvent(ensureJobState(), recovery.id, {
       now: nowIso(),
       executionTarget: currentRunPath(),

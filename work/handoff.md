@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-16 - Ask once when starting a fresh cut with an interrupted job saved
+
+- `www/preview.js`: `reviewAndStartJobRun()` now respects the user's prior **Continue With New Job (Keep Saved)** decision (`interruptedPromptDeferredForPath`) instead of re-prompting with `#interrupted-start-dialog`.
+- Validation: `npx vitest run test/ui/job-recovery.test.mjs test/ui/job-readiness.test.mjs test/ui/job-active-run.test.mjs` passed; deployed `preview.js` to `E:\www\preview.js`.
+
 ## 2026-11-16 - Add Mermaid state-machine documentation in docs/state-machines.md
 
 - `docs/state-machines.md`: Documented `Job Readiness`, `JobRunnerState`, `JogState`, `Recovery`, `ControllerCommunicationState`, and `Wi-Fi AP+STA` as Mermaid diagrams.
