@@ -1,4 +1,8 @@
 # Progress
+## 2026-11-16 - Add Mermaid state-machine documentation in docs/state-machines.md
+
+- Added `docs/state-machines.md` with Mermaid state diagrams covering `Job Readiness`, `JobRunnerState`, `JogState`, `Recovery`, `ControllerCommunicationState`, and `Wi-Fi AP+STA`.
+
 ## 2026-11-16 - Regenerate thumbnail and file-card metadata from right-click / touch-hold menu
 
 - Added `regenerateFileThumbnailAndMetadata()` to `www/lib/upload-thumbnail.js` to re-download a G-code file, render its 128×128 PNG thumbnail, and update `.job.json` `preview` metadata (bounds, dimensions, estimate, warnings) in one shared helper.

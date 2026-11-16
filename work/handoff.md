@@ -1,4 +1,8 @@
 # Handoff
+## 2026-11-16 - Add Mermaid state-machine documentation in docs/state-machines.md
+
+- `docs/state-machines.md`: Documented `Job Readiness`, `JobRunnerState`, `JogState`, `Recovery`, `ControllerCommunicationState`, and `Wi-Fi AP+STA` as Mermaid diagrams.
+
 ## 2026-11-16 - Regenerate thumbnail and file-card metadata from right-click / touch-hold menu
 
 - `www/lib/upload-thumbnail.js`, `www/app.js`, `www/files.js`: Added `regenerateFileThumbnailAndMetadata()` and wired **Refresh preview** into the `.file-actions` right-click/long-press menu on both `/` and `/files`, updating the thumbnail image and size/time badges immediately.
