@@ -1,4 +1,9 @@
 # Handoff
+## 2026-11-16 - Prevent double-shifting machine bounds on MockMarlin / DEV-MOCK
+
+- `www/preview.js`: `refreshMachineInfo()` skips `workZeroMachine` offset restoration when `/api/machine/info` reports `DEV-MOCK` / `MockMarlin`, keeping `MACHINE` bounds at `0..1625`, `0..5800`.
+- Validation: `npx vitest run test/ui/job-safe-z.test.mjs test/ui/preview-active-bounds.test.mjs test/ui/machine-controls.test.mjs` passed 3/3 files (46/46 tests); deployed `preview.js` to `E:\www\preview.js`.
+
 ## 2026-11-16 - Fix Cut start identity mismatch, missing #job-result crash, and mock authorizeStart parity
 
 - `www/preview.js`, `dev/mock-job-runner.mjs`: Fixed `recordPhysicalVerification()`/`startJobRun()` activeRunFingerprint handling, guarded null `jobResultEl` in `setJobResult()` (routing errors to `reportReadinessAction`), and aligned `MockJobRunner.validateStartEvidence()` with `src/main.cpp` (FNV-1a + SHA-256 fingerprints, `startAuthorization` without mandatory legacy `arm.state === 'ARMED'`).

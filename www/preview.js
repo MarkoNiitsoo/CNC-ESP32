@@ -2636,7 +2636,10 @@ async function loadMachineLimits() {
     const info = await res.json();
     const full = info?.full;
     if (!info?.available || !full || !['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'].every((key) => Number.isFinite(Number(full[key])))) return;
-    const zero = currentMachineFrame?.workZeroValid === true ? currentMachineFrame?.workZeroMachine : null;
+    const fullAlreadyMachineCoords = info?.machineType === 'DEV-MOCK' || /MockMarlin/i.test(String(info?.firmwareName || ''));
+    const zero = (!fullAlreadyMachineCoords && currentMachineFrame?.workZeroValid === true)
+      ? currentMachineFrame?.workZeroMachine
+      : null;
     const xShift = Number.isFinite(Number(zero?.x)) ? Number(zero.x) : 0;
     const yShift = Number.isFinite(Number(zero?.y)) ? Number(zero.y) : 0;
     const zShift = Number.isFinite(Number(zero?.z)) ? Number(zero.z) : 0;

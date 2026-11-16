@@ -1,4 +1,9 @@
 # Progress
+## 2026-11-16 - Prevent double-shifting machine bounds on MockMarlin / DEV-MOCK
+
+- Fixed `refreshMachineInfo()` in `www/preview.js`: `MockMarlin` (`/api/machine/info` with `machineType: 'DEV-MOCK'`) already reports `full` bounds in machine coordinates (`0..1625`, `0..5800`), so `workZeroMachine` must not be added again as `xShift`/`yShift`/`zShift` (which previously shifted `MACHINE` and the Bounds Check limits by `+190.919 mm`).
+- Validation: `npx vitest run test/ui/job-safe-z.test.mjs test/ui/preview-active-bounds.test.mjs test/ui/machine-controls.test.mjs` passed 3/3 files (46/46 tests); deployed `www/preview.js` to `E:\www\preview.js`.
+
 ## 2026-11-16 - Fix Cut start identity mismatch, missing #job-result crash, and mock authorizeStart parity
 
 - Updated `www/preview.js`:
