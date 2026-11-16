@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { assertCanUseActiveRunForExecution, getActiveRun, getActiveRunFingerprint } from '../www/lib/job-active-run.js';
+import { assertCanUseActiveRunForExecution, getActiveRun, getActiveRunFingerprint, safeFingerprint } from '../www/lib/job-active-run.js';
 import { migrateProjectSafeZ } from '../www/lib/job-safe-z.js';
 
 const ACTIVE_STATES = new Set(['PREPARING', 'RUNNING', 'PAUSING', 'PAUSED_INTACT', 'PAUSED', 'RESUMING', 'STOPPING']);
@@ -337,15 +337,17 @@ export class MockJobRunner {
     const bytes = Buffer.byteLength(text);
     const fingerprint = getActiveRunFingerprint(job);
     const actualHash = createHash('sha256').update(Buffer.from(text)).digest('hex');
+    const actualFnv = safeFingerprint(text);
     const identityMatches = active.sizeBytes === bytes && request.activeRunSizeBytes === bytes &&
-      request.activeRunFingerprint === fingerprint && fingerprint === actualHash;
+      request.activeRunFingerprint === fingerprint && (fingerprint === actualHash || fingerprint === actualFnv);
     const start = job.startAuthorization || {};
     const arm = job.arm || {};
     const verification = job.verificationDecision || {};
-    if (!identityMatches || start.activeRunMode !== active.mode ||
+    const hasAuthorizedGrant = start.state === 'authorized' || arm.state === 'ARMED';
+    const armMatches = arm.state !== 'ARMED' || (arm.activeRunMode === active.mode && arm.activeRunPath === active.path &&
+      arm.activeRunFingerprint === fingerprint && arm.activeRunSizeBytes === bytes);
+    if (!identityMatches || !hasAuthorizedGrant || !armMatches || start.activeRunMode !== active.mode ||
         start.activeRunPath !== active.path || start.activeRunFingerprint !== fingerprint || start.activeRunSizeBytes !== bytes ||
-        arm.state !== 'ARMED' || arm.activeRunMode !== active.mode || arm.activeRunPath !== active.path ||
-        arm.activeRunFingerprint !== fingerprint || arm.activeRunSizeBytes !== bytes ||
         verification.result !== 'complete' || !['bounds', 'aircut', 'skipped'].includes(verification.type) ||
         verification.activeRunPath !== active.path || verification.activeRunFingerprint !== fingerprint ||
         verification.activeRunSizeBytes !== bytes) {

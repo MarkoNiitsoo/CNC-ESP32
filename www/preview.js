@@ -598,8 +598,11 @@ async function recordPhysicalVerification(type, options = {}) {
   const mode = currentRunMode();
   job.activeRun.path = currentRunPath();
   job.activeRun.mode = mode;
-  if (mode === 'generated') job.activeRun.generatedFingerprint = gcodeFingerprint || job.activeRun.generatedFingerprint || '';
-  else job.activeRun.sourceFingerprint = gcodeFingerprint || job.activeRun.sourceFingerprint || '';
+  if (mode === 'generated') {
+    job.activeRun.generatedFingerprint = (jobActiveRunModule?.safeFingerprint && activeRunText)
+      ? jobActiveRunModule.safeFingerprint(activeRunText)
+      : (job.generatedValidation?.generatedFingerprint || job.activeRun.generatedFingerprint || gcodeFingerprint || '');
+  } else job.activeRun.sourceFingerprint = gcodeFingerprint || job.activeRun.sourceFingerprint || '';
   job.verificationDecision = createVerificationDecision(job, {
     type,
     safeZ: options.safeZ,
@@ -2042,13 +2045,17 @@ async function sendCmdBestEffort(cmd) {
 async function reviewAndStartJobRun() {
   const blockers = startPreparationBlockers();
   if (blockers.length) {
-    appendRunLog(`Start blocked: ${blockers.join(' ')}`);
+    const msg = `Start blocked: ${blockers.join(' ')}`;
+    appendRunLog(msg);
+    setJobResult(msg, true);
     renderRunPanel();
     openRequiredSteps();
     return;
   }
   if (!runChecklistComplete()) {
-    appendRunLog('Start blocked: complete the three final checks first.');
+    const msg = 'Start blocked: complete the three final checks first.';
+    appendRunLog(msg);
+    setJobResult(msg, true);
     showPreviewTab('run');
     workbenchController?.openForTab('run');
     return;
@@ -2178,13 +2185,16 @@ async function startJobRun() {
     appendRunLog('Start blocked: preparation decisions are no longer current.');
     return;
   }
+  const activeFingerprint = (jobActiveRunModule?.getActiveRunFingerprint
+    ? jobActiveRunModule.getActiveRunFingerprint(job)
+    : '') || gcodeFingerprint;
   const zeroReference = activeWorkZeroReference();
   const activeRunSizeBytes = new TextEncoder().encode(activeRunText).length;
   job.activeRun = { ...(job.activeRun || {}), sizeBytes: activeRunSizeBytes };
   const verification = job.verificationDecision || {};
   const verificationFingerprintMatches = jobActiveRunModule?.fingerprintsMatch
-    ? jobActiveRunModule.fingerprintsMatch(verification.activeRunFingerprint, gcodeFingerprint)
-    : verification.activeRunFingerprint === gcodeFingerprint;
+    ? jobActiveRunModule.fingerprintsMatch(verification.activeRunFingerprint, activeFingerprint)
+    : verification.activeRunFingerprint === activeFingerprint;
   if (verification.result === 'complete' && Number(verification.activeRunSizeBytes) <= 0 &&
       verification.activeRunPath === runPath && verificationFingerprintMatches) {
     verification.activeRunSizeBytes = activeRunSizeBytes;
@@ -2195,7 +2205,7 @@ async function startJobRun() {
     state: 'authorized',
     activeRunMode: runMode,
     activeRunPath: runPath,
-    activeRunFingerprint: gcodeFingerprint,
+    activeRunFingerprint: activeFingerprint,
     activeRunSizeBytes,
     workZeroId: zeroReference.id,
     homingEpoch: Number(zeroReference.homingEpoch) || 0,
@@ -2217,7 +2227,7 @@ async function startJobRun() {
       gcodePath: runPath,
       jobPath: jobPathFor(filePath),
       activeRunMode: runMode,
-      activeRunFingerprint: gcodeFingerprint,
+      activeRunFingerprint: activeFingerprint,
       activeRunSizeBytes,
       workZeroId: zeroReference.id,
       homingEpoch: Number(zeroReference.homingEpoch) || 0,
@@ -2241,7 +2251,7 @@ async function startJobRun() {
       safeStartZ: projectSafeZValue(),
       travelFeedMmMin: automaticTravelFeed(),
       activeRunMode: runMode,
-      activeRunFingerprint: gcodeFingerprint,
+      activeRunFingerprint: activeFingerprint,
       activeRunSizeBytes,
       sourceFingerprint: job.activeRun?.sourceFingerprint || '',
       generatedFingerprint: job.activeRun?.generatedFingerprint || '',
@@ -3902,6 +3912,10 @@ function formatCapture(capture) {
 }
 
 function setJobResult(message, isError = false) {
+  if (!jobResultEl) {
+    reportReadinessAction(message, isError);
+    return;
+  }
   jobResultEl.textContent = message;
   jobResultEl.className = isError ? 'job-result warning-item' : 'job-result';
 }
@@ -7183,7 +7197,10 @@ function installHoldAction(button, action, policy = {}) {
     timer = setTimeout(() => {
       completed = true;
       reset();
-      Promise.resolve(action()).catch((err) => appendRunLog(`Hold action failed: ${err.message}`));
+      Promise.resolve(action()).catch((err) => {
+        appendRunLog(`Hold action failed: ${err.message}`);
+        setJobResult(`Hold action failed: ${err.message}`, true);
+      });
     }, holdMs);
   };
 

@@ -1,4 +1,12 @@
 # Progress
+## 2026-11-16 - Fix Cut start identity mismatch, missing #job-result crash, and mock authorizeStart parity
+
+- Updated `www/preview.js`:
+  - `recordPhysicalVerification()` and `startJobRun()` now preserve/use `getActiveRunFingerprint(job)` (`safeFingerprint` for generated runs) instead of overwriting `activeRun.generatedFingerprint` with `sha256:...`.
+  - Guarded `setJobResult()` when `#job-result` is absent (`jobResultEl === null`) by forwarding messages to `reportReadinessAction(message, isError)` instead of throwing `TypeError` inside `catch` blocks.
+- Updated `dev/mock-job-runner.mjs` (`validateStartEvidence()`): accept both SHA-256 hex and `size:...:fnv1a:...` fingerprints (matching `src/main.cpp`) and allow `startAuthorization.state === 'authorized'` without requiring legacy manual `arm.state === 'ARMED'`.
+- Validation: `npx vitest run test/mock/mock-job-runner.test.mjs test/mock/mock-server.test.mjs test/ui/job-active-run.test.mjs` passed 3/3 files (118/118 tests); deployed `www/preview.js` to `E:\www\preview.js`.
+
 ## 2026-11-16 - Ask once when starting a fresh cut with an interrupted job saved
 
 - Updated `reviewAndStartJobRun()` in `www/preview.js`: when the user already confirmed **Continue With New Job (Keep Saved)** (`interruptedPromptDeferredForPath === promptKey`), skip the second `#interrupted-start-dialog` prompt and proceed directly with `appendFreshRestartEvent()` and `startJobRun()`.
