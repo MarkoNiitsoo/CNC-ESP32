@@ -7556,10 +7556,17 @@ addEventListener('cnc-jog-goto-start', (event) => {
   const xyDist = Math.hypot(to.x - from.x, to.y - from.y);
   const zDist = Math.abs(toZ - fromZ);
   if (xyDist >= 0.001 && zDist >= 0.001) {
-    const xyEnd = { x: to.x, y: to.y, z: fromZ };
-    startJogToolAnimation(from, xyEnd, xyFeedMax, zFeedMax, 80, 0, () => {
-      startJogToolAnimation(xyEnd, { x: to.x, y: to.y, z: toZ }, xyFeedMax, zFeedMax, 80, 0);
-    });
+    if (toZ > fromZ + 0.001) {
+      const zUpEnd = { x: from.x, y: from.y, z: toZ };
+      startJogToolAnimation(from, zUpEnd, xyFeedMax, zFeedMax, 80, 0, () => {
+        startJogToolAnimation(zUpEnd, { x: to.x, y: to.y, z: toZ }, xyFeedMax, zFeedMax, 80, 0);
+      });
+    } else {
+      const xyEnd = { x: to.x, y: to.y, z: fromZ };
+      startJogToolAnimation(from, xyEnd, xyFeedMax, zFeedMax, 80, 0, () => {
+        startJogToolAnimation(xyEnd, { x: to.x, y: to.y, z: toZ }, xyFeedMax, zFeedMax, 80, 0);
+      });
+    }
   } else {
     startJogToolAnimation(from, to, xyFeedMax, zFeedMax, 80, 0);
   }

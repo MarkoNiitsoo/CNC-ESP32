@@ -742,6 +742,19 @@ describe('mock HTTP API', () => {
     const directZIdx = directCmds.findIndex((c) => c === 'G0 Z2.000 F300');
     expect(directXyIdx).toBeGreaterThan(-1);
     expect(directZIdx).toBeGreaterThan(directXyIdx);
+
+    // Raising Z (from 2 to 15): Z up first, then XY
+    const raiseLogStart = env.marlin.log.length;
+    const raiseGotoRes = await fetch(`${base}/api/jog/goto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: 30, y: 25, z: 15, safeJog: false, xyFeedMax: 1800, zFeedMax: 300 }),
+    });
+    expect(raiseGotoRes.ok).toBe(true);
+    const raiseCmds = env.marlin.log.slice(raiseLogStart).map((e) => e.text);
+    const raiseZIdx = raiseCmds.findIndex((c) => c === 'G0 Z15.000 F300');
+    const raiseXyIdx = raiseCmds.findIndex((c) => c === 'G0 X30.000 Y25.000 F1800');
+    expect(raiseZIdx).toBeGreaterThan(-1);
+    expect(raiseXyIdx).toBeGreaterThan(raiseZIdx);
   });
 
   it('restores a saved XYZ origin from Home using Safe Z first', async () => {

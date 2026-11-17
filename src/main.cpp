@@ -10358,7 +10358,15 @@ void handleJogGoto() {
     return;
   }
 
-  if (hasXy) {
+  float currentWorkZ = marlinPosition.valid ? marlinPosition.z : NAN;
+  if (!safeJog && hasXy && hasZ && !isfinite(currentWorkZ)) {
+    const String m114 = sendJogCommandForResponse("M114", 300);
+    parseAxisFromM114(m114, 'Z', currentWorkZ);
+  }
+  const bool raiseZFirst = !safeJog && hasXy && hasZ && isfinite(currentWorkZ) && z > currentWorkZ + 0.001f;
+
+  auto runXyMove = [&]() -> bool {
+    if (!hasXy) return true;
     String xyCmd = "G0";
     if (hasX) xyCmd += " X" + String(x, 3);
     if (hasY) xyCmd += " Y" + String(y, 3);
@@ -10367,16 +10375,12 @@ void handleJogGoto() {
       jogStatus.lastError = error;
       touchJogStatus();
       sendJsonError(502, error);
-      return;
+      return false;
     }
-    if (hasZ && !checkJogResponseOk(sendJogCommandForResponse("M400", 120000), "Marlin did not finish XY move before Z", error)) {
-      jogStatus.lastError = error;
-      touchJogStatus();
-      sendJsonError(502, error);
-      return;
-    }
-  }
-  if (hasZ) {
+    return true;
+  };
+  auto runZMove = [&]() -> bool {
+    if (!hasZ) return true;
     jogStatus.zChangedDuringJog = true;
     jogStatus.zRestoreAvailable = false;
     jogStatus.zLiftedForJog = false;
@@ -10385,8 +10389,25 @@ void handleJogGoto() {
       jogStatus.lastError = error;
       touchJogStatus();
       sendJsonError(502, error);
-      return;
+      return false;
     }
+    return true;
+  };
+  auto waitBetweenAxes = [&](const char *msg) -> bool {
+    if (!hasXy || !hasZ) return true;
+    if (!checkJogResponseOk(sendJogCommandForResponse("M400", 120000), msg, error)) {
+      jogStatus.lastError = error;
+      touchJogStatus();
+      sendJsonError(502, error);
+      return false;
+    }
+    return true;
+  };
+
+  if (raiseZFirst) {
+    if (!runZMove() || !waitBetweenAxes("Marlin did not finish Z raise before XY") || !runXyMove()) return;
+  } else {
+    if (!runXyMove() || !waitBetweenAxes("Marlin did not finish XY move before Z") || !runZMove()) return;
   }
 
   if (!finishJogSingleMove(error)) {

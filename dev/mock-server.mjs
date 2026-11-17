@@ -1335,12 +1335,17 @@ export async function createMockServer(options = {}) {
         const hasXy = hasX || hasY;
         const liftError = await applySafeLift(hasXy);
         if (liftError) return json(res, liftError.status, { ok: false, error: liftError.error });
+        const currentWorkZ = Number(env.marlin.position.z);
+        const raiseZFirst = !safeJog && hasXy && hasZ && Number.isFinite(currentWorkZ) && tz > currentWorkZ + 0.001;
         const commands = ['G21', 'G90'];
-        if (hasXy) {
-          commands.push(`G0${hasX ? ` X${tx.toFixed(3)}` : ''}${hasY ? ` Y${ty.toFixed(3)}` : ''} F${xyFeedMax}`);
-        }
-        if (hasZ) {
-          commands.push(`G0 Z${tz.toFixed(3)} F${zFeedMax}`);
+        const xyCmd = hasXy ? `G0${hasX ? ` X${tx.toFixed(3)}` : ''}${hasY ? ` Y${ty.toFixed(3)}` : ''} F${xyFeedMax}` : null;
+        const zCmd = hasZ ? `G0 Z${tz.toFixed(3)} F${zFeedMax}` : null;
+        if (raiseZFirst) {
+          if (zCmd) commands.push(zCmd);
+          if (xyCmd) commands.push(xyCmd);
+        } else {
+          if (xyCmd) commands.push(xyCmd);
+          if (zCmd) commands.push(zCmd);
         }
         if (hasZ) {
           env.jog.zChangedDuringJog = true;
