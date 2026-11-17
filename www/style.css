@@ -1806,6 +1806,20 @@ pre {
   .z-jog-buttons {
     grid-template-columns: 1fr 1fr;
   }
+
+  .file-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .file-row {
+    padding: 8px;
+    gap: 6px;
+  }
+
+  .file-card {
+    min-height: 180px;
+  }
 }
 
 @media (max-width: 420px) {
