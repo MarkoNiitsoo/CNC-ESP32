@@ -1488,8 +1488,25 @@
       await invalidatePausedResumeBeforeManualMotion();
       await refreshProjectSafeZ();
       Object.assign(payload, jogSettings(safeJog));
+      const curX = Number.isFinite(Number(STATE.position?.x)) ? Number(STATE.position.x) : Number(STATE.frame?.work?.x);
+      const curY = Number.isFinite(Number(STATE.position?.y)) ? Number(STATE.position.y) : Number(STATE.frame?.work?.y);
+      const curZ = Number.isFinite(Number(STATE.position?.z)) ? Number(STATE.position.z) : Number(STATE.frame?.work?.z);
+      if (Number.isFinite(curX) && Number.isFinite(curY)) {
+        const from = { x: curX, y: curY, z: Number.isFinite(curZ) ? curZ : 0 };
+        const to = {
+          x: Number.isFinite(x) ? x : from.x,
+          y: Number.isFinite(y) ? y : from.y,
+          z: Number.isFinite(z) ? z : from.z,
+        };
+        window.dispatchEvent(new CustomEvent('cnc-jog-goto-start', {
+          detail: { from, to, xyFeedMax: payload.xyFeedMax, zFeedMax: payload.zFeedMax },
+        }));
+      }
       await apiPost('/api/jog/goto', payload);
       setMessage(`Moved to ${parts.join(' ')} mm.`);
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent('cnc-jog-goto-cancel'));
+      throw err;
     } finally {
       jogGotoPending = false;
       renderJogReadouts();
