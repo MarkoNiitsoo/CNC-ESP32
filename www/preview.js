@@ -7568,6 +7568,7 @@ addEventListener('cnc-commanded-jog-position', (event) => {
   const next = event.detail || {};
   if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) return;
   const isJogging = String(next.state || '').toUpperCase() === 'JOGGING';
+  if (!isJogging && jogGotoAnimationFrame) return;
   const current = jogGotoAnimatedPosition
     || prevCanvasWorkPosition
     || lastCanvasWorkPosition
