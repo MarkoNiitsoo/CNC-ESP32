@@ -769,6 +769,21 @@ export async function createMockServer(options = {}) {
         const result = executeSharedJobOperation('job.setFeedOverride', await readJson(req));
         return json(res, result.httpStatus, result.ok ? result.body : { ok: false, error: result.message });
       }
+      if (req.method === 'POST' && pathname === '/api/job/select') {
+        const body = await readJson(req);
+        const gcodePath = String(body.gcodePath || '').trim();
+        const jobPath = String(body.jobPath || '').trim();
+        if (gcodePath) {
+          try {
+            await env.sd.read(gcodePath);
+          } catch (err) {
+            return json(res, 404, { ok: false, error: 'gcode file not found' });
+          }
+        }
+        const snap = env.runner.selectJob(gcodePath, jobPath);
+        triggerStateSliceChange('job', snap);
+        return json(res, 200, snap);
+      }
       if (req.method === 'POST' && pathname === '/api/work-zero/goto') {
         if (env.runner.status.state === 'PAUSED_INTACT') {
           env.runner.interruptForManualMotion();

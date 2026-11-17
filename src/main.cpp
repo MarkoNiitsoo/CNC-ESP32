@@ -230,6 +230,9 @@ struct JobRunnerStatus {
   uint32_t completedAtMs = 0;
 };
 
+String selectedJobGcodePath = "";
+String selectedJobMetaPath = "";
+
 enum class JogState {
   Idle,
   PreparingSafeZ,
@@ -2091,6 +2094,10 @@ String jobStatusJson(bool authoritativeState = false) {
   json += jsonEscape(jobStatus.gcodePath);
   json += "\",\"jobPath\":\"";
   json += jsonEscape(jobStatus.jobPath);
+  json += "\",\"selectedGcodePath\":\"";
+  json += jsonEscape(selectedJobGcodePath);
+  json += "\",\"selectedJobPath\":\"";
+  json += jsonEscape(selectedJobMetaPath);
   json += "\",\"activeRunMode\":\"";
   json += jsonEscape(jobStatus.activeRunMode);
   json += "\",\"activeRunFingerprint\":\"";
@@ -8893,6 +8900,29 @@ void handleJobStatus() {
   server.send(200, "application/json", jobStatusJson());
 }
 
+void handleJobSelect() {
+  if (!ensureSdMounted()) {
+    sendJsonError(503, "SD card not mounted");
+    return;
+  }
+  const String body = server.arg("plain");
+  const String gcodePath = normalizeSdPath(extractJsonString(body, "gcodePath"));
+  const String jobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  if (gcodePath.length() == 0) {
+    selectedJobGcodePath = "";
+    selectedJobMetaPath = "";
+    server.send(200, "application/json", jobStatusJson());
+    return;
+  }
+  if (!isSafeSdPath(gcodePath) || !SD_MMC.exists(gcodePath)) {
+    sendJsonError(404, "gcode file not found");
+    return;
+  }
+  selectedJobGcodePath = gcodePath;
+  selectedJobMetaPath = jobPath;
+  server.send(200, "application/json", jobStatusJson());
+}
+
 void handleRecoveryCheckpointGet() {
   String body;
   const bool available = readPersistentJobCheckpoint(body);
@@ -11927,6 +11957,7 @@ void startHttpServer() {
   operatorRoute("/api/mkdir", HTTP_POST, handleMkdir);
   operatorRoute("/api/rename", HTTP_POST, handleRename);
   operatorRoute("/api/job/start", HTTP_POST, handleJobStart);
+  operatorRoute("/api/job/select", HTTP_POST, handleJobSelect);
   httpRoute("/api/job/status", HTTP_GET, handleJobStatus);
   operatorRoute("/api/test-motion/start", HTTP_POST, handleTestMotionStart);
   operatorRoute("/api/recovery/production/start", HTTP_POST, handleProductionResumeStart);

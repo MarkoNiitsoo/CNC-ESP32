@@ -1966,6 +1966,7 @@ async function applyJobRunStatus(data) {
   jobStatusReceivedAtMs = performance.now();
   jobStatusFirmwareUptimeMs = Number(data?.uptimeMs) || 0;
   jobStatusHealthy = true;
+  globalThis.LowRiderMachineBar?.syncSelectedJob?.(data);
   if (!data?.streamMode || data.streamMode === 'job') await syncRunHistoryFromStatus(data);
   if (data?.streamMode === 'production-resume') await syncProductionResumeFromStatus(data);
   const terminalStates = new Set(['IDLE', 'COMPLETED', 'STOPPED', 'RECOVERY_REQUIRED', 'ERROR']);

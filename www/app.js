@@ -134,6 +134,22 @@ function saveCurrentJob(job) {
   }
 }
 
+async function publishSelectedJob(gcodePath = '', jobPath = '') {
+  try {
+    await Promise.race([
+      fetch('/api/job/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gcodePath, jobPath }),
+        keepalive: true,
+      }),
+      new Promise((resolve) => setTimeout(resolve, 400)),
+    ]);
+  } catch (err) {
+    // Keep UI responsive when offline or read-only.
+  }
+}
+
 function showTravelSpeed(value, settings = motionSettingsModule?.loadMotionSettings()) {
   const maximum = motionSettingsModule?.travelSpeedUpperLimit(settings) ?? 100;
   const speed = motionSettingsModule?.normalizeTravelSpeed(value, maximum) ?? 50;
@@ -1085,7 +1101,9 @@ async function ensureJobViewData() {
 async function openJob(gcodePath) {
   const thumbnail = uploadThumbnailModule || await uploadThumbnailPromise;
   uploadThumbnailModule = thumbnail;
-  saveCurrentJob({ gcodePath, jobPath: thumbnail.jobPathForUpload(gcodePath) });
+  const jobPath = thumbnail.jobPathForUpload(gcodePath);
+  saveCurrentJob({ gcodePath, jobPath });
+  await publishSelectedJob(gcodePath, jobPath);
   window.location.href = previewUrl(gcodePath);
 }
 
@@ -1292,8 +1310,18 @@ async function refreshLogs() {
 clearCurrentJobButton?.addEventListener('click', () => {
   saveCurrentJob(null);
   jobMeta = null;
+  publishSelectedJob('', '').catch(() => {});
   renderCurrentJob();
   showView('files');
+});
+
+window.addEventListener('cnc-selected-job-changed', (event) => {
+  const next = event.detail?.gcodePath ? event.detail : null;
+  if (currentJob?.gcodePath === next?.gcodePath && currentJob?.jobPath === next?.jobPath) return;
+  saveCurrentJob(next);
+  jobMeta = null;
+  jobMetaLoadedForPath = '';
+  ensureJobViewData().catch(() => {});
 });
 refreshFilesButton?.addEventListener('click', () => loadFiles());
 uploadForm?.addEventListener('submit', uploadGcode);

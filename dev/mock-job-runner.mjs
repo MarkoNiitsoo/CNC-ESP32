@@ -37,7 +37,15 @@ export class MockJobRunner {
     this.controllerState = controllerState;
     this.runToken = 0;
     this.startGrant = null;
+    this.selectedGcodePath = '';
+    this.selectedJobPath = '';
     this.status = this.emptyStatus();
+  }
+
+  selectJob(gcodePath = '', jobPath = '') {
+    this.selectedGcodePath = String(gcodePath || '');
+    this.selectedJobPath = this.selectedGcodePath ? String(jobPath || '') : '';
+    return this.snapshot();
   }
 
   emptyStatus() {
@@ -75,7 +83,14 @@ export class MockJobRunner {
   }
 
   snapshot(message = '') {
-    const status = { ...this.status, controllerState: this.controllerState, position: { ...this.marlin.position }, uptimeMs: Date.now() };
+    const status = {
+      ...this.status,
+      selectedGcodePath: this.selectedGcodePath,
+      selectedJobPath: this.selectedJobPath,
+      controllerState: this.controllerState,
+      position: { ...this.marlin.position },
+      uptimeMs: Date.now(),
+    };
     if (message) return { ...status, ok: true, message };
     return status;
   }

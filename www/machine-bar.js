@@ -396,6 +396,56 @@
     applyOrdinaryControlGuard();
   }
 
+  let lastSyncedSelectedGcodePath;
+
+  function syncSelectedJobFromSlice(data) {
+    if (!data || !Object.prototype.hasOwnProperty.call(data, 'selectedGcodePath')) return;
+    const nextGcodePath = String(data.selectedGcodePath || '');
+    const nextJobPath = String(data.selectedJobPath || '');
+    const prevSeen = lastSyncedSelectedGcodePath;
+    lastSyncedSelectedGcodePath = nextGcodePath;
+
+    let current = null;
+    try {
+      current = JSON.parse(localStorage.getItem('lowrider.currentJob') || 'null');
+    } catch (err) {
+      current = null;
+    }
+
+    if (nextGcodePath) {
+      const resolvedJobPath = nextJobPath || current?.jobPath || '';
+      if (current?.gcodePath !== nextGcodePath || (nextJobPath && current?.jobPath !== nextJobPath)) {
+        try {
+          localStorage.setItem('lowrider.currentJob', JSON.stringify({
+            gcodePath: nextGcodePath,
+            jobPath: resolvedJobPath,
+          }));
+        } catch (err) {
+          // Ignore storage quota errors.
+        }
+        refreshProjectSafeZ().catch(() => {});
+        window.dispatchEvent(new CustomEvent('cnc-selected-job-changed', {
+          detail: { gcodePath: nextGcodePath, jobPath: resolvedJobPath },
+        }));
+      }
+      const isPreviewPage = window.location.pathname.endsWith('/preview.html') || window.location.pathname === '/preview';
+      if (isPreviewPage) {
+        const currentUrlPath = new URLSearchParams(window.location.search).get('path') || '';
+        if (currentUrlPath !== nextGcodePath) {
+          window.location.href = `/preview.html?path=${encodeURIComponent(nextGcodePath)}`;
+        }
+      }
+    } else if (prevSeen !== undefined && prevSeen !== '') {
+      try {
+        localStorage.removeItem('lowrider.currentJob');
+      } catch (err) {
+        // Ignore storage errors.
+      }
+      refreshProjectSafeZ().catch(() => {});
+      window.dispatchEvent(new CustomEvent('cnc-selected-job-changed', { detail: null }));
+    }
+  }
+
   window.LowRiderMachineBar = {
     lastCritical: () => STATE.marlinLog?.lastCritical || '',
     controllerState: controllerCommunicationState,
@@ -418,6 +468,7 @@
     }),
     machineFrame: () => ({ ...STATE.frame }),
     applyMachineSlice,
+    syncSelectedJob: syncSelectedJobFromSlice,
     socketSliceToken,
     waitForSocketSlice,
     safetyStopDisabled,
@@ -2836,6 +2887,7 @@
     window.CncTelemetry?.subscribe('job', (data) => {
       STATE.job = data;
       noteSocketSlice('job', data);
+      syncSelectedJobFromSlice(data);
       render();
     });
     window.CncTelemetry?.subscribe('log', (data) => {

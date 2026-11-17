@@ -274,10 +274,24 @@ async function uploadThumbnailSidecars(gcodePath, selected) {
 
 async function saveCurrentJob(gcodePath) {
   const [, thumbnail] = await thumbnailModulesPromise;
+  const jobPath = thumbnail.jobPathForUpload(gcodePath);
   localStorage.setItem(currentJobKey, JSON.stringify({
     gcodePath,
-    jobPath: thumbnail.jobPathForUpload(gcodePath),
+    jobPath,
   }));
+  try {
+    await Promise.race([
+      fetch('/api/job/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gcodePath, jobPath }),
+        keepalive: true,
+      }),
+      new Promise((resolve) => setTimeout(resolve, 400)),
+    ]);
+  } catch (err) {
+    // Keep navigation responsive even if offline or read-only.
+  }
 }
 
 async function loadFileMeta(item) {
@@ -329,13 +343,13 @@ function rowButton(text, onClick) {
   return button;
 }
 
-function openItem(item) {
+async function openItem(item) {
   if (item.type === 'dir') {
     loadPath(item.path);
     return;
   }
   if (canPreview(item)) {
-    saveCurrentJob(item.path);
+    await saveCurrentJob(item.path);
     window.location.href = `/preview.html?path=${encodeURIComponent(item.path)}`;
     return;
   }
