@@ -2709,7 +2709,10 @@
       event.preventDefault();
       if (!validateJogGotoInputs()) {
         const firstInvalid = ['x', 'y', 'z'].map((a) => el(`mb-jog-goto-${a}`)).find((n) => n?.classList.contains('is-invalid'));
-        setMessage(firstInvalid?.title || 'Target coordinate is outside the work area.');
+        const msg = firstInvalid?.title || 'Target coordinate is outside the work area.';
+        setMessage(msg);
+        const jogStatusEl = el('mb-jog-status');
+        if (jogStatusEl) jogStatusEl.textContent = msg;
         firstInvalid?.focus();
         return;
       }
@@ -2848,6 +2851,7 @@
       renderMarlinReadouts();
     });
     loadToolChangeSettings().catch((err) => setMessage(err.message));
+    refreshMachineBounds();
     window.CncTelemetry?.subscribe('jog', (data) => {
       STATE.jog = data;
       applyCommandedJogPosition(data);

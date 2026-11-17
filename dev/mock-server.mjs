@@ -1155,6 +1155,9 @@ export async function createMockServer(options = {}) {
             return json(res, 400, { ok: false, error: result.error });
           }
           env.jog.lastCommand = move;
+          syncMockFrame(env);
+          triggerStateSliceChange('machine', mockMachineSlice());
+          triggerStateSliceChange('jog', { ...env.jog });
         }
         env.jog.lastUpdateAt = Date.now();
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });

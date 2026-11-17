@@ -805,10 +805,11 @@ body.operator-read-only .machine-operator-panel * {
   font-size: 0.76rem;
 }
 
-.machine-jog-goto-field input.is-invalid {
-  background: rgba(214, 48, 49, 0.42);
-  border-color: #ff6b6b;
-  color: #fff;
+.machine-jog-goto-field input.is-invalid,
+.machine-jog-dock .machine-jog-goto-field input.is-invalid {
+  background: rgba(214, 48, 49, 0.52) !important;
+  border-color: #ff6b6b !important;
+  color: #fff !important;
 }
 
 .machine-jog-goto-submit {

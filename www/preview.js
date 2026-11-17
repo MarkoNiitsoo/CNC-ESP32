@@ -241,6 +241,7 @@ let currentMachineFrame = null;
 let animatedToolPosition = null;
 let jogGotoAnimatedPosition = null;
 let jogGotoAnimationFrame = 0;
+let lastCanvasWorkPosition = null;
 let motionAnimationFrame = null;
 let activeMotionAnimation = null;
 let lastMotionSequence = 0;
@@ -7424,11 +7425,14 @@ previewTabButtons.forEach((button) => {
 addEventListener('hashchange', routePreviewTab);
 addEventListener('resize', draw);
 addEventListener('cnc-skin-change', draw);
+let prevCanvasWorkPosition = null;
 addEventListener('cnc-position-update', (event) => {
   const position = event.detail || {};
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
   if (position.frame) currentMachineFrame = position.frame;
   liveToolPosition = { ...position };
+  if (lastCanvasWorkPosition) prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
+  lastCanvasWorkPosition = { x: Number(position.x), y: Number(position.y), z: Number(position.z) || 0 };
   draw();
 });
 function stopJogGotoAnimation() {
@@ -7454,12 +7458,15 @@ function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80
       z: (Number(from.z) || 0) + ((Number(to.z) || 0) - (Number(from.z) || 0)) * t,
       source: 'JOG_GOTO',
     };
+    lastCanvasWorkPosition = { ...jogGotoAnimatedPosition };
     draw();
     if (t < 1) {
       jogGotoAnimationFrame = requestAnimationFrame(step);
     } else {
       jogGotoAnimationFrame = 0;
       jogGotoAnimatedPosition = null;
+      lastCanvasWorkPosition = { x: to.x, y: to.y, z: Number(to.z) || 0 };
+      prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
       draw();
     }
   };
@@ -7477,9 +7484,13 @@ addEventListener('cnc-commanded-jog-position', (event) => {
   const next = event.detail || {};
   if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) return;
   const current = jogGotoAnimatedPosition
-    || (currentMachineFrame?.work && Number.isFinite(currentMachineFrame.work.x) ? currentMachineFrame.work : null)
+    || prevCanvasWorkPosition
+    || lastCanvasWorkPosition
     || liveToolPosition;
-  if (!current || !Number.isFinite(current.x) || !Number.isFinite(current.y)) return;
+  if (!current || !Number.isFinite(current.x) || !Number.isFinite(current.y)) {
+    lastCanvasWorkPosition = { x: next.x, y: next.y, z: Number(next.z) || 0 };
+    return;
+  }
   startJogToolAnimation(current, next, next.xyFeedMax, next.zFeedMax, 40);
 });
 addEventListener('cnc-machine-frame', (event) => {
