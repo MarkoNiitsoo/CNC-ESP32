@@ -1040,8 +1040,23 @@ function canvasWorkZeroPosition() {
   return workbenchUiModule?.workZeroTablePosition(jobState) || null;
 }
 
+function liveWorkZeroTablePosition() {
+  const fwZero = currentMachineFrame?.workZeroValid ? currentMachineFrame?.workZeroMachine : null;
+  if (fwZero && Number.isFinite(Number(fwZero.x)) && Number.isFinite(Number(fwZero.y))) {
+    return {
+      x: Number(fwZero.x),
+      y: Number(fwZero.y),
+      z: Number.isFinite(Number(fwZero.z)) ? Number(fwZero.z) : null,
+    };
+  }
+  return canvasWorkZeroPosition();
+}
+
 function canvasTablePosition(position) {
-  const mapped = workbenchUiModule?.workspaceToolPosition(position, canvasWorkZeroPosition()) || position;
+  const zero = (position?.source === 'JOG_GOTO' || position?.source === 'JOG_CMD' || position?.source === 'STATUS' || position?.source === 'MARLIN' || position?.source === 'FRAME')
+    ? liveWorkZeroTablePosition()
+    : canvasWorkZeroPosition();
+  const mapped = workbenchUiModule?.workspaceToolPosition(position, zero) || position;
   if (mapped && position?.zIsWork && Number.isFinite(position.z)) {
     return { ...mapped, z: position.z };
   }
@@ -7490,9 +7505,13 @@ addEventListener('cnc-position-update', (event) => {
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
   if (position.frame) currentMachineFrame = position.frame;
   liveToolPosition = { ...position };
-  if (lastCanvasWorkPosition) prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
-  lastCanvasWorkPosition = { x: Number(position.x), y: Number(position.y), z: Number(position.z) || 0 };
   const jogging = window.CncMachineBar?.getState?.()?.jog?.state === 'JOGGING';
+  if (jogging && lastCanvasWorkPosition) {
+    prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
+  } else {
+    prevCanvasWorkPosition = { x: Number(position.x), y: Number(position.y), z: Number(position.z) || 0 };
+  }
+  lastCanvasWorkPosition = { x: Number(position.x), y: Number(position.y), z: Number(position.z) || 0 };
   if (!jogging && !jogGotoAnimationFrame) draw();
 });
 function stopJogGotoAnimation() {
@@ -7595,6 +7614,14 @@ addEventListener('cnc-commanded-jog-position', (event) => {
 });
 addEventListener('cnc-machine-frame', (event) => {
   currentMachineFrame = event.detail || currentMachineFrame;
+  if (!jogGotoAnimationFrame && Number.isFinite(currentMachineFrame?.work?.x) && Number.isFinite(currentMachineFrame?.work?.y)) {
+    lastCanvasWorkPosition = {
+      x: Number(currentMachineFrame.work.x),
+      y: Number(currentMachineFrame.work.y),
+      z: Number(currentMachineFrame.work.z) || 0,
+    };
+    prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
+  }
   applySafeZInputLimits();
   refreshDryRunCommands();
   refreshRecoveryPlan();
