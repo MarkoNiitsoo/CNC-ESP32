@@ -1304,6 +1304,9 @@ export async function createMockServer(options = {}) {
           env.jog.zRestoreAvailable = Boolean(safeJog && (hasX || hasY) && !hasZ && env.jog.zLiftedForJog && Number.isFinite(env.jog.originalZ));
           env.jog.lastError = '';
           env.jog.lastUpdateAt = Date.now();
+          syncMockFrame(env);
+          triggerStateSliceChange('machine', mockMachineSlice());
+          triggerStateSliceChange('jog', { ...env.jog });
           return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
         }
 
@@ -1356,6 +1359,9 @@ export async function createMockServer(options = {}) {
         env.jog.zRestoreAvailable = Boolean(safeJog && hasXy && !hasZ && env.jog.zLiftedForJog && Number.isFinite(env.jog.originalZ));
         env.jog.lastError = '';
         env.jog.lastUpdateAt = Date.now();
+        syncMockFrame(env);
+        triggerStateSliceChange('machine', mockMachineSlice());
+        triggerStateSliceChange('jog', { ...env.jog });
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
       }
       if (pathname.startsWith('/api/')) return json(res, 501, { ok: false, error: `Mock API not implemented: ${pathname}` });
