@@ -669,6 +669,69 @@ describe('mock HTTP API', () => {
     expect(env.marlin.spindleOff).toBe(true);
   });
 
+  it('supports fixed step jogs (0.001/0.1/1/10 mm) and exact coordinate goto', async () => {
+    const { base, env } = await start();
+    await fetch(`${base}/api/machine/home`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ axes: 'all' }) });
+    expect(env.marlin.execute('G0 X10 Y20 Z-30').ok).toBe(true);
+    env.marlin.execute('G92 X0 Y0 Z0');
+    Object.assign(env.frame, { trusted: true, workZeroValid: true, workZeroMachine: { x: 10, y: 20, z: 90 } });
+
+    const stepRes = await fetch(`${base}/api/jog/step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dx: 0.001, dy: -1, dz: 0, safeJog: false, xyFeedMax: 1200, zFeedMax: 300 }),
+    });
+    const stepJson = await stepRes.json();
+    expect(stepJson).toMatchObject({
+      state: 'IDLE',
+      commandedPositionCaptured: true,
+    });
+    expect(stepJson.commandedWorkX).toBeCloseTo(0.001, 4);
+    expect(stepJson.commandedWorkY).toBeCloseTo(-1, 4);
+    expect(stepJson.commandedWorkZ).toBeCloseTo(0, 4);
+    expect(stepRes.ok).toBe(true);
+    expect(env.marlin.absolute).toBe(true);
+
+    const zStepRes = await fetch(`${base}/api/jog/step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dx: 0, dy: 0, dz: 10, safeJog: false, xyFeedMax: 1200, zFeedMax: 300 }),
+    });
+    expect(zStepRes.ok).toBe(true);
+    expect(env.marlin.position.z).toBeCloseTo(10, 3);
+
+    const oobStep = await fetch(`${base}/api/jog/step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dx: -50, dy: 0, dz: 0, safeJog: false }),
+    });
+    expect(oobStep.status).toBe(400);
+
+    const logStart = env.marlin.log.length;
+    const gotoRes = await fetch(`${base}/api/jog/goto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: 25.5, y: 12.25, z: 5, safeJog: true, safeLiftZ: 70, xyFeedMax: 1800, zFeedMax: 300 }),
+    });
+    expect(gotoRes.ok).toBe(true);
+    expect(await gotoRes.json()).toMatchObject({
+      state: 'IDLE',
+      commandedPositionCaptured: true,
+      commandedWorkX: 25.5,
+      commandedWorkY: 12.25,
+      commandedWorkZ: 5,
+    });
+    const cmds = env.marlin.log.slice(logStart).map((e) => e.text);
+    const liftIdx = cmds.findIndex((c) => c.startsWith('G53 G0 Z70.000'));
+    const xyIdx = cmds.findIndex((c) => c === 'G0 X25.500 Y12.250 F1800');
+    const zIdx = cmds.findIndex((c) => c === 'G0 Z5.000 F300');
+    expect(liftIdx).toBeGreaterThan(-1);
+    expect(xyIdx).toBeGreaterThan(liftIdx);
+    expect(zIdx).toBeGreaterThan(xyIdx);
+
+    const oobGoto = await fetch(`${base}/api/jog/goto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: -100, safeJog: false }),
+    });
+    expect(oobGoto.status).toBe(400);
+  });
+
   it('restores a saved XYZ origin from Home using Safe Z first', async () => {
     const { base, env } = await start();
     env.marlin.machine.zMax = 70;

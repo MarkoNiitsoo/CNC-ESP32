@@ -1,4 +1,11 @@
 # Progress
+## 2026-11-17 - Add Step Jog (0.001/0.1/1/10 mm) and Go to XYZ coordinates
+
+- Firmware (`src/main.cpp`): Added `POST /api/jog/step` (`handleJogStep`) and `POST /api/jog/goto` (`handleJogGoto`) with shared manual-motion admission (`validateManualJogRequest`), Safe Z lift (`validateAndApplyJogSafeLift`), machine-limit checks, `G21`/`G91`/`G1`/`G90` step execution, `G0` XYZ positioning, `M400` completion wait, and `M114` position refresh.
+- Mock server (`dev/mock-server.mjs`): Implemented `POST /api/jog/step` and `POST /api/jog/goto` with parity for Safe Z lift, bounds checking, and `G90` restoration.
+- UI (`www/machine-bar.js`, `www/style.css`): Added `Smooth` / `Step` mode toggle and `0.001` / `0.1` / `1` / `10` mm step presets to the Jog dock (directional arrows and Z+/Z- slider step in Step mode), plus an inline `X / Y / Z / Go` coordinate form (`#mb-jog-goto-form`) guarded by `data-requires-live-control`.
+- Docs & tests (`docs/protocol.md`, `test/mock/mock-server.test.mjs`, `test/ui/machine-controls.test.mjs`): Documented both endpoints and added unit/contract tests.
+
 ## 2026-11-16 - Prevent double-shifting machine bounds on MockMarlin / DEV-MOCK
 
 - Fixed `refreshMachineInfo()` in `www/preview.js`: `MockMarlin` (`/api/machine/info` with `machineType: 'DEV-MOCK'`) already reports `full` bounds in machine coordinates (`0..1625`, `0..5800`), so `workZeroMachine` must not be added again as `xShift`/`yShift`/`zShift` (which previously shifted `MACHINE` and the Bounds Check limits by `+190.919 mm`).

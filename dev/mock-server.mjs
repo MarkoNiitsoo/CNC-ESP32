@@ -1207,6 +1207,157 @@ export async function createMockServer(options = {}) {
         env.jog.safeLiftWorkZ = null;
         return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
       }
+      if (req.method === 'POST' && (pathname === '/api/jog/step' || pathname === '/api/jog/goto')) {
+        if (['PREPARING_SAFE_Z', 'JOGGING', 'STOPPING'].includes(env.jog.state)) {
+          return json(res, 409, { ok: false, error: 'previous jog is active or stopping; wait for confirmed Idle' });
+        }
+        if (env.runner.status.state === 'PAUSED_INTACT') {
+          env.runner.interruptForManualMotion();
+          return json(res, 409, { ok: false, error: 'direct Resume invalidated; wait for RECOVERY_REQUIRED before moving' });
+        }
+        if (env.runner.isActive()) {
+          return json(res, 409, { ok: false, error: 'manual move rejected while a job is active' });
+        }
+        const body = await readJson(req);
+        const safeJog = body.safeJog !== false;
+        const xyFeedMax = Math.max(600, Math.min(6000, Number(body.xyFeedMax ?? 3000)));
+        const zFeedMax = Math.max(20, Math.min(800, Number(body.zFeedMax ?? 400)));
+        const applySafeLift = async (needsXyLift) => {
+          if (!safeJog || !needsXyLift) return null;
+          if (body.jobPath) {
+            const job = JSON.parse(await env.sd.readText(body.jobPath));
+            const projectSafeZ = migrateProjectSafeZ(job);
+            const expectedWorkZ = Number(projectSafeZ.effectiveSafeZ);
+            const expectedMachineZ = Number(env.frame.workZeroMachine?.z) + expectedWorkZ;
+            if (!projectSafeZ.resolved || !env.frame.trusted || !env.frame.workZeroValid ||
+                Math.abs(Number(body.safeWorkZ) - expectedWorkZ) > 0.001 ||
+                Math.abs(Number(body.safeLiftZ) - expectedMachineZ) > 0.001) {
+              return { status: 409, error: 'safe jog does not match reachable project Safe Z' };
+            }
+          }
+          const requestedSafeLiftZ = Number(body.safeLiftZ ?? env.marlin.machine.zMax);
+          if (!Number.isFinite(requestedSafeLiftZ) ||
+              requestedSafeLiftZ < env.marlin.machine.zMin || requestedSafeLiftZ > env.marlin.machine.zMax) {
+            return { status: 400, error: 'safe jog machine Z is outside the current machine limits' };
+          }
+          const continuePendingRestore = env.jog.zRestoreAvailable && Number.isFinite(env.jog.originalZ);
+          if (!continuePendingRestore && !Number.isFinite(env.jog.originalZ)) {
+            env.jog.originalZ = env.marlin.position.z;
+          }
+          env.jog.safeJog = true;
+          env.jog.safeLiftZ = requestedSafeLiftZ;
+          for (const command of ['M5', 'G90', `G53 G0 Z${requestedSafeLiftZ.toFixed(3)} F${zFeedMax}`, 'G90']) {
+            const result = env.marlin.execute(command, { priority: true, allowMachineCoordinates: command.startsWith('G53 ') });
+            if (!result.ok) {
+              env.jog.lastError = result.error;
+              return { status: 400, error: result.error };
+            }
+            env.jog.lastCommand = command;
+          }
+          env.jog.safeLiftWorkZ = env.marlin.position.z;
+          env.jog.zLiftedForJog = true;
+          env.jog.zChangedDuringJog = false;
+          return null;
+        };
+
+        if (pathname === '/api/jog/step') {
+          const dx = Number(body.dx ?? 0);
+          const dy = Number(body.dy ?? 0);
+          const dz = Number(body.dz ?? 0);
+          const hasX = Math.abs(dx) >= 0.0005;
+          const hasY = Math.abs(dy) >= 0.0005;
+          const hasZ = Math.abs(dz) >= 0.0005;
+          if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(dz) ||
+              Math.abs(dx) > 100 || Math.abs(dy) > 100 || Math.abs(dz) > 100 || (!hasX && !hasY && !hasZ)) {
+            return json(res, 400, { ok: false, error: 'step delta must be non-zero and within +/-100 mm' });
+          }
+          const m = env.marlin.machine;
+          const curM = env.marlin.machinePosition;
+          if (env.frame.trusted && curM) {
+            if ((hasX && (curM.x + dx < m.xMin - 0.001 || curM.x + dx > m.xMax + 0.001)) ||
+                (hasY && (curM.y + dy < m.yMin - 0.001 || curM.y + dy > m.yMax + 0.001)) ||
+                (hasZ && (curM.z + dz < m.zMin - 0.001 || curM.z + dz > m.zMax + 0.001))) {
+              return json(res, 400, { ok: false, error: 'step target is outside the current machine limits' });
+            }
+          }
+          const liftError = await applySafeLift((hasX || hasY) && !hasZ);
+          if (liftError) return json(res, liftError.status, { ok: false, error: liftError.error });
+          if (hasZ) {
+            env.jog.zChangedDuringJog = true;
+            env.jog.zRestoreAvailable = false;
+            env.jog.zLiftedForJog = false;
+          }
+          const moveCmd = `G1${hasX ? ` X${dx.toFixed(3)}` : ''}${hasY ? ` Y${dy.toFixed(3)}` : ''}${hasZ ? ` Z${dz.toFixed(3)}` : ''} F${(hasX || hasY) ? xyFeedMax : zFeedMax}`;
+          for (const command of ['G21', 'G91', moveCmd, 'G90']) {
+            const result = env.marlin.execute(command, { priority: true });
+            if (!result.ok) {
+              env.marlin.execute('G90', { priority: true });
+              env.jog.lastError = result.error;
+              return json(res, 400, { ok: false, error: result.error });
+            }
+            env.jog.lastCommand = command;
+          }
+          env.jog.commandedWorkX = env.marlin.position.x;
+          env.jog.commandedWorkY = env.marlin.position.y;
+          env.jog.commandedWorkZ = env.marlin.position.z;
+          env.jog.commandedPositionCaptured = true;
+          env.jog.zRestoreAvailable = Boolean(safeJog && (hasX || hasY) && !hasZ && env.jog.zLiftedForJog && Number.isFinite(env.jog.originalZ));
+          env.jog.lastError = '';
+          env.jog.lastUpdateAt = Date.now();
+          return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
+        }
+
+        // POST /api/jog/goto
+        const hasX = body.x !== undefined && body.x !== null && body.x !== '' && Number.isFinite(Number(body.x));
+        const hasY = body.y !== undefined && body.y !== null && body.y !== '' && Number.isFinite(Number(body.y));
+        const hasZ = body.z !== undefined && body.z !== null && body.z !== '' && Number.isFinite(Number(body.z));
+        if (!hasX && !hasY && !hasZ) {
+          return json(res, 400, { ok: false, error: 'at least one target coordinate (x, y, or z) is required' });
+        }
+        const tx = hasX ? Number(body.x) : null;
+        const ty = hasY ? Number(body.y) : null;
+        const tz = hasZ ? Number(body.z) : null;
+        if (env.frame.trusted && env.frame.workZeroValid && env.frame.workZeroMachine) {
+          const m = env.marlin.machine;
+          const wz = env.frame.workZeroMachine;
+          if ((hasX && (wz.x + tx < m.xMin - 0.001 || wz.x + tx > m.xMax + 0.001)) ||
+              (hasY && (wz.y + ty < m.yMin - 0.001 || wz.y + ty > m.yMax + 0.001)) ||
+              (hasZ && (wz.z + tz < m.zMin - 0.001 || wz.z + tz > m.zMax + 0.001))) {
+            return json(res, 400, { ok: false, error: 'target coordinate is outside the current machine limits' });
+          }
+        }
+        const hasXy = hasX || hasY;
+        const liftError = await applySafeLift(hasXy);
+        if (liftError) return json(res, liftError.status, { ok: false, error: liftError.error });
+        const commands = ['G21', 'G90'];
+        if (safeJog && hasXy) {
+          commands.push(`G0${hasX ? ` X${tx.toFixed(3)}` : ''}${hasY ? ` Y${ty.toFixed(3)}` : ''} F${xyFeedMax}`);
+          if (hasZ) commands.push(`G0 Z${tz.toFixed(3)} F${zFeedMax}`);
+        } else {
+          commands.push(`G0${hasX ? ` X${tx.toFixed(3)}` : ''}${hasY ? ` Y${ty.toFixed(3)}` : ''}${hasZ ? ` Z${tz.toFixed(3)}` : ''} F${hasXy ? xyFeedMax : zFeedMax}`);
+        }
+        if (hasZ) {
+          env.jog.zChangedDuringJog = true;
+          env.jog.zRestoreAvailable = false;
+          env.jog.zLiftedForJog = false;
+        }
+        for (const command of commands) {
+          const result = env.marlin.execute(command, { priority: true });
+          if (!result.ok) {
+            env.jog.lastError = result.error;
+            return json(res, 400, { ok: false, error: result.error });
+          }
+          env.jog.lastCommand = command;
+        }
+        env.jog.commandedWorkX = env.marlin.position.x;
+        env.jog.commandedWorkY = env.marlin.position.y;
+        env.jog.commandedWorkZ = env.marlin.position.z;
+        env.jog.commandedPositionCaptured = true;
+        env.jog.zRestoreAvailable = Boolean(safeJog && hasXy && !hasZ && env.jog.zLiftedForJog && Number.isFinite(env.jog.originalZ));
+        env.jog.lastError = '';
+        env.jog.lastUpdateAt = Date.now();
+        return json(res, 200, { ...env.jog, heartbeatAgeMs: 0 });
+      }
       if (pathname.startsWith('/api/')) return json(res, 501, { ok: false, error: `Mock API not implemented: ${pathname}` });
       if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' });
       const file = await staticFile(env.wwwRoot, pathname);

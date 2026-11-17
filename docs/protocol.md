@@ -913,6 +913,14 @@ Marlin documents [M400](https://marlinfw.org/docs/gcode/M400.html) as a motion-c
 [M410](https://marlinfw.org/docs/gcode/M410.html) stops immediately without normal deceleration and
 can leave stepper position uncertain. Normal release therefore uses the former.
 
+### `POST /api/jog/step`
+
+Executes a single relative step move (`dx`, `dy`, `dz` in mm, within `±100` mm) using `G21 G91 G1 ... F...`, immediately restoring `G90`, waiting for `M400`, and refreshing `M114`. When `safeJog` is true and only X/Y axes move, firmware performs the same Safe Z lift validation and lift before moving X/Y. Rejects moves outside machine limits when homed.
+
+### `POST /api/jog/goto`
+
+Moves to explicit work coordinates (`x`, `y`, `z` in mm; at least one axis required) using `G21 G90 G0 ... F...`, waiting for `M400`, and refreshing `M114`. When `safeJog` is true and X or Y is specified, firmware lifts Z to `safeLiftZ` before moving X/Y and moves Z last if specified. Rejects targets outside machine limits when homed with a valid work zero.
+
 ### `GET /api/jog/status`
 
 Returns jog state, whether Z was lifted for safe jog, original captured Z, lifted work-coordinate Z,

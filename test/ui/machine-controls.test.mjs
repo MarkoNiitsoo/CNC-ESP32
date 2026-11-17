@@ -376,6 +376,22 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     expect(restore).toContain('sendJogCommandForResponse("M400", 120000)');
     expect(restore).toContain("fabs(currentZ - jogStatus.safeLiftWorkZ) > 0.5f");
   });
+
+  it('supports Smooth/Step jog mode (0.001/0.1/1/10 mm) and exact coordinate goto', () => {
+    expect(firmware).toContain('operatorRoute("/api/jog/step", HTTP_POST, handleJogStep)');
+    expect(firmware).toContain('operatorRoute("/api/jog/goto", HTTP_POST, handleJogGoto)');
+    expect(machineBar).toContain('data-mb-jog-mode="smooth"');
+    expect(machineBar).toContain('data-mb-jog-mode="step"');
+    for (const step of ['0.001', '0.1', '1', '10']) {
+      expect(machineBar).toContain(`data-mb-jog-step="${step}"`);
+    }
+    expect(machineBar).toContain("apiPost('/api/jog/step'");
+    expect(machineBar).toContain("apiPost('/api/jog/goto'");
+    expect(machineBar).toContain('id="mb-jog-goto-form"');
+    expect(machineBar).toContain('id="mb-jog-goto-x"');
+    expect(machineBar).toContain('id="mb-jog-goto-y"');
+    expect(machineBar).toContain('id="mb-jog-goto-z"');
+  });
 });
 
 describe('browser control disabling', () => {

@@ -11,6 +11,8 @@
     marlinLog: { entries: [], lastCritical: null },
     jog: { state: 'IDLE', zLiftedForJog: false, heartbeatAgeMs: 0, lastCommand: '', lastError: '' },
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
+    jogMode: 'smooth',
+    jogStepMm: 1,
     toolChangeSettings: null,
     projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
     operator: { configured: false, active: false, controller: false, readOnly: true, claimRequired: true, owner: null, canClaim: true, controlSessionEpoch: 0 },
@@ -23,6 +25,8 @@
   let jogTimer = null;
   let jogUpdatePending = false;
   let jogStartPending = false;
+  let jogStepPending = false;
+  let jogGotoPending = false;
   let jogPointerId = null;
   let jogSessionId = 0;
   let motionSettingsModule = null;
@@ -59,6 +63,8 @@
     '#mb-terminal-send', '#mb-terminal-select', '#mb-terminal-cmd', '#mb-m114', '#mb-capture-position',
     '#mb-jog-restore-z', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
     '#mb-jog-dock-toggle', '#mb-jog-settings-toggle', '#mb-jog-safe',
+    '[data-mb-jog-mode]', '[data-mb-jog-step]',
+    '#mb-jog-goto-x', '#mb-jog-goto-y', '#mb-jog-goto-z', '#mb-jog-goto-submit',
     '#mb-jog-z-slider', '#mb-jog-center', '[data-mb-jog-direction]',
     '[data-mb-feed]', '[data-mb-feed-delta]',
     '#home-machine-zero',
@@ -1420,6 +1426,71 @@
     }
   }
 
+  function syncJogModeUi() {
+    const isStep = STATE.jogMode === 'step';
+    const dock = el('machine-jog-dock');
+    if (dock) dock.classList.toggle('is-step-mode', isStep);
+    document.querySelectorAll('[data-mb-jog-mode]').forEach((btn) => {
+      const active = btn.dataset.mbJogMode === STATE.jogMode;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-mb-jog-step]').forEach((btn) => {
+      const value = Number(btn.dataset.mbJogStep);
+      const active = isStep && Math.abs(value - Number(STATE.jogStepMm)) < 1e-6;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    const knob = el('mb-jog-knob');
+    if (knob) {
+      knob.textContent = isStep ? `${STATE.jogStepMm}mm` : '';
+    }
+  }
+
+  async function stepJog(dx, dy, dz, safeJog) {
+    if (jogStepPending || jogGotoPending || jogStartPending || jogTimer || jogIsUiActive()) return;
+    jogStepPending = true;
+    try {
+      await invalidatePausedResumeBeforeManualMotion();
+      await refreshProjectSafeZ();
+      const settings = jogSettings(safeJog);
+      await apiPost('/api/jog/step', { dx, dy, dz, ...settings });
+      const parts = [];
+      if (dx) parts.push(`X${dx > 0 ? '+' : ''}${dx}`);
+      if (dy) parts.push(`Y${dy > 0 ? '+' : ''}${dy}`);
+      if (dz) parts.push(`Z${dz > 0 ? '+' : ''}${dz}`);
+      setMessage(`Step ${parts.join(' ')} mm complete.`);
+    } finally {
+      jogStepPending = false;
+      renderJogReadouts();
+    }
+  }
+
+  async function gotoJogCoordinates(x, y, z, safeJog) {
+    if (jogStepPending || jogGotoPending || jogStartPending || jogTimer || jogIsUiActive()) {
+      throw new Error('Wait for the active move to finish.');
+    }
+    const payload = { ...jogSettings(safeJog) };
+    const parts = [];
+    if (Number.isFinite(x)) { payload.x = x; parts.push(`X${x}`); }
+    if (Number.isFinite(y)) { payload.y = y; parts.push(`Y${y}`); }
+    if (Number.isFinite(z)) { payload.z = z; parts.push(`Z${z}`); }
+    if (!parts.length) {
+      throw new Error('Enter at least one X, Y, or Z coordinate.');
+    }
+    jogGotoPending = true;
+    try {
+      await invalidatePausedResumeBeforeManualMotion();
+      await refreshProjectSafeZ();
+      Object.assign(payload, jogSettings(safeJog));
+      await apiPost('/api/jog/goto', payload);
+      setMessage(`Moved to ${parts.join(' ')} mm.`);
+    } finally {
+      jogGotoPending = false;
+      renderJogReadouts();
+    }
+  }
+
   async function startJog(safeJog) {
     if (jogStartPending || jogTimer || jogIsUiActive()) return;
     const sessionId = ++jogSessionId;
@@ -1563,6 +1634,7 @@
     const pad = el('mb-jog-center');
     let centerPointerId = null;
     pad?.addEventListener('pointerdown', (event) => {
+      if (STATE.jogMode === 'step') return;
       if (jogPointerId !== null) return;
       event.preventDefault();
       centerPointerId = event.pointerId;
@@ -1596,6 +1668,7 @@
     document.querySelectorAll('[data-mb-jog-direction]').forEach((item) => {
       let pointerId = null;
       item.addEventListener('pointerdown', (event) => {
+        if (STATE.jogMode === 'step') return;
         if (pointerId !== null || jogPointerId !== null) return;
         event.preventDefault();
         pointerId = event.pointerId;
@@ -1627,11 +1700,21 @@
       item.addEventListener('pointercancel', stopDirection);
       item.addEventListener('lostpointercapture', stopDirection);
       item.addEventListener('contextmenu', (event) => event.preventDefault());
+      item.addEventListener('click', () => {
+        if (STATE.jogMode !== 'step') return;
+        const step = Number(STATE.jogStepMm) || 1;
+        const dx = (Number(item.dataset.mbJogX) || 0) * step;
+        const dy = (Number(item.dataset.mbJogY) || 0) * step;
+        stepJog(dx, dy, 0, Boolean(el('mb-jog-safe')?.checked)).catch((err) => {
+          setMessage(`Step jog failed: ${err.message}`);
+        });
+      });
     });
 
     const zSlider = el('mb-jog-z-slider');
     let zPointerId = null;
     zSlider?.addEventListener('pointerdown', (event) => {
+      if (STATE.jogMode === 'step') return;
       if (zPointerId !== null || jogPointerId !== null) return;
       event.preventDefault();
       zPointerId = event.pointerId;
@@ -1662,6 +1745,15 @@
     zSlider?.addEventListener('pointercancel', stopZSlider);
     zSlider?.addEventListener('lostpointercapture', stopZSlider);
     zSlider?.addEventListener('contextmenu', (event) => event.preventDefault());
+    zSlider?.addEventListener('click', (event) => {
+      if (STATE.jogMode !== 'step') return;
+      const rect = zSlider.getBoundingClientRect();
+      const step = Number(STATE.jogStepMm) || 1;
+      const isPositive = event.clientY === 0 ? true : event.clientY < rect.top + rect.height / 2;
+      stepJog(0, 0, isPositive ? step : -step, false).catch((err) => {
+        setMessage(`Z step jog failed: ${err.message}`);
+      });
+    });
   }
 
 
@@ -2253,6 +2345,19 @@
             <label class="machine-jog-setting-field"><span>XY max <output id="mb-jog-xy-output">50 mm/s</output></span><input id="mb-jog-xy-speed" type="range" min="10" max="100" value="50" data-requires-live-control></label>
             <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5" data-requires-live-control></label>
           </div>
+          <div class="machine-jog-mode-bar" role="group" aria-label="Jog mode and step size">
+            <div class="machine-jog-mode-toggle">
+              <button id="mb-jog-mode-smooth" class="machine-jog-mode-btn is-active" type="button" data-mb-jog-mode="smooth" aria-pressed="true" data-requires-live-control>Smooth</button>
+              <button id="mb-jog-mode-step" class="machine-jog-mode-btn" type="button" data-mb-jog-mode="step" aria-pressed="false" data-requires-live-control>Step</button>
+            </div>
+            <div class="machine-jog-step-sizes" role="group" aria-label="Step size in millimeters">
+              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.001" aria-pressed="false" data-requires-live-control>0.001</button>
+              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.1" aria-pressed="false" data-requires-live-control>0.1</button>
+              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="1" aria-pressed="false" data-requires-live-control>1</button>
+              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="10" aria-pressed="false" data-requires-live-control>10</button>
+              <span class="machine-jog-step-unit">mm</span>
+            </div>
+          </div>
           <div class="machine-jog-dock-core">
             <button id="mb-jog-z-slider" class="machine-jog-z-slider" type="button" aria-label="Variable Z jog slider" data-requires-live-control>
               <span class="machine-jog-z-label machine-jog-z-positive" aria-hidden="true">Z+</span>
@@ -2274,6 +2379,12 @@
             </div>
             <p id="mb-jog-status" class="compact-status">IDLE | Safe Z not lifted | ready</p>
           </div>
+          <form id="mb-jog-goto-form" class="machine-jog-goto" aria-label="Go to work coordinates">
+            <label class="machine-jog-goto-field"><span>X</span><input id="mb-jog-goto-x" type="number" step="any" inputmode="decimal" placeholder="—" aria-label="Target Work X (mm)" data-requires-live-control></label>
+            <label class="machine-jog-goto-field"><span>Y</span><input id="mb-jog-goto-y" type="number" step="any" inputmode="decimal" placeholder="—" aria-label="Target Work Y (mm)" data-requires-live-control></label>
+            <label class="machine-jog-goto-field"><span>Z</span><input id="mb-jog-goto-z" type="number" step="any" inputmode="decimal" placeholder="—" aria-label="Target Work Z (mm)" data-requires-live-control></label>
+            <button id="mb-jog-goto-submit" class="machine-jog-goto-submit" type="submit" data-requires-live-control>Go</button>
+          </form>
         </div>
       </div>
       <aside id="machine-drawer" class="machine-drawer" hidden aria-label="Machine safety drawer">
@@ -2424,6 +2535,48 @@
       }
     });
     button('mb-jog-restore-z', restoreJogZ);
+    document.querySelectorAll('[data-mb-jog-mode]').forEach((item) => {
+      item.addEventListener('click', () => {
+        const nextMode = item.dataset.mbJogMode === 'step' ? 'step' : 'smooth';
+        if (STATE.jogMode !== nextMode && nextMode === 'step') {
+          stopJog(false, false).catch(() => {});
+        }
+        STATE.jogMode = nextMode;
+        syncJogModeUi();
+      });
+    });
+    document.querySelectorAll('[data-mb-jog-step]').forEach((item) => {
+      item.addEventListener('click', () => {
+        const step = Number(item.dataset.mbJogStep);
+        if (!Number.isFinite(step) || step <= 0) return;
+        STATE.jogStepMm = step;
+        if (STATE.jogMode !== 'step') {
+          stopJog(false, false).catch(() => {});
+          STATE.jogMode = 'step';
+        }
+        syncJogModeUi();
+      });
+    });
+    el('mb-jog-goto-form')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const rawX = el('mb-jog-goto-x')?.value?.trim() ?? '';
+      const rawY = el('mb-jog-goto-y')?.value?.trim() ?? '';
+      const rawZ = el('mb-jog-goto-z')?.value?.trim() ?? '';
+      const x = rawX === '' ? NaN : Number(rawX);
+      const y = rawY === '' ? NaN : Number(rawY);
+      const z = rawZ === '' ? NaN : Number(rawZ);
+      if ((rawX !== '' && !Number.isFinite(x)) ||
+          (rawY !== '' && !Number.isFinite(y)) ||
+          (rawZ !== '' && !Number.isFinite(z))) {
+        setMessage('Invalid coordinate value.');
+        return;
+      }
+      gotoJogCoordinates(x, y, z, Boolean(el('mb-jog-safe')?.checked)).catch((err) => {
+        setMessage(`Go to XYZ failed: ${err.message}`);
+        render();
+      });
+    });
+    syncJogModeUi();
     installCriticalHold(el('mb-pause'), pauseOrResumeJob);
     installCriticalHold(el('mb-stop'), stopJob);
     document.querySelectorAll('[data-mb-goto-zero]').forEach((item) => {

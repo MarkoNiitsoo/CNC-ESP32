@@ -10093,6 +10093,331 @@ void handleJogRestoreZ() {
   server.send(200, "application/json", jogStatusJson());
 }
 
+bool validateManualJogRequest(String &error, int &httpStatus) {
+  String commError;
+  if (!checkCommandPermission(ControllerCommandClass::OrdinarySync, commError)) {
+    error = commError;
+    httpStatus = 503;
+    return false;
+  }
+  if (operatorStopLatchBlocksMotion()) {
+    error = operatorStopLatch == OperatorStopLatch::EmergencyStopped
+                ? "EMERGENCY STOPPED. Restart the controller and Home All."
+                : "Stop is latched. Return to controls to continue.";
+    httpStatus = 409;
+    return false;
+  }
+  if (otaActive) {
+    error = "OTA update in progress";
+    httpStatus = 409;
+    return false;
+  }
+  if (jobStatus.state == JobRunnerState::PausedIntact) {
+    beginPausedManualInterruption();
+    error = "direct Resume was invalidated; wait for RECOVERY_REQUIRED before moving";
+    httpStatus = 409;
+    return false;
+  }
+  if (jobIsActive()) {
+    error = "manual move rejected while a job is active";
+    httpStatus = 409;
+    return false;
+  }
+  if (jogIsActive()) {
+    error = "previous jog is active or stopping; wait for confirmed Idle";
+    httpStatus = 409;
+    return false;
+  }
+  if (machineDiscoveryState != MachineDiscoveryState::Idle) {
+    error = "Marlin transport is busy discovering machine information";
+    httpStatus = 409;
+    return false;
+  }
+  if (!server.hasArg("plain")) {
+    error = "missing JSON body";
+    httpStatus = 400;
+    return false;
+  }
+  return true;
+}
+
+bool validateAndApplyJogSafeLift(const String &body, bool safeJog, bool needsXyLift,
+                                 float xyFeedMax, float zFeedMax,
+                                 String &error, int &httpStatus) {
+  const bool continuePendingRestore = jogStatus.zRestoreAvailable && jogStatus.originalZCaptured &&
+                                      !jogStatus.zChangedDuringJog;
+  const float pendingOriginalZ = jogStatus.originalZ;
+  const String projectJobPath = normalizeSdPath(extractJsonString(body, "jobPath"));
+  const float requestedSafeWorkZ = extractJsonFloat(body, "safeWorkZ", NAN);
+  const float requestedSafeLiftZ = extractJsonFloat(body, "safeLiftZ", machineZMax());
+
+  if (safeJog && needsXyLift && projectJobPath.length() > 0) {
+    float projectSafeZ = NAN;
+    String projectSafeZError;
+    if (!isPathUnderRoot(projectJobPath, "/jobs") ||
+        !machineFrame.absoluteFromHome || !machineFrame.workZeroValid ||
+        !loadProjectSafeZ(projectJobPath, projectSafeZ, projectSafeZError) ||
+        !isfinite(requestedSafeWorkZ) || fabsf(projectSafeZ - requestedSafeWorkZ) > 0.001f ||
+        fabsf((machineFrame.workZeroMachineZ + projectSafeZ) - requestedSafeLiftZ) > 0.001f) {
+      error = projectSafeZError.length() > 0
+                  ? projectSafeZError
+                  : "safe jog does not match the trusted project Safe Z";
+      httpStatus = 409;
+      return false;
+    }
+  }
+  if (safeJog && needsXyLift && (!isfinite(requestedSafeLiftZ) || requestedSafeLiftZ < machineZMin() ||
+                                 requestedSafeLiftZ > machineZMax())) {
+    error = "safe jog machine Z is outside the current machine limits";
+    httpStatus = 400;
+    return false;
+  }
+
+  jogStatus.safeJog = safeJog;
+  jogStatus.safeLiftZ = requestedSafeLiftZ;
+  jogStatus.xyFeedMax = xyFeedMax;
+  jogStatus.zFeedMax = zFeedMax;
+  if (continuePendingRestore && safeJog && needsXyLift) {
+    jogStatus.originalZ = pendingOriginalZ;
+    jogStatus.originalZCaptured = true;
+  }
+
+  if (safeJog && needsXyLift && !prepareSafeJogLift()) {
+    error = jogStatus.lastError;
+    httpStatus = 400;
+    return false;
+  }
+  return true;
+}
+
+bool checkJogResponseOk(const String &response, const String &failMessage, String &error) {
+  if (!responseContainsToken(response, "ok") || responseContainsToken(response, "Error:") ||
+      responseContainsToken(response, "Unknown command")) {
+    error = failMessage;
+    return false;
+  }
+  return true;
+}
+
+bool finishJogSingleMove(String &error) {
+  const String waitResponse = sendJogCommandForResponse("M400", 120000);
+  if (!checkJogResponseOk(waitResponse, "Marlin did not confirm move completion", error)) {
+    return false;
+  }
+  const String m114Response = sendJogCommandForResponse("M114", 300);
+  jogStatus.lastM114 = m114Response;
+  float x = 0.0f, y = 0.0f, z = 0.0f;
+  if (parseAxisFromM114(m114Response, 'X', x) &&
+      parseAxisFromM114(m114Response, 'Y', y) &&
+      parseAxisFromM114(m114Response, 'Z', z)) {
+    jogStatus.commandedWorkX = x;
+    jogStatus.commandedWorkY = y;
+    jogStatus.commandedWorkZ = z;
+    jogStatus.commandedPositionCaptured = true;
+  }
+  jogStatus.lastError = "";
+  touchJogStatus();
+  return true;
+}
+
+void handleJogStep() {
+  String error;
+  int httpStatus = 400;
+  if (!validateManualJogRequest(error, httpStatus)) {
+    sendJsonError(httpStatus, error);
+    return;
+  }
+
+  const String body = server.arg("plain");
+  const float dx = extractJsonFloat(body, "dx", 0.0f);
+  const float dy = extractJsonFloat(body, "dy", 0.0f);
+  const float dz = extractJsonFloat(body, "dz", 0.0f);
+  if (!isfinite(dx) || !isfinite(dy) || !isfinite(dz) ||
+      fabsf(dx) > 100.0f || fabsf(dy) > 100.0f || fabsf(dz) > 100.0f ||
+      (fabsf(dx) < 0.0005f && fabsf(dy) < 0.0005f && fabsf(dz) < 0.0005f)) {
+    sendJsonError(400, "step delta must be non-zero and within +/-100 mm");
+    return;
+  }
+
+  const bool hasXy = fabsf(dx) >= 0.0005f || fabsf(dy) >= 0.0005f;
+  const bool hasZ = fabsf(dz) >= 0.0005f;
+  const bool safeJog = extractJsonBool(body, "safeJog", false);
+  const float xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 3000.0f), 600.0f, 6000.0f);
+  const float zFeedMax = clampFloat(extractJsonFloat(body, "zFeedMax", 400.0f), 20.0f, 800.0f);
+
+  if (machineFrame.absoluteFromHome && machineFrame.machineValid) {
+    const float nextMachineX = machineFrame.machineX + dx;
+    const float nextMachineY = machineFrame.machineY + dy;
+    const float nextMachineZ = machineFrame.machineZ + dz;
+    if ((fabsf(dx) >= 0.0005f && (nextMachineX < machineXMin() - 0.001f || nextMachineX > machineXMax() + 0.001f)) ||
+        (fabsf(dy) >= 0.0005f && (nextMachineY < machineYMin() - 0.001f || nextMachineY > machineYMax() + 0.001f)) ||
+        (hasZ && (nextMachineZ < machineZMin() - 0.001f || nextMachineZ > machineZMax() + 0.001f))) {
+      sendJsonError(400, "step target is outside the current machine limits");
+      return;
+    }
+  }
+
+  if (!validateAndApplyJogSafeLift(body, safeJog, hasXy && !hasZ, xyFeedMax, zFeedMax, error, httpStatus)) {
+    sendJsonError(httpStatus, error);
+    return;
+  }
+
+  if (hasZ) {
+    jogStatus.zChangedDuringJog = true;
+    jogStatus.zRestoreAvailable = false;
+    jogStatus.zLiftedForJog = false;
+  }
+
+  if (!checkJogResponseOk(sendJogCommandForResponse("G21", 300), "Marlin rejected G21", error) ||
+      !checkJogResponseOk(sendJogCommandForResponse("G91", 300), "Marlin rejected G91", error)) {
+    sendJogCommandForResponse("G90", 300);
+    jogStatus.lastError = error;
+    touchJogStatus();
+    sendJsonError(502, error);
+    return;
+  }
+
+  String cmd = "G1";
+  if (fabsf(dx) >= 0.0005f) cmd += " X" + String(dx, 3);
+  if (fabsf(dy) >= 0.0005f) cmd += " Y" + String(dy, 3);
+  if (hasZ) cmd += " Z" + String(dz, 3);
+  cmd += " F" + String(hasXy ? xyFeedMax : zFeedMax, 0);
+
+  const String moveResponse = sendJogCommandForResponse(cmd, 15000);
+  const String absResponse = sendJogCommandForResponse("G90", 300);
+  if (!checkJogResponseOk(moveResponse, "Marlin rejected step move: " + cmd, error) ||
+      !checkJogResponseOk(absResponse, "Marlin did not restore G90 after step move", error)) {
+    jogStatus.lastError = error;
+    touchJogStatus();
+    sendJsonError(502, error);
+    return;
+  }
+
+  if (!finishJogSingleMove(error)) {
+    jogStatus.lastError = error;
+    touchJogStatus();
+    sendJsonError(502, error);
+    return;
+  }
+
+  if (safeJog && hasXy && !hasZ && jogStatus.zLiftedForJog && jogStatus.originalZCaptured) {
+    jogStatus.zRestoreAvailable = true;
+    touchJogStatus();
+  }
+  logSystemEvent("HTTP Jog step dx=" + String(dx, 3) + " dy=" + String(dy, 3) + " dz=" + String(dz, 3));
+  server.send(200, "application/json", jogStatusJson());
+}
+
+void handleJogGoto() {
+  String error;
+  int httpStatus = 400;
+  if (!validateManualJogRequest(error, httpStatus)) {
+    sendJsonError(httpStatus, error);
+    return;
+  }
+
+  const String body = server.arg("plain");
+  const float x = extractJsonFloat(body, "x", NAN);
+  const float y = extractJsonFloat(body, "y", NAN);
+  const float z = extractJsonFloat(body, "z", NAN);
+  const bool hasX = isfinite(x);
+  const bool hasY = isfinite(y);
+  const bool hasZ = isfinite(z);
+  if (!hasX && !hasY && !hasZ) {
+    sendJsonError(400, "at least one target coordinate (x, y, or z) is required");
+    return;
+  }
+
+  const bool safeJog = extractJsonBool(body, "safeJog", true);
+  const float xyFeedMax = clampFloat(extractJsonFloat(body, "xyFeedMax", 3000.0f), 600.0f, 6000.0f);
+  const float zFeedMax = clampFloat(extractJsonFloat(body, "zFeedMax", 400.0f), 20.0f, 800.0f);
+
+  if (machineFrame.absoluteFromHome && machineFrame.workZeroValid) {
+    const float targetMachineX = machineFrame.workZeroMachineX + x;
+    const float targetMachineY = machineFrame.workZeroMachineY + y;
+    const float targetMachineZ = machineFrame.workZeroMachineZ + z;
+    if ((hasX && (targetMachineX < machineXMin() - 0.001f || targetMachineX > machineXMax() + 0.001f)) ||
+        (hasY && (targetMachineY < machineYMin() - 0.001f || targetMachineY > machineYMax() + 0.001f)) ||
+        (hasZ && (targetMachineZ < machineZMin() - 0.001f || targetMachineZ > machineZMax() + 0.001f))) {
+      sendJsonError(400, "target coordinate is outside the current machine limits");
+      return;
+    }
+  }
+
+  const bool hasXy = hasX || hasY;
+  if (!validateAndApplyJogSafeLift(body, safeJog, hasXy, xyFeedMax, zFeedMax, error, httpStatus)) {
+    sendJsonError(httpStatus, error);
+    return;
+  }
+
+  if (!checkJogResponseOk(sendJogCommandForResponse("G21", 300), "Marlin rejected G21", error) ||
+      !checkJogResponseOk(sendJogCommandForResponse("G90", 300), "Marlin rejected G90", error)) {
+    jogStatus.lastError = error;
+    touchJogStatus();
+    sendJsonError(502, error);
+    return;
+  }
+
+  if (safeJog && hasXy) {
+    String xyCmd = "G0";
+    if (hasX) xyCmd += " X" + String(x, 3);
+    if (hasY) xyCmd += " Y" + String(y, 3);
+    xyCmd += " F" + String(xyFeedMax, 0);
+    if (!checkJogResponseOk(sendJogCommandForResponse(xyCmd, 15000), "Marlin rejected goto XY: " + xyCmd, error)) {
+      jogStatus.lastError = error;
+      touchJogStatus();
+      sendJsonError(502, error);
+      return;
+    }
+    if (hasZ) {
+      jogStatus.zChangedDuringJog = true;
+      jogStatus.zRestoreAvailable = false;
+      jogStatus.zLiftedForJog = false;
+      const String zCmd = "G0 Z" + String(z, 3) + " F" + String(zFeedMax, 0);
+      if (!checkJogResponseOk(sendJogCommandForResponse(zCmd, 15000), "Marlin rejected goto Z: " + zCmd, error)) {
+        jogStatus.lastError = error;
+        touchJogStatus();
+        sendJsonError(502, error);
+        return;
+      }
+    }
+  } else {
+    if (hasZ) {
+      jogStatus.zChangedDuringJog = true;
+      jogStatus.zRestoreAvailable = false;
+      jogStatus.zLiftedForJog = false;
+    }
+    String cmd = "G0";
+    if (hasX) cmd += " X" + String(x, 3);
+    if (hasY) cmd += " Y" + String(y, 3);
+    if (hasZ) cmd += " Z" + String(z, 3);
+    cmd += " F" + String(hasXy ? xyFeedMax : zFeedMax, 0);
+    if (!checkJogResponseOk(sendJogCommandForResponse(cmd, 15000), "Marlin rejected goto: " + cmd, error)) {
+      jogStatus.lastError = error;
+      touchJogStatus();
+      sendJsonError(502, error);
+      return;
+    }
+  }
+
+  if (!finishJogSingleMove(error)) {
+    jogStatus.lastError = error;
+    touchJogStatus();
+    sendJsonError(502, error);
+    return;
+  }
+
+  if (safeJog && hasXy && !hasZ && jogStatus.zLiftedForJog && jogStatus.originalZCaptured) {
+    jogStatus.zRestoreAvailable = true;
+    touchJogStatus();
+  }
+  logSystemEvent("HTTP Jog goto" +
+                 (hasX ? (" X=" + String(x, 3)) : "") +
+                 (hasY ? (" Y=" + String(y, 3)) : "") +
+                 (hasZ ? (" Z=" + String(z, 3)) : ""));
+  server.send(200, "application/json", jogStatusJson());
+}
+
 // ── Cooperative machine-operation engine (Phase 3C) ──────────────────────────
 // Long-running Home / Work Zero / Z Zero operations initiated over the WebSocket
 // command channel must not block loop(): admission validates the request, binds
@@ -11608,6 +11933,8 @@ void startHttpServer() {
   operatorRoute("/api/jog/start", HTTP_POST, handleJogStart);
   operatorRoute("/api/jog/update", HTTP_POST, handleJogUpdate);
   operatorRoute("/api/jog/stop", HTTP_POST, handleJogStop);
+  operatorRoute("/api/jog/step", HTTP_POST, handleJogStep);
+  operatorRoute("/api/jog/goto", HTTP_POST, handleJogGoto);
   operatorRoute("/api/jog/restore-z", HTTP_POST, handleJogRestoreZ);
   httpRoute("/api/jog/status", HTTP_GET, handleJogStatus);
   operatorRoute("/api/work-zero/goto", HTTP_POST, handleGoToWorkZero);
