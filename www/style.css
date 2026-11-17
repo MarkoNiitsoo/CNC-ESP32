@@ -723,25 +723,14 @@ body.operator-read-only .machine-operator-panel * {
 }
 
 .machine-jog-mode-bar {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   padding: 6px 8px;
   border: 1px solid rgba(159, 177, 191, 0.2);
   border-radius: 10px;
   background: color-mix(in srgb, var(--cnc-panel-strong) 84%, transparent);
   backdrop-filter: blur(8px);
-}
-
-.machine-jog-mode-toggle {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.machine-jog-step-sizes {
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 
 .machine-jog-mode-btn,

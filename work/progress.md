@@ -6,6 +6,7 @@
 - UI & mock server (`www/machine-bar.js`, `www/preview.js`, `www/style.css`, `dev/mock-server.mjs`):
   - Smooth jog animation: `POST /api/jog/update` in `dev/mock-server.mjs` now immediately broadcasts `machine` and `jog` telemetry patches (instead of waiting for the 1 s sync timer), and `preview.js` tracks `prevCanvasWorkPosition` / `lastCanvasWorkPosition` and paces active `JOGGING` segments across the 155 ms update window without drawing intermediate jumped frames in `cnc-position-update`.
   - 3D toolhead & Z continuity (`www/preview.js`): `canvasToolPosition()` / `canvasTablePosition()` now use `currentMachineFrame.work.z` when `isMachine: true` so idle Z matches work Z during jog (fixing the vertical jump on jog start/stop in 3D view), and `draw()` renders the toolhead as a vertical shaded 3D cylinder (with `Z=0` plane projection ring) in `projection.mode === '3d'`.
+  - Single-row Jog mode bar (`www/machine-bar.js`, `www/style.css`): Removed the redundant `Step` button; clicking `0.01 / 0.1 / 1 / 10 mm` directly activates Step mode and clicking `Smooth` returns to continuous jog.
   - Red out-of-bounds highlight: `.machine-jog-goto-field input.is-invalid` uses `!important` to override `aurora-glass` theme's `input` `!important` background/border, `refreshMachineBounds()` runs on startup, and invalid `Go` submits also surface the range error in `#mb-jog-status`.
 - Docs & tests (`docs/protocol.md`, `test/mock/mock-server.test.mjs`, `test/ui/machine-controls.test.mjs`): Documented both endpoints and added unit/contract tests.
 

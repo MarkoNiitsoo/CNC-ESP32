@@ -2478,17 +2478,12 @@
             <label class="machine-jog-setting-field"><span>Z max <output id="mb-jog-z-output">5 mm/s</output></span><input id="mb-jog-z-speed" type="range" min="1" max="10" value="5" data-requires-live-control></label>
           </div>
           <div class="machine-jog-mode-bar" role="group" aria-label="Jog mode and step size">
-            <div class="machine-jog-mode-toggle">
-              <button id="mb-jog-mode-smooth" class="machine-jog-mode-btn is-active" type="button" data-mb-jog-mode="smooth" aria-pressed="true" data-requires-live-control>Smooth</button>
-              <button id="mb-jog-mode-step" class="machine-jog-mode-btn" type="button" data-mb-jog-mode="step" aria-pressed="false" data-requires-live-control>Step</button>
-            </div>
-            <div class="machine-jog-step-sizes" role="group" aria-label="Step size in millimeters">
-              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.01" aria-pressed="false" data-requires-live-control>0.01</button>
-              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.1" aria-pressed="false" data-requires-live-control>0.1</button>
-              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="1" aria-pressed="false" data-requires-live-control>1</button>
-              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="10" aria-pressed="false" data-requires-live-control>10</button>
-              <span class="machine-jog-step-unit">mm</span>
-            </div>
+            <button id="mb-jog-mode-smooth" class="machine-jog-mode-btn is-active" type="button" data-mb-jog-mode="smooth" aria-pressed="true" data-requires-live-control>Smooth</button>
+            <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.01" aria-pressed="false" data-requires-live-control>0.01</button>
+            <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.1" aria-pressed="false" data-requires-live-control>0.1</button>
+            <button type="button" class="machine-jog-step-btn" data-mb-jog-step="1" aria-pressed="false" data-requires-live-control>1</button>
+            <button type="button" class="machine-jog-step-btn" data-mb-jog-step="10" aria-pressed="false" data-requires-live-control>10</button>
+            <span class="machine-jog-step-unit">mm</span>
           </div>
           <div class="machine-jog-dock-core">
             <button id="mb-jog-z-slider" class="machine-jog-z-slider" type="button" aria-label="Variable Z jog slider" data-requires-live-control>
