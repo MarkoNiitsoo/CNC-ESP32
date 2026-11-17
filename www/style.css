@@ -805,6 +805,12 @@ body.operator-read-only .machine-operator-panel * {
   font-size: 0.76rem;
 }
 
+.machine-jog-goto-field input.is-invalid {
+  background: rgba(214, 48, 49, 0.42);
+  border-color: #ff6b6b;
+  color: #fff;
+}
+
 .machine-jog-goto-submit {
   min-height: 28px;
   padding: 2px 10px;

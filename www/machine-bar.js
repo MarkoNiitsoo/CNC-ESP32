@@ -13,6 +13,7 @@
     jogVector: { x: 0, y: 0, z: 0, speed: 0 },
     jogMode: 'smooth',
     jogStepMm: 1,
+    machineBounds: null,
     toolChangeSettings: null,
     projectSafeZ: { active: false, jobPath: '', projectSafeZ: null },
     operator: { configured: false, active: false, controller: false, readOnly: true, claimRequired: true, owner: null, canClaim: true, controlSessionEpoch: 0 },
@@ -496,6 +497,90 @@
     return STATE.frame?.safeZ?.mappedToMachine === true && Number.isFinite(zeroMachineZ)
       ? zeroMachineZ + Number(workZ)
       : Number(workZ);
+  }
+
+  let machineBoundsPromise = null;
+  async function refreshMachineBounds() {
+    if (STATE.machineBounds) return STATE.machineBounds;
+    if (!machineBoundsPromise) {
+      machineBoundsPromise = fetch('/api/machine/info')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((info) => {
+          const full = info?.full;
+          if (!info?.available || !full) return null;
+          if (!['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'].every((k) => Number.isFinite(Number(full[k])))) return null;
+          STATE.machineBounds = {
+            xMin: Number(full.xMin),
+            xMax: Number(full.xMax),
+            yMin: Number(full.yMin),
+            yMax: Number(full.yMax),
+            zMin: Number(full.zMin),
+            zMax: Number(full.zMax),
+            fullAlreadyMachineCoords: info?.machineType === 'DEV-MOCK' || /MockMarlin/i.test(String(info?.firmwareName || '')),
+          };
+          validateJogGotoInputs();
+          return STATE.machineBounds;
+        })
+        .catch(() => null)
+        .finally(() => { machineBoundsPromise = null; });
+    }
+    return machineBoundsPromise;
+  }
+
+  function workAreaBounds() {
+    const b = STATE.machineBounds;
+    const wz = STATE.frame?.workZeroValid === true ? STATE.frame?.workZeroMachine : null;
+    const result = {};
+    if (b) {
+      const shiftX = b.fullAlreadyMachineCoords && Number.isFinite(Number(wz?.x)) ? Number(wz.x) : 0;
+      const shiftY = b.fullAlreadyMachineCoords && Number.isFinite(Number(wz?.y)) ? Number(wz.y) : 0;
+      const shiftZ = b.fullAlreadyMachineCoords && Number.isFinite(Number(wz?.z)) ? Number(wz.z) : 0;
+      result.x = { min: b.xMin - shiftX, max: b.xMax - shiftX };
+      result.y = { min: b.yMin - shiftY, max: b.yMax - shiftY };
+      result.z = { min: b.zMin - shiftZ, max: b.zMax - shiftZ };
+    }
+    const safeWorkMin = Number(STATE.frame?.safeZ?.workMin);
+    const safeWorkMax = Number(STATE.frame?.safeZ?.workMax);
+    if (Number.isFinite(safeWorkMin) && Number.isFinite(safeWorkMax) && safeWorkMax >= safeWorkMin) {
+      result.z = { min: safeWorkMin, max: safeWorkMax };
+    }
+    return result;
+  }
+
+  function validateJogGotoInputs() {
+    const bounds = workAreaBounds();
+    let allValid = true;
+    for (const axis of ['x', 'y', 'z']) {
+      const input = el(`mb-jog-goto-${axis}`);
+      if (!input) continue;
+      const raw = input.value.trim();
+      let invalid = false;
+      let reason = '';
+      if (raw !== '') {
+        const val = Number(raw);
+        const axisBounds = bounds[axis];
+        if (!Number.isFinite(val)) {
+          invalid = true;
+          reason = `Invalid ${axis.toUpperCase()} coordinate`;
+        } else if (axisBounds && (val < axisBounds.min - 0.001 || val > axisBounds.max + 0.001)) {
+          invalid = true;
+          reason = `${axis.toUpperCase()} ${val} mm is outside work area (${axisBounds.min.toFixed(2)} .. ${axisBounds.max.toFixed(2)} mm)`;
+        }
+      }
+      input.classList.toggle('is-invalid', invalid);
+      if (invalid) {
+        input.setAttribute('aria-invalid', 'true');
+        input.title = reason;
+        allValid = false;
+      } else {
+        input.removeAttribute('aria-invalid');
+        const axisBounds = bounds[axis];
+        input.title = axisBounds
+          ? `Target Work ${axis.toUpperCase()} (${axisBounds.min.toFixed(2)} .. ${axisBounds.max.toFixed(2)} mm)`
+          : `Target Work ${axis.toUpperCase()} (mm)`;
+      }
+    }
+    return allValid;
   }
 
   async function refreshProjectSafeZ() {
@@ -2001,6 +2086,7 @@
     if (toggle) toggle.setAttribute('aria-expanded', String(STATE.jogSettingsOpen && STATE.jogDockOpen));
     if (handle) handle.setAttribute('aria-expanded', String(STATE.jogDockOpen));
     document.body.classList.toggle('machine-jog-dock-open', STATE.jogDockOpen);
+    if (STATE.jogDockOpen) refreshMachineBounds();
   }
 
   function toggleJogDock(open = !STATE.jogDockOpen) {
@@ -2155,6 +2241,7 @@
   function render() {
     renderWifiStaBanner();
     syncSafeZControl();
+    validateJogGotoInputs();
     const state = visibleJobState();
     const recoveryPending = STATE.job?.recoveryCheckpoint?.requiresReview === true;
     const stateLabel = STATE.job?.errorCode === 'COMMUNICATION_LOST' ? 'COMM LOST' : state;
@@ -2615,8 +2702,17 @@
         });
       });
     });
+    ['x', 'y', 'z'].forEach((axis) => {
+      el(`mb-jog-goto-${axis}`)?.addEventListener('input', () => validateJogGotoInputs());
+    });
     el('mb-jog-goto-form')?.addEventListener('submit', (event) => {
       event.preventDefault();
+      if (!validateJogGotoInputs()) {
+        const firstInvalid = ['x', 'y', 'z'].map((a) => el(`mb-jog-goto-${a}`)).find((n) => n?.classList.contains('is-invalid'));
+        setMessage(firstInvalid?.title || 'Target coordinate is outside the work area.');
+        firstInvalid?.focus();
+        return;
+      }
       const rawX = el('mb-jog-goto-x')?.value?.trim() ?? '';
       const rawY = el('mb-jog-goto-y')?.value?.trim() ?? '';
       const rawZ = el('mb-jog-goto-z')?.value?.trim() ?? '';
