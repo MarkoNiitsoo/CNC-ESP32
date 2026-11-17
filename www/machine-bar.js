@@ -2343,7 +2343,7 @@
           <div id="mb-jog-settings" class="machine-jog-settings machine-jog-dock-settings" hidden>
             <p class="warning">Software controls are not a physical emergency stop.</p>
             <div class="machine-jog-setting-toggles">
-              <label><input id="mb-jog-safe" type="checkbox" checked data-requires-live-control> Safe</label>
+              <label><input id="mb-jog-safe" type="checkbox" data-requires-live-control> Safe</label>
               <button id="mb-jog-restore-z" class="machine-jog-restore-button" type="button" disabled data-requires-live-control>Restore Z unavailable</button>
             </div>
             <label class="machine-jog-setting-field"><span>Safe Z <output id="mb-jog-safe-z-output">70 mm</output></span><input id="mb-jog-safe-z" type="range" min="1" max="70" step="1" value="70" data-requires-live-control></label>
@@ -2356,7 +2356,7 @@
               <button id="mb-jog-mode-step" class="machine-jog-mode-btn" type="button" data-mb-jog-mode="step" aria-pressed="false" data-requires-live-control>Step</button>
             </div>
             <div class="machine-jog-step-sizes" role="group" aria-label="Step size in millimeters">
-              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.001" aria-pressed="false" data-requires-live-control>0.001</button>
+              <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.01" aria-pressed="false" data-requires-live-control>0.01</button>
               <button type="button" class="machine-jog-step-btn" data-mb-jog-step="0.1" aria-pressed="false" data-requires-live-control>0.1</button>
               <button type="button" class="machine-jog-step-btn" data-mb-jog-step="1" aria-pressed="false" data-requires-live-control>1</button>
               <button type="button" class="machine-jog-step-btn" data-mb-jog-step="10" aria-pressed="false" data-requires-live-control>10</button>

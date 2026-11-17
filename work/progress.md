@@ -3,7 +3,7 @@
 
 - Firmware (`src/main.cpp`): Added `POST /api/jog/step` (`handleJogStep`) and `POST /api/jog/goto` (`handleJogGoto`) with shared manual-motion admission (`validateManualJogRequest`), Safe Z lift (`validateAndApplyJogSafeLift`), machine-limit checks, `G21`/`G91`/`G1`/`G90` step execution, `G0` XYZ positioning, `M400` completion wait, and `M114` position refresh.
 - Mock server (`dev/mock-server.mjs`): Implemented `POST /api/jog/step` and `POST /api/jog/goto` with parity for Safe Z lift, bounds checking, `G90` restoration, and immediate `syncMockFrame` + `triggerStateSliceChange('machine'|'jog')` WebSocket updates.
-- UI (`www/machine-bar.js`, `www/style.css`): Added `Smooth` / `Step` mode toggle and `0.001` / `0.1` / `1` / `10` mm step presets to the Jog dock (directional arrows and dedicated `Z+` / `Z-` step buttons `#mb-jog-z-step-up` / `#mb-jog-z-step-down` in Step mode, replacing the Z slider), plus an inline `X / Y / Z / Go` coordinate form (`#mb-jog-goto-form`) guarded by `data-requires-live-control`.
+- UI (`www/machine-bar.js`, `www/style.css`): Added `Smooth` / `Step` mode toggle and `0.01` / `0.1` / `1` / `10` mm step presets to the Jog dock (directional arrows and dedicated `Z+` / `Z-` step buttons `#mb-jog-z-step-up` / `#mb-jog-z-step-down` in Step mode, replacing the Z slider), defaulted `#mb-jog-safe` to unchecked so X/Y jogs are not blocked by Safe Z unless enabled, and added an inline `X / Y / Z / Go` coordinate form (`#mb-jog-goto-form`) guarded by `data-requires-live-control`.
 - Docs & tests (`docs/protocol.md`, `test/mock/mock-server.test.mjs`, `test/ui/machine-controls.test.mjs`): Documented both endpoints and added unit/contract tests.
 
 ## 2026-11-16 - Prevent double-shifting machine bounds on MockMarlin / DEV-MOCK

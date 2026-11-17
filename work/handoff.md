@@ -2,7 +2,7 @@
 ## 2026-11-17 - Add Step Jog (0.001/0.1/1/10 mm) and Go to XYZ coordinates
 
 - `src/main.cpp`, `dev/mock-server.mjs`, `docs/protocol.md`: Added `POST /api/jog/step` (relative `G91` step with guaranteed `G90` restore, `0.001` mm precision, Safe Z lift, and machine-bounds check) and `POST /api/jog/goto` (work-coordinate `G0` to optional X/Y/Z, Safe Z lift before XY when enabled, and bounds check). Mock server also broadcasts `machine` and `jog` WebSocket telemetry slices after each move.
-- `www/machine-bar.js`, `www/style.css`: Added `Smooth` / `Step` mode toggle + `0.001` / `0.1` / `1` / `10` mm step buttons, dedicated `Z+` / `Z-` step buttons (`#mb-jog-z-step-up` / `#mb-jog-z-step-down`) in Step mode, and `#mb-jog-goto-form` (`X`, `Y`, `Z`, `Go`) in the Jog dock; all interactive controls carry `data-requires-live-control`.
+- `www/machine-bar.js`, `www/style.css`: Added `Smooth` / `Step` mode toggle + `0.01` / `0.1` / `1` / `10` mm step buttons, dedicated `Z+` / `Z-` step buttons (`#mb-jog-z-step-up` / `#mb-jog-z-step-down`) in Step mode, `#mb-jog-safe` unchecked by default, and `#mb-jog-goto-form` (`X`, `Y`, `Z`, `Go`) in the Jog dock; all interactive controls carry `data-requires-live-control`.
 - `test/mock/mock-server.test.mjs`, `test/ui/machine-controls.test.mjs`: Added mock HTTP and UI/firmware contract tests.
 
 ## 2026-11-16 - Prevent double-shifting machine bounds on MockMarlin / DEV-MOCK
