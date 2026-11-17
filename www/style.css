@@ -943,7 +943,7 @@ body.machine-drawer-open .machine-jog-dock {
   user-select: none;
 }
 
-.machine-jog-center {
+button.machine-jog-center {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -967,7 +967,7 @@ body.machine-drawer-open .machine-jog-dock {
   line-height: 1.15;
 }
 
-.machine-jog-direction {
+button.machine-jog-direction {
   position: absolute;
   top: calc(50% + var(--direction-y));
   left: calc(50% + var(--direction-x));
@@ -1297,7 +1297,7 @@ input[type="reset"],
   -webkit-touch-callout: none;
 }
 
-button:not(.danger-button):not(.warning-button) {
+button:not(.danger-button):not(.warning-button):not(.machine-jog-direction):not(.machine-jog-center):not(.machine-jog-z-slider) {
   border: 1px solid color-mix(in srgb, var(--cnc-accent) 72%, transparent);
   background: color-mix(in srgb, var(--cnc-accent) 68%, transparent);
 }
