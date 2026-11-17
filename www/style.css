@@ -691,10 +691,9 @@ body.operator-read-only .machine-operator-panel * {
 }
 
 .machine-jog-z-steps {
-  display: grid;
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  width: 46px;
+  display: flex;
+  justify-content: center;
+  width: 50px;
   height: 176px;
   align-self: center;
 }
@@ -703,22 +702,69 @@ body.operator-read-only .machine-operator-panel * {
   display: none;
 }
 
-.machine-jog-z-step-btn {
+.machine-jog-z-wheel {
+  position: relative;
   width: 100%;
   height: 100%;
-  border: 1px solid rgba(159, 177, 191, 0.35);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--cnc-panel-strong) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cnc-accent) 45%, rgba(255, 255, 255, 0.22));
+  border-radius: 25px;
+  background: color-mix(in srgb, var(--cnc-panel-strong) 56%, transparent);
   color: var(--cnc-text, #eef6fb);
-  font-size: 0.85rem;
-  font-weight: 700;
-  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+  cursor: ns-resize;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
 
-.machine-jog-z-step-btn:active {
-  background: color-mix(in srgb, var(--cnc-accent) 78%, transparent);
+.machine-jog-z-wheel.is-active,
+.machine-jog-z-wheel:focus-visible {
+  outline: none;
   border-color: var(--cnc-accent);
+  background: color-mix(in srgb, var(--cnc-accent) 18%, rgba(12, 16, 32, 0.56));
+}
+
+.machine-jog-z-wheel.is-ticking {
+  border-color: color-mix(in srgb, var(--cnc-accent) 85%, white 15%);
+  background: color-mix(in srgb, var(--cnc-accent) 28%, rgba(12, 16, 32, 0.56));
+}
+
+.machine-jog-z-wheel-track {
+  position: absolute;
+  inset: 26px 8px;
+  border-radius: 12px;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.26) 0px,
+    rgba(255, 255, 255, 0.26) 2px,
+    transparent 2px,
+    transparent 11px
+  );
+  background-position: 0 var(--wheel-offset, 0px);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.machine-jog-z-wheel-readout {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 3;
+  transform: translate(-50%, -50%);
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: rgba(10, 14, 24, 0.78);
   color: #fff;
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1.1;
+  pointer-events: none;
+}
+
+.machine-jog-z-wheel[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .machine-jog-mode-bar {

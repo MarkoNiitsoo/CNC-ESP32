@@ -65,7 +65,7 @@
     '#mb-jog-restore-z', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
     '#mb-jog-dock-toggle', '#mb-jog-settings-toggle', '#mb-jog-safe',
     '[data-mb-jog-mode]', '[data-mb-jog-step]',
-    '#mb-jog-z-step-up', '#mb-jog-z-step-down',
+    '#mb-jog-z-wheel',
     '#mb-jog-goto-x', '#mb-jog-goto-y', '#mb-jog-goto-z', '#mb-jog-goto-submit',
     '#mb-jog-z-slider', '#mb-jog-center', '[data-mb-jog-direction]',
     '[data-mb-feed]', '[data-mb-feed-delta]',
@@ -1610,6 +1610,10 @@
     if (zSlider) zSlider.hidden = isStep;
     const zSteps = el('mb-jog-z-step-controls');
     if (zSteps) zSteps.hidden = !isStep;
+    const zWheel = el('mb-jog-z-wheel');
+    if (zWheel) zWheel.setAttribute('aria-valuetext', `${STATE.jogStepMm} mm step`);
+    const zWheelReadout = el('mb-jog-z-wheel-readout');
+    if (zWheelReadout) zWheelReadout.textContent = `${STATE.jogStepMm}mm`;
   }
 
   async function stepJog(dx, dy, dz, safeJog) {
@@ -2542,9 +2546,13 @@
               <span id="mb-jog-z-handle" class="machine-jog-z-handle" aria-hidden="true"></span>
               <span class="machine-jog-z-label machine-jog-z-negative" aria-hidden="true">Z-</span>
             </button>
-            <div id="mb-jog-z-step-controls" class="machine-jog-z-steps" hidden aria-label="Z axis step controls">
-              <button id="mb-jog-z-step-up" class="machine-jog-z-step-btn" type="button" data-mb-jog-z-step="1" aria-label="Step Z positive" data-requires-live-control>Z+</button>
-              <button id="mb-jog-z-step-down" class="machine-jog-z-step-btn" type="button" data-mb-jog-z-step="-1" aria-label="Step Z negative" data-requires-live-control>Z-</button>
+            <div id="mb-jog-z-step-controls" class="machine-jog-z-steps" hidden aria-label="Z axis step wheel">
+              <div id="mb-jog-z-wheel" class="machine-jog-z-wheel" role="slider" tabindex="0" aria-label="Swipe Z step wheel" aria-valuetext="1 mm step" data-requires-live-control>
+                <span class="machine-jog-z-label machine-jog-z-positive" aria-hidden="true">Z+</span>
+                <span class="machine-jog-z-wheel-track" aria-hidden="true"></span>
+                <span id="mb-jog-z-wheel-readout" class="machine-jog-z-wheel-readout" aria-hidden="true">1mm</span>
+                <span class="machine-jog-z-label machine-jog-z-negative" aria-hidden="true">Z-</span>
+              </div>
             </div>
             <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick and locked directions">
               <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y+" data-mb-jog-x="0" data-mb-jog-y="1" style="--direction-x:0px;--direction-y:-74px;--direction-angle:-90deg" aria-label="Jog Y positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
@@ -2739,15 +2747,122 @@
         syncJogModeUi();
       });
     });
-    document.querySelectorAll('[data-mb-jog-z-step]').forEach((item) => {
-      item.addEventListener('click', () => {
-        const sign = Number(item.dataset.mbJogZStep) >= 0 ? 1 : -1;
-        const step = Number(STATE.jogStepMm) || 1;
-        stepJog(0, 0, sign * step, false).catch((err) => {
+    const zWheel = el('mb-jog-z-wheel');
+    if (zWheel) {
+      const DETENT_PX = 22;
+      let zWheelOffsetPx = 0;
+      let zWheelQueuedTicks = 0;
+      let zWheelDraining = false;
+      let zWheelTickTimer = null;
+      let wheelPointerId = null;
+      let wheelStartY = 0;
+      let wheelLastY = 0;
+      let wheelAccumPx = 0;
+      let wheelMoved = false;
+
+      const triggerZWheelHaptic = () => {
+        try {
+          if (typeof navigator?.vibrate === 'function') navigator.vibrate(12);
+        } catch (err) {
+          // Ignore environments without vibration support.
+        }
+        zWheel.classList.add('is-ticking');
+        if (zWheelTickTimer) clearTimeout(zWheelTickTimer);
+        zWheelTickTimer = setTimeout(() => {
+          zWheel.classList.remove('is-ticking');
+          zWheelTickTimer = null;
+        }, 90);
+      };
+
+      const drainZWheelTicks = async () => {
+        if (zWheelDraining || jogStepPending || jogGotoPending || jogStartPending || jogTimer || jogIsUiActive()) return;
+        zWheelDraining = true;
+        try {
+          while (zWheelQueuedTicks !== 0) {
+            const ticks = zWheelQueuedTicks;
+            zWheelQueuedTicks = 0;
+            const step = Number(STATE.jogStepMm) || 1;
+            const dz = Number((ticks * step).toFixed(4));
+            await stepJog(0, 0, dz, false);
+          }
+        } catch (err) {
+          zWheelQueuedTicks = 0;
           setMessage(`Z step jog failed: ${err.message}`);
-        });
+        } finally {
+          zWheelDraining = false;
+        }
+      };
+
+      const enqueueZWheelTick = (sign) => {
+        if (zWheel.getAttribute('aria-disabled') === 'true') return;
+        zWheelQueuedTicks += sign >= 0 ? 1 : -1;
+        triggerZWheelHaptic();
+        void drainZWheelTicks();
+      };
+
+      zWheel.addEventListener('pointerdown', (event) => {
+        if (zWheel.getAttribute('aria-disabled') === 'true') return;
+        event.preventDefault();
+        wheelPointerId = event.pointerId;
+        wheelStartY = event.clientY;
+        wheelLastY = event.clientY;
+        wheelAccumPx = 0;
+        wheelMoved = false;
+        zWheel.classList.add('is-active');
+        zWheel.setPointerCapture?.(event.pointerId);
       });
-    });
+
+      zWheel.addEventListener('pointermove', (event) => {
+        if (wheelPointerId !== event.pointerId) return;
+        const dy = event.clientY - wheelLastY;
+        wheelLastY = event.clientY;
+        if (Math.abs(event.clientY - wheelStartY) >= 5) wheelMoved = true;
+        zWheelOffsetPx += dy;
+        zWheel.style.setProperty('--wheel-offset', `${zWheelOffsetPx.toFixed(1)}px`);
+        wheelAccumPx += dy;
+        while (wheelAccumPx <= -DETENT_PX) {
+          wheelAccumPx += DETENT_PX;
+          enqueueZWheelTick(1);
+        }
+        while (wheelAccumPx >= DETENT_PX) {
+          wheelAccumPx -= DETENT_PX;
+          enqueueZWheelTick(-1);
+        }
+      });
+
+      const releaseWheelPointer = (event, allowTap) => {
+        if (wheelPointerId !== event.pointerId) return;
+        wheelPointerId = null;
+        zWheel.classList.remove('is-active');
+        if (allowTap && !wheelMoved) {
+          const rect = zWheel.getBoundingClientRect();
+          const sign = event.clientY < rect.top + rect.height / 2 ? 1 : -1;
+          enqueueZWheelTick(sign);
+        }
+      };
+
+      zWheel.addEventListener('pointerup', (event) => releaseWheelPointer(event, true));
+      zWheel.addEventListener('pointercancel', (event) => releaseWheelPointer(event, false));
+
+      zWheel.addEventListener('wheel', (event) => {
+        if (zWheel.getAttribute('aria-disabled') === 'true') return;
+        event.preventDefault();
+        const sign = event.deltaY < 0 ? 1 : -1;
+        zWheelOffsetPx += sign * 12;
+        zWheel.style.setProperty('--wheel-offset', `${zWheelOffsetPx.toFixed(1)}px`);
+        enqueueZWheelTick(sign);
+      }, { passive: false });
+
+      zWheel.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowUp' || event.key === 'PageUp') {
+          event.preventDefault();
+          enqueueZWheelTick(1);
+        } else if (event.key === 'ArrowDown' || event.key === 'PageDown') {
+          event.preventDefault();
+          enqueueZWheelTick(-1);
+        }
+      });
+    }
     ['x', 'y', 'z'].forEach((axis) => {
       el(`mb-jog-goto-${axis}`)?.addEventListener('input', () => validateJogGotoInputs());
     });
