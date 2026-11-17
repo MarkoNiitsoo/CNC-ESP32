@@ -1408,9 +1408,33 @@
     if (![next.x, next.y, next.z].every(Number.isFinite)) return false;
     STATE.jogAnimationPosition = next;
     window.dispatchEvent(new CustomEvent('cnc-commanded-jog-position', {
-      detail: { ...next, source: 'JOG_CMD', updatedAt: Date.now() },
+      detail: {
+        ...next,
+        xyFeedMax: Number(jog.xyFeedMax) || 3000,
+        zFeedMax: Number(jog.zFeedMax) || 400,
+        state: String(jog.state || ''),
+        source: 'JOG_CMD',
+        updatedAt: Date.now(),
+      },
     }));
     return true;
+  }
+
+  function currentWorkPositionForAnimation() {
+    const curX = Number.isFinite(Number(STATE.position?.x)) ? Number(STATE.position.x) : Number(STATE.frame?.work?.x);
+    const curY = Number.isFinite(Number(STATE.position?.y)) ? Number(STATE.position.y) : Number(STATE.frame?.work?.y);
+    const curZ = Number.isFinite(Number(STATE.position?.z)) ? Number(STATE.position.z) : Number(STATE.frame?.work?.z);
+    if (!Number.isFinite(curX) || !Number.isFinite(curY)) return null;
+    return { x: curX, y: curY, z: Number.isFinite(curZ) ? curZ : 0 };
+  }
+
+  function dispatchJogMoveAnimation(toResolver, settings) {
+    const from = currentWorkPositionForAnimation();
+    if (!from) return;
+    const to = toResolver(from);
+    window.dispatchEvent(new CustomEvent('cnc-jog-goto-start', {
+      detail: { from, to, xyFeedMax: settings.xyFeedMax, zFeedMax: settings.zFeedMax },
+    }));
   }
 
   async function sendJogUpdate() {
@@ -1459,12 +1483,20 @@
       await invalidatePausedResumeBeforeManualMotion();
       await refreshProjectSafeZ();
       const settings = jogSettings(safeJog);
+      dispatchJogMoveAnimation((from) => ({
+        x: from.x + (Number(dx) || 0),
+        y: from.y + (Number(dy) || 0),
+        z: from.z + (Number(dz) || 0),
+      }), settings);
       await apiPost('/api/jog/step', { dx, dy, dz, ...settings });
       const parts = [];
       if (dx) parts.push(`X${dx > 0 ? '+' : ''}${dx}`);
       if (dy) parts.push(`Y${dy > 0 ? '+' : ''}${dy}`);
       if (dz) parts.push(`Z${dz > 0 ? '+' : ''}${dz}`);
       setMessage(`Step ${parts.join(' ')} mm complete.`);
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent('cnc-jog-goto-cancel'));
+      throw err;
     } finally {
       jogStepPending = false;
       renderJogReadouts();
@@ -1488,20 +1520,11 @@
       await invalidatePausedResumeBeforeManualMotion();
       await refreshProjectSafeZ();
       Object.assign(payload, jogSettings(safeJog));
-      const curX = Number.isFinite(Number(STATE.position?.x)) ? Number(STATE.position.x) : Number(STATE.frame?.work?.x);
-      const curY = Number.isFinite(Number(STATE.position?.y)) ? Number(STATE.position.y) : Number(STATE.frame?.work?.y);
-      const curZ = Number.isFinite(Number(STATE.position?.z)) ? Number(STATE.position.z) : Number(STATE.frame?.work?.z);
-      if (Number.isFinite(curX) && Number.isFinite(curY)) {
-        const from = { x: curX, y: curY, z: Number.isFinite(curZ) ? curZ : 0 };
-        const to = {
-          x: Number.isFinite(x) ? x : from.x,
-          y: Number.isFinite(y) ? y : from.y,
-          z: Number.isFinite(z) ? z : from.z,
-        };
-        window.dispatchEvent(new CustomEvent('cnc-jog-goto-start', {
-          detail: { from, to, xyFeedMax: payload.xyFeedMax, zFeedMax: payload.zFeedMax },
-        }));
-      }
+      dispatchJogMoveAnimation((from) => ({
+        x: Number.isFinite(x) ? x : from.x,
+        y: Number.isFinite(y) ? y : from.y,
+        z: Number.isFinite(z) ? z : from.z,
+      }), payload);
       await apiPost('/api/jog/goto', payload);
       setMessage(`Moved to ${parts.join(' ')} mm.`);
     } catch (err) {

@@ -7436,20 +7436,15 @@ function stopJogGotoAnimation() {
   jogGotoAnimationFrame = 0;
   jogGotoAnimatedPosition = null;
 }
-addEventListener('cnc-jog-goto-cancel', () => {
-  stopJogGotoAnimation();
-  draw();
-});
-addEventListener('cnc-jog-goto-start', (event) => {
-  const { from, to, xyFeedMax, zFeedMax } = event.detail || {};
+function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80) {
   if (!from || !to || ![from.x, from.y, to.x, to.y].every(Number.isFinite)) return;
-  stopJogGotoAnimation();
   const xyDist = Math.hypot(to.x - from.x, to.y - from.y);
   const zDist = Math.abs((Number(to.z) || 0) - (Number(from.z) || 0));
   if (xyDist < 0.001 && zDist < 0.001) return;
+  stopJogGotoAnimation();
   const xySpeedMmS = Math.max(1, (Number(xyFeedMax) || 3000) / 60);
   const zSpeedMmS = Math.max(0.5, (Number(zFeedMax) || 400) / 60);
-  const durationMs = Math.max(120, Math.min(15000, Math.max((xyDist / xySpeedMmS) * 1000, (zDist / zSpeedMmS) * 1000)));
+  const durationMs = Math.max(minDurationMs, Math.min(15000, Math.max((xyDist / xySpeedMmS) * 1000, (zDist / zSpeedMmS) * 1000)));
   const startTime = performance.now();
   const step = (now) => {
     const t = Math.min(1, (now - startTime) / durationMs);
@@ -7469,6 +7464,23 @@ addEventListener('cnc-jog-goto-start', (event) => {
     }
   };
   jogGotoAnimationFrame = requestAnimationFrame(step);
+}
+addEventListener('cnc-jog-goto-cancel', () => {
+  stopJogGotoAnimation();
+  draw();
+});
+addEventListener('cnc-jog-goto-start', (event) => {
+  const { from, to, xyFeedMax, zFeedMax } = event.detail || {};
+  startJogToolAnimation(from, to, xyFeedMax, zFeedMax, 80);
+});
+addEventListener('cnc-commanded-jog-position', (event) => {
+  const next = event.detail || {};
+  if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) return;
+  const current = jogGotoAnimatedPosition
+    || (currentMachineFrame?.work && Number.isFinite(currentMachineFrame.work.x) ? currentMachineFrame.work : null)
+    || liveToolPosition;
+  if (!current || !Number.isFinite(current.x) || !Number.isFinite(current.y)) return;
+  startJogToolAnimation(current, next, next.xyFeedMax, next.zFeedMax, 40);
 });
 addEventListener('cnc-machine-frame', (event) => {
   currentMachineFrame = event.detail || currentMachineFrame;
