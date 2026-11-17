@@ -481,15 +481,46 @@
   }
 }
 
-.zero-origin-actions {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+.zero-origin-head,
+.preflight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin-top: 14px;
 }
 
-.zero-origin-actions #set-work-zero {
+.zero-origin-head h2,
+.preflight-head h2 {
+  margin: 0;
+}
+
+.zero-origin-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.zero-origin-actions #touch-plate-z-zero,
+.preflight-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.zero-origin-actions #touch-plate-z-zero {
   grid-column: 1 / -1;
+}
+
+.advanced-zero-options {
+  margin-top: 8px;
+}
+
+.advanced-zero-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .zero-history-dialog {
@@ -565,17 +596,6 @@
   margin-top: 14px;
   border-top: 1px solid #263640;
   padding-top: 12px;
-}
-
-@media (max-width: 520px) {
-  .zero-origin-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .zero-origin-actions #set-work-zero,
-  .zero-origin-actions #open-zero-history {
-    grid-column: 1 / -1;
-  }
 }
 
 .dry-run-inputs {

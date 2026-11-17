@@ -779,11 +779,6 @@ function renderReadiness() {
   }[status.gate];
 
   readinessSummaryEl.innerHTML = `
-    <dl class="operator-current-state">
-      <dt>Machine</dt><dd>${html(homeBusy ? machineState : 'Idle')}</dd>
-      <dt>Current job</dt><dd>${html(basename(filePath) || 'None')}</dd>
-      <dt>Saved recoveries</dt><dd>${savedRecoveries}</dd>
-    </dl>
     <div class="operator-readiness-progress"><strong>${completedSteps} / 3</strong><span>preparation decisions ready</span></div>
     <h3>${html(copy[0])}</h3>
     <p>${html(copy[1])}</p>
@@ -3775,9 +3770,11 @@ function selectedPrepareWorkZero() {
 
 function renderPrepareWorkZeroHistory() {
   if (!prepareWorkZeroHistorySelect || !restorePrepareWorkZeroButton || !prepareWorkZeroHintEl) return;
+  const historyBox = prepareWorkZeroHistorySelect.closest('.prepare-zero-history');
   const entries = restorableWorkZeros();
   const previousId = prepareWorkZeroHistorySelect.value;
   prepareWorkZeroHistorySelect.textContent = '';
+  if (historyBox) historyBox.hidden = !entries.length;
   if (!entries.length) {
     const option = document.createElement('option');
     option.value = '';

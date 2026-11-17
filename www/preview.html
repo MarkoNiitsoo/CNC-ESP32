@@ -186,32 +186,32 @@
       </section>
 
       <section class="panel zero-origin-panel preview-tab-panel" data-preview-tab="preflight">
-        <h2>Zero / Origin</h2>
-        <div id="zero-live-coords" class="zero-live-coords" aria-live="polite">
-          <div class="zero-coord-box"><span>Work XYZ</span><strong id="zero-live-work">X - · Y - · Z -</strong></div>
-          <div class="zero-coord-box"><span>Machine XYZ</span><strong id="zero-live-machine">X - · Y - · Z -</strong></div>
+        <div class="zero-origin-head">
+          <h2>Zero / Origin</h2>
           <button id="zero-open-jog" type="button" data-requires-live-control>Open Jog</button>
         </div>
         <div id="zero-origin-summary" class="zero-origin-summary"></div>
-        <div class="prepare-zero-history">
+        <div class="prepare-zero-history" hidden>
           <label for="prepare-work-zero-history">Saved work zeros</label>
           <select id="prepare-work-zero-history" aria-label="Saved work zeros"></select>
           <button id="restore-prepare-work-zero" type="button" disabled data-requires-live-control>Restore &amp; Activate</button>
           <p id="prepare-work-zero-hint" class="form-hint">Home All first, then restore a saved zero into the current machine session.</p>
         </div>
+        <div id="set-work-zero-gate" class="form-hint" style="display:none" tabindex="-1">Home All is required before setting Work Zero.</div>
         <div class="zero-origin-actions">
           <button id="home-machine-zero" type="button" data-requires-live-control>Home Machine</button>
-          <div id="set-work-zero-gate" class="form-hint" style="display:none" tabindex="-1">Home All is required before setting Work Zero.</div>
           <button id="set-work-zero" type="button" data-icon="workZero" data-requires-live-control>Set Work Zero</button>
-          <details class="advanced-zero-options">
-            <summary>Advanced zero options</summary>
+          <button id="set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Tool Z Zero</button>
+          <button id="open-zero-history" type="button">History</button>
+          <button id="touch-plate-z-zero" type="button" hidden data-requires-live-control>Touch Plate Z Zero</button>
+        </div>
+        <details class="advanced-zero-options">
+          <summary>Advanced zero options</summary>
+          <div class="advanced-zero-actions">
             <button id="set-zero-x" type="button" data-requires-live-control>Set Zero X</button>
             <button id="set-zero-y" type="button" data-requires-live-control>Set Zero Y</button>
-          </details>
-          <button id="set-z-zero" type="button" data-icon="zZero" data-requires-live-control>Set Tool Z Zero</button>
-          <button id="touch-plate-z-zero" type="button" hidden data-requires-live-control>Touch Plate Z Zero</button>
-          <button id="open-zero-history" type="button">History</button>
-        </div>
+          </div>
+        </details>
         <div id="job-result" class="job-result" role="status"></div>
       </section>
 
@@ -255,12 +255,14 @@
       </dialog>
 
       <section class="panel preflight-panel preview-tab-panel" data-preview-tab="preflight">
-        <h2>Preflight</h2>
-        <div id="preflight-state" class="preflight-state preflight-unknown">UNKNOWN</div>
+        <div class="preflight-head">
+          <h2>Preflight</h2>
+          <div id="preflight-state" class="preflight-state preflight-unknown">UNKNOWN</div>
+        </div>
         <p id="preflight-action">Load a preview to check job readiness.</p>
-        <div class="job-actions">
-          <button id="refresh-preflight" type="button">Refresh Preflight</button>
-          <button id="save-job-preflight" type="button">Save Job With Preflight</button>
+        <div class="job-actions preflight-actions">
+          <button id="refresh-preflight" type="button">Refresh</button>
+          <button id="save-job-preflight" type="button">Save Preflight</button>
         </div>
         <div id="preflight-checks" class="preflight-checks"></div>
       </section>
