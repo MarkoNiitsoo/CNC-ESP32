@@ -2759,13 +2759,23 @@
       let wheelLastY = 0;
       let wheelAccumPx = 0;
       let wheelMoved = false;
+      let vibrateBlockedNotified = false;
 
-      const triggerZWheelHaptic = () => {
+      const vibrateZWheel = (durationMs) => {
         try {
-          if (typeof navigator?.vibrate === 'function') navigator.vibrate(12);
+          if (typeof navigator?.vibrate !== 'function') return;
+          const ok = navigator.vibrate(durationMs);
+          if (ok === false && !vibrateBlockedNotified) {
+            vibrateBlockedNotified = true;
+            setMessage('Haptic vibration blocked by browser or device settings.');
+          }
         } catch (err) {
           // Ignore environments without vibration support.
         }
+      };
+
+      const triggerZWheelHaptic = () => {
+        vibrateZWheel(28);
         zWheel.classList.add('is-ticking');
         if (zWheelTickTimer) clearTimeout(zWheelTickTimer);
         zWheelTickTimer = setTimeout(() => {
@@ -2810,6 +2820,7 @@
         wheelMoved = false;
         zWheel.classList.add('is-active');
         zWheel.setPointerCapture?.(event.pointerId);
+        vibrateZWheel(18);
       });
 
       zWheel.addEventListener('pointermove', (event) => {
