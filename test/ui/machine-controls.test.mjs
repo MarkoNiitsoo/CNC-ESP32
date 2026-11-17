@@ -387,6 +387,8 @@ describe('firmware-backed Safe Jog Z ceiling', () => {
     }
     expect(machineBar).toContain("apiPost('/api/jog/step'");
     expect(machineBar).toContain("apiPost('/api/jog/goto'");
+    expect(machineBar).toContain('id="mb-jog-z-step-up"');
+    expect(machineBar).toContain('id="mb-jog-z-step-down"');
     expect(machineBar).toContain('id="mb-jog-goto-form"');
     expect(machineBar).toContain('id="mb-jog-goto-x"');
     expect(machineBar).toContain('id="mb-jog-goto-y"');

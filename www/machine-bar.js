@@ -64,6 +64,7 @@
     '#mb-jog-restore-z', '#mb-jog-safe-z', '#mb-jog-xy-speed', '#mb-jog-z-speed',
     '#mb-jog-dock-toggle', '#mb-jog-settings-toggle', '#mb-jog-safe',
     '[data-mb-jog-mode]', '[data-mb-jog-step]',
+    '#mb-jog-z-step-up', '#mb-jog-z-step-down',
     '#mb-jog-goto-x', '#mb-jog-goto-y', '#mb-jog-goto-z', '#mb-jog-goto-submit',
     '#mb-jog-z-slider', '#mb-jog-center', '[data-mb-jog-direction]',
     '[data-mb-feed]', '[data-mb-feed-delta]',
@@ -1445,6 +1446,10 @@
     if (knob) {
       knob.textContent = isStep ? `${STATE.jogStepMm}mm` : '';
     }
+    const zSlider = el('mb-jog-z-slider');
+    if (zSlider) zSlider.hidden = isStep;
+    const zSteps = el('mb-jog-z-step-controls');
+    if (zSteps) zSteps.hidden = !isStep;
   }
 
   async function stepJog(dx, dy, dz, safeJog) {
@@ -2364,6 +2369,10 @@
               <span id="mb-jog-z-handle" class="machine-jog-z-handle" aria-hidden="true"></span>
               <span class="machine-jog-z-label machine-jog-z-negative" aria-hidden="true">Z-</span>
             </button>
+            <div id="mb-jog-z-step-controls" class="machine-jog-z-steps" hidden aria-label="Z axis step controls">
+              <button id="mb-jog-z-step-up" class="machine-jog-z-step-btn" type="button" data-mb-jog-z-step="1" aria-label="Step Z positive" data-requires-live-control>Z+</button>
+              <button id="mb-jog-z-step-down" class="machine-jog-z-step-btn" type="button" data-mb-jog-z-step="-1" aria-label="Step Z negative" data-requires-live-control>Z-</button>
+            </div>
             <div id="mb-jog-pad" class="machine-jog-pad" aria-label="XY jog joystick and locked directions">
               <button class="machine-jog-direction" type="button" data-mb-jog-direction data-direction-label="Y+" data-mb-jog-x="0" data-mb-jog-y="1" style="--direction-x:0px;--direction-y:-74px;--direction-angle:-90deg" aria-label="Jog Y positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
               <button class="machine-jog-direction" type="button" data-mb-jog-direction data-mb-jog-x="1" data-mb-jog-y="1" style="--direction-x:52px;--direction-y:-52px;--direction-angle:-45deg" aria-label="Jog X and Y positive" data-requires-live-control><span aria-hidden="true">&#10148;</span></button>
@@ -2555,6 +2564,15 @@
           STATE.jogMode = 'step';
         }
         syncJogModeUi();
+      });
+    });
+    document.querySelectorAll('[data-mb-jog-z-step]').forEach((item) => {
+      item.addEventListener('click', () => {
+        const sign = Number(item.dataset.mbJogZStep) >= 0 ? 1 : -1;
+        const step = Number(STATE.jogStepMm) || 1;
+        stepJog(0, 0, sign * step, false).catch((err) => {
+          setMessage(`Z step jog failed: ${err.message}`);
+        });
       });
     });
     el('mb-jog-goto-form')?.addEventListener('submit', (event) => {
