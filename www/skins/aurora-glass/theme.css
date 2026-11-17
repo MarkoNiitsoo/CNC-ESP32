@@ -1,7 +1,7 @@
 :root {
   --cnc-bg: #0c0f1a;
-  --cnc-panel: rgba(15, 23, 42, 0.45);
-  --cnc-panel-strong: rgba(10, 16, 32, 0.7);
+  --cnc-panel: rgba(22, 32, 58, 0.64);
+  --cnc-panel-strong: rgba(16, 24, 46, 0.78);
   --cnc-text: #f8fafc;
   --cnc-muted: #94a3b8;
   --cnc-accent: #6366f1;
@@ -23,9 +23,9 @@
   --cnc-current-position: #fbbf24;
 
   /* Custom transparent glass tint variables (no blur, no double borders) */
-  --glass-bg: rgba(12, 16, 32, 0.54);
-  --glass-border: rgba(255, 255, 255, 0.14);
-  --glass-border-hover: rgba(255, 255, 255, 0.24);
+  --glass-bg: rgba(18, 26, 50, 0.62);
+  --glass-border: rgba(148, 163, 184, 0.24);
+  --glass-border-hover: rgba(191, 219, 254, 0.36);
   --glass-border-focus: rgba(99, 102, 241, 0.45);
   --glass-shadow: 0 6px 24px 0 rgba(0, 0, 0, 0.28);
 }

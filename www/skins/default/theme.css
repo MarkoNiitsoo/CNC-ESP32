@@ -1,5 +1,5 @@
 :root {
-  --cnc-bg: #080d10; --cnc-panel: rgba(17, 24, 32, 0.82); --cnc-panel-strong: rgba(8, 13, 16, 0.96);
+  --cnc-bg: #080d10; --cnc-panel: rgba(20, 30, 40, 0.84); --cnc-panel-strong: rgba(13, 21, 28, 0.94);
   --cnc-text: #eef3f7; --cnc-muted: #9fb1bf; --cnc-accent: #2d80c7; --cnc-ok: #3fc475;
   --cnc-warning: #ffd166; --cnc-danger: #cf4d4d; --cnc-blocked: #b95000;
   --cnc-path-generated: #ffd166; --cnc-path-travel: #2f86d1;

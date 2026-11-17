@@ -513,12 +513,15 @@ button.machine-danger-dark {
   position: absolute;
   right: 28px;
   bottom: 0;
-  width: min(86vw, 320px);
+  width: min(86vw, 326px);
   display: grid;
   gap: 8px;
   align-content: end;
-  padding: 0 8px 0 0;
-  background: transparent;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--cnc-accent) 36%, rgba(159, 177, 191, 0.24));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--cnc-panel) 66%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
   pointer-events: auto;
 }
 
@@ -540,12 +543,15 @@ button.machine-danger-dark {
 .machine-jog-dock-core .compact-status {
   grid-column: 1 / -1;
   min-width: 0;
-  height: 1.2rem;
+  height: 1.4rem;
   margin: 0;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cnc-bg) 72%, transparent);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  line-height: 1.2rem;
+  line-height: 1.4rem;
 }
 
 .machine-jog-settings-toggle {

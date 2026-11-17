@@ -859,9 +859,9 @@ body.workbench-page {
 }
 
 .workbench-page {
-  --workbench-glass-top: color-mix(in srgb, var(--cnc-panel-strong) 78%, transparent);
-  --workbench-glass-panel: color-mix(in srgb, var(--cnc-panel-strong) 72%, transparent);
-  --workbench-glass-soft: color-mix(in srgb, var(--cnc-panel) 68%, transparent);
+  --workbench-glass-top: color-mix(in srgb, var(--cnc-panel-strong) 82%, transparent);
+  --workbench-glass-panel: color-mix(in srgb, var(--cnc-panel) 84%, transparent);
+  --workbench-glass-soft: color-mix(in srgb, var(--cnc-panel-strong) 72%, rgba(255, 255, 255, 0.04));
   --workbench-glass-chip: rgba(20, 31, 40, 0.7);
 }
 
@@ -1051,7 +1051,7 @@ body.workbench-page {
   width: min(82vw, 390px);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  border: 1px solid rgba(159, 177, 191, 0.25);
+  border: 1px solid color-mix(in srgb, var(--cnc-accent) 36%, rgba(159, 177, 191, 0.28));
   background: var(--workbench-glass-panel);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
   transition: transform 180ms ease;
