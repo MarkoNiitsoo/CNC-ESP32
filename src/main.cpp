@@ -10358,7 +10358,7 @@ void handleJogGoto() {
     return;
   }
 
-  if (safeJog && hasXy) {
+  if (hasXy) {
     String xyCmd = "G0";
     if (hasX) xyCmd += " X" + String(x, 3);
     if (hasY) xyCmd += " Y" + String(y, 3);
@@ -10369,30 +10369,19 @@ void handleJogGoto() {
       sendJsonError(502, error);
       return;
     }
-    if (hasZ) {
-      jogStatus.zChangedDuringJog = true;
-      jogStatus.zRestoreAvailable = false;
-      jogStatus.zLiftedForJog = false;
-      const String zCmd = "G0 Z" + String(z, 3) + " F" + String(zFeedMax, 0);
-      if (!checkJogResponseOk(sendJogCommandForResponse(zCmd, 15000), "Marlin rejected goto Z: " + zCmd, error)) {
-        jogStatus.lastError = error;
-        touchJogStatus();
-        sendJsonError(502, error);
-        return;
-      }
+    if (hasZ && !checkJogResponseOk(sendJogCommandForResponse("M400", 120000), "Marlin did not finish XY move before Z", error)) {
+      jogStatus.lastError = error;
+      touchJogStatus();
+      sendJsonError(502, error);
+      return;
     }
-  } else {
-    if (hasZ) {
-      jogStatus.zChangedDuringJog = true;
-      jogStatus.zRestoreAvailable = false;
-      jogStatus.zLiftedForJog = false;
-    }
-    String cmd = "G0";
-    if (hasX) cmd += " X" + String(x, 3);
-    if (hasY) cmd += " Y" + String(y, 3);
-    if (hasZ) cmd += " Z" + String(z, 3);
-    cmd += " F" + String(hasXy ? xyFeedMax : zFeedMax, 0);
-    if (!checkJogResponseOk(sendJogCommandForResponse(cmd, 15000), "Marlin rejected goto: " + cmd, error)) {
+  }
+  if (hasZ) {
+    jogStatus.zChangedDuringJog = true;
+    jogStatus.zRestoreAvailable = false;
+    jogStatus.zLiftedForJog = false;
+    const String zCmd = "G0 Z" + String(z, 3) + " F" + String(zFeedMax, 0);
+    if (!checkJogResponseOk(sendJogCommandForResponse(zCmd, 15000), "Marlin rejected goto Z: " + zCmd, error)) {
       jogStatus.lastError = error;
       touchJogStatus();
       sendJsonError(502, error);

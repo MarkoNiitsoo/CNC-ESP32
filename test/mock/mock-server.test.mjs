@@ -730,6 +730,18 @@ describe('mock HTTP API', () => {
       body: JSON.stringify({ x: -100, safeJog: false }),
     });
     expect(oobGoto.status).toBe(400);
+
+    const directLogStart = env.marlin.log.length;
+    const directGotoRes = await fetch(`${base}/api/jog/goto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: 15, y: 10, z: 2, safeJog: false, xyFeedMax: 1800, zFeedMax: 300 }),
+    });
+    expect(directGotoRes.ok).toBe(true);
+    const directCmds = env.marlin.log.slice(directLogStart).map((e) => e.text);
+    const directXyIdx = directCmds.findIndex((c) => c === 'G0 X15.000 Y10.000 F1800');
+    const directZIdx = directCmds.findIndex((c) => c === 'G0 Z2.000 F300');
+    expect(directXyIdx).toBeGreaterThan(-1);
+    expect(directZIdx).toBeGreaterThan(directXyIdx);
   });
 
   it('restores a saved XYZ origin from Home using Safe Z first', async () => {

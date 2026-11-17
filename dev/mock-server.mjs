@@ -1336,11 +1336,11 @@ export async function createMockServer(options = {}) {
         const liftError = await applySafeLift(hasXy);
         if (liftError) return json(res, liftError.status, { ok: false, error: liftError.error });
         const commands = ['G21', 'G90'];
-        if (safeJog && hasXy) {
+        if (hasXy) {
           commands.push(`G0${hasX ? ` X${tx.toFixed(3)}` : ''}${hasY ? ` Y${ty.toFixed(3)}` : ''} F${xyFeedMax}`);
-          if (hasZ) commands.push(`G0 Z${tz.toFixed(3)} F${zFeedMax}`);
-        } else {
-          commands.push(`G0${hasX ? ` X${tx.toFixed(3)}` : ''}${hasY ? ` Y${ty.toFixed(3)}` : ''}${hasZ ? ` Z${tz.toFixed(3)}` : ''} F${hasXy ? xyFeedMax : zFeedMax}`);
+        }
+        if (hasZ) {
+          commands.push(`G0 Z${tz.toFixed(3)} F${zFeedMax}`);
         }
         if (hasZ) {
           env.jog.zChangedDuringJog = true;

@@ -7502,11 +7502,14 @@ function stopJogGotoAnimation() {
   jogGotoAnimationFrame = 0;
   jogGotoAnimatedPosition = null;
 }
-function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80, fixedDurationMs = 0) {
+function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80, fixedDurationMs = 0, onComplete = null) {
   if (!from || !to || ![from.x, from.y, to.x, to.y].every(Number.isFinite)) return;
   const xyDist = Math.hypot(to.x - from.x, to.y - from.y);
   const zDist = Math.abs((Number(to.z) || 0) - (Number(from.z) || 0));
-  if (xyDist < 0.001 && zDist < 0.001) return;
+  if (xyDist < 0.001 && zDist < 0.001) {
+    onComplete?.();
+    return;
+  }
   stopJogGotoAnimation();
   const xySpeedMmS = Math.max(1, (Number(xyFeedMax) || 3000) / 60);
   const zSpeedMmS = Math.max(0.5, (Number(zFeedMax) || 400) / 60);
@@ -7536,6 +7539,7 @@ function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80
       lastCanvasWorkPosition = { x: to.x, y: to.y, z: Number(to.z) || 0 };
       prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
       draw();
+      onComplete?.();
     }
   };
   jogGotoAnimationFrame = requestAnimationFrame(step);
@@ -7546,7 +7550,19 @@ addEventListener('cnc-jog-goto-cancel', () => {
 });
 addEventListener('cnc-jog-goto-start', (event) => {
   const { from, to, xyFeedMax, zFeedMax } = event.detail || {};
-  startJogToolAnimation(from, to, xyFeedMax, zFeedMax, 80, 0);
+  if (!from || !to) return;
+  const fromZ = Number(from.z) || 0;
+  const toZ = Number(to.z) || 0;
+  const xyDist = Math.hypot(to.x - from.x, to.y - from.y);
+  const zDist = Math.abs(toZ - fromZ);
+  if (xyDist >= 0.001 && zDist >= 0.001) {
+    const xyEnd = { x: to.x, y: to.y, z: fromZ };
+    startJogToolAnimation(from, xyEnd, xyFeedMax, zFeedMax, 80, 0, () => {
+      startJogToolAnimation(xyEnd, { x: to.x, y: to.y, z: toZ }, xyFeedMax, zFeedMax, 80, 0);
+    });
+  } else {
+    startJogToolAnimation(from, to, xyFeedMax, zFeedMax, 80, 0);
+  }
 });
 addEventListener('cnc-commanded-jog-position', (event) => {
   const next = event.detail || {};
