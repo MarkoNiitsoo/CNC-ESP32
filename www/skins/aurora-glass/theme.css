@@ -22,13 +22,12 @@
   --cnc-zero: #10b981;
   --cnc-current-position: #fbbf24;
 
-  /* Custom glassmorphism variables */
-  --glass-bg: rgba(15, 23, 42, 0.45);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-border-hover: rgba(255, 255, 255, 0.16);
-  --glass-border-focus: rgba(99, 102, 241, 0.4);
-  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.35);
-  --glass-blur: 16px;
+  /* Custom transparent glass tint variables (no blur, no double borders) */
+  --glass-bg: rgba(12, 16, 32, 0.54);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-border-hover: rgba(255, 255, 255, 0.24);
+  --glass-border-focus: rgba(99, 102, 241, 0.45);
+  --glass-shadow: 0 6px 24px 0 rgba(0, 0, 0, 0.28);
 }
 
 /* Base body background override with vibrant glowing aurora effect */
@@ -40,24 +39,26 @@ body {
     #0c0f1a !important;
 }
 
-/* Glass panel containers */
-.machine-state,
+/* Transparent tinted panel containers (no blur, single border) */
 .machine-drawer-head,
 .machine-drawer-card,
 .machine-config-group,
 .machine-operator-panel,
 .machine-jog-dock-settings,
-.machine-bar,
 .status-header,
 .topbar,
 .path-picker,
 .panel {
   background: var(--glass-bg) !important;
-  backdrop-filter: blur(var(--glass-blur)) saturate(120%) !important;
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(120%) !important;
   border: 1px solid var(--glass-border) !important;
   box-shadow: var(--glass-shadow) !important;
   border-radius: 16px !important;
+}
+
+.machine-state {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 /* Header tweaks */
@@ -65,27 +66,28 @@ body {
 .topbar {
   padding: 12px 16px !important;
   margin-top: 6px !important;
-  background: rgba(12, 15, 26, 0.45) !important;
+  background: rgba(12, 15, 26, 0.56) !important;
 }
 
 .machine-bar {
+  background: rgba(12, 16, 32, 0.62) !important;
+  border: 0 !important;
   border-bottom: 1px solid var(--glass-border) !important;
+  box-shadow: var(--glass-shadow) !important;
   padding: 10px 14px !important;
 }
 
 /* Form Inputs, Buttons, and Select elements */
-button,
+button:not(.machine-jog-direction):not(.machine-jog-center),
 input,
 select,
 textarea {
   border-radius: 12px !important;
   border: 1px solid var(--glass-border) !important;
-  background: rgba(255, 255, 255, 0.05) !important;
-  backdrop-filter: blur(8px) !important;
-  -webkit-backdrop-filter: blur(8px) !important;
+  background: rgba(15, 23, 42, 0.38) !important;
   color: var(--cnc-text) !important;
   font-weight: 600 !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
@@ -96,23 +98,23 @@ select option {
 }
 
 /* Element hovers */
-button:not(:disabled):hover,
+button:not(.machine-jog-direction):not(.machine-jog-center):not(:disabled):hover,
 select:not(:disabled):hover {
-  background: rgba(255, 255, 255, 0.1) !important;
+  background: rgba(255, 255, 255, 0.12) !important;
   border-color: var(--glass-border-hover) !important;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16) !important;
 }
 
 /* Primary/Accent buttons */
-button:not(.danger-button):not(.warning-button):not(.secondary-button):not(.machine-warn):not(.machine-danger):not(.caution):not(.machine-danger-dark) {
-  background: color-mix(in srgb, var(--cnc-accent) 25%, rgba(255, 255, 255, 0.05)) !important;
-  border-color: rgba(99, 102, 241, 0.35) !important;
+button:not(.danger-button):not(.warning-button):not(.secondary-button):not(.machine-warn):not(.machine-danger):not(.caution):not(.machine-danger-dark):not(.machine-jog-direction):not(.machine-jog-center) {
+  background: color-mix(in srgb, var(--cnc-accent) 28%, rgba(15, 23, 42, 0.34)) !important;
+  border-color: rgba(99, 102, 241, 0.38) !important;
 }
 
-button:not(.danger-button):not(.warning-button):not(.secondary-button):not(.machine-warn):not(.machine-danger):not(.caution):not(.machine-danger-dark):not(:disabled):hover {
-  background: color-mix(in srgb, var(--cnc-accent) 45%, rgba(255, 255, 255, 0.1)) !important;
+button:not(.danger-button):not(.warning-button):not(.secondary-button):not(.machine-warn):not(.machine-danger):not(.caution):not(.machine-danger-dark):not(.machine-jog-direction):not(.machine-jog-center):not(:disabled):hover {
+  background: color-mix(in srgb, var(--cnc-accent) 45%, rgba(15, 23, 42, 0.42)) !important;
   border-color: var(--cnc-accent) !important;
-  box-shadow: 0 0 16px rgba(99, 102, 241, 0.35) !important;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.3) !important;
 }
 
 /* State warning/danger buttons */
@@ -173,24 +175,36 @@ textarea:focus {
 }
 
 /* Jog Pad & Dock Stylings */
+.machine-jog-direction {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: rgba(248, 250, 252, 0.62) !important;
+}
+
+.machine-jog-direction:not(:disabled):hover,
+.machine-jog-direction.is-active {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: color-mix(in srgb, var(--cnc-accent) 90%, white 10%) !important;
+}
+
 .machine-jog-center {
-  border: 2px solid rgba(255, 255, 255, 0.25) !important;
-  background: rgba(15, 23, 42, 0.7) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3) !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .machine-jog-knob {
-  background: var(--cnc-accent) !important;
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.6) !important;
+  background: color-mix(in srgb, var(--cnc-accent) 32%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--cnc-accent) 55%, rgba(255, 255, 255, 0.35)) !important;
+  box-shadow: none !important;
 }
 
 .machine-jog-handle {
-  background: rgba(99, 102, 241, 0.35) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  background: rgba(99, 102, 241, 0.42) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
   border-right: 0 !important;
   border-radius: 12px 0 0 12px !important;
 }
@@ -212,9 +226,7 @@ textarea:focus {
 
 /* Drawer overlays */
 .machine-drawer-overlay {
-  background: rgba(8, 12, 24, 0.6) !important;
-  backdrop-filter: blur(4px) !important;
-  -webkit-backdrop-filter: blur(4px) !important;
+  background: rgba(8, 12, 24, 0.58) !important;
 }
 
 /* Responsive pad & mobile optimizations */
