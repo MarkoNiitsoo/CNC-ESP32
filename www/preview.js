@@ -7433,14 +7433,15 @@ addEventListener('cnc-position-update', (event) => {
   liveToolPosition = { ...position };
   if (lastCanvasWorkPosition) prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
   lastCanvasWorkPosition = { x: Number(position.x), y: Number(position.y), z: Number(position.z) || 0 };
-  draw();
+  const jogging = window.CncMachineBar?.getState?.()?.jog?.state === 'JOGGING';
+  if (!jogging && !jogGotoAnimationFrame) draw();
 });
 function stopJogGotoAnimation() {
   if (jogGotoAnimationFrame) cancelAnimationFrame(jogGotoAnimationFrame);
   jogGotoAnimationFrame = 0;
   jogGotoAnimatedPosition = null;
 }
-function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80) {
+function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80, fixedDurationMs = 0) {
   if (!from || !to || ![from.x, from.y, to.x, to.y].every(Number.isFinite)) return;
   const xyDist = Math.hypot(to.x - from.x, to.y - from.y);
   const zDist = Math.abs((Number(to.z) || 0) - (Number(from.z) || 0));
@@ -7448,7 +7449,10 @@ function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80
   stopJogGotoAnimation();
   const xySpeedMmS = Math.max(1, (Number(xyFeedMax) || 3000) / 60);
   const zSpeedMmS = Math.max(0.5, (Number(zFeedMax) || 400) / 60);
-  const durationMs = Math.max(minDurationMs, Math.min(15000, Math.max((xyDist / xySpeedMmS) * 1000, (zDist / zSpeedMmS) * 1000)));
+  const computedMs = Math.max((xyDist / xySpeedMmS) * 1000, (zDist / zSpeedMmS) * 1000);
+  const durationMs = fixedDurationMs > 0
+    ? Math.max(fixedDurationMs, computedMs)
+    : Math.max(minDurationMs, Math.min(15000, computedMs));
   const startTime = performance.now();
   const step = (now) => {
     const t = Math.min(1, (now - startTime) / durationMs);
@@ -7464,7 +7468,10 @@ function startJogToolAnimation(from, to, xyFeedMax, zFeedMax, minDurationMs = 80
       jogGotoAnimationFrame = requestAnimationFrame(step);
     } else {
       jogGotoAnimationFrame = 0;
-      jogGotoAnimatedPosition = null;
+      const stillJogging = window.CncMachineBar?.getState?.()?.jog?.state === 'JOGGING';
+      jogGotoAnimatedPosition = stillJogging
+        ? { x: to.x, y: to.y, z: Number(to.z) || 0, source: 'JOG_GOTO' }
+        : null;
       lastCanvasWorkPosition = { x: to.x, y: to.y, z: Number(to.z) || 0 };
       prevCanvasWorkPosition = { ...lastCanvasWorkPosition };
       draw();
@@ -7478,11 +7485,12 @@ addEventListener('cnc-jog-goto-cancel', () => {
 });
 addEventListener('cnc-jog-goto-start', (event) => {
   const { from, to, xyFeedMax, zFeedMax } = event.detail || {};
-  startJogToolAnimation(from, to, xyFeedMax, zFeedMax, 80);
+  startJogToolAnimation(from, to, xyFeedMax, zFeedMax, 80, 0);
 });
 addEventListener('cnc-commanded-jog-position', (event) => {
   const next = event.detail || {};
   if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) return;
+  const isJogging = String(next.state || '').toUpperCase() === 'JOGGING';
   const current = jogGotoAnimatedPosition
     || prevCanvasWorkPosition
     || lastCanvasWorkPosition
@@ -7491,7 +7499,16 @@ addEventListener('cnc-commanded-jog-position', (event) => {
     lastCanvasWorkPosition = { x: next.x, y: next.y, z: Number(next.z) || 0 };
     return;
   }
-  startJogToolAnimation(current, next, next.xyFeedMax, next.zFeedMax, 40);
+  const xyDist = Math.hypot(next.x - current.x, next.y - current.y);
+  const zDist = Math.abs((Number(next.z) || 0) - (Number(current.z) || 0));
+  if (xyDist < 0.001 && zDist < 0.001) {
+    if (!isJogging && jogGotoAnimatedPosition && !jogGotoAnimationFrame) {
+      jogGotoAnimatedPosition = null;
+      draw();
+    }
+    return;
+  }
+  startJogToolAnimation(current, next, next.xyFeedMax, next.zFeedMax, 40, isJogging ? 155 : 0);
 });
 addEventListener('cnc-machine-frame', (event) => {
   currentMachineFrame = event.detail || currentMachineFrame;
