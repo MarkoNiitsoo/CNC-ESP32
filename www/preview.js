@@ -1026,7 +1026,13 @@ function canvasToolPosition() {
     if (commanded) return { ...commanded, source: 'CMD' };
   }
   if (currentMachineFrame?.machine && Number.isFinite(currentMachineFrame.machine.x)) {
-    return { ...currentMachineFrame.machine, source: 'MACHINE', isMachine: true };
+    const workZ = Number(currentMachineFrame?.work?.z);
+    return {
+      ...currentMachineFrame.machine,
+      ...(Number.isFinite(workZ) ? { z: workZ, zIsWork: true } : {}),
+      source: 'MACHINE',
+      isMachine: true,
+    };
   }
   if (liveToolPosition) return liveToolPosition;
   if (Number.isFinite(statusPosition?.x) && Number.isFinite(statusPosition?.y)) {
@@ -1040,7 +1046,11 @@ function canvasWorkZeroPosition() {
 }
 
 function canvasTablePosition(position) {
-  return workbenchUiModule?.workspaceToolPosition(position, canvasWorkZeroPosition()) || position;
+  const mapped = workbenchUiModule?.workspaceToolPosition(position, canvasWorkZeroPosition()) || position;
+  if (mapped && position?.zIsWork && Number.isFinite(position.z)) {
+    return { ...mapped, z: position.z };
+  }
+  return mapped;
 }
 
 function canvasTableBounds(bounds) {
@@ -6688,15 +6698,66 @@ function draw() {
     const toolX = projectedTool.x;
     const toolY = projectedTool.y;
     ctx.save();
-    ctx.fillStyle = colors.position;
-    ctx.beginPath();
-    ctx.arc(toolX, toolY, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = colors.position;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(toolX, toolY, 9, 0, Math.PI * 2);
-    ctx.stroke();
+    if (projection.mode === '3d') {
+      const tipZ = Number.isFinite(Number(visibleToolPosition.z)) ? Number(visibleToolPosition.z) : 0;
+      const topPoint = project({ x: visibleToolPosition.x, y: visibleToolPosition.y, z: tipZ + 28 });
+      const planePoint = project({ x: visibleToolPosition.x, y: visibleToolPosition.y, z: 0 });
+      const radius = Math.max(4, Math.min(9, 4 * projection.scale));
+      const ry = Math.max(2, radius * 0.45);
+      // Shadow/projection ring on the Z=0 work plane
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(planePoint.x, planePoint.y, radius * 1.1, ry * 1.1, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      if (Math.abs(tipZ) > 0.05) {
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(planePoint.x, planePoint.y);
+        ctx.lineTo(toolX, toolY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      // Vertical cylinder body (cutter bit)
+      const grad = ctx.createLinearGradient(toolX - radius, 0, toolX + radius, 0);
+      grad.addColorStop(0, '#4a6478');
+      grad.addColorStop(0.35, '#d8ecfa');
+      grad.addColorStop(0.7, colors.position);
+      grad.addColorStop(1, '#2a3d4d');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(topPoint.x - radius, topPoint.y);
+      ctx.lineTo(toolX - radius, toolY);
+      ctx.ellipse(toolX, toolY, radius, ry, 0, Math.PI, 0, true);
+      ctx.lineTo(topPoint.x + radius, topPoint.y);
+      ctx.ellipse(topPoint.x, topPoint.y, radius, ry, 0, 0, Math.PI, true);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = colors.position;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      // Top cap of cylinder
+      ctx.fillStyle = '#c5e2f6';
+      ctx.beginPath();
+      ctx.ellipse(topPoint.x, topPoint.y, radius, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Cutting tip marker
+      ctx.fillStyle = colors.position;
+      ctx.beginPath();
+      ctx.arc(toolX, toolY, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = colors.position;
+      ctx.beginPath();
+      ctx.arc(toolX, toolY, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = colors.position;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(toolX, toolY, 9, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.restore();
   }
   const workflow = jobState ? guidedWorkflowStatus() : null;
